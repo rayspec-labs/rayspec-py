@@ -33,6 +33,7 @@ from rayspec.cli.commands._loader_common import (
     make_context,
     report_lines,
 )
+from rayspec.config import ExtensionsSpec
 from rayspec.engine.approval import (
     ApprovalAnswer,
     ApprovalPrompt,
@@ -719,8 +720,24 @@ def register(app: typer.Typer) -> None:
         )
         store.redactor = redactor
         warn_unredactable_secrets(out, redactor)  # a value too short to redact is named
-        sinks = _sinks(json_, out, verbose=verbose and not quiet, quiet=quiet, redactor=redactor)
-        prompt = approval_prompt_for(sinks, interactive=interactive)
+        try:
+            # an id in `extensions:` that names nothing is a usage error, not a crash mid-run
+            sinks = _sinks(
+                json_,
+                out,
+                verbose=verbose and not quiet,
+                quiet=quiet,
+                redactor=redactor,
+                extensions=ctx.config.extensions,
+            )
+            prompt = approval_prompt_for(
+                sinks,
+                interactive=interactive,
+                prompt=configured_approval(ctx.config.extensions, interactive=interactive),
+            )
+        except RayspecError as exc:
+            fail(str(exc), hint=exc.hint)
+            return
         options = RunOptions(
             dry_run=dry_run,
             exec_shell=exec_shell,
@@ -795,6 +812,7 @@ def _sinks(
     verbose: bool,
     quiet: bool,
     redactor: Redactor = NULL_REDACTOR,
+    extensions: ExtensionsSpec | None = None,
 ) -> Any:
     """The event sinks of one run: JSONL on stdout, problems-only lines, or the console tree.
 
@@ -805,7 +823,9 @@ def _sinks(
     This is the ONE place a sink is built, so it is the one place redaction is wired in.
     Every sink is wrapped in a :class:`~rayspec.redact.RedactingSink` when the run has known
     secret values, which covers the console tree, the quiet lines and ``--json`` alike — and any
-    sink added later, without it having to remember the rule.
+    sink added later, without it having to remember the rule. That includes the sinks
+    ``config.extensions.sinks`` names: a third-party observer is redacted by construction,
+    because it is built here like every other one.
     """
     from rayspec.events.sinks import ConsoleSink, JsonStdoutSink, MultiSink
 
@@ -813,10 +833,64 @@ def _sinks(
         return RedactingSink(sink, redactor) if redactor else sink
 
     if json_mode:
-        return MultiSink([wrap(JsonStdoutSink(sys.stdout))])
-    if quiet:
-        return MultiSink([wrap(_problems_only_sink(out))])
-    return MultiSink([wrap(ConsoleSink(out, verbose=verbose, summary=False))])
+        primary: Any = JsonStdoutSink(sys.stdout)
+    elif quiet:
+        primary = _problems_only_sink(out)
+    else:
+        primary = ConsoleSink(out, verbose=verbose, summary=False)
+    sinks = [wrap(primary)]
+    sinks += [
+        wrap(sink) for sink in configured_sinks(extensions, out, verbose=verbose, quiet=quiet)
+    ]
+    return MultiSink(sinks)
+
+
+def configured_sinks(
+    extensions: ExtensionsSpec | None, out: Console, *, verbose: bool, quiet: bool
+) -> list[Any]:
+    """The sinks ``config.extensions.sinks`` names, built through :mod:`rayspec.registry`.
+
+    They are ADDITIONAL observers next to the CLI's own sink, in the order they are configured;
+    an id that names nothing raises :class:`~rayspec.registry.UnknownExtensionError` (with
+    did-you-mean) before the run starts.
+    """
+    if extensions is None or not extensions.sinks:
+        return []
+    from rayspec.registry import SinkContext, create_sink
+
+    return [
+        create_sink(
+            sink_id,
+            SinkContext(
+                console=out,
+                stream=sys.stdout,
+                verbose=verbose,
+                quiet=quiet,
+                settings=extensions.settings_for(sink_id),
+            ),
+        )
+        for sink_id in extensions.sinks
+    ]
+
+
+def configured_approval(
+    extensions: ExtensionsSpec | None, *, interactive: bool
+) -> ApprovalPrompt | None:
+    """The approval prompt ``config.extensions.approval`` names, built through the registry.
+
+    ``None`` — which :func:`approval_prompt_for` reads as "use the builtin
+    :class:`~rayspec.engine.approval.ConsoleApprovalPrompt`" — when nothing is configured or the
+    run cannot ask anyway. The builtin prompt is registered under the id ``console`` and can be
+    named explicitly; it is not resolved through the registry by default so that the default
+    path stays exactly what it was.
+    """
+    approval_id = extensions.approval if extensions else None
+    if not interactive or not approval_id:
+        return None
+    from rayspec.registry import ApprovalContext, create_approval
+
+    settings = extensions.settings_for(approval_id) if extensions else {}
+    return create_approval(approval_id, ApprovalContext(interactive=True, settings=settings))
 
 
 class SuspendingApprovalPrompt:
@@ -878,6 +952,8 @@ __all__ = [
     "SUMMARY_KEYS",
     "SuspendingApprovalPrompt",
     "approval_prompt_for",
+    "configured_approval",
+    "configured_sinks",
     "cost_label",
     "failed_leaf_paths",
     "load_stub_script",

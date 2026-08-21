@@ -129,6 +129,31 @@ class RedactSpec(StrictModel):
         return tuple(dict.fromkeys(self.detectors))
 
 
+class ExtensionsSpec(StrictModel):
+    """The ``extensions:`` block: which registered sinks and approval prompt a run uses.
+
+    Ids are resolved through :mod:`rayspec.registry`, which knows the builtins and everything
+    installed packages publish under the ``rayspec.sinks`` / ``rayspec.approvals`` entry-point
+    groups (``rayspec plugins`` lists them). Both keys are optional and default to what rayspec
+    has always done: the console (or ``--json``) sink the CLI flags pick, and the interactive
+    terminal approval prompt. ``sinks`` are ADDITIONAL observers — they join the CLI's own sink
+    rather than replacing it, and they are redacted like every other sink.
+    """
+
+    sinks: list[str] = Field(default_factory=list)
+    approval: str | None = None
+    #: extension id → the settings mapping its factory is handed (``providers:``-shaped).
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "extensions"
+
+    def settings_for(self, extension_id: str) -> dict[str, Any]:
+        """The settings mapping of one extension id (empty when it has none)."""
+        return dict(self.settings.get(extension_id, {}))
+
+
 class ProjectSpec(StrictModel):
     """A registered project (``rayspec projects add``)."""
 
@@ -180,6 +205,8 @@ class Config(StrictModel):
     secrets: dict[str, SecretSourceSpec] = Field(default_factory=dict)
     #: opt-in builtin redaction detectors on top of the known secret values.
     redact: RedactSpec = Field(default_factory=RedactSpec)
+    #: which registered sinks and approval prompt a run uses (see :class:`ExtensionsSpec`).
+    extensions: ExtensionsSpec = Field(default_factory=ExtensionsSpec)
 
     @classmethod
     def _what(cls) -> str:
