@@ -68,6 +68,9 @@ def _validate_one(
         warnings.append(caps.warning)
     status = "[green]OK[/green]" if report.ok else "[red]FAILED[/red]"
     printer(f"[bold]{escape(rw.workflow.name)}[/bold] ({escape(rw.label)}): {status}")
+    # the layers in force, named on every run: a guardrail nobody can see is one nobody trusts,
+    # and policy is discovered against --root rather than against the workflow file
+    printer(f"  [dim]{escape(report.policy_note)}[/dim]", soft_wrap=True)
     secrets = list(secret_input_names(rw.workflow))
     if secrets:
         # the (secret) marker — these values are never persisted and reach shell/python
@@ -85,6 +88,10 @@ def _validate_one(
         "errors": list(report.errors),
         "warnings": list(warnings),
         "secret_inputs": secrets,
+        "policy": {
+            "layers": list(report.policy_layers),
+            "searched": list(report.policy_searched),
+        },
         "problems": message_problems(list(report.errors), path=rw.label),
     }
     return len(report.errors), len(warnings), row
@@ -130,7 +137,7 @@ def register(app: typer.Typer) -> None:
             )
             return
         out = console()
-        printer = (lambda *_: None) if json_ else out.print
+        printer = (lambda *_, **__: None) if json_ else out.print
         total_errors = 0
         failed = 0
         rows: list[dict[str, Any]] = []

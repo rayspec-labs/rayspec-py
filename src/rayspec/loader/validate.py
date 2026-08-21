@@ -78,11 +78,25 @@ CapabilitiesFor = Callable[[str], ProviderCapabilities | None]
 
 @dataclass(slots=True)
 class ValidationReport:
-    """Outcome of :func:`validate_workflow`; ``unsupported`` holds the capability hits."""
+    """Outcome of :func:`validate_workflow`; ``unsupported`` holds the capability hits.
+
+    ``policy_layers`` / ``policy_searched`` are what the policy pass read, so a command can say
+    which guardrails are in force instead of leaving "was my policy.yaml even found?" to
+    guesswork; :func:`~rayspec.policy.policy_note` formats them for display.
+    """
 
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     unsupported: list[UnsupportedFeatureError] = field(default_factory=list)
+    policy_layers: list[str] = field(default_factory=list)
+    policy_searched: list[str] = field(default_factory=list)
+
+    @property
+    def policy_note(self) -> str:
+        """``policy: <the layers in force>`` — one line, never empty."""
+        from rayspec.policy import policy_note
+
+        return policy_note(self.policy_layers, self.policy_searched)
 
     @property
     def ok(self) -> bool:
@@ -316,7 +330,9 @@ class _Validator:
         )
 
     def _report_policy(self, outcome: PolicyReport) -> None:
-        """Turn one policy outcome into validation errors and warnings."""
+        """Turn one policy outcome into validation errors, warnings and the layers-in-force line."""
+        self.report.policy_layers = list(outcome.policy_layers)
+        self.report.policy_searched = list(outcome.policy_searched)
         for problem in outcome.errors:
             self.report.error(problem.where, problem.message, location=problem.location)
         for problem in outcome.warnings:

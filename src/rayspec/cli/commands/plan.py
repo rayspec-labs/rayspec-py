@@ -586,6 +586,10 @@ def register(app: typer.Typer) -> None:
                 ],
                 "steps": _steps_json(rw),
                 "providers": providers_report,
+                "policy": {
+                    "layers": list(report.policy_layers),
+                    "searched": list(report.policy_searched),
+                },
                 "errors": list(report.errors),
                 "warnings": warnings,
                 "unsupported": len(report.unsupported),
@@ -629,6 +633,8 @@ def register(app: typer.Typer) -> None:
         if rw.workflow.description:
             out.print(f"  {rw.workflow.description}")
         out.print(f"  hash {rw.hash[:12]}  isolation {rw.workflow.isolation}{_caps_line(rw)}")
+        # which guardrails this plan was measured against — absent policy is said out loud
+        out.print(f"  [dim]{escape(report.policy_note)}[/dim]", soft_wrap=True)
         out.print("")
         out.print("[bold]inputs[/bold]")
         if not rw.workflow.inputs:

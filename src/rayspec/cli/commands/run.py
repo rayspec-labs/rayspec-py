@@ -20,6 +20,7 @@ import anyio
 import typer
 import yaml
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -682,8 +683,11 @@ def register(app: typer.Typer) -> None:
         warnings = [*rw.warnings, *report.warnings]
         if caps.warning:
             warnings.append(caps.warning)
-        # warnings go to stderr in text mode too (stdout stays the run's own output)
-        report_lines("warnings:", warnings, style="yellow", printer=common.err_console().print)
+        # warnings go to stderr in text mode too (stdout stays the run's own output), and so
+        # does the line naming the policy layers this run is subject to
+        err = common.err_console()
+        err.print(f"[dim]{escape(report.policy_note)}[/dim]", soft_wrap=True)
+        report_lines("warnings:", warnings, style="yellow", printer=err.print)
         if report.errors:
             error_lines(report.errors, json_mode=json_, kind="validation errors")
             raise typer.Exit(code=EXIT_USAGE)
