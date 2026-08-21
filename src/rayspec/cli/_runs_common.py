@@ -1086,6 +1086,7 @@ __all__ = [
     "planned_step_paths",
     "project_store",
     "read_output_text",
+    "record_root",
     "recorded_calls",
     "release_workdir_lock",
     "replay_script",
