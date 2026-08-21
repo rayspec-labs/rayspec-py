@@ -18,6 +18,12 @@ asked for it. ``auto_if`` is not even evaluated for a class that may not be appr
 automatically, so an expression can never escalate a gate. A **rejection** is never
 constrained by a class.
 
+The gate is also the last place where the operator's rules and the workflow's class name are
+both in hand, so it is where a mismatch is reported: a class nothing in force defines keeps the
+permissive default and says so (``class_not_held``), and a gate a class merely holds says which
+rule is holding it (``gate_held``) even when no waiver was asked for. ``require_tty`` asks
+:func:`at_a_terminal` at the moment of asking rather than trusting the caller's flags.
+
 Simultaneous gates are handled one at a time (``Runtime.approval_lock`` is held from closing
 the launch gate until the decision or pause is recorded); when the run is already pausing at
 another gate, a later gate pauses too but does not overwrite ``run.pause`` (the decision slot

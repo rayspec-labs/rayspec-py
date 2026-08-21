@@ -2,17 +2,24 @@
 """Static risk analysis of a resolved workflow — what a run would be *allowed* to do.
 
 This is the analysis behind ``rayspec plan --risk``. It answers one question: before anyone
-approves this run, what can it reach? Agents that can leave the workspace, shell bodies that
-push, merge, delete or fetch code, MCP servers that start a local command or talk to a remote
-one, steps that work outside the workspace, and gates that anything at all could waive.
+approves this run, what can it reach? Agents that can leave the workspace or run commands of
+their own choosing, shell bodies that push, merge, delete or fetch code, MCP servers that start
+a local command or talk to a remote one, steps that work outside the workspace, and gates that
+anything at all could waive.
 
 **It reads. It never runs.** No step body is executed, no provider is contacted, no socket is
 opened, no file is written — the whole report is derived from the workflow document as the
 loader resolved it. That is what makes it safe to run against a workflow you have not read yet,
 which is exactly when you need it. The cost of reading rather than running is that the analysis
 is textual: a body is matched as it is written, before templates are rendered, so a command
-assembled at run time is not seen. The report says what a workflow *declares*, not everything it
-could conceivably do.
+assembled at run time is not seen.
+
+**What it cannot read, it reports.** Silence about a construct the analysis does not understand
+would be indistinguishable from safety, and the two constructs it cannot follow — a templated
+body and an agent's own decisions — are the normal way to write a workflow, not an evasion. So a
+rendered body is a ``templated-body`` finding, an agent that may run commands is an
+``agent-tools`` one, and an empty finding list is rendered as *nothing matched*, never as
+*nothing is wrong*.
 
 Module boundary: pure functions over a :class:`~rayspec.loader.ResolvedWorkflow`. Rendering
 belongs to the CLI; deciding what to do about a finding belongs to a human.
