@@ -79,8 +79,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--stubs-from RUN_ID` | replay a stored run's recorded answers instead of a `--stubs` file (run id or unique prefix, resolved in the current project first and then in every project under `RAYSPEC_HOME`) — the in-memory equivalent of `rayspec runs stubs <run> -o f.yaml` followed by `--stubs f.yaml`. Mutually exclusive with `--stubs`; an unknown/ambiguous id or a run with secret inputs is exit 2. The donor run — not a file — is recorded in `run.json` as `stubs_path: "run:<run id>"`, so `resume`/`approve`/`reject` and `run --resume` rebuild the same script from it (a donor that was deleted is exit 2 naming it; an explicit `--stubs`/`--stubs-from` on the resume entry overrides it) |
 | `--stubs-init PATH` | write a stub scaffold (one entry per prompt step) and exit; refuses to overwrite an existing file unless `--force` |
 | `--exec-shell` | run shell/python steps for real inside `--dry-run` (worktree isolation applies again) |
-| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false` |
-| `--approve-class NAME` | pre-approve gates of one [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class the policy marks `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
+| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false` (no operator policy is read yet, so today no class is) |
+| `--approve-class NAME` | pre-approve gates of one [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class marked `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
 | `--no-interactive` | never prompt; a gate pauses the run (exit 3) |
 | `--json` | JSONL events on stdout followed by **the final summary object as the last stdout line** (shapes below; `rayspec run … --json \| tail -1 \| jq .exit_code`); warnings and errors go to stderr. `--json` does not imply `--no-interactive`: on a terminal an `approve:` step still prompts (on stderr) — pass `--no-interactive` (pause, exit 3) or `--yes` for unattended pipelines |
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
@@ -261,7 +261,9 @@ to type `rayspec approve`, or in review of a workflow somebody else wrote.
 It **runs nothing**: no step body is executed, no provider is contacted, no socket is opened and
 no file is written. The price of reading rather than running is that the analysis is textual — a
 body is matched as written, before templates are rendered, so a command assembled at run time is
-not seen. The report says what a workflow *declares*.
+not seen. What the report cannot read it says out loud rather than passing over: a templated body
+is a `templated-body` finding, an agent that may run commands is an `agent-tools` one, and a run
+with no findings at all prints what was *not* covered instead of declaring the workflow safe.
 
 Findings, worst first, each with where it is, the evidence, and what to do about it:
 
@@ -275,28 +277,38 @@ Findings, worst first, each with where it is, the evidence, and what to do about
 | `shell-delete` | high | `rm -rf`, `git branch -D`, `find … -delete` |
 | `shell-publish` | high | `npm publish`, `twine upload`, `cargo publish`, `docker push`, `gh release create`, … |
 | `shell-privilege` | high | `sudo`, `chown`, `chmod 777` |
-| `outside-workspace` | high | a `cwd:` outside the workspace, or a body naming `~/`, `$HOME`, `Path.home()`, `/etc`, `/usr`, … |
+| `outside-workspace` | high | a `cwd:` outside the workspace, or a body naming `~/`, `$HOME`, `Path.home()`, an absolute path (outside `/dev` and `/tmp`) or a `../` escape |
 | `mcp-remote` | medium | an agent's MCP server is reached over the network |
-| `shell-network` | medium | `curl`, `wget`, `ssh`, `rsync`, `requests`, `socket`, … |
+| `agent-tools` | medium | an agent may run `shell` or `edit` tools — what it does is its own decision and is not in this report |
+| `shell-network` | medium | `curl`, `wget`, `ssh`, `rsync`, `requests`, `socket`, … in a command position |
 | `shell-install` | medium | the step installs code it did not bring with it |
 | `shell-credentials` | medium | `gh auth`, `docker login`, `aws configure`, … |
 | `python-process` | medium | a `python:` body shells out, so what it runs cannot be read off the workflow |
 | `reject-ignored` | medium | a gate with `on_reject: continue` — rejecting it does not stop the run |
 | `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) holds shut |
+| `templated-body` | medium | a `shell:`/`python:` body or a `cwd:` assembled at run time — what it runs is not what is written |
+| `unheld-class` | medium | a gate names an [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) that nothing in force defines, so the name holds nothing |
 | `no-isolation` | low | `isolation: none` — steps run in the project directory itself, not in a worktree |
-| `waivable-gate` | low | a gate `--yes` approves — the policy does not mark its class `allow_yes: false` |
+| `waivable-gate` | low | a gate `--yes` approves — it names no class, or its class is not marked `allow_yes: false` |
 
-A gate whose class the policy marks `allow_yes: false` is *not* reported: it is a real gate.
+A gate whose class is marked `allow_yes: false` is *not* reported: it is a real gate. A gate that
+names a class nothing defines is reported as `unheld-class` — the name reads like a lock and is
+not one.
 
 ```
 $ rayspec plan release_check --risk
 risk report release_check  .rayspec/workflows/release_check.yaml
-  2 high · 1 medium · 0 low
+  1 high · 8 medium · 1 low
 
-  high   publish  shell-publish
-         shell: gh release create "v$VERSION" --generate-notes
-         → the run can publish an artefact the world can install; this is the step to gate with
-           an approval class the policy locks
+  high   publish  shell-push
+         shell: git push origin "{{ inputs.tag }}"
+         → a shared branch is changed; put the step behind an approve: gate with a class the
+           policy marks allow_yes: false
+
+  medium gate  unheld-class
+         class release (not held)
+         → no operator policy in force defines approval class 'release', so naming it restricts
+           nothing; the rule that would hold this gate is allow_yes: false for it
 ```
 
 The report is advisory: it never changes the exit code, which stays 0 unless the workflow has

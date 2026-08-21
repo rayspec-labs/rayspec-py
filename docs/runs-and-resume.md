@@ -274,7 +274,7 @@ An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
 
 ### Approval classes
 
-A gate can name a **class**, and an operator can say what that class permits:
+A gate can name a **class**; what that class permits is decided outside the workflow:
 
 ```yaml
 - id: publish
@@ -284,42 +284,58 @@ A gate can name a **class**, and an operator can say what that class permits:
     class: release
 ```
 
-```yaml
-# the operator's policy file — not the workflow
-classes:
-  release:
-    allow_yes: false
-    require_tty: true
-```
-
 The split is the point. The workflow decides *that* a gate exists; the operator decides *how
-strictly* it is held. A workflow can never relax its own gate, which is what makes it safe to
-leave one running on a schedule that is also allowed to publish a release. A gate that names no
-class, or names one the policy says nothing about, behaves exactly as gates always have.
+strictly* it is held. A workflow can name a class but cannot define one, so it can never loosen
+a rule an operator set — which is what makes it safe to leave a workflow running on a schedule
+that is also allowed to publish a release.
+
+**rayspec does not read an operator policy yet.** There is nowhere to load one from, so today
+naming a class records the intent, makes the gate addressable by `--approve-class`, and nothing
+more. Nothing pretends otherwise: `rayspec plan` and the gate itself warn
+(`steps.publish.approve.class: names approval class 'release', but no operator policy is in
+force, so the gate is not held`), and `rayspec plan --risk` reports the gate as `unheld-class`.
+The table below is what each rule does wherever the rules come from — the engine enforces
+them today — not a description of a file you can write.
 
 | Rule | What it forbids | What still works |
 |---|---|---|
 | *(none — the default)* | nothing | everything |
 | `allow_yes: false` | **every** automatic approval: `--yes`, `--dry-run`, `--approve-class`, `auto_if`, and any combination of them | a human answering this one gate: the terminal prompt, or `rayspec approve <run>` / `rayspec reject <run>` |
-| `require_tty: true` | the above, **and** a decision recorded out of band by `rayspec approve`/`rayspec reject` (it can be scripted), **and** a replacement prompt configured through `extensions.approval` | the built-in terminal prompt of the process running the workflow — reach it with `rayspec resume <run>` from a terminal |
+| `require_tty: true` | the above, **and** a decision recorded out of band by `rayspec approve`/`rayspec reject` (it can be scripted), **and** a replacement prompt configured through `extensions.approval`, **and** asking at all from a process with no terminal | the built-in terminal prompt of the process running the workflow — reach it with `rayspec resume <run>` from a terminal |
 
-`allow_yes: false` cannot be waived. Not by `--yes`, not by `--approve-class`, not by an
-environment variable, not by a configuration key, not by all of them at once: the rule is
-checked where the gate is decided, not where a flag is parsed, so there is no path around it.
-What you get instead of an approval is a warning naming the class and the rule, and a gate that
-goes on to ask a human.
+Where the rules are checked is what makes them rules: in the executor that decides a gate, not
+where a flag is parsed. So when a class is in force, no combination of `--yes`, `--dry-run`,
+`--approve-class` and `auto_if` approves a gate it holds — nor does an environment variable or a
+configuration key, because none of them is consulted there. `rayspec test` takes the same rules
+(see below). What you get instead of an approval is a warning naming the class and the rule, and
+a gate that goes on to ask a human.
+
+The limit of the mechanism is the **name**. A class the rules in force do not define keeps the
+permissive default: a workflow can no more invent a restriction than lift one, so a name that
+does not match on both sides — a typo, or an edit to the workflow — leaves the gate open. It does
+not leave it open quietly: `rayspec plan` before a run, `plan --risk` in review and the gate
+itself each report that the class is not held.
+
+`require_tty` cannot tell a person from a terminal. It refuses a decision recorded out of band,
+refuses a prompt that is not the built-in one, and refuses to ask at all unless the process
+really is attached to a terminal — checked when the gate is asked rather than taken from a flag.
+But a pty wrapper (`script`, `expect`, `unbuffer`) looks exactly like a human to it. The rule
+buys you "not from a pipe in a scheduled job", not "a person was there".
 
 **Rejecting is never constrained by a class.** Refusing to approve is the fail-closed direction,
 and a gate nobody can reject is a gate nobody can get out of.
 
 `--approve-class <name>` pre-approves gates of one class for one invocation — `rayspec run
 release_check --approve-class chore` answers the tidy-up gates and still stops at the release
-one. It is repeatable, and it pre-approves nothing at all for a class whose policy says
+one. It is repeatable, and it pre-approves nothing at all for a class whose rules say
 `allow_yes: false`. A name no gate in the workflow uses simply pre-approves nothing: the run
-pauses exactly as it would have.
+pauses exactly as it would have. Until a policy can be loaded, no class is marked
+`allow_yes: false`, so `--approve-class` is today the only half of this feature with an effect.
 
-`rayspec test` is not governed by classes: it is a stub harness that reaches no provider and, by
-default, runs no script, so its gates approve as they always did.
+`rayspec test` is governed by the same rules. A case is a dry run and a dry run approves gates,
+but a class held shut is not waived by the mode a gate is reached in — and with `--exec-shell` a
+gated `git push` really runs. A case that reaches such a gate pauses and fails, naming the gate,
+instead of publishing.
 
 ### Approving by condition (`auto_if`)
 
@@ -355,8 +371,9 @@ prints the approve/reject hint and exits 3 again. `rayspec approve <run> [commen
 in-process (exit code = how the run ends). Whichever way the gate is answered, `run.pause` is
 cleared once the decision is recorded — a finished run never reports a pending gate. The summary
 printed after a pause (`decide with: rayspec approve <run> [comment] · rayspec reject <run>
-[reason] · rayspec resume <run>`) names these commands; a cancelled run (`rayspec cancel`,
-`stop:`, reject) is not resumable without `--force`.
+[reason] · rayspec resume <run>`) names these commands — except at a gate whose class requires a
+terminal, where it names only `rayspec resume <run>`, because the other two would be refused. A
+cancelled run (`rayspec cancel`, `stop:`, reject) is not resumable without `--force`.
 
 ## Failures, retries and timeouts
 
