@@ -265,3 +265,22 @@ def test_a_sink_is_not_handed_stdout_when_the_cli_owns_it(
 
     assert _run(["run", "demo", "--root", str(project)]).exit_code == 0
     assert seen.read_text(encoding="utf-8") != "stream: NoneType\n"
+
+
+def test_a_project_block_merges_with_the_user_level_one(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """`settings:` declared once in ~/.rayspec/config.yaml survives a project `sinks:` line."""
+    events = tmp_path / "events.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    (home / "config.yaml").write_text(
+        f"extensions:\n  settings:\n    recorder: {{path: {events}}}\n", encoding="utf-8"
+    )
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  sinks: [recorder]\n")
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "run.finished" in events.read_text(encoding="utf-8").splitlines()

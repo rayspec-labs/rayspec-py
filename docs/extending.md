@@ -124,6 +124,10 @@ extensions:
     acme-log: {path: /tmp/acme.log}
 ```
 
+The two files merge per key: a project can add `sinks:` without losing the `settings:` block
+declared once in `~/.rayspec/config.yaml`, and a `settings:` entry for one id replaces only that
+id's mapping. A `sinks:` list is replaced as a whole, not appended to.
+
 `settings` is the mapping the factory is handed as `context.settings` — the same idea as
 `providers.<id>` for a provider. An id that names nothing fails the run before it starts, with
 the usual did-you-mean; so does a factory that raises — validate your settings in `__init__` and

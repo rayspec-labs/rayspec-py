@@ -1823,7 +1823,9 @@ of a run — configured plugins included — in `RedactingSink`.
 
 Additive in `config`: `Config.extensions: ExtensionsSpec` (`sinks: list[str] = []`,
 `approval: str | None = None`, `settings: dict[str, dict[str, Any]] = {}`,
-`.settings_for(id)`), exported as `rayspec.config.ExtensionsSpec`. `extensions.sinks` are
+`.settings_for(id)`), exported as `rayspec.config.ExtensionsSpec`; `_MERGE_DEPTH["extensions"]
+= 2`, so the user-level and project-level blocks merge per key and per extension id (a `sinks:`
+list is still replaced as a whole). `extensions.sinks` are
 ADDITIONAL observers built next to the CLI's own sink (`cli/commands/run.py: configured_sinks`),
 in configuration order; `extensions.approval` replaces the interactive prompt
 (`configured_approval` — `None`, i.e. the builtin `ConsoleApprovalPrompt`, when unset, so the

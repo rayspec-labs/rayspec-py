@@ -35,7 +35,15 @@ class ConfigError(LoaderError):
 
 
 #: Top-level keys whose mappings are merged per key (one level for aliases, two for tiers).
-_MERGE_DEPTH: dict[str, int] = {"tiers": 2, "aliases": 1, "secrets": 1, "redact": 1}
+_MERGE_DEPTH: dict[str, int] = {
+    "tiers": 2,
+    "aliases": 1,
+    "secrets": 1,
+    "redact": 1,
+    # per key, and per extension id inside `settings`: a project naming a sink must not drop
+    # the settings the user declared for it once in ~/.rayspec/config.yaml
+    "extensions": 2,
+}
 
 
 def _merge_dicts(base: dict[str, Any], override: dict[str, Any], depth: int) -> dict[str, Any]:
