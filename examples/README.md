@@ -94,6 +94,8 @@ named example must back at least one token of its row (comment-only YAML lines d
 | `loop.max_iterations` / `until:` / `on_exhausted` | `fix_issue`, `dogfood` | `build`, `tdd` |
 | `each` / `as:` / `max_parallel` / `on_failure` | `triage_fanout` | `triage` |
 | `approve.on_reject` | `release_check`, `dogfood` | `continue` (`gate`, `gate_human`) |
+| `approve.class` | `release_check`, `fix_issue` | the operator's rules for a kind of gate, named by the workflow and defined outside it |
+| `approve.auto_if` | `fix_issue` | a clean first round approves the PR gate; anything else asks |
 | `include.with:` | `pr_review` | validated against the block's `inputs:` |
 | `stop.status` / `stop.reason` | `fix_issue`, `dogfood` | templated reason |
 | `outputs:` (workflow and include) | `hello_review`, `pr_review`, `triage_fanout` | deep-rendered, typed when a single `{{ }}` |

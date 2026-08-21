@@ -337,6 +337,7 @@
     },
     "ApproveSpec": {
       "additionalProperties": false,
+      "description": "A human gate.\n\n``class:`` names the *approval class* the gate belongs to. The class itself is not defined\nhere — a workflow must not be able to decide how strictly it is gated — it is named so that\nan operator's policy can say what may approve it and so that ``--approve-class`` can\npre-authorise one kind of gate without pre-authorising every gate.\n\n``auto_if:`` is a condition that approves the gate without asking. It can only ever *add* an\nautomatic approval to what the class already permits: a class that may not be approved\nautomatically is never approved automatically, whatever the expression evaluates to.",
       "properties": {
         "message": {
           "title": "Message",
@@ -351,6 +352,30 @@
           ],
           "title": "On Reject",
           "type": "string"
+        },
+        "class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Class"
+        },
+        "auto_if": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auto If"
         }
       },
       "required": [

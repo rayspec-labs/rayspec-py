@@ -407,9 +407,10 @@ async def test_on_step_failure_continue_applies_inside_each_bodies(harness: Harn
     """``defaults.on_step_failure: continue`` reaches composite bodies.
 
     ``run_graph`` runs every sibling list — including the body of ``each:``/``loop:``/``include:``
-    — and ``RunContext.keep_going`` is read from the ROOT workflow, so the policy is global.
-    ``later`` is queued *after* the failure settles, so it discriminates: under ``drain`` it would
-    be skipped ``run_failed``.
+    — and ``each:``/``loop:`` bodies share their parent's ``Defaults``, so they inherit the
+    enclosing scope's policy (see ``engine.context.effective_on_step_failure``). ``later`` is
+    queued *after* the failure settles, so it discriminates: under ``drain`` it would be skipped
+    ``run_failed``.
     """
     body = """
   - id: fan

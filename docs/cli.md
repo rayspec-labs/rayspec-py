@@ -57,7 +57,8 @@ the script to this file"; that command has no `--json`.)
 ```
 rayspec run <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
             [--dry-run] [--stubs PATH] [--stubs-from RUN_ID] [--stubs-init PATH] [--exec-shell]
-            [--yes] [--no-interactive] [--json | --output FORMAT] [--quiet] [--verbose]
+            [--yes] [--approve-class NAME] [--no-interactive]
+            [--json | --output FORMAT] [--quiet] [--verbose]
             [--allow-unsupported] [--fail-fast] [--resume RUN_ID] [--force]
             [--worktree | --no-worktree] [--base BRANCH] [--repo SOURCE]
             [--locked | --no-locked] [--wait-slot DURATION]
@@ -75,7 +76,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--stubs-from RUN_ID` | replay a stored run's recorded answers instead of a `--stubs` file (run id or unique prefix, resolved in the current project first and then in every project under `RAYSPEC_HOME`) — the in-memory equivalent of `rayspec runs stubs <run> -o f.yaml` followed by `--stubs f.yaml`. Mutually exclusive with `--stubs`; an unknown/ambiguous id or a run with secret inputs is exit 2. The donor run — not a file — is recorded in `run.json` as `stubs_path: "run:<run id>"`, so `resume`/`approve`/`reject` and `run --resume` rebuild the same script from it (a donor that was deleted is exit 2 naming it; an explicit `--stubs`/`--stubs-from` on the resume entry overrides it) |
 | `--stubs-init PATH` | write a stub scaffold (one entry per prompt step) and exit; refuses to overwrite an existing file unless `--force` |
 | `--exec-shell` | run shell/python steps for real inside `--dry-run` (worktree isolation applies again) |
-| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) |
+| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false` (no operator policy is read yet, so today no class is) |
+| `--approve-class NAME` | pre-approve gates of one [approval class](runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class marked `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
 | `--no-interactive` | never prompt; a gate pauses the run (exit 3) |
 | `--json` | JSONL events on stdout followed by **the final summary object as the last stdout line** (shapes below; `rayspec run … --json \| tail -1 \| jq .exit_code`); warnings and errors go to stderr. `--json` does not imply `--no-interactive`: on a terminal an `approve:` step still prompts (on stderr) — pass `--no-interactive` (pause, exit 3) or `--yes` for unattended pipelines |
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
@@ -231,6 +233,7 @@ includes or provider capabilities — `rayspec validate` stays authoritative. Se
 rayspec plan <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
              [--allow-unsupported] [--locked | --no-locked] [--json | --output FORMAT]
 rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output FORMAT]
+rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
 
 Show what a run would do without executing: the workflow hash and isolation, inputs with their
@@ -277,6 +280,7 @@ rayspec plan review_pr --render --step assess --stubs .rayspec/dryrun/stubs.yaml
 
 Options:
 
+- `--risk` — Report what the run would be allowed to do (runs nothing).
 - `--render` — Show the rendered prompt/script bodies instead of the plan.
 - `--step` `<path>` — With `--render`: render only this step path.
 - `--stubs` `<file>` — With `--render`: stub script supplying the upstream step outputs.
@@ -288,6 +292,70 @@ With `--json` the usual plan payload gains `stubs` (the file, or `null`) and `re
 `[{path, def_path, kind, agent, model, provider, text, env, step_env, error, warnings}]`, where
 `path` is the *record* path the preview bound (`build[1]/echo`, `fan[0]/work`) and `def_path`
 the definition path.
+
+#### `--risk`: what the run would be allowed to do
+
+`rayspec plan <workflow> --risk` reports what a run of this workflow could reach, read off the
+workflow document itself. It is meant to be read **before** approving a run — by the person about
+to type `rayspec approve`, or in review of a workflow somebody else wrote.
+
+It **runs nothing**: no step body is executed, no provider is contacted, no socket is opened and
+no file is written. The price of reading rather than running is that the analysis is textual — a
+body is matched as written, before templates are rendered, so a command assembled at run time is
+not seen. What the report cannot read it says out loud rather than passing over: a templated body
+is a `templated-body` finding, an agent that may run commands is an `agent-tools` one, and a run
+with no findings at all prints what was *not* covered instead of declaring the workflow safe.
+
+Findings, worst first, each with where it is, the evidence, and what to do about it:
+
+| Category | Severity | What it means |
+|---|---|---|
+| `agent-access` | high | an agent runs with `access: full` — it may read and write outside the workspace |
+| `mcp-command` | high | an agent's MCP server is a program started on this machine |
+| `shell-pipe-to-shell` | high | a body pipes something downloaded into a shell |
+| `shell-push` | high | a body runs `git push` / `git merge` / `git rebase` / `gh pr merge` |
+| `shell-force` | high | `--force`, `git reset --hard`, `git clean -f` |
+| `shell-delete` | high | `rm -rf`, `git branch -D`, `find … -delete` |
+| `shell-publish` | high | `npm publish`, `twine upload`, `cargo publish`, `docker push`, `gh release create`, … |
+| `shell-privilege` | high | `sudo`, `chown`, `chmod 777` |
+| `outside-workspace` | high | a `cwd:` outside the workspace, or a body naming `~/`, `$HOME`, `Path.home()`, an absolute path (outside `/dev` and `/tmp`) or a `../` escape |
+| `mcp-remote` | medium | an agent's MCP server is reached over the network |
+| `agent-tools` | medium | an agent may run `shell` or `edit` tools — what it does is its own decision and is not in this report |
+| `shell-network` | medium | `curl`, `wget`, `ssh`, `rsync`, `requests`, `socket`, … in a command position |
+| `shell-install` | medium | the step installs code it did not bring with it |
+| `shell-credentials` | medium | `gh auth`, `docker login`, `aws configure`, … |
+| `python-process` | medium | a `python:` body shells out, so what it runs cannot be read off the workflow |
+| `reject-ignored` | medium | a gate with `on_reject: continue` — rejecting it does not stop the run |
+| `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](runs-and-resume.md#approval-classes) holds shut |
+| `templated-body` | medium | a `shell:`/`python:` body or a `cwd:` assembled at run time — what it runs is not what is written |
+| `unheld-class` | medium | a gate names an [approval class](runs-and-resume.md#approval-classes) that nothing in force defines, so the name holds nothing |
+| `no-isolation` | low | `isolation: none` — steps run in the project directory itself, not in a worktree |
+| `waivable-gate` | low | a gate `--yes` approves — it names no class, or its class is not marked `allow_yes: false` |
+
+A gate whose class is marked `allow_yes: false` is *not* reported: it is a real gate. A gate that
+names a class nothing defines is reported as `unheld-class` — the name reads like a lock and is
+not one.
+
+```
+$ rayspec plan release_check --risk
+risk report release_check  .rayspec/workflows/release_check.yaml
+  1 high · 8 medium · 1 low
+
+  high   publish  shell-push
+         shell: git push origin "{{ inputs.tag }}"
+         → a shared branch is changed; put the step behind an approve: gate with a class the
+           policy marks allow_yes: false
+
+  medium gate  unheld-class
+         class release (not held)
+         → no operator policy in force defines approval class 'release', so naming it restricts
+           nothing; the rule that would hold this gate is allow_yes: false for it
+```
+
+The report is advisory: it never changes the exit code, which stays 0 unless the workflow has
+validation or input errors (2). `--json` adds `risk: [{severity, category, where, detail,
+advice}]` to the usual plan payload, which is the form to gate a pipeline on. `--risk` and
+`--render` are different views and are refused together.
 
 ### `rayspec test`
 
@@ -330,7 +398,9 @@ and only you can pass it**. A case file's `exec_shell: true` is a declaration th
 real execution; without the flag the command refuses to run at all (exit 2, naming the case's
 `file:line`) rather than letting a checked-in data file widen what the command does. Note that
 `--exec-shell` takes no workdir lock, so do not run it beside a real `rayspec run` on the same
-checkout. `--junit FILE` writes a JUnit XML report (one `<testsuite>` per suite, the four-line
+checkout, and that a case is bound by the same [approval classes](runs-and-resume.md#approval-classes)
+a run is: a gate whose class may not be approved automatically pauses the case and fails it rather
+than running the step behind it. `--junit FILE` writes a JUnit XML report (one `<testsuite>` per suite, the four-line
 blocks as the `<failure>` text) — written whether cases pass, fail, or the suite could not start
 (a usage error becomes one erroring `<testcase>`), so a CI publish step always has a file.
 `--json` prints one object on stdout: `{passed, failed, duration_s, cases: [{suite, case, ok,
@@ -515,9 +585,11 @@ script is a plain file meant to be committed.
 Options:
 
 - `--output` / `-o` `<path>` — Write the script here instead of stdout.
-- `--redact` — Redact secret values while recording. **Not available in this build**: the flag
-  always exits 2 (it never silently records an un-redacted script), and a run with secret inputs
-  is refused either way.
+- `--redact` — **Refused** (exit 2), and permanently so: a recording command is never given
+  secret values. A redactor replaces only values it is *given*, a run's are never persisted, and
+  asking you for them in order to write a file you are meant to commit is not a trade rayspec
+  makes — exact-match redaction cannot promise that a value a step transformed is gone. A run
+  with secret inputs is refused outright; a run without them has nothing to redact.
 - `--force` — Overwrite an existing file.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
@@ -698,8 +770,20 @@ omitted:
 
 - **status** — final status, `skip_reason`, `(tolerated)`, the error, attempts, duration, tokens
   and cost, plus where the step is defined (`file:line`);
+- **cap** — only for a step the run-level circuit breaker skipped: the cap that actually fired.
+  `skip_reason: budget_exceeded` names the *breaker*, and `budget_usd`, `max_tokens` and
+  `timeout_total` are one breaker sharing that one reason, so this line says which of them was
+  over (`cap  time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)`) — every cap that was
+  over, not just the first. When the run did not end on the breaker (it was interrupted or
+  paused, or a cap was raised since), the caps are re-checked against the totals and timestamps
+  the run record still holds and the line says so: `cap  budget exceeded (…) (recomputed from
+  the run record)`. A recomputed line answers "which cap is this run over", not "which cap
+  fired"; `--json` carries the same distinction as `cap.source` (`run.reason` | `recomputed`);
 - **join** — every `needs` with its recorded outcome (and what the join table *counts* it as: a
-  tolerated failure counts as succeeded) and the decision that followed;
+  tolerated failure counts as succeeded) and the decision that followed. A step whose skip reason
+  says the run itself was being torn down (`run_failed`, `stopped`, `budget_exceeded`) is
+  re-evaluated the way the scheduler saw it, and the row says so: `decision skip (run_failed) —
+  the run was already draining`;
 - **when** — the expression, its value re-evaluated in the step's own scope, and each operand
   with the value it had (`steps.assess.output = LGTM`);
 - **retries** — one line per `step.retry` event: attempt, delay and the error that caused it;
@@ -731,7 +815,7 @@ Options:
   characters are stripped on the way to the terminal, like everywhere else).
 - `--json` / `--output json` — Machine-readable output: `{run_id, workflow, step, def_path, kind, location,
   status, skip_reason, tolerated, attempts, error, exit_code, approved, duration_ms, tokens,
-  cost_usd, cost_source, usage_unknown, join: {join, needs: [{step, status, counts_as,
+  cost_usd, cost_source, usage_unknown, cap: {reason, knobs, source} | null, join: {join, needs: [{step, status, counts_as,
   skip_reason, tolerated}], decision, skip_reason}, when: {expression, value, error, operands:
   [{reference, value, error}]}, retries: [{attempt, delay_s, error}], agent, env, rendered:
   {kind, source, text, env}, fingerprint, reused, output_ref, output_kind, prompt_ref,
@@ -789,7 +873,8 @@ Two things are not in `run.json` and come from the command line again — both a
 Options:
 
 - `--force` — Resume even if the workflow changed, the run already finished, or its pid/host cannot be verified.
-- `--yes` / `-y` — Auto-approve gates.
+- `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
+- `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.

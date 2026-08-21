@@ -21,7 +21,7 @@ from pydantic_core import PydanticCustomError
 
 from rayspec.schema.agent import AgentDef, AgentOverride
 from rayspec.schema.base import StrictModel, suggest
-from rayspec.schema.common import Duration, Identifier, JoinPolicy, PositiveDuration
+from rayspec.schema.common import Duration, Identifier, JoinPolicy, Name, PositiveDuration
 from rayspec.schema.errors import schema_error_from_validation
 
 #: kind key → kind name
@@ -259,9 +259,34 @@ class EachStep(StepBase):
     on_failure: Literal["fail", "continue"] = "fail"
 
 
+def validate_auto_if(value: str) -> str:
+    """One ``auto_if:`` expression: a non-empty bare Jinja expression.
+
+    The *content* is checked by the loader (compile, references, secret placement) exactly like
+    ``when:``; only emptiness is refused here, where there is no template checker.
+    """
+    if not value.strip():
+        raise ValueError("auto_if must not be empty; give a condition, e.g. `steps.tests.ok`")
+    return value
+
+
 class ApproveSpec(StrictModel):
+    """A human gate.
+
+    ``class:`` names the *approval class* the gate belongs to. The class itself is not defined
+    here — a workflow must not be able to decide how strictly it is gated — it is named so that
+    an operator's policy can say what may approve it and so that ``--approve-class`` can
+    pre-authorise one kind of gate without pre-authorising every gate.
+
+    ``auto_if:`` is a condition that approves the gate without asking. It can only ever *add* an
+    automatic approval to what the class already permits: a class that may not be approved
+    automatically is never approved automatically, whatever the expression evaluates to.
+    """
+
     message: str
     on_reject: Literal["cancel", "continue", "fail"] = "cancel"
+    class_: Name | None = Field(default=None, alias="class")
+    auto_if: Annotated[str, AfterValidator(validate_auto_if)] | None = None
 
     @classmethod
     def _what(cls) -> str:
@@ -274,7 +299,8 @@ def _approve_shorthand(value: Any) -> Any:
     if isinstance(value, dict | ApproveSpec):
         return value
     raise PydanticCustomError(
-        "approve_shape", "approve must be a message string or a mapping {message, on_reject}"
+        "approve_shape",
+        "approve must be a message string or a mapping {message, on_reject, class, auto_if}",
     )
 
 

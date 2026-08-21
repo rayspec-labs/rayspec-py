@@ -36,6 +36,7 @@ import anyio
 from anyio import to_thread
 
 from rayspec.engine.approval import ApprovalPrompt, humanize_duration
+from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
@@ -68,27 +69,92 @@ BUDGET_SKIP_REASON = "budget_exceeded"
 _ARTIFACT_CHUNK_BYTES = 1 << 20
 
 
-def budget_reason(
+#: The run-level caps in the order the breaker reports them — the documented precedence. The
+#: cost and token caps are one budget and are reported as one sentence; the wall clock follows.
+CAP_KNOBS: tuple[str, ...] = (
+    "defaults.budget_usd",
+    "defaults.max_tokens",
+    "defaults.timeout_total",
+)
+#: How a run-level breaker reason starts (``RunRecord.reason`` of a run a cap ended).
+CAP_REASON_PREFIXES: tuple[str, ...] = ("budget exceeded (", "time limit exceeded (")
+
+
+@dataclass(frozen=True, slots=True)
+class CapBreach:
+    """One run-level cap the run is over: the knobs to raise, and the one-line reason."""
+
+    knobs: tuple[str, ...]
+    reason: str
+
+
+def budget_parts(
     usage: Any, cost_usd: float | None, cost_source: str, defaults: Defaults
-) -> str | None:
-    """``budget exceeded (cost ~$0.40 > budget_usd $0.30, tokens 12,000 > max_tokens 10,000)``
-    when a run-level cap of ``defaults`` is exceeded by the totals, else ``None``.
+) -> list[tuple[str, str]]:
+    """``(knob, clause)`` for each money cap of ``defaults`` the totals exceed.
 
     Cost is the provider-reported figure or the pricing-table estimate (``~$``); a run without any
     known cost cannot trip ``budget_usd`` (tokens are always known).
     """
-    parts: list[str] = []
+    parts: list[tuple[str, str]] = []
     cap_cost = defaults.budget_usd
     if cap_cost is not None and cost_usd is not None and cost_usd > cap_cost:
         approx = {"table": "~", "partial": "≥"}.get(cost_source, "")
-        parts.append(f"cost {approx}${cost_usd:.3f} > budget_usd ${cap_cost:.3f}")
+        parts.append(
+            ("defaults.budget_usd", f"cost {approx}${cost_usd:.3f} > budget_usd ${cap_cost:.3f}")
+        )
     cap_tokens = defaults.max_tokens
     total = int(getattr(usage, "total", 0) or 0)
     if cap_tokens is not None and total > cap_tokens:
-        parts.append(f"tokens {total:,} > max_tokens {cap_tokens:,}")
+        parts.append(("defaults.max_tokens", f"tokens {total:,} > max_tokens {cap_tokens:,}"))
+    return parts
+
+
+def budget_reason(
+    usage: Any, cost_usd: float | None, cost_source: str, defaults: Defaults
+) -> str | None:
+    """``budget exceeded (cost ~$0.40 > budget_usd $0.30, tokens 12,000 > max_tokens 10,000)``
+    when a money cap of ``defaults`` is exceeded by the totals, else ``None``.
+    """
+    parts = budget_parts(usage, cost_usd, cost_source, defaults)
     if not parts:
         return None
-    return f"budget exceeded ({', '.join(parts)})"
+    return f"budget exceeded ({', '.join(clause for _, clause in parts)})"
+
+
+def cap_reasons(
+    usage: Any,
+    cost_usd: float | None,
+    cost_source: str,
+    elapsed_s: float | None,
+    defaults: Defaults,
+) -> tuple[CapBreach, ...]:
+    """Every run-level cap the run is over, in :data:`CAP_KNOBS` order.
+
+    The precedence is written down rather than merely deterministic: the money caps
+    (``budget_usd`` / ``max_tokens``, one sentence because they are one budget) come before the
+    wall clock (``timeout_total``), so the first breach is the primary reason. ALL of them are
+    reported — a cap that fired must never go unnamed because another one fired too, which is
+    what a step's ``skip_reason: budget_exceeded`` on its own cannot tell anybody.
+    """
+    breaches: list[CapBreach] = []
+    money = budget_parts(usage, cost_usd, cost_source, defaults)
+    if money:
+        breaches.append(
+            CapBreach(
+                knobs=tuple(knob for knob, _ in money),
+                reason=f"budget exceeded ({', '.join(clause for _, clause in money)})",
+            )
+        )
+    clock = time_reason(elapsed_s, defaults)
+    if clock is not None:
+        breaches.append(CapBreach(knobs=("defaults.timeout_total",), reason=clock))
+    return tuple(breaches)
+
+
+def is_cap_reason(reason: str | None) -> bool:
+    """Whether ``reason`` is what the run-level breaker writes (``RunRecord.reason``)."""
+    return reason is not None and reason.startswith(CAP_REASON_PREFIXES)
 
 
 def time_reason(elapsed_s: float | None, defaults: Defaults) -> str | None:
@@ -173,6 +239,11 @@ class RunOptions:
     #: ``engine.executors._process.process_env``); never persisted, never templated, never in a
     #: fingerprint. Empty for every run without a ``secrets:`` block.
     config_secrets: Mapping[str, str] = field(default_factory=dict)
+    #: additive: the approval-class rules in force (from the operator's policy file) plus the
+    #: classes ``--approve-class`` pre-authorised. The default permits everything, which is the
+    #: behaviour of every run that names no class. See
+    #: :mod:`rayspec.engine.approval_classes`.
+    approval_classes: ApprovalClasses = field(default_factory=ApprovalClasses)
 
 
 @dataclass(slots=True)
@@ -191,6 +262,63 @@ class StepOutcome:
     control: RunControl | None = None
     reused: bool = False
     event_data: dict[str, Any] = field(default_factory=dict)
+
+
+#: ``defaults.on_step_failure`` from the most permissive to the most restrictive. A failure
+#: policy is a blast-radius control, so it may only ever be TIGHTENED from the outside in:
+#: ``continue`` keeps scheduling after a failure, ``drain`` launches nothing new, ``fail_fast``
+#: also cancels what is already running.
+ON_STEP_FAILURE_ORDER: tuple[str, ...] = ("continue", "drain", "fail_fast")
+
+
+def strictest_on_step_failure(*policies: str) -> str:
+    """The most restrictive of ``policies`` under :data:`ON_STEP_FAILURE_ORDER`."""
+    return max(policies, key=ON_STEP_FAILURE_ORDER.index)
+
+
+def stated_on_step_failure(defaults: Defaults) -> str | None:
+    """``defaults.on_step_failure`` when the workflow WROTE the key, else ``None``.
+
+    Writing the key is a statement; not writing it accepts the ``drain`` default. The two are
+    not the same thing, which is why this reads ``model_fields_set`` rather than the value.
+    """
+    if "on_step_failure" not in defaults.model_fields_set:
+        return None
+    return defaults.on_step_failure
+
+
+def on_step_failure_floor(defaults: Defaults, parent: ExecScope | None) -> str:
+    """The strictest policy this scope or any enclosing one STATED — the floor nesting may not
+    go below. ``continue`` (the bottom of :data:`ON_STEP_FAILURE_ORDER`) means none did."""
+    stated = stated_on_step_failure(defaults) or ON_STEP_FAILURE_ORDER[0]
+    below = ON_STEP_FAILURE_ORDER[0] if parent is None else parent.on_step_failure_floor
+    return strictest_on_step_failure(stated, below)
+
+
+def effective_on_step_failure(defaults: Defaults, parent: ExecScope | None) -> str:
+    """The failure policy in force for a scope whose defaults are ``defaults``.
+
+    ``defaults.on_step_failure`` is lexically scoped, like ``defaults.timeout`` and unlike the
+    run-wide ``defaults.max_parallel``: an ``include:``d workflow that *states* a policy governs
+    its own body, and one that says nothing inherits the including run's. ``loop:``/``each:``
+    bodies share their parent's defaults, so they always inherit.
+
+    A stated policy may only ever TIGHTEN what an enclosing workflow stated
+    (:data:`ON_STEP_FAILURE_ORDER`, :func:`on_step_failure_floor`). ``on_step_failure: fail_fast``
+    on the root workflow says "when something fails, stop launching agents and shell steps at
+    once", and that is a guarantee about the whole run: a vendored block writing ``continue`` must
+    not be able to take it away and keep spending tokens in somebody else's workspace. The floor
+    is what enclosing scopes *stated*, not what was in force for them — a run that never mentions
+    the key has asked for nothing, so a block may still state ``continue`` for its own body. The
+    ``--fail-fast`` flag is outside this scoping and tightens every scope at once
+    (:meth:`RunContext.fail_fast_for`).
+    """
+    stated = stated_on_step_failure(defaults)
+    if parent is None:
+        return defaults.on_step_failure
+    if stated is None:
+        return parent.on_step_failure
+    return strictest_on_step_failure(parent.on_step_failure_floor, stated)
 
 
 class ExecScope:
@@ -222,6 +350,12 @@ class ExecScope:
         self.parent = parent
         #: why running steps were cancelled (set by the scheduler before cancelling a graph)
         self.cancel_reason: str | None = None
+        #: the strictest policy this scope or an enclosing one STATED — see
+        #: :func:`on_step_failure_floor`
+        self.on_step_failure_floor: str = on_step_failure_floor(defaults, parent)
+        #: ``drain`` | ``fail_fast`` | ``continue`` for THIS sibling list — see
+        #: :func:`effective_on_step_failure`
+        self.on_step_failure: str = effective_on_step_failure(defaults, parent)
 
     # -- paths ----------------------------------------------------------------------------
 
@@ -691,11 +825,11 @@ class RunContext:
 
     # -- drain policy ---------------------------------------------------------------------
 
-    @property
-    def keep_going(self) -> bool:
-        """Whether a failed step leaves independent branches running.
+    def keep_going_for(self, scope: ExecScope) -> bool:
+        """Whether a failed step leaves independent branches of ``scope`` running.
 
-        ``defaults.on_step_failure: continue``.
+        ``defaults.on_step_failure: continue`` of the workflow that owns this sibling list (see
+        :func:`effective_on_step_failure`).
 
         Only relaxes draining caused by a *failure*: a pause or a stop still halts new work, and
         the failed step's own dependents still skip with ``upstream_failed`` — ``continue`` is not
@@ -703,20 +837,19 @@ class RunContext:
         """
         if self.options.fail_fast:
             return False
-        return self.resolved.workflow.defaults.on_step_failure == "continue"
+        return scope.on_step_failure == "continue"
 
-    @property
-    def fail_fast(self) -> bool:
-        """Whether a failed step cancels running siblings instead of draining them.
+    def fail_fast_for(self, scope: ExecScope) -> bool:
+        """Whether a failed step cancels the running siblings of ``scope``.
 
-        ``--fail-fast`` (``RunOptions.fail_fast``) OR the root workflow's
-        ``defaults.on_step_failure: fail_fast``. The CLI flag can only *enable* fail-fast: it
-        never downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
+        ``--fail-fast`` (``RunOptions.fail_fast``) OR the ``defaults.on_step_failure: fail_fast``
+        in force for this sibling list. The CLI flag can only *enable* fail-fast: it never
+        downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
         behaviour. The scheduler reads this, never ``options.fail_fast``.
         """
         if self.options.fail_fast:
             return True
-        return self.resolved.workflow.defaults.on_step_failure == "fail_fast"
+        return scope.on_step_failure == "fail_fast"
 
     # -- run-level circuit breaker --------------------------------------------------------
 
@@ -809,17 +942,16 @@ class RunContext:
             return None
         defaults = self.resolved.workflow.defaults
         usage, cost, source = self.budget_totals(pending)
-        knob = "defaults.budget_usd / defaults.max_tokens"
-        reason = budget_reason(usage, cost, source, defaults)
-        if reason is None:
-            reason = time_reason(self.elapsed_s(), defaults)
-            knob = "defaults.timeout_total"
-        if reason is None:
+        breaches = cap_reasons(usage, cost, source, self.elapsed_s(), defaults)
+        if not breaches:
             return None
+        # every cap that is over is named: one trip, one reason, no silent loser
+        reason = "; ".join(breach.reason for breach in breaches)
+        knobs = " / ".join(dict.fromkeys(knob for breach in breaches for knob in breach.knobs))
         self.budget_exceeded = reason
         await self.warn(
             f"{reason}: no new steps start, running steps finish; the run ends failed — "
-            f"raise {knob} and resume (--force: the workflow hash changes)"
+            f"raise {knobs} and resume (--force: the workflow hash changes)"
         )
         return reason
 
@@ -949,8 +1081,12 @@ def sha256_json(value: Any) -> str:
 
 __all__ = [
     "BUDGET_SKIP_REASON",
+    "CAP_KNOBS",
+    "CAP_REASON_PREFIXES",
     "LEAF_KINDS",
+    "ON_STEP_FAILURE_ORDER",
     "REUSABLE_KINDS",
+    "CapBreach",
     "ExecScope",
     "ExecutorFn",
     "ProviderPool",
@@ -958,11 +1094,18 @@ __all__ = [
     "RunOptions",
     "StepOutcome",
     "body_ids",
+    "budget_parts",
     "budget_reason",
+    "cap_reasons",
     "cost_source_of",
+    "effective_on_step_failure",
     "error_info",
+    "is_cap_reason",
     "merge_cost_source",
+    "on_step_failure_floor",
     "sha256_json",
+    "stated_on_step_failure",
+    "strictest_on_step_failure",
     "time_reason",
     "totals_of",
     "usage_from_mapping",

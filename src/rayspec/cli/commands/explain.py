@@ -23,6 +23,7 @@ no step runs, no provider is created, nothing is written.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Any, cast
 
 import typer
@@ -41,6 +42,13 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.cli.commands.eval import echo_block, format_value, print_warning
 from rayspec.cli.commands.plan import body_of
 from rayspec.engine import context_rebuild
+from rayspec.engine.context import (
+    BUDGET_SKIP_REASON,
+    CAP_KNOBS,
+    cap_reasons,
+    is_cap_reason,
+    totals_of,
+)
 from rayspec.engine.context_rebuild import RebuiltContext
 from rayspec.engine.graph import classify, join_decision
 from rayspec.engine.paths import StepPath
@@ -86,8 +94,85 @@ def status_section(record: StepRecord | None) -> dict[str, Any]:
     }
 
 
-def join_section(step: StepModel, run: RunRecord, path: StepPath) -> dict[str, Any]:
-    """The ``needs`` row that decided the step: each need's outcome and the join verdict."""
+def last_known_moment(run: RunRecord) -> datetime | None:
+    """The latest moment the RECORD witnessed: the run's end, its pause, or a step's end.
+
+    Deliberately not ``utcnow()``. A record with no ``ended_at`` — a run whose process was
+    killed, or one that is still going — would otherwise accrue elapsed time between the run and
+    whenever somebody types ``explain``, and a wall-clock cap that never fired would be reported
+    as the one that stopped the step.
+    """
+    stamps = [run.ended_at, None if run.pause is None else run.pause.requested_at]
+    stamps += [rec.ended_at for rec in run.steps.values()]
+    known = [stamp for stamp in stamps if stamp is not None]
+    return max(known) if known else None
+
+
+def recomputed_elapsed_s(run: RunRecord) -> float | None:
+    """Wall clock the record can account for, or ``None`` when it cannot say (no end stamp
+    anywhere, or a run that never started)."""
+    end = last_known_moment(run)
+    if run.started_at is None or end is None:
+        return None
+    return max(0.0, (end - run.started_at).total_seconds())
+
+
+def cap_section(
+    record: StepRecord | None, run: RunRecord, resolved: ResolvedWorkflow
+) -> dict[str, Any] | None:
+    """Which run-level cap skipped this step, or ``None`` when no cap did.
+
+    ``skip_reason: budget_exceeded`` names the circuit *breaker*: ``defaults.budget_usd``,
+    ``defaults.max_tokens`` and ``defaults.timeout_total`` are one breaker and share that one
+    reason, so on its own it points a reader at money for a run that ran out of time.
+
+    ``source`` says where the answer comes from, and the text view prints it, because the two are
+    not equally good. ``run.reason`` is the breaker's own message and is the authority when a cap
+    ended the run. ``recomputed`` is the fallback for a run that ended some other way
+    (interrupted, paused) or whose caps were raised since: the caps are re-checked against what
+    ``run.json`` still holds — the totals over EVERY step record (the breaker measured only the
+    ones this run finished or replayed, which the record does not distinguish, so a resumed run's
+    recomputed totals can be higher) and the wall clock up to the last moment the record
+    witnessed (:func:`last_known_moment`). It answers "which cap is this run over", not "which
+    cap fired", so it is labelled rather than stated as fact.
+    """
+    if record is None or record.skip_reason != BUDGET_SKIP_REASON:
+        return None
+    if is_cap_reason(run.reason):
+        reason = run.reason or ""
+        return {
+            "reason": reason,
+            "knobs": [knob for knob in CAP_KNOBS if knob.split(".", 1)[1] in reason],
+            "source": "run.reason",
+        }
+    usage, cost_usd, cost_source = totals_of(list(run.steps.values()))
+    elapsed_s = recomputed_elapsed_s(run)
+    breaches = cap_reasons(usage, cost_usd, cost_source, elapsed_s, resolved.workflow.defaults)
+    if not breaches:
+        return None
+    return {
+        "reason": "; ".join(breach.reason for breach in breaches),
+        "knobs": [knob for breach in breaches for knob in breach.knobs],
+        "source": "recomputed",
+    }
+
+
+#: ``skip_reason`` values that say the RUN was being torn down, not that the step's own ``needs``
+#: decided it — the scheduler was draining when the step was considered.
+DRAIN_SKIP_REASONS = frozenset({"run_failed", "stopped", BUDGET_SKIP_REASON})
+
+
+def join_section(
+    step: StepModel, run: RunRecord, path: StepPath, record: StepRecord | None = None
+) -> dict[str, Any]:
+    """The ``needs`` row that decided the step: each need's outcome and the join verdict.
+
+    The table is re-evaluated rather than read off the record, so it has to be given the same
+    input the scheduler had. ``draining`` is that input: a step recorded with a teardown skip
+    reason (:data:`DRAIN_SKIP_REASONS`) was decided while the run was already failing, being
+    stopped or over a cap, and evaluating its row as if the run were healthy prints
+    ``decision run`` directly underneath the recorded skip.
+    """
     needs: list[dict[str, Any]] = []
     records: list[StepRecord] = []
     for need in step.needs:
@@ -108,16 +193,22 @@ def join_section(step: StepModel, run: RunRecord, path: StepPath) -> dict[str, A
                 "tolerated": rec.tolerated if rec is not None else None,
             }
         )
-    section: dict[str, Any] = {"join": step.join, "needs": needs, "decision": None}
+    draining = record is not None and record.skip_reason in DRAIN_SKIP_REASONS
+    section: dict[str, Any] = {
+        "join": step.join,
+        "needs": needs,
+        "decision": None,
+        "draining": draining,
+    }
     if step.needs and len(records) == len(step.needs):
         try:
-            decision = join_decision(step, records, draining=False)
-        except ValueError:
+            decision = join_decision(step, records, draining=draining)
+        except ValueError:  # a need that never reached a terminal status
             return section
         section["decision"] = "run" if decision.run else "skip"
         section["skip_reason"] = decision.skip_reason
     elif not step.needs:
-        section["decision"] = "run"
+        section["decision"] = "run" if not draining or step.join == "always" else "skip"
     return section
 
 
@@ -312,6 +403,10 @@ def print_status(out: Console, payload: dict[str, Any]) -> None:
         _line(out, "defined at", payload["location"])
     if status.get("skip_reason"):
         _line(out, "skip reason", status["skip_reason"])
+    if payload.get("cap"):
+        cap = payload["cap"]
+        marker = " (recomputed from the run record)" if cap.get("source") == "recomputed" else ""
+        _line(out, "cap", f"{cap['reason']}{marker}")
     if status.get("error"):
         error = status["error"]
         _line(out, "error", f"{error.get('type')}: {error.get('message')}")
@@ -343,6 +438,8 @@ def print_join(out: Console, join: dict[str, Any]) -> None:
         verdict = join["decision"]
         if join.get("skip_reason"):
             verdict += f" ({join['skip_reason']})"
+        if join.get("draining"):
+            verdict += " — the run was already draining"
         _line(out, "decision", verdict)
 
 
@@ -511,7 +608,8 @@ def build_payload(
         "kind": type(step).kind,
         "location": resolved.location_of(rebuilt.def_path),
         **status_section(record),
-        "join": join_section(step, run, rebuilt.record_path),
+        "cap": cap_section(record, run, resolved),
+        "join": join_section(step, run, rebuilt.record_path, record),
         "when": when_section(step, rebuilt, engine),
         "retries": retries,
         "agent": agent_section(resolved, rebuilt.def_path, record),
@@ -543,6 +641,7 @@ __all__ = [
     "RE_RENDERED",
     "agent_section",
     "build_payload",
+    "cap_section",
     "env_section",
     "event_summary",
     "join_section",
