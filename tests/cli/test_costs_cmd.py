@@ -57,6 +57,7 @@ def _step(
     usage: Usage,
     cost_usd: float | None,
     cost_source: str,
+    usage_unknown: bool = False,
 ) -> StepRecord:
     return StepRecord(
         path=path,
@@ -68,6 +69,7 @@ def _step(
         usage=usage,
         cost_usd=cost_usd,
         cost_source=cost_source,
+        usage_unknown=usage_unknown,
     )
 
 
@@ -80,6 +82,7 @@ def _seed(
     created: datetime,
     suffix: str,
     steps: list[StepRecord],
+    status: RunStatus = RunStatus.SUCCEEDED,
 ) -> RunRecord:
     run = RunRecord(
         run_id=_run_id(created, suffix),
@@ -88,10 +91,10 @@ def _seed(
         workflow_hash="a" * 64,
         project_slug=slug,
         project_root=str(root),
-        status=RunStatus.SUCCEEDED,
+        status=status,
         created_at=created,
         started_at=created,
-        ended_at=created + timedelta(seconds=10),
+        ended_at=created + timedelta(seconds=10) if status is RunStatus.SUCCEEDED else None,
     )
     store.create(run)
     for rec in steps:
@@ -424,6 +427,10 @@ def test_json_shape_is_stable(cli: CliRunner, ledger: Ledger) -> None:
         "workflow",
         "runs",
         "runs_unknown_cost",
+        "runs_partial_cost",
+        "runs_usage_unknown",
+        "runs_in_flight",
+        "runs_unreadable",
         "tokens",
         "usage",
         "cost_usd",
@@ -442,6 +449,9 @@ def test_json_shape_is_stable(cli: CliRunner, ledger: Ledger) -> None:
         "workflow",
         "runs",
         "runs_unknown_cost",
+        "runs_partial_cost",
+        "runs_usage_unknown",
+        "runs_in_flight",
         "tokens",
         "usage",
         "cost_usd",
@@ -511,3 +521,184 @@ def test_costs_does_not_mint_a_store_for_a_project_without_runs(
 ) -> None:
     assert cli.invoke(app, ["costs", "--root", str(project)]).exit_code == 0
     assert not (home / "projects").exists()
+
+
+# --------------------------------------------------------------------------------------------
+# figures that are not final: a cut-off step, an unreadable record, a run still in flight
+# --------------------------------------------------------------------------------------------
+
+
+def _seed_cut_off(ledger: Ledger, *, created: datetime, suffix: str) -> None:
+    """A run whose second step was interrupted before the provider reported any usage."""
+    _seed(
+        ledger.store,
+        ledger.slug,
+        ledger.project,
+        workflow="cutoff",
+        created=created,
+        suffix=suffix,
+        steps=[
+            _step(
+                "draft",
+                usage=Usage(input=1000, output=100),
+                cost_usd=1.00,
+                cost_source="provider",
+            ),
+            _step(
+                "review",
+                usage=Usage(),
+                cost_usd=None,
+                cost_source="none",
+                usage_unknown=True,
+            ),
+        ],
+    )
+
+
+def test_a_cut_off_step_makes_the_row_a_lower_bound(cli: CliRunner, ledger: Ledger) -> None:
+    """`rayspec run` prints `tokens: ≥1100 (usage of 1 step unknown)`; a roll-up may not
+    quietly present the same run as complete."""
+    _seed_cut_off(ledger, created=datetime(2026, 8, 19, 10, 0, 0, tzinfo=UTC), suffix="cut1")
+    result = cli.invoke(app, ["costs", "--workflow", "cutoff", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if line.startswith("cutoff"))
+    assert "≥$1.00" in row  # the cost is a lower bound, not $1.00 exactly
+    assert "≥1.1k tok" in row  # and so is the token count
+    assert "cut off before it reported usage" in result.output
+
+
+def test_a_cut_off_step_is_visible_in_json(cli: CliRunner, ledger: Ledger) -> None:
+    _seed_cut_off(ledger, created=datetime(2026, 8, 19, 10, 0, 0, tzinfo=UTC), suffix="cut1")
+    payload = _payload(cli, ledger, "--workflow", "cutoff")
+    group = _group(payload, "cutoff")
+    assert group["runs_usage_unknown"] == 1
+    assert group["cost_source"] == "partial"
+    assert payload["runs_usage_unknown"] == 1 and payload["cost_source"] == "partial"
+
+
+def test_a_cut_off_step_with_no_usage_at_all_is_not_reported_as_zero(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    _seed(
+        ledger.store,
+        ledger.slug,
+        ledger.project,
+        workflow="cutoff",
+        created=datetime(2026, 8, 19, 11, 0, 0, tzinfo=UTC),
+        suffix="cut2",
+        steps=[
+            _step("review", usage=Usage(), cost_usd=None, cost_source="none", usage_unknown=True)
+        ],
+    )
+    result = cli.invoke(app, ["costs", "--workflow", "cutoff", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    row = next(line for line in result.output.splitlines() if line.startswith("cutoff"))
+    # columns: workflow · runs · tokens · cost · cost source
+    assert row.split()[2] == "unknown"  # not "-", which would read as "zero tokens"
+
+
+def _corrupt(ledger: Ledger, run_id: str) -> None:
+    (ledger.store.run_dir(run_id) / "run.json").write_text("{not json", encoding="utf-8")
+
+
+def test_an_unreadable_record_is_named_not_silently_dropped(cli: CliRunner, ledger: Ledger) -> None:
+    _corrupt(ledger, _run_id(DEPLOY_NEW, "cccc"))
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    total = next(line for line in result.output.splitlines() if line.startswith("total"))
+    assert total.split()[1] == "4"  # the four runs that could be read
+    assert "≥" in total  # the sum can no longer claim to be complete
+    assert "1 run record could not be read" in result.output
+    assert "rayspec runs" in result.output
+
+
+def test_an_unreadable_record_is_visible_in_json(cli: CliRunner, ledger: Ledger) -> None:
+    _corrupt(ledger, _run_id(DEPLOY_NEW, "cccc"))
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable"] == 1
+    assert payload["runs"] == 4
+    assert payload["cost_source"] == "partial"
+
+
+def test_a_readable_store_reports_no_unreadable_records(cli: CliRunner, ledger: Ledger) -> None:
+    assert _payload(cli, ledger)["runs_unreadable"] == 0
+
+
+def test_running_and_paused_runs_are_flagged_as_not_final(cli: CliRunner, ledger: Ledger) -> None:
+    _seed(
+        ledger.store,
+        ledger.slug,
+        ledger.project,
+        workflow="live",
+        created=datetime(2026, 8, 20, 11, 0, 0, tzinfo=UTC),
+        suffix="live",
+        status=RunStatus.RUNNING,
+        steps=[
+            _step("plan", usage=Usage(input=100, output=10), cost_usd=0.05, cost_source="provider")
+        ],
+    )
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    assert "still running or paused" in result.output
+    payload = _payload(cli, ledger)
+    assert payload["runs_in_flight"] == 1
+    assert _group(payload, "live")["runs_in_flight"] == 1
+
+
+def test_finished_runs_are_not_flagged_as_in_flight(cli: CliRunner, ledger: Ledger) -> None:
+    payload = _payload(cli, ledger)
+    assert payload["runs_in_flight"] == 0
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert "still running or paused" not in result.output
+
+
+# --------------------------------------------------------------------------------------------
+# ordering and wording details
+# --------------------------------------------------------------------------------------------
+
+
+def test_an_unpriced_group_sorts_after_a_zero_cost_group(cli: CliRunner, ledger: Ledger) -> None:
+    """A $0.00 group is a known figure; an unpriced one is not, so it sorts last."""
+    _seed(
+        ledger.store,
+        ledger.slug,
+        ledger.project,
+        workflow="zzz",
+        created=datetime(2026, 8, 19, 12, 0, 0, tzinfo=UTC),
+        suffix="zzz1",
+        steps=[_step("free", usage=Usage(input=10), cost_usd=0.0, cost_source="provider")],
+    )
+    _seed(
+        ledger.store,
+        ledger.slug,
+        ledger.project,
+        workflow="aaa",
+        created=datetime(2026, 8, 19, 13, 0, 0, tzinfo=UTC),
+        suffix="aaa1",
+        steps=[_step("free", usage=Usage(input=10), cost_usd=None, cost_source="none")],
+    )
+    payload = _payload(cli, ledger)
+    order = [g["workflow"] for g in payload["workflows"]]
+    assert order.index("zzz") < order.index("aaa")
+
+
+def test_the_notice_does_not_cite_a_marker_that_is_not_on_screen(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """Nothing in scope is priced, so the cost column is empty everywhere — there is no ≥."""
+    result = cli.invoke(app, ["costs", "--workflow", "audit", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    assert "no cost is known for any run in scope" in result.output
+    assert "≥" not in result.output
+
+
+def test_outside_a_project_json_names_no_project(
+    cli: CliRunner, home: Path, tmp_path: Path
+) -> None:
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    result = cli.invoke(app, ["costs", "--json", "--root", str(stray)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["project"] is None  # no slug is claimed for a directory that is not a project
+    assert payload["runs"] == 0

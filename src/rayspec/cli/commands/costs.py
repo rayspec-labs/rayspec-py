@@ -16,6 +16,13 @@ The one property everything else is subordinate to: **a run whose cost is unknow
 shown as unknown, never dropped and never treated as zero.** A total that quietly omits runs is
 worse than no total, so an incomplete sum is rendered with the ``≥`` marker the rest of the CLI
 uses for a lower bound and the run is counted in the ``unknown`` bucket of the breakdown.
+
+Four things can make a figure less than the whole truth, and each one is named below the table
+rather than folded away: a run that carries no cost at all, a priced run containing an unpriced
+step, a step that was cut off before the provider reported any usage (``StepRecord.usage_unknown``
+— the same lower bound ``rayspec run`` prints as ``tokens: ≥N``), and a run that is still running
+or paused. A run record the store cannot read is counted too: it is missing from the sum, which is
+the one thing a total may never hide.
 """
 
 from __future__ import annotations
@@ -36,7 +43,8 @@ from rich.text import Text
 from rayspec.cli import _runs_common as common
 from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, err_console, fail
 from rayspec.providers.base import Usage
-from rayspec.providers.pricing import COST_SOURCES, combine_cost_sources
+from rayspec.providers.pricing import COST_SOURCES, combine_cost_sources, cost_marker
+from rayspec.schema import RunStatus
 from rayspec.store.model import RunRecord
 from rayspec.textsafe import safe_text
 
@@ -47,6 +55,9 @@ UNKNOWN = "unknown"
 
 #: Breakdown buckets in the order they are printed.
 BUCKETS: tuple[str, ...] = (*COST_SOURCES, UNKNOWN)
+
+#: Statuses of a run whose figures can still grow — summed like any other run, but said out loud.
+IN_FLIGHT: frozenset[RunStatus] = frozenset({RunStatus.RUNNING, RunStatus.PAUSED})
 
 #: What ``--since`` accepts, named in every error about it.
 SINCE_HINT = (
@@ -100,6 +111,10 @@ def cost_bucket(run: RunRecord) -> str:
 
     A run with no cost at all is ``unknown`` whatever its steps recorded — that is the fact the
     reader needs, because it is the reason the enclosing total is a lower bound.
+
+    ``none`` next to a real dollar figure is the legacy bucket: a ``run.json`` written before
+    ``StepRecord.cost_source`` existed records a cost without saying where it came from. It is
+    reported as it was recorded rather than guessed at, and documented in ``docs/cli.md``.
     """
     if run.total_cost_usd() is None:
         return UNKNOWN
@@ -113,6 +128,9 @@ class CostGroup:
     label: str
     runs: int
     runs_unknown_cost: int
+    runs_partial_cost: int
+    runs_usage_unknown: int
+    runs_in_flight: int
     usage: Usage
     cost_usd: float | None
     cost_source: str
@@ -125,17 +143,30 @@ class CostGroup:
         """The cost shown is a lower bound: at least one run contributed nothing to it."""
         return self.runs_unknown_cost > 0
 
+    @property
+    def tokens_partial(self) -> bool:
+        """The token count is a lower bound: a step was cut off before reporting any usage."""
+        return self.runs_usage_unknown > 0
+
     def breakdown(self) -> str:
         """``1 provider · 2 table · 1 unknown`` — every run accounted for, in a fixed order."""
         parts = [f"{self.buckets[name]} {name}" for name in BUCKETS if self.buckets.get(name)]
         return " · ".join(parts) if parts else "-"
 
 
-def aggregate(records: Sequence[RunRecord], *, label: str) -> CostGroup:
-    """Fold runs into one :class:`CostGroup`. Every record is counted, priced or not."""
+def aggregate(records: Sequence[RunRecord], *, label: str, incomplete: bool = False) -> CostGroup:
+    """Fold runs into one :class:`CostGroup`. Every record is counted, priced or not.
+
+    ``incomplete`` says that records which belong in this fold are missing from ``records``
+    (a ``run.json`` the store could not read): the sum is then a lower bound even when every
+    record that *was* read is fully priced.
+    """
     usage = Usage()
     total: float | None = None
     unknown = 0
+    partial_cost = 0
+    usage_unknown = 0
+    in_flight = 0
     sources: list[str] = []
     buckets: Counter[str] = Counter()
     for run in records:
@@ -146,17 +177,34 @@ def aggregate(records: Sequence[RunRecord], *, label: str) -> CostGroup:
         else:
             total = cost if total is None else total + cost
             sources.append(common.run_cost_source(run))
+            if common.unpriced_steps(run):
+                # a run that IS priced but holds a step with tokens and no price: its own cost
+                # is already a lower bound, which is a different sentence from "no cost at all"
+                partial_cost += 1
+        # a step interrupted before the adapter reported anything: usage.total is 0 there, so
+        # `unpriced_steps` cannot see it — the record says so with its own flag instead
+        if any(rec.usage_unknown for rec in run.steps.values()):
+            usage_unknown += 1
+        if run.status in IN_FLIGHT:
+            in_flight += 1
         buckets[cost_bucket(run)] += 1
     stamps = [_aware(run.created_at) for run in records]
     return CostGroup(
         label=label,
         runs=len(records),
         runs_unknown_cost=unknown,
+        runs_partial_cost=partial_cost,
+        runs_usage_unknown=usage_unknown,
+        runs_in_flight=in_flight,
         usage=usage,
         cost_usd=total,
         # an unpriced run makes the sum a lower bound exactly the way an unpriced step makes a
-        # run's own sum one, so the run-level fold is reused rather than re-invented here
-        cost_source=combine_cost_sources(sources, unpriced=unknown > 0 or "partial" in sources),
+        # run's own sum one, so the run-level fold is reused rather than re-invented here; a
+        # cut-off step and a record that could not be read are lower bounds for the same reason
+        cost_source=combine_cost_sources(
+            sources,
+            unpriced=incomplete or unknown > 0 or usage_unknown > 0 or "partial" in sources,
+        ),
         buckets=dict(buckets),
         first_run_at=min(stamps) if stamps else None,
         last_run_at=max(stamps) if stamps else None,
@@ -165,24 +213,37 @@ def aggregate(records: Sequence[RunRecord], *, label: str) -> CostGroup:
 
 @dataclass(frozen=True, slots=True)
 class CostReport:
-    """The whole answer: one group per workflow plus the total over the same runs."""
+    """The whole answer: one group per workflow plus the total over the same runs.
+
+    ``runs_unreadable`` counts the ``run.json`` files the store could not parse. They are not in
+    any group — nothing could be read out of them — so the number is carried here and the total
+    is marked as a lower bound, because a sum that silently shrank is the one failure this
+    command exists to prevent.
+    """
 
     groups: tuple[CostGroup, ...]
     total: CostGroup
+    runs_unreadable: int = 0
 
 
-def build_report(records: Sequence[RunRecord]) -> CostReport:
+def build_report(records: Sequence[RunRecord], *, unreadable: int = 0) -> CostReport:
     """Group ``records`` by workflow name, most expensive first, then by name.
 
     An unpriced group sorts last (its cost is unknown, not zero) but is never dropped, so the
-    run counts of the groups always add up to the total's.
+    run counts of the groups always add up to the total's. ``unreadable`` is the number of run
+    records the store could not load; it makes the total a lower bound.
     """
     by_workflow: dict[str, list[RunRecord]] = {}
     for run in records:
         by_workflow.setdefault(run.workflow_name, []).append(run)
     groups = [aggregate(runs, label=name) for name, runs in by_workflow.items()]
-    groups.sort(key=lambda g: (-(g.cost_usd or 0.0), g.label))
-    return CostReport(groups=tuple(groups), total=aggregate(list(records), label="total"))
+    # a tri-state key: unknown is not zero, so an unpriced group sorts after a $0.00 one
+    groups.sort(key=lambda g: (g.cost_usd is None, -(g.cost_usd or 0.0), g.label))
+    return CostReport(
+        groups=tuple(groups),
+        total=aggregate(list(records), label="total", incomplete=unreadable > 0),
+        runs_unreadable=unreadable,
+    )
 
 
 def select_runs(
@@ -192,7 +253,8 @@ def select_runs(
 
     ``since`` compares against ``created_at`` (the field ``rayspec runs`` orders by, and the only
     timestamp every record has) and is **inclusive**: a run created exactly at the cutoff is in.
-    ``workflow`` matches the recorded name exactly.
+    ``workflow`` matches the recorded name exactly. The roll-up itself regroups and re-sorts, so
+    the newest-first order is for callers that reuse this helper to list what was summed.
     """
     chosen = [
         run
@@ -223,10 +285,23 @@ def _row(group: CostGroup, *, label: Text) -> list[Any]:
     return [
         label,
         str(group.runs),
-        common.fmt_tokens(group.usage.total) if group.usage.total else "-",
+        _tokens_cell(group),
         common.fmt_cost(group.cost_usd, group.cost_source, group.usage),
         group.breakdown(),
     ]
+
+
+def _tokens_cell(group: CostGroup) -> str:
+    """``12.3k tok`` · ``≥12.3k tok`` (a step was cut off) · ``unknown`` · ``-`` (no tokens).
+
+    ``usage.total`` is itself a lower bound once a step reported nothing, so the column carries
+    the same ``≥`` the cost column does — and when *nothing* was reported it says ``unknown``
+    rather than ``-``, which would read as "this run used no tokens" (the wording
+    ``rayspec run`` uses in its footer for the same record).
+    """
+    if not group.usage.total:
+        return "unknown" if group.tokens_partial else "-"
+    return f"{'≥' if group.tokens_partial else ''}{common.fmt_tokens(group.usage.total)}"
 
 
 def group_payload(group: CostGroup) -> dict[str, Any]:
@@ -235,6 +310,9 @@ def group_payload(group: CostGroup) -> dict[str, Any]:
         "workflow": group.label,
         "runs": group.runs,
         "runs_unknown_cost": group.runs_unknown_cost,
+        "runs_partial_cost": group.runs_partial_cost,
+        "runs_usage_unknown": group.runs_usage_unknown,
+        "runs_in_flight": group.runs_in_flight,
         "tokens": group.usage.total,
         "usage": common.usage_dict(group.usage),
         "cost_usd": group.cost_usd,
@@ -246,9 +324,13 @@ def group_payload(group: CostGroup) -> dict[str, Any]:
 
 
 def costs_payload(
-    report: CostReport, *, project: str, since: datetime | None, workflow: str | None
+    report: CostReport, *, project: str | None, since: datetime | None, workflow: str | None
 ) -> dict[str, Any]:
-    """The whole ``--json`` object: the totals, the filters that produced them, the groups."""
+    """The whole ``--json`` object: the totals, the filters that produced them, the groups.
+
+    ``project`` is ``None`` outside a rayspec project — no slug is claimed for a directory that
+    is not one, on the filesystem or in the output.
+    """
     total = group_payload(report.total)
     del total["workflow"]  # the totals are not a workflow; the filters below name the scope
     return {
@@ -256,6 +338,7 @@ def costs_payload(
         "since": None if since is None else since.isoformat(),
         "workflow": workflow,
         **total,
+        "runs_unreadable": report.runs_unreadable,
         "workflows": [group_payload(group) for group in report.groups],
     }
 
@@ -280,21 +363,72 @@ def scope_line(*, project: str, since: datetime | None, workflow: str | None) ->
     return " · ".join(parts)
 
 
-def partial_notice(total: CostGroup) -> str | None:
-    """The line that keeps an incomplete sum honest, or ``None`` when nothing is missing.
+def _runs(count: int) -> str:
+    return "1 run" if count == 1 else f"{count} runs"
 
-    Two ways a total can be a lower bound, and the reader is owed the difference: whole runs
-    that carry no cost at all, or priced runs that contain an unpriced step.
+
+def unreadable_notice(count: int) -> str | None:
+    """The line for run records the store could not parse, or ``None`` when there are none.
+
+    A skipped record is a missing row in ``rayspec runs`` — visible. In a *total* it is
+    invisible, so it is said out loud even though the store only logs a warning.
     """
+    if count <= 0:
+        return None
+    noun, verb = ("record", "is") if count == 1 else ("records", "are")
+    return (
+        f"{count} run {noun} could not be read and {verb} not in these totals — "
+        f"run `rayspec runs` to see which"
+    )
+
+
+def partial_notices(report: CostReport) -> list[str]:
+    """The lines below the table that keep an incomplete sum honest — empty when nothing is
+    missing.
+
+    One line per reason the figures are less than the whole truth (runs with no cost at all,
+    priced runs holding an unpriced step, runs whose usage was cut off, runs still in flight,
+    records that could not be read) — the first two are counted apart because "this run has no
+    cost" and "this run's cost is already a lower bound" are different answers. Then one line
+    explaining the marker on screen — and only
+    a marker that *is* on screen: when nothing in scope is priced, the cost column is empty
+    everywhere and pointing at ``≥`` would send the reader looking for something that is not
+    there.
+    """
+    total = report.total
+    lines: list[str] = []
     if total.partial:
-        return (
+        lines.append(
             f"{total.runs_unknown_cost} of {total.runs} runs have no recorded cost "
-            f"(dry runs, an unpriced provider, no pricing entry) — totals marked ≥ are a "
-            f"lower bound"
+            f"(dry runs, an unpriced provider, no pricing entry)"
         )
-    if total.cost_source == "partial":
-        return "some runs have steps with tokens but no price — totals marked ≥ are a lower bound"
-    return None
+    if total.runs_partial_cost:
+        verb = "holds" if total.runs_partial_cost == 1 else "hold"
+        lines.append(
+            f"{total.runs_partial_cost} of {total.runs} priced runs {verb} steps with tokens "
+            f"but no price"
+        )
+    if total.runs_usage_unknown:
+        lines.append(
+            f"{_runs(total.runs_usage_unknown)} had a step cut off before it reported usage "
+            f"— tokens and cost are lower bounds"
+        )
+    if total.runs_in_flight:
+        verb = "is" if total.runs_in_flight == 1 else "are"
+        lines.append(
+            f"{_runs(total.runs_in_flight)} {verb} still running or paused — those figures "
+            f"are not final"
+        )
+    unreadable = unreadable_notice(report.runs_unreadable)
+    if unreadable is not None:
+        lines.append(unreadable)
+    if not lines:
+        return []
+    if total.cost_usd is None:
+        lines.append("no cost is known for any run in scope")
+    elif cost_marker(total.cost_source) == "≥":
+        lines.append("totals marked ≥ are a lower bound")
+    return lines
 
 
 def register(app: typer.Typer) -> None:
@@ -342,15 +476,20 @@ def register(app: typer.Typer) -> None:
                 empty = build_report([])
                 out.print(
                     json.dumps(
-                        costs_payload(empty, project=ctx.slug, since=cutoff, workflow=workflow),
+                        # no slug is minted for this directory, so none is reported either
+                        costs_payload(empty, project=None, since=cutoff, workflow=workflow),
                         ensure_ascii=False,
                     ),
                     markup=False,
                     highlight=False,
                 )
             return
-        records = select_runs(ctx.store.list_runs(limit=None), since=cutoff, workflow=workflow)
-        report = build_report(records)
+        # list_runs() drops a run.json it cannot parse (a log warning the CLI suppresses); the
+        # id listing is the only place the shortfall is still visible, and a total may not hide it
+        known = len(ctx.store.list_run_ids())
+        loaded = ctx.store.list_runs(limit=None)
+        records = select_runs(loaded, since=cutoff, workflow=workflow)
+        report = build_report(records, unreadable=max(known - len(loaded), 0))
         if json_:
             out.print(
                 json.dumps(
@@ -372,6 +511,9 @@ def register(app: typer.Typer) -> None:
                 markup=False,
                 highlight=False,
             )
+            unreadable = unreadable_notice(report.runs_unreadable)
+            if unreadable is not None:
+                out.print(unreadable, style="dim", markup=False, highlight=False)
             return
         out.print(
             scope_line(project=ctx.slug, since=cutoff, workflow=workflow),
@@ -380,13 +522,13 @@ def register(app: typer.Typer) -> None:
             highlight=False,
         )
         out.print(costs_table(report))
-        note = partial_notice(report.total)
-        if note is not None:
+        for note in partial_notices(report):
             out.print(note, style="dim", markup=False, highlight=False)
 
 
 __all__ = [
     "BUCKETS",
+    "IN_FLIGHT",
     "SINCE_HINT",
     "UNKNOWN",
     "CostGroup",
@@ -399,8 +541,9 @@ __all__ = [
     "empty_notice",
     "group_payload",
     "parse_since",
-    "partial_notice",
+    "partial_notices",
     "register",
     "scope_line",
     "select_runs",
+    "unreadable_notice",
 ]
