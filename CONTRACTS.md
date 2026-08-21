@@ -1394,6 +1394,47 @@ CLI surface:
   built-in default. Precedence on a resume entry: explicit `--stubs` > explicit `--stubs-from` >
   the recorded `stubs_path`. No new field: the `RunRecord.toolchain` reservation stands.
 
+### CLI `costs` — the cost roll-up
+`src/rayspec/cli/commands/costs.py` (`rayspec costs [--since WHEN] [--workflow NAME] [--json]
+[--root]`). **Read-only consumer of the store**: it calls `store.list_runs()` and nothing else —
+no record format changes, no field is added, nothing is ever written and no `projects/<slug>`
+directory is created (`tests/cli/test_costs_cmd.py` hashes the whole `RAYSPEC_HOME` tree around
+the invocations). The per-run arithmetic is *not* reimplemented: `RunRecord.total_cost_usd()` /
+`total_usage()` for the numbers and `_runs_common.fmt_cost` / `run_cost_source` / `fmt_tokens` /
+`usage_dict` / `fmt_stamp` for the rendering, so a roll-up can never disagree with the
+`rayspec runs` lines it sums. Scope is one project (`make_runs_context`), and the
+outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug minted).
+
+- `parse_since(text, *, now=None) -> datetime` — aware UTC cutoff from a window
+  (`45s|90m|24h|7d|2w`, decimals allowed) or an ISO-8601 date/timestamp (`2026-08-01`,
+  `…T06:30:00`, `…Z`, `…+02:00`; naive = UTC). `ValueError` otherwise (a negative window
+  included); the command turns it into exit 2 with `SINCE_HINT`.
+- `select_runs(records, *, since, workflow)` — `created_at >= since` (**inclusive** at the
+  cutoff) and an exact `workflow_name` match; newest first.
+- `cost_bucket(run)` — `unknown` when `total_cost_usd()` is `None`, else `run_cost_source(run)`.
+  `BUCKETS = (*COST_SOURCES, "unknown")` is the fixed print order.
+- `aggregate(records, *, label) -> CostGroup(label, runs, runs_unknown_cost, usage, cost_usd,
+  cost_source, buckets, first_run_at, last_run_at)` — every record is counted; `cost_usd` is
+  `None` when nothing in the group is priced (never `0.0`); `cost_source =
+  combine_cost_sources(sources of the priced runs, unpriced=any unknown run or any run whose own
+  source is `partial`)`, i.e. an unpriced *run* makes the group a lower bound exactly the way an
+  unpriced *step* makes a run one.
+- `build_report(records) -> CostReport(groups, total)` — grouped by workflow, most expensive
+  first then by name (unpriced groups last, never dropped: `sum(g.runs) == total.runs`).
+- Presentation: `costs_table(report)` (workflow · runs · tokens · cost · cost source, total row
+  last), `scope_line`, `empty_notice`, `partial_notice` (names the unknown runs, or — when every
+  run is priced but one contains an unpriced step — says so), `group_payload` / `costs_payload`.
+- `--json`: one object `{project, since, workflow, runs, runs_unknown_cost, tokens, usage{…},
+  cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at, workflows: [{workflow, runs,
+  runs_unknown_cost, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at,
+  last_run_at}]}`. The top level is the total over exactly the runs in `workflows`; `cost_sources`
+  counts every run once (zero buckets omitted). Exit 0 with `runs: 0` when nothing is in scope
+  (an unknown `--workflow` is a filter that matched nothing, not an error) · exit 2 on a bad
+  `--since`.
+- Deliberately out of scope (a follow-up would be a new command, not a flag here): cross-project,
+  per-team, per-repo, per-user or per-tag roll-ups and chargeback export formats. `--json` is the
+  seam for those.
+
 ### CLI `init` + `doctor`
 `src/rayspec/cli/commands/{init,doctor}.py`; scaffold templates are package data under
 `src/rayspec/cli/templates/<kind>/**` (read with `importlib.resources`; one directory per kind).
