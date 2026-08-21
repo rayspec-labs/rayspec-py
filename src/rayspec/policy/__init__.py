@@ -45,6 +45,12 @@ from rayspec.policy.model import (
     WorkspacePolicy,
     access_rank,
 )
+from rayspec.policy.trust import (
+    TRUSTED_FILENAME,
+    TrustEntry,
+    TrustStore,
+    trusted_path,
+)
 
 __all__ = [
     "ACCESS_ORDER",
@@ -52,6 +58,7 @@ __all__ = [
     "LAYER_NAMES",
     "POLICY_ENV",
     "POLICY_FILENAME",
+    "TRUSTED_FILENAME",
     "AccessPolicy",
     "ChangeGuard",
     "EffectivePolicy",
@@ -66,7 +73,9 @@ __all__ = [
     "PolicySource",
     "ProvidersPolicy",
     "ToolsPolicy",
+    "TrustEntry",
     "TrustPolicy",
+    "TrustStore",
     "WorkspacePolicy",
     "access_rank",
     "check_agent_controls",
@@ -75,4 +84,5 @@ __all__ = [
     "merged_summary",
     "policy_paths",
     "sources_text",
+    "trusted_path",
 ]

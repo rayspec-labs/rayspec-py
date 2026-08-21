@@ -28,6 +28,7 @@ from rayspec.loader.secrets import (
 from rayspec.policy import (
     EffectivePolicy,
     PolicyReport,
+    TrustStore,
     check_agent_controls,
     check_policy,
     load_policy,
@@ -320,7 +321,11 @@ class _Validator:
             effective = load_policy(self._policy_root(), home=self.rw.home)
         if effective.is_empty:
             return
-        self._apply_policy(check_policy(self.rw, effective, capabilities_for=self.caps_for))
+        root = self._policy_root()
+        trusted = TrustStore.load(root) if effective.trust_required() else None
+        self._apply_policy(
+            check_policy(self.rw, effective, capabilities_for=self.caps_for, trusted=trusted)
+        )
 
     def _apply_policy(self, outcome: PolicyReport) -> None:
         """Report one policy outcome and fold its tool denials into the resolved agents."""

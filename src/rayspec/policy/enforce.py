@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from rayspec.policy.layers import EffectivePolicy, PolicySource, sources_text
+from rayspec.policy.trust import TrustStore
 
 if TYPE_CHECKING:  # type-only: importing the loader at runtime would close an import cycle
     from rayspec.loader.loader import ResolvedAgent, ResolvedWorkflow
@@ -173,16 +174,19 @@ def check_policy(
     effective: EffectivePolicy,
     *,
     capabilities_for: Callable[[str], ProviderCapabilities | None] | None = None,
+    trusted: TrustStore | None = None,
 ) -> PolicyReport:
-    """Check every resolved agent of ``resolved`` against ``effective``.
+    """Check ``resolved`` — every agent, and the workflow itself — against ``effective``.
 
     Returns the errors and warnings to report and the tool denials to fold into the agents.
     Nothing is raised: an unsatisfiable policy is a report full of errors, each naming the layer
-    that made it unsatisfiable.
+    that made it unsatisfiable. ``trusted`` is the project's trust list, needed only when a layer
+    sets ``trust.require``.
     """
     report = PolicyReport()
     if effective.is_empty:
         return report
+    _check_trust(resolved, effective, trusted, report)
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
         caps = None if capabilities_for is None else capabilities_for(agent.provider)
@@ -192,6 +196,42 @@ def check_policy(
         _check_mcp(agent, effective, report)
         _check_tools(key, agent, effective, report, caps)
     return report
+
+
+def _check_trust(
+    resolved: ResolvedWorkflow,
+    effective: EffectivePolicy,
+    trusted: TrustStore | None,
+    report: PolicyReport,
+) -> None:
+    """``trust.require``: only a workflow whose resolved hash is listed may run."""
+    sources = effective.trust_required()
+    if not sources:
+        return
+    if trusted is None:
+        report.errors.append(
+            PolicyProblem(
+                where="trust",
+                message=(
+                    f"policy requires a trusted workflow ({sources_text(sources)}) but the "
+                    "trust list was not available to check it against"
+                ),
+            )
+        )
+        return
+    problem = trusted.problem_for(resolved)
+    if problem is None:
+        return
+    report.errors.append(
+        PolicyProblem(
+            where="trust",
+            message=(
+                f"{resolved.label} {problem}, and policy requires a trusted workflow "
+                f"({sources_text(sources)}); review the workflow, then run: "
+                f"rayspec trust add {resolved.workflow.name}"
+            ),
+        )
+    )
 
 
 def _problem(agent: ResolvedAgent, field_name: str, message: str, *extra: str) -> PolicyProblem:

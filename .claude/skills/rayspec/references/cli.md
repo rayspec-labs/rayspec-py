@@ -355,6 +355,49 @@ what `extensions:` in `config.yaml` may name. `--json`: `{plugins: [{group, name
 distribution, version, status, detail}], registered: {stores, sinks, approvals}}`. Writing one:
 [extending.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/extending.md).
 
+### `rayspec trust add`
+
+```
+rayspec trust add <workflow>... [--root DIR]
+```
+
+Record each workflow's current hash in `.rayspec/trusted.yaml`. The hash covers every file that
+contributed to the resolved workflow — the document, every `include:`d body, every agent file and
+every `prompt_file`/`instructions_file` — so trust is a statement about what will actually run.
+Adding a workflow that is already listed replaces its entry (`updated`). See
+[policy.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md).
+
+### `rayspec trust list`
+
+```
+rayspec trust list [--root DIR] [--json | --output FORMAT]
+```
+
+The trust list with, per entry, whether the workflow still hashes to what was trusted:
+`current`, `changed` (it was edited since) or `missing` (it no longer loads). `--json`:
+`[{workflow, hash, added, status}]`.
+
+### `rayspec trust remove`
+
+```
+rayspec trust remove <workflow>... [--root DIR]
+```
+
+Drop workflows from the trust list (the file is deleted when the last entry goes). Exit 2 when a
+name is not listed.
+
+### `rayspec trust check`
+
+```
+rayspec trust check [<workflow>...] [--root DIR] [--json | --output FORMAT]
+```
+
+Exit 0 only when every named workflow — with no arguments, every discovered workflow — is listed
+at its current hash; exit 1 otherwise, naming what changed. This is the gate a scheduled job puts
+in front of `rayspec run`. `--json`: `[{workflow, name, hash, trusted, problem}]`. Setting
+`trust: {require: true}` in `policy.yaml` applies the same gate to every command that loads a
+workflow.
+
 ### `rayspec projects add`
 
 ```
