@@ -309,6 +309,28 @@ defaults:
 - `rayspec plan` prints the caps next to the isolation (`budget_usd $5.00  max_tokens
   2,000,000`; `--json`: `budget_usd`, `max_tokens`).
 
+### Wall-clock cap (`timeout_total`)
+
+`defaults.timeout_total` is the same breaker measured in time instead of money or tokens:
+
+```yaml
+defaults:
+  timeout_total: 2h        # or "90m" / 5400
+```
+
+- The clock starts when the run starts and **keeps counting across resumes**: it is measured
+  from `run.json`'s original `started_at`, which a resume entry never rewrites. `2h` therefore
+  means two hours of *run*, not two hours per attempt — including the time a run spent waiting
+  at an approval gate. Resuming a run that has already used its budget of time starts nothing
+  and ends `failed` right away; finished steps are still replayed.
+- The cap is checked when a step finishes, so it never cancels anything: a step that is running
+  when the clock runs out is allowed to finish, and only the steps that had not started yet are
+  skipped (`skip_reason: budget_exceeded`, the same drain as above). It is a *circuit breaker*,
+  not a kill switch — use `timeout:` (per attempt, per step) or `stop:` if you need one.
+- The run ends `failed` with
+  `reason: time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` — exit **1**. Raise the
+  cap and resume with `--force` (the workflow hash changed) to continue where it stopped.
+
 ## Security notes
 
 The run store is sensitive data: `run.json` holds the inputs (except `secret: true` inputs,

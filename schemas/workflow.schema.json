@@ -522,6 +522,24 @@
             }
           ],
           "description": "A token count (500000) or a string ('500k', '1.5M')."
+        },
+        "timeout_total": {
+          "default": null,
+          "title": "Timeout Total",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
         }
       },
       "title": "Defaults",

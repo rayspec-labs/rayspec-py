@@ -116,6 +116,11 @@ carry the `> 0` check; `Money` / `TokenCount` annotated types exported from
 `rayspec.schema.workflow`). Root workflow only; included bodies' values are
 ignored by the engine.
 
+Additive: `Defaults.timeout_total: PositiveDuration | None = None` — the run-level
+WALL-CLOCK cap, the third circuit breaker beside `budget_usd`/`max_tokens` (same `Duration`
+parsing as `defaults.timeout`, `> 0`). Measured from `RunRecord.started_at`, which a resume
+never rewrites: the cap is per RUN, not per attempt. Root workflow only.
+
 Additive: `InputSpec.secret: bool = False` — the value is never persisted (stored
 and printed as `"<secret>"`) and reaches `shell:`/`python:` steps only as `RAYSPEC_INPUT_<NAME>` or
 through their `env:` mapping; `secret: true` + `default` is a schema error; `to_json_schema()`
@@ -1128,6 +1133,17 @@ Semantics fixed here (tests in `tests/engine/`):
   defaults).
   `rayspec plan` prints `budget_usd $X  max_tokens N` after the isolation and adds `budget_usd` /
   `max_tokens` to its `--json` payload.
+- Wall-clock breaker: `defaults.timeout_total` joins the same circuit breaker.
+  `RunContext.elapsed_s()` is `utcnow() - RunRecord.started_at` (the ORIGINAL start — a resume
+  entry keeps it, so the cap measures the run, not the attempt, waiting at an approval gate
+  included); `context.time_reason(elapsed_s, defaults)` renders `time limit exceeded (elapsed
+  2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
+  greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
+  one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
+  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged; the warning hint
+  names the knob that tripped. `scheduler.finish` asks the breaker after EVERY step when
+  `ctx.time_capped` (a shell-only run reports no usage), and `Runner.run` asks it once before
+  the graph starts so a resumed run whose clock already expired starts nothing.
 
 ### CLI `run` — `rayspec run <workflow> [--input k=v]* [--inputs-file f] [--root]
 [--dry-run] [--stubs f] [--stubs-init f] [--exec-shell] [--yes] [--no-interactive] [--json] [--quiet]

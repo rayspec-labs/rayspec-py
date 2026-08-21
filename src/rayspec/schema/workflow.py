@@ -23,6 +23,7 @@ from rayspec.schema.common import (
     Name,
     OnStepFailure,
     OnUnsupported,
+    PositiveDuration,
 )
 from rayspec.schema.errors import schema_error_from_validation
 from rayspec.schema.inputs import InputSpec
@@ -97,6 +98,9 @@ class Defaults(StrictModel):
     budget_usd: Money | None = None
     #: same for the run's total tokens (input + output), always enforceable
     max_tokens: TokenCount | None = None
+    #: same for the run's wall-clock duration, measured from the run's ORIGINAL start (a resume
+    #: keeps counting); ``None`` = no cap. Not a per-step timeout — see ``timeout``.
+    timeout_total: PositiveDuration | None = None
 
     @classmethod
     def _what(cls) -> str:

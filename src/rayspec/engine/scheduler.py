@@ -489,8 +489,11 @@ async def finish(outcome: StepOutcome, step: StepModel, scope: ExecScope, ctx: R
     scope.views[step.id] = view_of(outcome, step)
     rec = outcome.record
     ctx.accounted_paths.add(rec.path)
-    if rec.kind in LEAF_KINDS and (rec.usage.total or rec.cost_usd is not None):
-        await ctx.check_budget()  # totals changed (a fresh leaf or a replayed record)
+    spent = rec.kind in LEAF_KINDS and (rec.usage.total or rec.cost_usd is not None)
+    if spent or ctx.time_capped:
+        # the totals changed (a fresh leaf or a replayed record) — or the wall clock may have
+        # run out while this step ran, which no step's usage would show
+        await ctx.check_budget()
     data: dict[str, Any] = {
         "status": str(rec.status.value),
         "duration_ms": rec.duration_ms,

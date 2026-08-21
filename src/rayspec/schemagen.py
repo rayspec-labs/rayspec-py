@@ -110,6 +110,7 @@ def _workflow_patches() -> dict[str, dict[str, Any]]:
             "description": f"Schema version — must be {SCHEMA_VERSION}.",
         },
         "Defaults.timeout": _duration(positive=False, nullable=True),
+        "Defaults.timeout_total": _duration(positive=True, nullable=True),
         "Defaults.budget_usd": _money(),
         "Defaults.max_tokens": _tokens(),
         "RetryPolicy.delay": _duration(positive=False, nullable=False),

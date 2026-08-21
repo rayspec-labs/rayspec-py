@@ -247,6 +247,9 @@ class Runner:
         if not resumed and run.toolchain is None:  # the SDK/CLI/models in effect, once
             run.toolchain = await capture_toolchain(ctx)
             await ctx.save_run()
+        # a resumed run whose ``defaults.timeout_total`` already expired starts nothing: the
+        # clock runs from the ORIGINAL start, so the breaker has to be asked before the graph
+        await ctx.check_budget()
 
         engine_error: BaseException | None = None
 
