@@ -20,6 +20,8 @@ files live under ``$RAYSPEC_HOME``; they hold ids, counts and amounts and never 
 from __future__ import annotations
 
 from rayspec.limits.envelope import (
+    ENVELOPE_PAUSE_REASON,
+    ENVELOPE_PAUSE_STEP,
     BudgetEnvelope,
     RunEnvelope,
     envelope_reason,
@@ -53,6 +55,8 @@ from rayspec.limits.slots import (
 )
 
 __all__ = [
+    "ENVELOPE_PAUSE_REASON",
+    "ENVELOPE_PAUSE_STEP",
     "LOCKFILE_NAME",
     "LOCKFILE_VERSION",
     "SLOT_POLL_S",

@@ -40,7 +40,7 @@ from rayspec.providers.base import (
     Usage,
 )
 from rayspec.schema import PromptStep, StepModel, StepStatus
-from rayspec.store.model import ErrorInfo, SessionRef, StepRecord
+from rayspec.store.model import DenialInfo, ErrorInfo, SessionRef, StepRecord
 from rayspec.templating import TemplateRenderError
 
 
@@ -296,9 +296,16 @@ async def run_prompt(
         _estimate_cost(record, ctx, model=result.model, usage=usage)
     record.model = result.model or agent.model
     record.provider = provider.id
+    record.denials = [
+        DenialInfo(tool=d.tool, reason=d.reason, call_id=d.call_id) for d in result.denials
+    ]
     if result.session_ref:
         record.session_ref = SessionRef(provider=provider.id, id=result.session_ref)
-    return _map_result(step, record, result, structured_value, structured_error)
+    if record.denials:
+        await ctx.warn(denial_warning(record), step_path=record.path)
+    return _map_result(
+        step, record, result, structured_value, structured_error, on_denial=agent.on_denial
+    )
 
 
 async def persist_prompt(ctx: RunContext, record: StepRecord, prompt: str) -> None:
@@ -328,13 +335,41 @@ async def persist_prompt(ctx: RunContext, record: StepRecord, prompt: str) -> No
     record.prompt_ref = str(ref)
 
 
+def denial_warning(record: StepRecord) -> str:
+    """``2 tool call(s) denied: Bash, Write`` — what the console and events.jsonl show."""
+    return f"{len(record.denials)} tool call(s) denied: {denied_tools(record)}"
+
+
+def denied_tools(record: StepRecord) -> str:
+    """The distinct tool names of ``record.denials``, in the order they were refused."""
+    return ", ".join(dict.fromkeys(d.tool for d in record.denials))
+
+
 def _map_result(
     step: PromptStep,
     record: StepRecord,
     result: AgentResult,
     structured_value: Any,
     structured_error: str | None,
+    *,
+    on_denial: str = "warn",
 ) -> StepOutcome:
+    if result.status == "success" and record.denials and on_denial == "fail":
+        # the turn "succeeded", but the agent was refused something it tried to do. With
+        # ``on_denial: fail`` that is the step's answer — a denial nobody reads is a silent
+        # failure. The denials stay on the record either way.
+        return _fail(
+            record,
+            ErrorInfo(
+                type="denied",
+                message=(
+                    f"the agent was denied {len(record.denials)} tool call(s): "
+                    f"{denied_tools(record)}"
+                ),
+                transient=False,
+            ),
+            output=result.text or None,
+        )
     if result.status == "success":
         if step.output_schema is not None:
             if structured_error is not None:
@@ -422,6 +457,8 @@ __all__ = [
     "UsageTracker",
     "agent_fingerprint_data",
     "build_request",
+    "denial_warning",
+    "denied_tools",
     "make_emit",
     "persist_prompt",
     "prompt_fingerprint",

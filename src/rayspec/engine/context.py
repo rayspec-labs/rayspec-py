@@ -363,6 +363,7 @@ class RunContext:
         cache: Mapping[str, StepRecord] | None = None,
         hash_mismatch: bool = False,
         secret_inputs: Mapping[str, Any] | None = None,
+        envelope: Any = None,
     ) -> None:
         self.resolved = resolved
         self.run = run
@@ -396,6 +397,14 @@ class RunContext:
         self.price_table: Any = None
         #: set (to the reason) once the run-level cap tripped: no new step starts
         self.budget_exceeded: str | None = None
+        #: the operator's cross-run spending envelope / circuit breaker
+        #: (:class:`rayspec.limits.envelope.RunEnvelope`), or ``None`` when no policy caps this
+        #: machine. Unlike the in-workflow caps it PAUSES the run instead of failing it.
+        self.envelope: Any = envelope
+        #: set (to the reason) once the envelope stopped the run — the final status is ``paused``
+        self.envelope_pause: str | None = None
+        #: the record path of the last step that reached a final outcome (what a pause names)
+        self.last_finished_path: str | None = None
         #: record paths finished (or replayed) in THIS run — what the caps are measured over;
         #: stale cache records of a resumed run do not count until they are replayed/re-run
         self.accounted_paths: set[str] = set()
@@ -539,6 +548,11 @@ class RunContext:
         """Store a (non-final) record and save ``run.json``."""
         async with self.lock:
             self.run.steps[record.path] = record
+            if self.envelope_pause is None:
+                # where the run got to — what an envelope pause names as its location. Frozen
+                # once the envelope tripped, so the pause names the step that reached the
+                # ceiling and not the last step the drain skipped afterwards.
+                self.last_finished_path = record.path
             await to_thread.run_sync(self.store.save, self.run)
 
     async def persist(self, outcome: StepOutcome) -> None:
@@ -557,6 +571,11 @@ class RunContext:
                 await to_thread.run_sync(self._write_output, record, content, kind)
                 outcome.output_kind = kind
             self.run.steps[record.path] = record
+            if self.envelope_pause is None:
+                # where the run got to — what an envelope pause names as its location. Frozen
+                # once the envelope tripped, so the pause names the step that reached the
+                # ceiling and not the last step the drain skipped afterwards.
+                self.last_finished_path = record.path
             await to_thread.run_sync(self.store.save, self.run)
 
     def _write_output(self, record: StepRecord, content: str, kind: str) -> None:
@@ -739,6 +758,33 @@ class RunContext:
         the ``run.finished`` event and the approval panel report)."""
         return totals_of(self.run.steps.values())
 
+    async def check_envelope(self) -> str | None:
+        """Commit this run's spend to the local ledger and ask whether it may go on.
+
+        The operator's ceilings (``policy.budget``, ``policy.max_consecutive_failures``) are a
+        different instrument from the workflow's own ``defaults.budget_usd``: reaching one is
+        not a defect, it is the moment the machine was supposed to stop and ask. So the run
+        DRAINS like any capped run (``budget_exceeded``: nothing new starts, running steps
+        finish) but ends ``paused`` (exit 3) rather than failed, and ``rayspec approve`` /
+        ``rayspec resume`` continue it.
+
+        A dry run never touches the ledger: it spends nothing.
+        """
+        envelope = self.envelope
+        if envelope is None or self.options.dry_run or not envelope.active:
+            return None
+        _usage, cost, _source = self.run_totals()
+        reason = await to_thread.run_sync(envelope.check, cost)
+        if reason is None:
+            return None
+        self.envelope_pause = reason
+        self.budget_exceeded = reason  # drain: no new step starts, running ones finish
+        await self.warn(
+            f"{reason}: the run pauses — resume it with `rayspec resume {self.run.run_id}` "
+            f"once the ceiling allows, or `rayspec approve {self.run.run_id}` to continue anyway"
+        )
+        return reason
+
     async def check_budget(self, *, pending: StepRecord | None = None) -> str | None:
         """Compare the run totals (:meth:`budget_totals`) and the elapsed wall clock
         (:meth:`elapsed_s`) with the root ``defaults`` caps; the first time one of them is
@@ -749,6 +795,9 @@ class RunContext:
         :attr:`budget_exceeded`, and the run drains and ends ``failed`` the same way."""
         if self.budget_exceeded is not None:
             return self.budget_exceeded
+        envelope_reason = await self.check_envelope()
+        if envelope_reason is not None:
+            return envelope_reason
         if not self.caps_set:
             return None
         defaults = self.resolved.workflow.defaults
@@ -853,6 +902,7 @@ def view_of(outcome: StepOutcome, step: StepModel | None = None) -> StepView:
         skip_reason=rec.skip_reason,
         error=rec.error.message if rec.error is not None else None,
         tolerated=rec.tolerated,
+        denials=[d.model_dump() for d in rec.denials] if rec.kind == "prompt" else None,
         body_ids=body_ids(step) if step is not None else frozenset(),
     )
 

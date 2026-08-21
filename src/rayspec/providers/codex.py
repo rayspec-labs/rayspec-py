@@ -113,6 +113,7 @@ from rayspec.providers.base import (
     AgentEvent,
     AgentRequest,
     AgentResult,
+    Denial,
     EmitFn,
     ErrorKind,
     ProviderCapabilities,
@@ -182,6 +183,27 @@ def error_info_code(error: TurnError | None) -> str | None:
         if len(dumped) == 1:
             return next(iter(dumped))
     return None
+
+
+def _turn_error(turn: Any, state: Any) -> TurnError | None:
+    """The turn's own error, else the last error the stream reported."""
+    if turn is not None and getattr(turn, "error", None) is not None:
+        return turn.error
+    return getattr(state, "last_error", None)
+
+
+def sandbox_denial(error: TurnError | None) -> Denial | None:
+    """A ``sandboxError`` turn error as a neutral :class:`Denial` (``None`` for anything else).
+
+    Codex reports a refused command as a turn error rather than as a list of denied calls, so
+    the same shape has to be built here: the step still ends up with ``denials`` naming what the
+    sandbox would not let the agent do, and ``on_denial: fail`` behaves identically on both
+    adapters.
+    """
+    if error_info_code(error) != "sandboxError":
+        return None
+    message = (getattr(error, "message", "") or "").strip()
+    return Denial(tool="shell", reason=message or "the sandbox refused the command")
 
 
 def classify_turn_error(error: TurnError | None, *, fallback_message: str = "") -> AgentError:
@@ -1082,6 +1104,7 @@ class CodexProvider:
             num_turns=1,
             model=req.model,  # as requested: the SDK handle does not expose the effective model
             error=error,
+            denials=tuple(d for d in (sandbox_denial(_turn_error(turn, state)),) if d is not None),
             raw=raw,
         )
 

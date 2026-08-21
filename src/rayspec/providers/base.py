@@ -232,6 +232,23 @@ class Usage:
 
 
 @dataclass(frozen=True, slots=True)
+class Denial:
+    """One tool call the provider's permission or sandbox layer refused.
+
+    Additive to the provider contract. A denial is not an error — the turn may well have
+    finished successfully — but it means the agent could not do something it tried to do, and a
+    permission denial that only appears in a log is a silent failure. The engine records these
+    on the step (``StepRecord.denials``) and, for an agent with ``on_denial: fail``, fails the
+    step. ``tool`` is the provider's name for what was refused (``Bash``, ``shell``);
+    ``reason`` is its own wording, ``call_id`` ties it to the ``tool_call`` event when known.
+    """
+
+    tool: str
+    reason: str = ""
+    call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AgentError:
     kind: ErrorKind
     message: str
@@ -254,6 +271,9 @@ class AgentResult:
     num_turns: int | None = None
     model: str | None = None
     error: AgentError | None = None
+    #: additive: the tool calls this turn had refused (permission or sandbox). Empty for a turn
+    #: that was allowed everything it asked for.
+    denials: tuple[Denial, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -344,6 +364,7 @@ __all__ = [
     "AgentRequest",
     "AgentResult",
     "CostSource",
+    "Denial",
     "EffortLevel",
     "EmitFn",
     "ErrorKind",

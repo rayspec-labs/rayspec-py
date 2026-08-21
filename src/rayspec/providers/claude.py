@@ -80,6 +80,7 @@ from rayspec.providers.base import (
     AgentEvent,
     AgentRequest,
     AgentResult,
+    Denial,
     EmitFn,
     ErrorKind,
     ProviderCapabilities,
@@ -938,6 +939,7 @@ class ClaudeProvider:
             num_turns=result.num_turns,
             model=_model_from_usage(result.model_usage) or state.last_model or state.init_model,
             error=error,
+            denials=tuple(denial_of(d) for d in result.permission_denials or ()),
             raw=raw,
         )
 
@@ -1100,6 +1102,23 @@ def _validate_setting_sources(raw: Any) -> list[str] | None:
             "setting_sources", f"unknown source(s) {', '.join(bad)}; allowed: user|project|local"
         )
     return sources
+
+
+def denial_of(denial: Any) -> Denial:
+    """One Claude ``permission_denials`` entry as the neutral :class:`Denial`.
+
+    The tool INPUT is deliberately dropped: it is step content (a command line, a file body) and
+    the record is not the place for it. What the step needs to know is that ``Bash`` was refused.
+    """
+    if isinstance(denial, Mapping):
+        name = denial.get("tool_name")
+        call_id = denial.get("tool_use_id")
+        return Denial(
+            tool=str(name) if name else "unknown",
+            reason=str(denial.get("message") or "permission denied"),
+            call_id=str(call_id) if call_id else None,
+        )
+    return Denial(tool="unknown", reason=f"permission denied: {denial}")
 
 
 def _denial_event(denial: Any) -> AgentEvent:

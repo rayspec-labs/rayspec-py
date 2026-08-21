@@ -20,6 +20,13 @@ from datetime import datetime
 
 from rayspec.limits.ledger import SpendLedger, SpendState
 
+#: ``PauseInfo.reason`` of a run the envelope stopped (an ``approve:`` gate reads ``approval``).
+ENVELOPE_PAUSE_REASON = "budget"
+
+#: ``PauseInfo.step`` when the envelope stopped a run before any step finished. Not a step id
+#: (no identifier may contain ``<``), so it can never be mistaken for one.
+ENVELOPE_PAUSE_STEP = "<run>"
+
 
 @dataclass(frozen=True, slots=True)
 class BudgetEnvelope:
@@ -154,6 +161,8 @@ class RunEnvelope:
 
 
 __all__ = [
+    "ENVELOPE_PAUSE_REASON",
+    "ENVELOPE_PAUSE_STEP",
     "BudgetEnvelope",
     "RunEnvelope",
     "envelope_reason",
