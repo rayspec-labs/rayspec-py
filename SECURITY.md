@@ -66,12 +66,12 @@ reason a malicious shell script is not a vulnerability in your shell.
 
 **2. `secret: true` inputs are the real surface.** A secret input is never persisted, never
 printed, and reaches `shell:`/`python:` steps through `RAYSPEC_INPUT_<NAME>` or those steps' own
-`env:` — and nowhere else. Delivery is run-wide, not per-step: every `shell:`/`python:` step of the
-run receives every secret the run was given, included bodies too, whether or not it names one
-(`RunContext.secret_env` ignores the scope on purpose). Including a body you have not read is
-therefore a decision about your credentials. Every other placement (a prompt body, an agent's instructions, a
-`when:`/`until:`/`each:` expression, `outputs:`, `cwd:`, an approval message, an include `with:`)
-is refused with a load-time error naming the step and field, and a redactor sits under those
+`env:` — and nowhere else. Delivery is run-wide, not per-step: every `shell:`/`python:` step of
+the run receives every secret the run was given, included bodies too, whether or not it names one
+(`RunContext.secret_env` ignores the scope on purpose), so including a body you have not read is a
+decision about your credentials. Every other placement (a prompt body, an agent's instructions,
+a `when:`/`until:`/`each:` expression, `outputs:`, `cwd:`, an approval message, an include
+`with:`) is refused with a load-time error naming the step and field, and a redactor sits under those
 refusals as a net for values a step prints itself. The rules are documented in
 [docs/schema.md § Secret inputs](docs/schema.md#secret-inputs). Any path by which a `secret: true`
 input reaches a prompt, a template, an expression, an output, an event, the console or the run

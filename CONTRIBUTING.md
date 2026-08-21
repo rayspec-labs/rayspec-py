@@ -44,7 +44,7 @@ Nothing else — dry runs and the whole test suite work without provider credent
 
 ## The gate
 
-Run this before every commit — the same four checks CI runs, which it runs on 3.11, 3.12, 3.13
+Run this before every commit. These are the four checks CI runs — it runs them on 3.11, 3.12, 3.13
 and 3.14 rather than on your one interpreter:
 
 ```bash
