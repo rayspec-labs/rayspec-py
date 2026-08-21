@@ -57,13 +57,13 @@ CHAIN = """
 
 
 async def test_the_clock_trips_the_breaker_and_no_new_step_starts(harness: Harness) -> None:
-    harness.workflow("t", wf("  timeout_total: 0.05", CHAIN))
-    provider = StubProvider(script={"steps": {"a": {"latency_ms": 120}}})
+    harness.workflow("t", wf("  timeout_total: 0.4", CHAIN))
+    provider = StubProvider(script={"steps": {"a": {"latency_ms": 900}}})
     result = await harness.run("t", providers={"claude": provider})
     assert result.status is RunStatus.FAILED and result.exit_code == 1
     assert result.reason is not None
     assert result.reason.startswith("time limit exceeded (elapsed ")
-    assert "> timeout_total 0.1s)" in result.reason
+    assert "> timeout_total 0.4s)" in result.reason
     assert harness.statuses(result.run_id) == {"a": "succeeded", "b": "skipped", "c": "skipped"}
     run = harness.record(result.run_id)
     assert run.steps["b"].skip_reason == BUDGET_SKIP_REASON
@@ -77,7 +77,7 @@ async def test_running_leaves_drain_when_the_clock_runs_out(harness: Harness) ->
     harness.workflow(
         "t",
         wf(
-            "  timeout_total: 0.05\n  max_parallel: 4",
+            "  timeout_total: 0.4\n  max_parallel: 4",
             """
   - {id: quick, prompt: "quick"}
   - {id: slow, prompt: "slow"}
@@ -87,7 +87,7 @@ async def test_running_leaves_drain_when_the_clock_runs_out(harness: Harness) ->
         ),
     )
     provider = StubProvider(
-        script={"steps": {"quick": {"latency_ms": 120}, "slow": {"latency_ms": 400}}}
+        script={"steps": {"quick": {"latency_ms": 600}, "slow": {"latency_ms": 1500}}}
     )
     result = await harness.run("t", providers={"claude": provider})
     assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
@@ -147,7 +147,7 @@ async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Ha
     harness.workflow(
         "t",
         wf(
-            "  timeout_total: 0.05\n  max_parallel: 1",
+            "  timeout_total: 0.4\n  max_parallel: 1",
             """
   - {id: a, prompt: "one"}
   - {id: b, prompt: "two"}
@@ -156,7 +156,7 @@ async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Ha
 """,
         ),
     )
-    provider = StubProvider(script={"steps": {"a": {"latency_ms": 120}}})
+    provider = StubProvider(script={"steps": {"a": {"latency_ms": 900}}})
     result = await harness.run("t", providers={"claude": provider})
     assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
     statuses = harness.statuses(result.run_id)
@@ -174,12 +174,12 @@ async def test_the_tripped_clock_outranks_a_stop_step(harness: Harness) -> None:
     successful — the cap decides the run status, and its outputs are not published."""
     harness.workflow(
         "t",
-        "rayspec: 1\nname: t\ndefaults:\n  timeout_total: 0.05\n"
+        "rayspec: 1\nname: t\ndefaults:\n  timeout_total: 0.4\n"
         "outputs:\n  done: yes\nsteps:\n"
         '  - {id: slow, prompt: "one"}\n'
         '  - {id: bye, needs: [slow], join: always, stop: {status: succeeded, reason: "early"}}\n',
     )
-    provider = StubProvider(script={"steps": {"slow": {"latency_ms": 120}}})
+    provider = StubProvider(script={"steps": {"slow": {"latency_ms": 900}}})
     result = await harness.run("t", providers={"claude": provider})
     assert result.status is RunStatus.FAILED and result.exit_code == 1
     assert "time limit exceeded" in (result.reason or "")
