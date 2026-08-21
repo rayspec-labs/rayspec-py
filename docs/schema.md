@@ -205,6 +205,15 @@ chunks is caught too: a stream holds back the tail that could still *grow* into 
 flushed when the step finishes — what `stream.jsonl` reassembles to is always exactly what the
 step produced.
 
+Anything JSON-shaped — `run.json`, `events.jsonl`, a `json` step output — is redacted on its
+**parsed value**, never on the serialised text: a secret that is a bare JSON token (a number,
+`true`, `null`) becomes the quoted marker, so the document stays well-formed and the run stays
+readable. Object **keys** are replaced beside their values, because a structured result can put
+a value in the key position just as easily. What is left alone is the run record's own
+structure — a field name, the step paths the steps are keyed by — and a *structural* number: a
+duration, a token count or an exit code never holds a value you supplied, it cannot hold a marker
+string either, and corrupting the checkpoint over a coincidence protects nobody.
+
 Be clear about what this is:
 
 - it is **exact match**. It cannot catch a value an agent or a script transformed — base64, URL

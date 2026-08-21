@@ -1498,8 +1498,9 @@ CLI surface:
   to a file (refusing an existing one without `--force`; the write is atomic and any `OSError` is
   exit 2 `cannot write <path>: …`) or to stdout; prints `workflow_drift_warning` and
   `recording_notes` on stderr; exit 2 for a run with `secret_inputs` (naming them) and **always**
-  for `--redact` (not available until the redactor ships — the flag never silently records an
-  un-redacted script).
+  for `--redact` — a permanent refusal, not a gap: a recording command is never given secret
+  values, so the flag never silently records an un-redacted script and never promises a later
+  build.
 - `rayspec runs diff <a> <b> [--json] [--exit-code] [--outputs] [--steps] [--across-projects]
   [--root]` — two runs of
   ONE workflow. `RunDiff.changed` (what `--exit-code` returns 1 on) covers the run status, the set
@@ -1868,17 +1869,41 @@ Two new packages and one new loader module; nothing else moved.
   entry neither fails a run nor executes its `cmd:` helper),
   `build_redactor(config, {name: value}) -> Redactor`.
 - **`rayspec.redact`** — pure text transformation. `Redactor.build({name: value}, *,
-  detectors=()) -> Redactor` (`literals` longest-first, each value registered **twice** when its
-  JSON-escaped form differs, because records are redacted as serialised JSON text;
-  `MIN_REDACTABLE_LEN = 4` — shorter values are skipped and named in `.skipped`, which the CLI
-  turns into a `warning:` line at run start and a `doctor` note; `bool(redactor)` is False when
-  it would change nothing). `redact(text)`, `redact_obj(value)` (also replaces a **number** that
-  IS a secret, so a JSON document stays well-formed), `REDACTION = "[REDACTED:{name}]"`,
-  `NULL_REDACTOR` (the shared no-op). `StreamRedactor.feed(text)` holds back only the tail that
-  could still GROW into a match — the longest suffix that is a proper prefix of a known value, or
-  a detector shape in progress — so ordinary text is emitted immediately and a live log never
-  lags; `redactor.hold` is the documented upper bound, not what is held. `flush()` returns the
-  tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
+  detectors=()) -> Redactor` — `build` and `extend` also take `(name, value)` PAIRS
+  (`rayspec.redact.Secrets`), because `config.secrets` and the workflow's inputs are independent
+  namespaces that can use the same name for different values and a merge by name would drop one
+  of the values while the step still receives it — (`literals` longest-first, each value registered **twice** when its
+  JSON-escaped form differs, so a writer of raw TEXT — `stdout.log`, an artifact, a step output
+  that happens to contain JSON — still catches the escaped form; `MIN_REDACTABLE_LEN = 4` —
+  shorter values are skipped and named in `.skipped`, which the CLI turns into a `warning:` line
+  at run start and a `doctor` note; `bool(redactor)` is False when it would change nothing).
+  `redact(text)` = `redact_shapes(redact_values(text))` — the two halves are separate because
+  a known value can be replaced the moment it is whole while a detector shape may still be
+  growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
+  included (a structured result or a tool payload can put a secret in the key position), plus a
+  **number** whose whole text IS a secret, so a JSON document stays well-formed.
+  `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
+  redacted, and any substitution the model cannot hold put back at exactly the field it broke
+  (a structural number equal to a secret is a coincidence, not a leak). The record's own
+  STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
+  keyed by step path), names a place in the record rather than carrying a value — while
+  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
+  that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
+  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
+  `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
+  is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
+  already knew everything) are how a later caller ADDS a value without discarding one already
+  installed. `REDACTION = "[REDACTED:{name}]"`, `NULL_REDACTOR` (the shared no-op).
+  `StreamRedactor.feed(text)` holds back only the tail that could still GROW into a match (the
+  longest suffix that is a proper prefix of a known value, or a detector shape in progress) and
+  then moves that boundary further back rather than cutting a COMPLETE match in half — a value
+  that ends with its own prefix (`4242424242`) otherwise looks like one still being written and
+  has its head released raw. Both rules are measured on the RAW buffer: substituting complete
+  values before measuring would replace a known value that is a PREFIX of another known value
+  (`dbuser` inside `dbuser:pw@host`) and destroy the prefix the boundary needs. Ordinary text is
+  emitted immediately and a live log never lags; `redactor.hold` is the documented upper bound
+  for a partial match, not what is held, and a run of complete matches that overlap each other
+  is held whole. `flush()` returns the tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
   8192`, 4 KiB tokens) precisely so a shape split across two chunks is still caught. The
   concatenation of `feed`/`flush` equals the redaction of the concatenated input — only the
   chunk boundaries move. `RedactingSink(inner, redactor)` wraps any `EventSink` (event `data`,
@@ -1912,18 +1937,35 @@ Additive changes to existing modules:
   silent leak.
 - `store/file.py`: `FileRunStore(root, *, redactor=NULL_REDACTOR)` and the mutable
   `store.redactor` attribute (the store is built before the run's secrets are known; the CLI
-  assigns the real one at run start). Every writer redacts: `save` (the serialised `run.json`
-  payload), `write_output_with_sha` (before hashing, so the sha is the file's — and for
-  `kind="json"` the PARSED value is redacted, not the serialised text, so a secret that is a
-  bare JSON token cannot turn a valid document into an invalid one), `append_event`,
-  `append_stream` (boundary-safe per `(run, step, kind, attempt)`), and `record_step` through
-  those two. `flush_streams(run_id, step_path=None)` writes the held-back tail, and
+  assigns the real one at run start, and the Runner installs what the CLI did not). Every writer
+  redacts, and everything JSON-shaped is redacted on the PARSED value rather than on the
+  serialised text — a secret that is a bare JSON token would otherwise be swapped for an
+  unquoted marker and leave a file that no longer parses: `save` (`redact_dump(run)`, then
+  serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
+  `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
+  value), `append_event` (the event's `data`, the only free-form part), `append_stream`
+  (`text` boundary-safe per `(run, step, kind, attempt)`, plus `data`, `name` and `call_id` —
+  every part of the record that carries text, since the line is built from the parts), and
+  `record_step` through those two. `flush_streams(run_id, step_path=None)` writes the held-back tail, and
   **`append_event` calls it** on `step.finished` and on `run.finished`/`run.paused` — the events
   the engine emits for every step and every run — so a finished stream is always complete on
   disk and `stream.jsonl` reassembles to exactly what the step produced. **New writes must go
   through the store**: a writer that opens a file under the run dir directly is not covered.
 - `engine/context.py`: `RunOptions.config_secrets: Mapping[str, str] = {}` (additive) — the
   resolved `config.secrets`, handed only to `shell:`/`python:` steps.
+- `engine/runner.py`: `Runner._install_redactor()` runs first in `run()`, before the workdir lock
+  and before the record exists. It makes `store.redactor` cover every `secret: true` input the
+  run was given plus every `RunOptions.config_secrets` value, by `Redactor.extend` — as PAIRS,
+  so a `config.secrets` entry and an input of the same name both reach the redactor. A redactor
+  the caller installed is never replaced, and one that already knows every value and every name
+  is left alone (`extend` returns `self`), so the CLI path is a no-op. Everything else goes
+  through `extend`, including values `covers` reports as covered, so a value too short to redact
+  lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
+  emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
+  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
+  `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
+  caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
+  by construction.
 - `engine/executors/_process.py`: `process_env` adds `ctx.options.config_secrets` under their own
   names, below the step's own `env:` (never in `context.json`, `export_env` or the fingerprint);
   `_pump` redacts `stdout.log`/`stderr.log`, the captured chunks and the emitted stream records
@@ -1966,7 +2008,11 @@ Decided and **not** to be re-litigated:
 - Builtin detectors are **opt-in, default off**. A false positive in a run log is worse than the
   gap.
 - Tests: `tests/secrets/**` (sources, redactor, store writers, the `_pump` writer, sinks,
-  placement) — that package deliberately has **no** `__init__.py`, because `tests/` is on
+  placement, the Runner-installed boundary in `test_runner_boundary.py`, and
+  `test_secret_values_never_persist.py` — one real run per value shape (numeric, quoted,
+  multiline, unicode, tabs, leading zeroes, regex metacharacters, a value wrapped inside a
+  longer one), asserting the raw bytes are absent from every file under the run directory) —
+  that package deliberately has **no** `__init__.py`, because `tests/` is on
   `sys.path` and a package named `secrets` there shadows the standard library's for every
   dependency that imports it. `tests/integration/test_e2e_secret_sources.py` is the end-to-end
   leak test; `tests/integration/test_e2e_secret_inputs.py::
@@ -2120,8 +2166,11 @@ rolled back whole and reported. Cost: nothing is imported when the group is empt
 
 **Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
 in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record
-(`create`/`save` — on the parsed value, so a secret that is a bare JSON token cannot make the
-record unparseable), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
+(`create`/`save` — `Redactor.redact_dump`, on the parsed value, so a secret that is a bare JSON
+token cannot make the record unparseable and the common structural coincidence is put back
+before the copy is re-validated; a residue `redact_dump` cannot repair raises `StoreError`
+naming the field, because this boundary has to hand the plugin a valid record and will not let a
+bare `ValidationError` out of a write), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
 value), the prompt (`write_prompt`), the events (`data`) and the stream records (a
 `StreamRedactor` per `(run_id, step_path, kind, attempt)`, flushed on `step.finished`/
 `run.finished`/`run.paused` exactly as `FileRunStore` does) BEFORE the wrapped store sees them —
