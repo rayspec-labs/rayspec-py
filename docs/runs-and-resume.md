@@ -451,6 +451,35 @@ defaults:
   successful (its `outputs:` are not published either). Raise the
   cap and resume with `--force` (the workflow hash changed) to continue where it stopped.
 
+## Publishing the run branch
+
+A run that pauses at three in the morning has done real work in a worktree on one machine.
+`RAYSPEC_PUSH_BRANCH` makes rayspec push that work somewhere you can see it:
+
+```bash
+RAYSPEC_PUSH_BRANCH=1 rayspec run nightly --no-interactive       # push to origin
+RAYSPEC_PUSH_BRANCH=upstream rayspec run nightly                 # or to another remote
+```
+
+The hook fires when the run **pauses** and when it **ends** (whatever the final status), and it
+publishes `rayspec/<workflow>-<shortid>` — the branch the run's worktree is on.
+
+Rules it keeps, deliberately:
+
+- **Opt-in.** Nothing is pushed unless the variable is set. `1`/`true`/`yes`/`on` mean `origin`;
+  any other value names the remote.
+- **Only an isolated run.** An in-place run (`--no-worktree`, a non-git directory) is on *your*
+  branch — pushing that would be a surprise, so it never happens. A `--dry-run` publishes nothing.
+- **It never forces.** If somebody else moved the remote branch on, git rejects the push and
+  rayspec leaves it alone.
+- **It fails soft.** No remote, no such branch, a rejected push, a timeout (60s), no `git` at all:
+  every one of them is a `warning` event on the finished run (`rayspec show` lists it under
+  `warnings:`). The run's status and exit code are exactly what they would have been without the
+  hook — a push is not part of the run's outcome, and a broken remote must never turn a succeeded
+  run into a failed one.
+
+A successful push is silent: `git ls-remote <remote> 'refs/heads/rayspec/*'` is the confirmation.
+
 ## Security notes
 
 The run store is sensitive data: `run.json` holds the inputs (except `secret: true` inputs,

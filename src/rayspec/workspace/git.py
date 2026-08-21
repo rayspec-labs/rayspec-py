@@ -18,6 +18,18 @@ from pathlib import Path
 
 from rayspec.workspace.errors import GitError
 
+#: Environment variable that opts a run into publishing its branch when it pauses or ends.
+#: ``1``/``true``/``yes``/``on`` mean ``origin``; any other non-empty value names the remote.
+PUSH_ENV = "RAYSPEC_PUSH_BRANCH"
+#: The remote :func:`push_remote` picks when the opt-in is just "on".
+DEFAULT_REMOTE = "origin"
+#: How long :func:`push_branch` waits for git before it gives up (and warns).
+PUSH_TIMEOUT_S = 60.0
+#: Values of :data:`PUSH_ENV` that mean "off".
+_PUSH_FALSY = frozenset({"", "0", "false", "no", "off"})
+#: Characters of git's complaint kept in a :class:`PushOutcome` reason.
+_REASON_CAP = 500
+
 #: Environment applied to every git call: no prompts, no pager, stable output.
 _GIT_ENV_DEFAULTS: Mapping[str, str] = {
     "GIT_TERMINAL_PROMPT": "0",
@@ -95,6 +107,70 @@ def run_git(
             stderr=result.stderr,
         )
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class PushOutcome:
+    """What :func:`push_branch` did. ``pushed`` is the whole answer; ``reason`` says why not."""
+
+    branch: str
+    remote: str
+    pushed: bool
+    reason: str | None = None
+
+
+def push_remote(env: Mapping[str, str] | None = None) -> str | None:
+    """The remote a run should publish its branch to, or ``None`` when nobody asked for one.
+
+    Reads :data:`PUSH_ENV`: off by default, ``1``/``true``/``yes``/``on`` means
+    :data:`DEFAULT_REMOTE`, and any other value names the remote.
+    """
+    env = os.environ if env is None else env
+    raw = (env.get(PUSH_ENV) or "").strip()
+    if raw.lower() in _PUSH_FALSY:
+        return None
+    return DEFAULT_REMOTE if raw.lower() in {"1", "true", "yes", "on"} else raw
+
+
+def push_branch(
+    workdir: Path,
+    branch: str,
+    *,
+    remote: str = DEFAULT_REMOTE,
+    timeout: float | None = PUSH_TIMEOUT_S,
+) -> PushOutcome:
+    """Push ``branch`` from ``workdir`` to ``remote``, reporting instead of raising.
+
+    This is a hook on a run that is already over, so it **fails soft**: no remote, no such
+    branch, no git binary, a rejected push, a timeout — every one of them comes back as
+    ``pushed=False`` with a ``reason``, and the caller turns that into a warning. It never
+    raises and it never forces: a remote branch somebody else moved on is left alone, and the
+    rejection is the reason.
+    """
+    try:
+        if not branch_exists(workdir, branch):
+            return PushOutcome(branch, remote, False, f"no local branch {branch!r} in {workdir}")
+        if remote_url(workdir, remote) is None:
+            return PushOutcome(branch, remote, False, f"no remote {remote!r} configured")
+        result = run_git(
+            ["push", "--set-upstream", remote, f"refs/heads/{branch}:refs/heads/{branch}"],
+            workdir,
+            check=False,
+            timeout=timeout,
+        )
+    except (GitError, OSError) as exc:
+        return PushOutcome(branch, remote, False, _reason(str(exc)))
+    if result.ok:
+        return PushOutcome(branch, remote, True)
+    return PushOutcome(branch, remote, False, _reason(result.stderr or result.stdout))
+
+
+def _reason(text: str) -> str:
+    """One capped line of git's complaint (or a placeholder when it said nothing)."""
+    line = " ".join(text.split())
+    if not line:
+        return "git push failed"
+    return line[: _REASON_CAP - 1] + "…" if len(line) > _REASON_CAP else line
 
 
 def is_git_repo(path: Path) -> bool:
@@ -211,7 +287,11 @@ def is_ancestor(path: Path, ancestor: str, descendant: str) -> bool:
 
 
 __all__ = [
+    "DEFAULT_REMOTE",
+    "PUSH_ENV",
+    "PUSH_TIMEOUT_S",
     "GitResult",
+    "PushOutcome",
     "branch_exists",
     "common_dir",
     "current_branch",
@@ -220,6 +300,8 @@ __all__ = [
     "is_ancestor",
     "is_dirty",
     "is_git_repo",
+    "push_branch",
+    "push_remote",
     "ref_exists",
     "remote_default_branch",
     "remote_url",

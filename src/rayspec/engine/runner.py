@@ -309,6 +309,44 @@ class Runner:
 
     # -- internals ------------------------------------------------------------------------
 
+    async def _publish_branch(self, ctx: RunContext) -> None:
+        """Push the run's branch when ``RAYSPEC_PUSH_BRANCH`` asks for it — best effort.
+
+        The point is that a run left alone on a schedule leaves its work somewhere visible: the
+        branch is pushed when the run pauses and when it ends, so the laptop is not the only
+        copy. Only an isolated run publishes — an in-place run is on the user's own branch and
+        pushing that would be a surprise — and a dry run publishes nothing.
+
+        The push happens after the run's outcome is already decided, so it may never influence
+        it: every failure (no remote, a rejected push, a timeout, no git at all) becomes a
+        warning event on the finished run, and the status and the exit code are what they would
+        have been without the hook.
+        """
+        from rayspec.loader.loader import import_optional
+
+        module = import_optional("rayspec.workspace.git")
+        push_remote = getattr(module, "push_remote", None) if module is not None else None
+        push_branch = getattr(module, "push_branch", None) if module is not None else None
+        if push_remote is None or push_branch is None:
+            return
+        workspace = self.workspace
+        remote = push_remote()
+        if (
+            remote is None
+            or self.options.dry_run
+            or workspace.isolation == "none"
+            or not workspace.branch
+        ):
+            return
+        branch, workdir = workspace.branch, workspace.workdir
+        try:
+            outcome = await to_thread.run_sync(lambda: push_branch(workdir, branch, remote=remote))
+        except Exception as exc:  # a hook must not be able to break a finished run
+            await ctx.warn(f"could not push {branch} to {remote}: {exc}")
+            return
+        if not outcome.pushed:
+            await ctx.warn(f"could not push {branch} to {remote}: {outcome.reason}")
+
     def _resolve_actor(self) -> ActorInfo:
         """Who is launching this run (blocking: reads the workdir's git configuration)."""
         return resolve_actor(workdir=self.workspace.workdir)
@@ -566,6 +604,7 @@ class Runner:
             run.pid = None
         await to_thread.run_sync(self._refresh_head_sha)  # pause / run end
         run.workspace = self.workspace.info()
+        await self._publish_branch(ctx)  # opt-in, best effort — never changes ``status``
         usage, cost, cost_source = ctx.run_totals()
         run.cost_source = cost_source
         self._release_lock()  # released on every final status — a resume takes it again

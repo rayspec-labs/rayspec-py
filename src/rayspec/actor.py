@@ -109,9 +109,11 @@ def git_email(workdir: Path | None = None) -> str | None:
     Never raises: a missing ``git`` binary, an unreadable directory or a timeout is simply "no
     answer from git".
     """
-    from rayspec.workspace.errors import GitError
-    from rayspec.workspace.git import run_git
-
+    try:
+        from rayspec.workspace.errors import GitError
+        from rayspec.workspace.git import run_git
+    except ImportError:  # the workspace layer is optional; the OS user still answers
+        return None
     try:
         result = run_git(
             ["config", "--get", "user.email"], workdir, check=False, timeout=GIT_TIMEOUT_S
