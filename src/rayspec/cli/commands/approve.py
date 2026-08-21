@@ -15,7 +15,13 @@ from typing import Annotated
 import typer
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    fail,
+    resolve_output,
+)
 from rayspec.cli.commands.resume import (
     SecretInputsOption,
     StubsOption,
@@ -105,6 +111,7 @@ def register(app: typer.Typer) -> None:
             str | None, typer.Argument(help="Approval comment (becomes the gate's output).")
         ] = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
         quiet: Annotated[
             bool, typer.Option("--quiet", help="Only problems and run-level lines.")
         ] = False,
@@ -116,6 +123,7 @@ def register(app: typer.Typer) -> None:
         root: RootOption = None,
     ) -> None:
         """Approve the pending gate of a paused run and resume it."""
+        json_ = resolve_output(output, json_)
         decide_and_resume(
             run=run,
             approved=True,

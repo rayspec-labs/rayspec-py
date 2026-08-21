@@ -17,7 +17,14 @@ import typer
 from rich.markup import escape
 
 from rayspec import __version__
-from rayspec.cli.commands._loader_common import JsonOption, console, err_console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    console,
+    err_console,
+    fail,
+    resolve_output,
+)
 from rayspec.cli.commands._skill_common import print_install_result, session_hint
 from rayspec.loader import find_project_root
 from rayspec.skill import (
@@ -114,8 +121,11 @@ def register(app: typer.Typer) -> None:
         console().print(escape(session_hint(directory, global_install=global_)))
 
     @skill.command("show")
-    def show(root: RootOption = None, json_: JsonOption = False) -> None:
+    def show(
+        root: RootOption = None, json_: JsonOption = False, output: OutputOption = None
+    ) -> None:
         """Show the packaged skill (version, digest, path) and the installed copies."""
+        json_ = resolve_output(output, json_)
         project_root = resolve_root(root)
         packaged = skill_dir()
         digest = content_digest()

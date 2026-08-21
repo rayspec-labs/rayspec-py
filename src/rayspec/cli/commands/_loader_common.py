@@ -15,6 +15,7 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -55,6 +56,42 @@ AllowUnsupportedOption = Annotated[
     typer.Option("--allow-unsupported", help="Downgrade capability mismatches to warnings."),
 ]
 JsonOption = Annotated[bool, typer.Option("--json", help="Machine-readable output.")]
+
+
+class OutputFormat(StrEnum):
+    """``--output`` values: how a command presents its result."""
+
+    table = "table"
+    json = "json"
+
+
+OutputOption = Annotated[
+    OutputFormat | None,
+    typer.Option(
+        "--output",
+        help="Presentation: `table` (default) or `json` (`--json` is the older spelling).",
+        show_default=False,
+    ),
+]
+
+
+def resolve_output(output: OutputFormat | None, json_: bool) -> bool:
+    """Whether to print machine-readable JSON, from the two spellings of the same choice.
+
+    ``--json`` predates ``--output`` and is in the docs, the packaged skill, tests and users'
+    scripts, so it keeps working untouched: it is exactly ``--output json``. Passing both is fine
+    while they agree and a usage error when they do not — silently letting one win would print a
+    table into a pipe that asked for JSON.
+    """
+    if output is None:
+        return json_
+    if json_ and output is not OutputFormat.json:
+        fail(
+            f"--json and --output {output.value} disagree",
+            hint="--json is the older spelling of --output json; pass one of them",
+        )
+    return output is OutputFormat.json
+
 
 CAPABILITY_SKIP_WARNING = "capability checks skipped (providers registry not available)"
 
@@ -406,6 +443,8 @@ __all__ = [
     "CapabilitySource",
     "Context",
     "JsonOption",
+    "OutputFormat",
+    "OutputOption",
     "RootOption",
     "capability_source",
     "console",
@@ -419,6 +458,7 @@ __all__ = [
     "make_context",
     "message_problems",
     "report_lines",
+    "resolve_output",
     "short_path",
     "template_checker",
     "workflow_label",

@@ -20,9 +20,11 @@ from rich.table import Table
 
 from rayspec.cli.commands._loader_common import (
     JsonOption,
+    OutputOption,
     RootOption,
     console,
     make_context,
+    resolve_output,
     short_path,
 )
 from rayspec.config import TIER_NAMES, Config
@@ -137,8 +139,11 @@ def _model_cell(row: dict[str, Any]) -> str:
 
 def register(app: typer.Typer) -> None:
     @app.command()
-    def agents(root: RootOption = None, json_: JsonOption = False) -> None:
+    def agents(
+        root: RootOption = None, json_: JsonOption = False, output: OutputOption = None
+    ) -> None:
         """List named agent files with their resolved provider/model (aliases and tiers applied)."""
+        json_ = resolve_output(output, json_)
         ctx = make_context(root)
         refs = discover_agents(ctx.project_root, home=ctx.home)
         rows = [

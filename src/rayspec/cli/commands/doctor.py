@@ -32,7 +32,14 @@ from rich.text import Text
 
 from rayspec import __version__
 from rayspec.cli.commands import _pricing_common as pricing
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.config import Config, load_config, load_env, project_env_info, rayspec_home
 from rayspec.errors import RayspecError
 from rayspec.loader import discover_workflows, find_project_root
@@ -884,9 +891,11 @@ def register(app: typer.Typer) -> None:
             ),
         ] = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Check the environment: Python, RAYSPEC_HOME, git/uv, SDKs, CLIs, auth (+ --probe)."""
+        json_ = resolve_output(output, json_)
         providers = list(provider or [])
         for pid in providers:
             try:

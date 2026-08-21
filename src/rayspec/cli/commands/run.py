@@ -27,11 +27,13 @@ from rayspec.cli import _runs_common as runs_common
 from rayspec.cli.commands import _loader_common as common
 from rayspec.cli.commands._loader_common import (
     AllowUnsupportedOption,
+    OutputOption,
     RootOption,
     error_lines,
     fail,
     make_context,
     report_lines,
+    resolve_output,
 )
 from rayspec.engine.approval import (
     ApprovalAnswer,
@@ -498,6 +500,7 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
         json_: Annotated[bool, typer.Option("--json", help="JSONL events on stdout.")] = False,
+        output: OutputOption = None,
         quiet: Annotated[
             bool,
             typer.Option("--quiet", help="Only problems and run-level lines (no per-step lines)."),
@@ -528,6 +531,7 @@ def register(app: typer.Typer) -> None:
         ] = None,
     ) -> None:
         """Run a workflow (or resume one with --resume)."""
+        json_ = resolve_output(output, json_)
         ctx = make_context(root)
         out = common.err_console() if json_ else common.console()
         project_root = ctx.project_root

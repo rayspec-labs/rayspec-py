@@ -11,9 +11,11 @@ from rich.table import Table
 from rayspec.cli._docs import docs_url
 from rayspec.cli.commands._loader_common import (
     JsonOption,
+    OutputOption,
     RootOption,
     console,
     make_context,
+    resolve_output,
     short_path,
 )
 from rayspec.loader import discover_workflows
@@ -27,8 +29,11 @@ EMPTY_PROJECT_HINT = (
 
 def register(app: typer.Typer) -> None:
     @app.command()
-    def workflows(root: RootOption = None, json_: JsonOption = False) -> None:
+    def workflows(
+        root: RootOption = None, json_: JsonOption = False, output: OutputOption = None
+    ) -> None:
         """List workflows from .rayspec/workflows/ and ~/.rayspec/workflows/."""
+        json_ = resolve_output(output, json_)
         ctx = make_context(root)
         refs = discover_workflows(ctx.project_root, home=ctx.home)
         if json_:

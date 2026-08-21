@@ -26,7 +26,14 @@ from rich.console import Console
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.engine import context_rebuild
 from rayspec.errors import RayspecError
 from rayspec.templating import RenderedScript, TemplateEngine, to_jsonable
@@ -107,8 +114,10 @@ def register(app: typer.Typer) -> None:
         ] = False,
         root: RootOption = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """Evaluate a Jinja expression in a stored run's context (read-only)."""
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         try:

@@ -29,7 +29,12 @@ from rich.text import Text
 
 from rayspec.cli._docs import docs_url
 from rayspec.cli.commands import _loader_common as common
-from rayspec.cli.commands._loader_common import RootOption, make_context
+from rayspec.cli.commands._loader_common import (
+    OutputOption,
+    RootOption,
+    make_context,
+    resolve_output,
+)
 from rayspec.testing import discover_suites, run_case
 from rayspec.testing.report import (
     CaseResult,
@@ -110,12 +115,14 @@ def register(app: typer.Typer) -> None:
         json_: Annotated[
             bool, typer.Option("--json", help="One JSON object with every case's outcome.")
         ] = False,
+        output: OutputOption = None,
         exec_shell: Annotated[
             bool, typer.Option("--exec-shell", help="Run shell/python steps in every case.")
         ] = False,
         root: RootOption = None,
     ) -> None:
         """Run the project's workflow test cases (dry run, stub provider)."""
+        json_ = resolve_output(output, json_)
         # a case is a dry run against the stub provider: it needs no credentials, so the
         # project's .rayspec/.env is not applied to this process
         ctx = make_context(root, project_env=False)

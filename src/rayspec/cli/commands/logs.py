@@ -29,7 +29,14 @@ from rich.console import Console
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import EXIT_INTERRUPTED
 from rayspec.events.model import EventType, RunEvent, StreamRecord
@@ -445,9 +452,11 @@ def register(app: typer.Typer) -> None:
             ),
         ] = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Show a run's event log (or one step's stream); --follow tails a live run."""
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         if step is not None:

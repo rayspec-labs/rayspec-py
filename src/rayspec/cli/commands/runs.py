@@ -29,10 +29,12 @@ from rich.text import Text
 from rayspec.cli import _runs_common as common
 from rayspec.cli.commands._loader_common import (
     JsonOption,
+    OutputOption,
     RootOption,
     console,
     err_console,
     fail,
+    resolve_output,
 )
 from rayspec.errors import RayspecError
 from rayspec.store.file import FileRunStore
@@ -210,7 +212,7 @@ def register(app: typer.Typer) -> None:
     )
 
     @runs_app.callback(invoke_without_command=True)
-    def runs(
+    def runs(  # noqa: PLR0917 - Typer options are positional by construction
         ctx: typer.Context,
         all_: Annotated[
             bool, typer.Option("--all", "-a", help="List runs of every project under RAYSPEC_HOME.")
@@ -219,16 +221,19 @@ def register(app: typer.Typer) -> None:
             int | None, typer.Option("--limit", "-n", help="Show at most N runs.", min=1)
         ] = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """List runs (newest first) of the current project, or of every project with --all."""
+        json_ = resolve_output(output, json_)
         ctx.obj = root
         if ctx.invoked_subcommand is not None:
             # only --root is forwarded (ctx.obj); the listing flags would be silently dropped
             given = [
                 name
                 for name, used in (
-                    ("--json", json_),
+                    ("--json", json_ and output is None),
+                    ("--output", output is not None),
                     ("--all", all_),
                     ("--limit", limit is not None),
                 )
@@ -306,6 +311,7 @@ def register(app: typer.Typer) -> None:
         run_a: Annotated[str, typer.Argument(metavar="A", help="First run id or prefix.")],
         run_b: Annotated[str, typer.Argument(metavar="B", help="Second run id or prefix.")],
         json_: JsonOption = False,
+        output: OutputOption = None,
         exit_code: Annotated[
             bool, typer.Option("--exit-code", help="Exit 1 when anything differs (CI gate).")
         ] = False,
@@ -322,6 +328,7 @@ def register(app: typer.Typer) -> None:
         root: RootOption = None,
     ) -> None:
         """Compare two runs of one workflow: status, timing, cost, steps and outputs."""
+        json_ = resolve_output(output, json_)
         from rayspec.cli.commands import _runs_diff
 
         rc = common.make_runs_context(group_root(ctx, root))

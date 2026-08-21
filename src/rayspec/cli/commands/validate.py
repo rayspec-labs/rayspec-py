@@ -14,6 +14,7 @@ from rayspec.cli.commands._loader_common import (
     AllowUnsupportedOption,
     Context,
     JsonOption,
+    OutputOption,
     RootOption,
     console,
     error_entries,
@@ -22,6 +23,7 @@ from rayspec.cli.commands._loader_common import (
     make_context,
     message_problems,
     report_lines,
+    resolve_output,
     workflow_label,
 )
 from rayspec.cli.commands.workflows import EMPTY_PROJECT_HINT
@@ -104,8 +106,10 @@ def register(app: typer.Typer) -> None:
         root: RootOption = None,
         allow_unsupported: AllowUnsupportedOption = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """Validate workflows (schema, graph, references, provider capabilities)."""
+        json_ = resolve_output(output, json_)
         ctx = make_context(root)
         targets = list(names or [])
         if not targets:
