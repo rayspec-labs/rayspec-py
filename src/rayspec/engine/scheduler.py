@@ -17,7 +17,8 @@ Semantics (plan §3.2):
   become ``interrupted``);
 * the ``max_parallel`` permit is held ONLY around prompt/shell/python executors;
 * ``stop:`` / pause signals (``RunControl``) cancel the siblings (``interrupted``, reason
-  ``stopped``/``paused``) and bubble after the graph finishes; cancellation from outside marks
+  ``stopped``/``paused``) and bubble after the graph finishes — one signal per sibling list, the
+  first one, except that a pause beats a stop; cancellation from outside marks
   running steps ``interrupted`` (except a gate that already recorded a pause: Ctrl-C at the
   prompt keeps the record ``paused``);
 * ``run_one`` never raises (except to propagate cancellation): bugs become failed steps.
@@ -81,7 +82,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     outcomes: dict[str, StepOutcome] = {}
     pending: dict[str, StepModel] = {s.id: s for s in graph.steps}
     running: set[str] = set()
-    state: dict[str, Any] = {"draining": False, "control": None}
+    state: dict[str, Any] = {"draining": False, "control": None, "paused": False}
     send, recv = anyio.create_memory_object_stream[StepOutcome](math.inf)
     # The failure policy of THIS sibling list: an ``include:``d workflow that states its own
     # ``defaults.on_step_failure`` governs its body, one that says nothing inherits the run's.
@@ -101,9 +102,30 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
             # is for triaging machine failures, not for overriding an operator's "no".
             state["draining"] = True
         if rec.status is StepStatus.PAUSED:
+            # not a terminal outcome: nothing that needs this step can be decided any more, and
+            # the wind-down has to stop where it is (the resumed run picks the list back up)
             state["draining"] = True
-        if outcome.control is not None and state["control"] is None:
-            state["control"] = outcome.control
+            state["paused"] = True
+        control = outcome.control
+        if control is not None and (
+            state["control"] is None
+            or (isinstance(control, RunPaused) and not isinstance(state["control"], RunPaused))
+        ):
+            # first signal wins, except that a pause beats a stop — the same rule the ``each:``
+            # executor applies to its items. A pause keeps the run resumable, and a gate that
+            # paused during the wind-down of a ``stop:`` must not be buried by that ``stop:``.
+            state["control"] = control
+
+    def decidable(sid: str) -> bool:
+        """Whether every ``needs`` of ``sid`` has settled on a TERMINAL outcome.
+
+        A record can also settle non-terminal — an ``approve:`` gate that paused, or a composite
+        whose body paused — and the join table has no row for that. Such a step is simply not
+        considered: a pause leaves it pending for the resumed run to decide.
+        """
+        return all(
+            n in outcomes and outcomes[n].record.status.is_terminal for n in graph.needs[sid]
+        )
 
     async def decide_and_launch(tg: TaskGroup) -> None:
         progressed = True
@@ -112,7 +134,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
             for sid in list(pending):
                 step = pending[sid]
                 needs = graph.needs[sid]
-                if any(n not in outcomes for n in needs):
+                if not decidable(sid):
                     continue
                 if ctx.budget_exceeded is not None and step.join != "always":
                     # the run-level cap tripped — nothing new starts (running steps drain,
@@ -182,13 +204,15 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
         ``upstream_skipped``) and only the rest is ``run_failed``.
 
         Nothing here cancels: a cleanup step that fails must not take the other cleanup steps
-        with it. A cleanup step that pauses ends the wind-down and leaves the rest pending, so
-        the resumed run decides them.
+        with it. A cleanup step that PAUSES ends the wind-down and leaves the rest pending, so
+        the resumed run decides them — and it is the pause that bubbles, not the signal that
+        started the teardown, so the run stays answerable (``paused``, exit 3) instead of
+        recording an outcome no ``rayspec approve`` could ever act on.
         """
         while pending:
-            if isinstance(state["control"], RunPaused):
+            if state["paused"]:
                 return
-            ready = [sid for sid in pending if all(n in outcomes for n in graph.needs[sid])]
+            ready = [sid for sid in pending if decidable(sid)]
             if not ready:  # unreachable for a DAG whose other steps are all decided
                 return
             launch: list[str] = []

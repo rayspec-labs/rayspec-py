@@ -1103,7 +1103,18 @@ Semantics fixed here (tests in `tests/engine/`):
   rest pending for the resumed run (a pause never records pending steps at all). Skip reasons:
   after a cancellation every leftover is `stopped` (nothing on those branches failed); after
   fail-fast the join table's own reason stands (`upstream_failed`/`upstream_skipped`) and
-  `run_failed` is the fallback. `when:` is still evaluated for the `join: always` steps.
+  `run_failed` is the fallback. The TEARDOWN reason wins over the run-level cap: a leftover of a
+  fail-fast/`stop:` teardown is `run_failed`/`stopped` even when `ctx.budget_exceeded` is also
+  set (the wind-down does not consult it — only `decide_and_launch` does, which is where
+  `budget_exceeded` is recorded). `when:` is still evaluated for the `join: always` steps.
+- Only TERMINAL records are joined. A step is considered (and a leftover is wound down) only once
+  every `needs` record is `status.is_terminal` — `PAUSED` is not, so an `approve:` gate that
+  paused, or a composite whose body paused, leaves its dependents undecided for the resumed run
+  instead of reaching `join_decision`/`graph.classify`, which raise on a non-terminal outcome.
+  One `RunControl` bubbles per sibling list, the first one raised, EXCEPT that a `RunPaused`
+  beats a `RunStopped` (the same rule `executors/each.py` applies to concurrent items): a gate
+  that pauses while a `stop:` is winding the list down leaves the run `paused` and answerable,
+  not `stopped`.
 - Approval: simultaneous gates are handled one at a time (`Runtime.approval_lock`); when a run is
   already pausing, a later gate is recorded `paused` too but `run.pause`/`run.paused` belong to
   the first gate (the later one asks again on resume). Ctrl-C at the prompt = pause: the gate
