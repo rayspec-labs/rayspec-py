@@ -110,6 +110,8 @@ class ResolvedAgent:
     network: str | None
     commands: CommandsSpec | None
     thinking: bool | None
+    #: ``warn`` (record them) or ``fail`` (a refused tool call fails the step)
+    on_denial: str
     mcp: dict[str, McpServerDef]
     provider_options: dict[str, dict[str, Any]]
     source: str
@@ -715,6 +717,7 @@ class _Loader:
             network=definition.network,
             commands=definition.commands,
             thinking=definition.thinking,
+            on_denial=definition.on_denial,
             mcp=dict(definition.mcp),
             provider_options=dict(definition.provider_options),
             source=src.description,

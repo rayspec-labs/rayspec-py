@@ -263,6 +263,7 @@ agents:
     budget_usd: 2.5             # > 0;  capability budget_usd
     tools: { allow: [], deny: [web] }   # see below
     thinking: true              # capability thinking
+    on_denial: fail             # warn (default) | fail — what a refused tool call does
     mcp:                        # capability mcp_servers
       github: { transport: stdio, command: gh-mcp, args: [--stdio], env: {} }
       docs:   { transport: http, url: https://mcp.example/, headers: {} }
@@ -280,6 +281,7 @@ agents:
 | `instructions` / `instructions_file` | `null`; at most one of them |
 | `instructions_mode` | `append` (`replace` = no provider system prompt at all) |
 | `max_turns`, `budget_usd`, `thinking` | `null` |
+| `on_denial` | `warn` — a tool call the provider's permission or sandbox layer refused is recorded on the step (`steps.<id>.denials`, `run.json`) and the step stands. `fail` fails the step instead, and needs a provider that reports refused calls on a turn that otherwise succeeded (capability `denial_reporting`: `claude` yes, `codex` no). See [providers.md](providers.md#denied-tool-calls-on_denial) |
 | `tools.allow`, `tools.deny` | `[]` |
 | `mcp` | `{}`; `transport` defaults to `stdio` (needs `command`); `http`/`sse` need `url` |
 | `provider_options` | `{}` |

@@ -30,7 +30,7 @@ the failed `config` check instead).
 | `0` | succeeded |
 | `1` | the run failed |
 | `2` | usage error: unknown workflow, validation errors, bad inputs, `--stubs` without `--dry-run` when an agent is not `provider: stub`, store/workspace errors |
-| `3` | the run paused at an approval gate |
+| `3` | the run paused: an `approve:` gate is waiting for a person, **or** an operational ceiling stopped it (`policy.budget`, `max_consecutive_failures` — see [runs-and-resume.md](runs-and-resume.md#operational-limits-policy-not-workflow)). `run.json`'s `pause.reason` tells them apart (`approval` · `budget` · `failures`), and the console footer says what to type next. They are not answered the same way: `approve` on a ceiling pause **waives** it |
 | `4` | the run was cancelled (`stop:` or a rejected gate) |
 | `130` | interrupted (Ctrl-C / SIGTERM) |
 
@@ -61,6 +61,7 @@ rayspec run <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
             [--json | --output FORMAT] [--quiet] [--verbose]
             [--allow-unsupported] [--fail-fast] [--resume RUN_ID] [--force]
             [--worktree | --no-worktree] [--base BRANCH] [--repo SOURCE]
+            [--locked | --no-locked] [--wait-slot DURATION]
 ```
 
 Load, validate, resolve inputs, prepare the workspace and run (or resume) a workflow. `<workflow>`
@@ -88,6 +89,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
 | `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](isolation.md#--repo)) |
+| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is also refused — "nothing to check" must not read as "everything is fine" |
+| `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 1h30m`), a bare number of seconds (`--wait-slot 90`), or `forever` — the only spelling that waits indefinitely. `--wait-slot 0` does **not** wait (the default); a negative duration is a usage error. Otherwise exit 2, naming the run that holds the slot. A `--dry-run` takes no slot |
 
 On **stderr**, before the run starts, comes the policy line — `policy: .rayspec/policy.yaml`, or
 `policy: none in force (searched …)` — followed by the `warnings:` block, so neither ends up in
@@ -137,7 +140,8 @@ Stream records wrap agent events (`text_delta`, `tool_call`, …) and shell outp
 ### `rayspec validate`
 
 ```
-rayspec validate [names...] [--root DIR] [--allow-unsupported] [--json | --output FORMAT]
+rayspec validate [names...] [--root DIR] [--allow-unsupported] [--locked | --no-locked]
+                 [--json | --output FORMAT]
 ```
 
 Load and validate workflows (schema, graph, references, templates, provider capabilities);
@@ -148,18 +152,60 @@ regexes such as `^[a-z][a-z0-9_]*$` and `[...]` in messages survive — exit 2 w
 errors. A name that is neither a discovered workflow nor a file is `error: unknown workflow
 '<name>'` (exit 2). An empty project prints `no workflows found (nothing to validate)` plus the
 `rayspec init` hint (exit 0). `--allow-unsupported` turns capability mismatches into warnings.
+`--locked` / `--no-locked` additionally checks each workflow against
+[`.rayspec/rayspec.lock`](#rayspec-lock); a drifted agent is an **error** here, not a warning
+(on by default under `CI`).
 Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
 ~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
 found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
 discovered against `--root`, see [policy.md](policy.md)). A workflow with `secret: true` inputs
 gets a dim marker line too — `secret inputs: token (secret; env-only, never persisted)`.
 `--json`: `[{name, path, ok, errors: [...], warnings: [...], secret_inputs: [...],
-policy: {layers, searched}, problems: [...]}]` (exit 2 when any entry has errors); `errors` is one string per problem and `path` is the workflow's label
+policy: {layers, searched}, problems: [...]}]` (exit 2 when any entry has errors); `errors` is
+one string per problem and `path` is the workflow's label
 (`.rayspec/workflows/<name>.yaml`) even when the file fails to load (`null` only when the target
 is neither a discovered name nor a file). `problems` is the same list as objects — `{path, line,
 location, field, message, hint}`, one per problem, `path` never `null` — so a schema mistake can
 be jumped to in an editor. Include bodies are validated as closed scopes (only
 their own steps and the `inputs` bound by `with:` are visible), exactly as the engine runs them.
+
+### `rayspec lock`
+
+```
+rayspec lock [NAMES...] [--check] [--root DIR] [--json | --output FORMAT]
+```
+
+Write `.rayspec/rayspec.lock`, pinning the literal model id and effort every agent of the named
+workflows (default: all of them) resolves to today. Commit the file.
+
+`model: sonnet` is a tier, `@fast` is an alias and an unset `model:` is the provider's default —
+all three mean "whatever this resolves to *today*". Between the review of a change and its merge
+a provider can change what that is, and nothing in the run record would have said so. The
+lockfile is what makes that visible, and [`run`](#rayspec-run) / [`plan`](#rayspec-plan) /
+[`validate`](#rayspec-validate) `--locked` is what makes it fatal.
+
+| Option | Effect |
+|---|---|
+| `--check` | report drift and exit 1; never write the file (what a CI job runs) |
+| `--json` | `{"path", "workflows": {name: {agent key: {provider, model, effort}}}, "drift": [...], "checked": bool}` |
+| `--root DIR` | project root |
+
+Exit codes: `0` written / in sync · `1` `--check` found drift · `2` usage (unknown workflow, a
+workflow that does not load, an unreadable lockfile).
+
+```console
+$ rayspec lock
+wrote .rayspec/rayspec.lock (2 workflow(s), 3 agent(s))
+
+$ rayspec lock --check
+error: review_pr: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
+hint: run `rayspec lock` to re-pin
+```
+
+Agents are keyed the way `run.json`'s `toolchain.models` keys them (`agents.reviewer`,
+`file:.rayspec/agents/x.yaml`, `inline:<step path>`), so a record and the lockfile talk about the
+same agents. An agent that resolves to no literal model id (the provider's own default) is
+recorded with `model: null` and named on stdout: rayspec cannot pin what it never sees.
 
 ### `rayspec schema`
 
@@ -192,7 +238,7 @@ includes or provider capabilities — `rayspec validate` stays authoritative. Se
 
 ```
 rayspec plan <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
-             [--allow-unsupported] [--json | --output FORMAT]
+             [--allow-unsupported] [--locked | --no-locked] [--json | --output FORMAT]
 rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output FORMAT]
 rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
@@ -870,6 +916,8 @@ rayspec resume [OPTIONS] {run}
 
 Resume a paused, failed or interrupted run: the run is re-executed from the top with a reuse cache (steps that succeeded — or failed with `allow_failure` — and still have their output file *and* whose fingerprint — rendered prompt/script + agent — is unchanged are replayed, not re-run). Refuses (exit 2) a run that already succeeded or was cancelled (unless `--force`), a run whose workflow file changed since the run (unless `--force`), a run with a live pid and a run recorded as running on another host (unless `--force`). A pending gate is re-asked on a TTY (`--yes` auto-approves, `--no-interactive` pauses again with exit 3). With `--json` the JSONL events **and** the final summary object are printed on stdout (the summary is the last line), exactly like `rayspec run --json`.
 
+`resume` finds the run wherever it was recorded, and from that point on everything project-scoped is read for the **run's** project rather than the directory you typed the command in: its workflow, the `config.yaml` that decides what a `model:` tier or an `@alias` resolves to, `.rayspec/rayspec.lock`, `secrets:`, the operator policy and the spend ledger. (`<project>/.rayspec/.env` is the exception and stays the caller's — it is a credential file controlled by whoever pushed the checkout.) The same holds for [`rayspec approve`](#rayspec-approve) and [`rayspec reject`](#rayspec-reject).
+
 Two things are not in `run.json` and come from the command line again — both are checked **before** anything is written, after the workflow-hash guard and after the pending-gate pointer (a run paused at a gate, non-TTY without `--yes`, exits 3 pointing at `approve`/`reject` first — that is what such a run needs):
 
 - **Secret inputs** (`secret: true`, [schema.md](schema.md#secret-inputs)) are never persisted: every secret that was given at launch must be supplied again with `--input NAME=VALUE` (accepted on resume for secret inputs only — any other name is `inputs are fixed per run`, exit 2) or through `RAYSPEC_INPUT_<NAME>` in the environment; otherwise exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN`. An optional secret that was not given at launch is not required (but may be supplied now — it is then recorded as `<secret>` and exported like the others).
@@ -886,6 +934,8 @@ Options:
 - `--verbose` — Also show step starts.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
 - `--stubs` `<path>` — Stub script for the resumed run (default: the file recorded at launch).
+- `--locked` / `--no-locked` — Check the resumed workflow against `.rayspec/rayspec.lock` (see [`rayspec run`](#rayspec-run)); on by default under `CI`. A resume is where an unattended job spends the second half of a run, and the workflow hash does not cover a tier that was re-pointed in `config.yaml` — so the lockfile is checked here too — the one in the run's own project, against the models its own `config.yaml` resolves.
+- `--wait-slot` `DURATION` — Queue for a free host run slot instead of failing (same spellings as [`rayspec run`](#rayspec-run)). A resume takes a slot because it starts the same agents.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec approve`
@@ -894,7 +944,7 @@ Options:
 rayspec approve [OPTIONS] {run} [comment]
 ```
 
-Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
+Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. On a run an operational ceiling paused (`pause.reason` `budget` or `failures`) there is no gate to answer: `approve` there means "run it anyway" and **waives** the ceiling for that run — a spending waiver does not touch the failure breaker, and closing the breaker does not waive a spend. `rayspec resume` re-evaluates the ceiling instead, which is usually what an unattended job wants. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
 
 Options:
 
@@ -903,6 +953,8 @@ Options:
 - `--force` — Resume even if the workflow changed.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
 - `--stubs` `<path>` — Stub script for the resumed run (default: the file recorded at launch).
+- `--locked` / `--no-locked` — Check the workflow against `.rayspec/rayspec.lock` before resuming (on by default under `CI`).
+- `--wait-slot` `DURATION` — Queue for a free host run slot instead of failing.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec reject`
@@ -911,7 +963,7 @@ Options:
 rayspec reject [OPTIONS] {run} [reason]
 ```
 
-Record a rejection for the pending gate of a *paused* run and resume it; the optional reason becomes the gate's output. What happens next is the gate's `on_reject`: `cancel` (default) ends the run as cancelled (exit 4), `continue` proceeds with `approved: false`, `fail` fails the step. Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume). `--json` prints the JSONL events and the summary object (last line) on stdout.
+Record a rejection for the pending gate of a *paused* run and resume it; the optional reason becomes the gate's output. A run an operational ceiling paused has nothing to reject — the ceiling is unchanged, so the run simply pauses on it again. What happens next is the gate's `on_reject`: `cancel` (default) ends the run as cancelled (exit 4), `continue` proceeds with `approved: false`, `fail` fails the step. Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume). `--json` prints the JSONL events and the summary object (last line) on stdout.
 
 Options:
 
@@ -920,6 +972,8 @@ Options:
 - `--force` — Resume even if the workflow changed.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
 - `--stubs` `<path>` — Stub script for the resumed run (default: the file recorded at launch).
+- `--locked` / `--no-locked` — Check the workflow against `.rayspec/rayspec.lock` before resuming (on by default under `CI`).
+- `--wait-slot` `DURATION` — Queue for a free host run slot instead of failing.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec cancel`

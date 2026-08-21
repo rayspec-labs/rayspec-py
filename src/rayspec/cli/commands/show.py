@@ -36,6 +36,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     resolve_output,
 )
+from rayspec.cli.commands.run import pause_actions
 from rayspec.loader.inputs import SECRET_PLACEHOLDER, env_var_name
 from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord
@@ -396,11 +397,7 @@ def print_show(
                 markup=False,
             )
         elif run.status.value == "paused":
-            out.print(
-                f"  rayspec approve {run.run_id} [comment]  ·  rayspec reject {run.run_id} "
-                f"[reason]  ·  rayspec resume {run.run_id}",
-                markup=False,
-            )
+            out.print("  " + pause_actions(run.run_id, pause.reason), markup=False)
     # what a resume entry still needs from the user — minus what config.secrets re-fetches
     print_secret_inputs(out, run, configured=configured_secrets)
 

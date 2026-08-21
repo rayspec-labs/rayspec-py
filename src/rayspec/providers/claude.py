@@ -80,6 +80,7 @@ from rayspec.providers.base import (
     AgentEvent,
     AgentRequest,
     AgentResult,
+    Denial,
     EmitFn,
     ErrorKind,
     ProviderCapabilities,
@@ -965,6 +966,7 @@ class ClaudeProvider:
             num_turns=result.num_turns,
             model=_model_from_usage(result.model_usage) or state.last_model or state.init_model,
             error=error,
+            denials=tuple(denial_of(d) for d in result.permission_denials or ()),
             raw=raw,
         )
 
@@ -1129,7 +1131,39 @@ def _validate_setting_sources(raw: Any) -> list[str] | None:
     return sources
 
 
+#: Longest denial wording kept on a record: it is a human note, not data anything reads, and a
+#: step may collect one per refused call.
+DENIAL_REASON_MAX = 300
+
+
+def _short(text: str) -> str:
+    return text if len(text) <= DENIAL_REASON_MAX else text[: DENIAL_REASON_MAX - 1] + "\u2026"
+
+
+def denial_of(denial: Any) -> Denial:
+    """One Claude ``permission_denials`` entry as the neutral :class:`Denial`.
+
+    The tool INPUT is deliberately dropped: it is step content (a command line, a file body) and
+    the record is not the place for it. What the step needs to know is that ``Bash`` was refused.
+    """
+    if isinstance(denial, Mapping):
+        name = denial.get("tool_name")
+        call_id = denial.get("tool_use_id")
+        return Denial(
+            tool=str(name) if name else "unknown",
+            reason=_short(str(denial.get("message") or "permission denied")),
+            call_id=str(call_id) if call_id else None,
+        )
+    return Denial(tool="unknown", reason=_short(f"permission denied: {denial}"))
+
+
 def _denial_event(denial: Any) -> AgentEvent:
+    """The live ``warning`` event for one denial.
+
+    It carries the tool INPUT, which :func:`denial_of` deliberately drops: an event is a live
+    view of what the agent is doing and the console shows it as it happens, while a record is
+    kept and read back later. What is streamed and what is persisted are not the same promise.
+    """
     if isinstance(denial, Mapping):
         name = denial.get("tool_name")
         return AgentEvent(

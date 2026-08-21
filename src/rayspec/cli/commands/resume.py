@@ -30,8 +30,10 @@ from rayspec.cli.commands._loader_common import (
     fail,
     resolve_output,
 )
+from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.cli.commands.run import (
     ApproveClassOption,
+    WaitSlotOption,
     approval_classes_for,
     load_stub_script,
     paused_gate_class,
@@ -39,6 +41,7 @@ from rayspec.cli.commands.run import (
 )
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
+from rayspec.limits import OPERATIONAL_PAUSE_REASONS
 from rayspec.loader import ResolvedWorkflow
 from rayspec.loader.inputs import resolve_resume_secrets, secret_input_names
 from rayspec.schema import RunStatus
@@ -74,11 +77,13 @@ def secret_provider_for(ctx: Any, record: RunRecord) -> SecretProvider:
     Built once and threaded through :func:`resume_secret_inputs` and
     :func:`rayspec.cli._runs_common.resume_run`, because memoisation is per instance: a second
     provider would run every ``cmd:`` helper a second time (a second Touch ID prompt for
-    ``op read``) in the same command. Its ``base_dir`` is the RUN's project root — that is where
-    the workflow lives, so a relative ``file:`` source resolves the same way it did at launch.
+    ``op read``) in the same command. Both the table it reads (``config.secrets``) and its
+    ``base_dir`` are the RUN's — that is where the workflow lives, so a relative ``file:``
+    source resolves the same way it did at launch, and a secret the caller's project happens to
+    declare under the same name is not what the run gets.
     """
-    root = Path(record.project_root)
-    return provider_for(ctx.config, base_dir=root if root.is_dir() else ctx.project_root)
+    root = common.record_root(ctx, record)
+    return provider_for(common.record_context(ctx, record).config, base_dir=root)
 
 
 def resume_secret_inputs(
@@ -176,14 +181,25 @@ def refuse_policy_violations(resolved: ResolvedWorkflow) -> None:
 
 
 def guard_workflow_unchanged(
-    ctx: common.RunsContext, record: RunRecord, *, force: bool
+    ctx: common.RunsContext, record: RunRecord, *, force: bool, locked: bool | None = None
 ) -> ResolvedWorkflow:
-    """Re-load ``record``'s workflow, apply the policy and apply :func:`refuse_changed_workflow`.
+    """Re-load ``record``'s workflow, apply the policy, :func:`refuse_changed_workflow` and the
+    lock gate.
 
     The shared first step of ``resume`` / ``approve`` / ``reject``: a CI job polling a paused
     run learns that the workflow drifted (exit 2) instead of "still paused" (exit 3). A workflow
     that cannot be loaded at all is also exit 2, and so is one the policy in force forbids.
+
+    The lockfile is checked here too. The workflow hash only covers the workflow's own files, so
+    a model that moved because a *tier* was re-pointed leaves it untouched — and a poll-then-
+    approve CI job is precisely the unattended run the lockfile exists to protect.
+
+    The context is re-scoped to the run's project first
+    (:func:`~rayspec.cli._runs_common.record_context`, a no-op when the run is the caller's own).
+    Loading the workflow in one project and resolving its models in another is what turns
+    ``--locked`` into a refusal of a run that never drifted.
     """
+    ctx = common.record_context(ctx, record)
     try:
         resolved = common.load_resolved_for(ctx, record)
     except RayspecError as exc:
@@ -191,6 +207,7 @@ def guard_workflow_unchanged(
         raise AssertionError("unreachable") from None  # pragma: no cover
     refuse_policy_violations(resolved)
     refuse_changed_workflow(record, resolved, force=force)
+    enforce_lockfile(ctx.loader_context, resolved, locked=locked, project_root=ctx.project_root)
     return resolved
 
 
@@ -214,6 +231,8 @@ def register(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", help="Also show step starts.")] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        locked: LockedOption = None,
+        wait_slot: WaitSlotOption = None,
         root: RootOption = None,
     ) -> None:
         """Resume a paused/failed/interrupted run (steps that succeeded are reused).
@@ -224,6 +243,8 @@ def register(app: typer.Typer) -> None:
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
+        # the run may live in another project; from here on the command speaks for THAT one
+        ctx = common.record_context(ctx, record)
         if record.status is RunStatus.SUCCEEDED and not force:
             fail(
                 f"run {record.run_id} already succeeded — nothing to resume",
@@ -239,9 +260,17 @@ def register(app: typer.Typer) -> None:
             )
             return
         # a changed workflow is refused before the paused/non-TTY short-circuit below
-        resolved = guard_workflow_unchanged(ctx, record, force=force)
+        resolved = guard_workflow_unchanged(ctx, record, force=force, locked=locked)
         interactive = common.stdin_is_tty() and not no_interactive and not yes
-        pending = record.pause is not None and record.pause.decision is None
+        # only an APPROVAL gate needs a person before the run may go on. A run the spending
+        # envelope paused (``pause.reason == "budget"``) is continued by resuming it — the
+        # ceiling is re-evaluated — so it must not be sent away to `approve`, least of all on
+        # the non-TTY path, which is exactly where an unattended run lives.
+        pending = (
+            record.pause is not None
+            and record.pause.decision is None
+            and record.pause.reason not in OPERATIONAL_PAUSE_REASONS
+        )
         # --approve-class may be able to answer the pending gate, so the short-circuit below
         # (which exists so a CI poller does not restart the engine to learn "still paused")
         # does not apply when it was given
@@ -263,7 +292,7 @@ def register(app: typer.Typer) -> None:
             )
             # the hint names only what this gate's approval class accepts: recommending a
             # command the class refuses is how a control teaches people to work around it
-            classes = approval_classes_for(ctx.project_root, ctx.home)
+            classes = approval_classes_for(ctx.project_root, ctx.home)  # the RUN's policy
             gate_class = paused_gate_class(resolved, record.pause.step)
             if not classes.may_decide_out_of_band(gate_class):
                 hint = (
@@ -301,6 +330,7 @@ def register(app: typer.Typer) -> None:
             inputs=secrets,
             stub_script=stub_script,
             stubs_path=stubs_path,
+            wait_slot=wait_slot,
             approve_classes=approve_class or (),
         )
         raise typer.Exit(code=code)
@@ -309,6 +339,7 @@ def register(app: typer.Typer) -> None:
 __all__ = [
     "SecretInputsOption",
     "StubsOption",
+    "WaitSlotOption",
     "guard_workflow_unchanged",
     "refuse_changed_workflow",
     "refuse_policy_violations",

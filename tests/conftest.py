@@ -26,6 +26,17 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _no_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset ``CI`` for every test.
+
+    Some commands change their DEFAULTS under CI (``--locked`` is the first). A suite whose
+    outcome depends on whether the developer's shell happens to export ``CI`` is not a suite,
+    so the variable is removed here; a test that wants the CI behaviour sets it itself.
+    """
+    monkeypatch.delenv("CI", raising=False)
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fresh, isolated ``RAYSPEC_HOME`` exported in the environment.

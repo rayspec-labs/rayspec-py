@@ -14,6 +14,9 @@ from rayspec.schema.common import AccessLevelName, EffortName, InstructionsModeN
 #: ``network:`` — whether the agent may reach the network through its provider's own tools.
 NetworkModeName = Literal["on", "off"]
 
+#: What a refused tool call does to the step (agent-level, see :attr:`AgentDef.on_denial`).
+DenialPolicy = Literal["warn", "fail"]
+
 
 class ToolsSpec(StrictModel):
     """Neutral allow/deny lists.
@@ -96,6 +99,10 @@ class AgentDef(StrictModel):
     network: NetworkModeName | None = None
     commands: CommandsSpec | None = None
     thinking: bool | None = None
+    #: What a refused tool call does to the step. ``warn`` (the default) records the denials on
+    #: the step record and lets it stand; ``fail`` fails the step. An agent that is denied a
+    #: tool did not do what it was asked, and on an unattended run that must be able to be loud.
+    on_denial: DenialPolicy = "warn"
     mcp: dict[Name, McpServerDef] = Field(default_factory=dict)
     provider_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -128,6 +135,7 @@ __all__ = [
     "AgentDef",
     "AgentOverride",
     "CommandsSpec",
+    "DenialPolicy",
     "McpServerDef",
     "NetworkModeName",
     "ToolsSpec",
