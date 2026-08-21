@@ -93,6 +93,11 @@ EXAMPLES_DIR = "examples"
 #: Files of an example that belong to the repository's test harness, not to a user's project.
 EXAMPLE_SKIP = frozenset({"checks.yaml"})
 
+#: Files of an example that are documentation only. An existing copy is kept instead of refused:
+#: trying an example inside a repository that already has a README is a normal thing to do, and
+#: nothing the example prints depends on its own README being there.
+EXAMPLE_OPTIONAL = frozenset({"README.md"})
+
 
 def examples_root() -> Traversable | None:
     """The example corpus: the packaged copy, or the repository's ``examples/`` in a checkout.
@@ -171,6 +176,30 @@ def scaffold_example(root: Path, name: str, *, force: bool = False) -> list[Scaf
     return _place(root, example_files(name), force=force)
 
 
+def example_conflicts(root: Path, name: str) -> list[str]:
+    """Files of example ``name`` that ``root`` already holds with *different* content.
+
+    An example is a project, not a pile of files: keeping one of its documents and writing the
+    rest leaves a config, agent or stub file that belongs to something else, and the commands
+    ``init`` then prints fail. The CLI refuses such a scaffold unless ``--force`` is given, so
+    this is computed before anything is written. Identical files are not conflicts (re-running
+    the same example stays idempotent) and neither are the documentation-only files of
+    :data:`EXAMPLE_OPTIONAL`. Raises :class:`LookupError` for an unknown example name.
+    """
+    conflicts: list[str] = []
+    for rel, node in example_files(name):
+        target = root / rel
+        if rel in EXAMPLE_OPTIONAL or not target.is_file():
+            continue
+        try:
+            same = target.read_bytes() == node.read_bytes()
+        except OSError:
+            same = False
+        if not same:
+            conflicts.append(rel)
+    return conflicts
+
+
 def example_catalogue() -> list[tuple[str, str]]:
     """``[(name, description)]`` for the catalogue an unknown ``--from`` prints.
 
@@ -242,15 +271,20 @@ def _dry_run_command(case: Any) -> str | None:
     return " ".join(parts)
 
 
-def example_next_steps(name: str, *, skill: bool = True) -> list[str]:
-    """The commands to try after ``rayspec init --from <name>``."""
+def example_next_steps(name: str, *, skill: bool = True, readme: bool = True) -> list[str]:
+    """The commands to try after ``rayspec init --from <name>``.
+
+    ``readme=False`` drops the line that opens the example's ``README.md`` — with an existing
+    README kept in its place, that step would open somebody else's document.
+    """
     lines = ["rayspec validate                        # schema, graph, references, capabilities"]
     dry_run = example_dry_run(name)
     if dry_run is not None:
         lines.append(f"{dry_run}   # scripted agents, no login needed")
-    lines.append(
-        "open README.md                          # what this example shows, and a real run"
-    )
+    if readme:
+        lines.append(
+            "open README.md                          # what this example shows, and a real run"
+        )
     if skill:
         lines.append(
             "open a fresh Claude Code session here   # the rayspec skill in "
@@ -442,6 +476,16 @@ def register(app: typer.Typer) -> None:
                 message += f"; did you mean {match!r}?"
             fail(message, hint=hint)
         target = (root or Path.cwd()).resolve()
+        if from_ is not None and not force:
+            conflicts = example_conflicts(target, from_)
+            if conflicts:
+                fail(
+                    f"{target} already holds {len(conflicts)} file(s) that `{from_}` would have "
+                    "to replace: " + ", ".join(conflicts),
+                    hint="an example only works as a whole — keeping one of these and writing "
+                    "the rest leaves a project whose own commands fail; scaffold into an empty "
+                    "directory, or pass --force to replace them",
+                )
         out = console()
         err = err_console()
         label = from_ if from_ is not None else (kind or TemplateKind.code).value
@@ -504,12 +548,22 @@ def register(app: typer.Typer) -> None:
                     f"project is now a mixed `{previous}`/`{label}` scaffold — use "
                     f"--force to switch (`{previous}`-only files that stay: {orphans})"
                 )
+        kept_docs = sorted(
+            item.relative
+            for item in results
+            if item.action == "skipped" and item.relative in EXAMPLE_OPTIONAL
+        )
+        if from_ is not None and kept_docs:
+            err.print(
+                f"[yellow]warning:[/yellow] kept the existing {', '.join(kept_docs)}; the "
+                f"`{from_}` example's own copy was not written (--force overwrites it)"
+            )
         warning = None if from_ is not None else non_git_warning(target, label)
         if warning is not None:
             err.print(f"[yellow]warning:[/yellow] {escape(warning)}", highlight=False)
         out.print("\nnext steps:")
         steps = (
-            example_next_steps(from_, skill=not no_skill)
+            example_next_steps(from_, skill=not no_skill, readme="README.md" not in kept_docs)
             if from_ is not None
             else next_steps(label, skill=not no_skill)
         )

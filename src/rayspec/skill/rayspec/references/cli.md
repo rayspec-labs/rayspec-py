@@ -778,6 +778,16 @@ hint: available examples (rayspec init --from <name>):
   …
 ```
 
+An example is applied whole or not at all. When the target directory already holds one of its
+files with *different* content — a `config.yaml` from a plain `rayspec init`, another example's
+`stubs.yaml`, a workflow you edited — `--from` refuses (exit 2, naming those files) instead of
+writing the rest around them: a kept `config.yaml` or stub file belongs to something else, and
+the commands `init` prints next then fail. `--force` replaces them, and an empty directory is the
+other way out; re-running the same example over an untouched copy writes nothing and stays exit 0.
+The example's own `README.md` is the exception — an existing README is kept (a stderr `warning:`
+says so, and the `open README.md` next step is dropped), so trying an example inside a repository
+that already has one still works.
+
 The next steps `--from` prints end with the example's own scripted dry run — the exact command
 (inputs included) that this repository asserts green on every commit, so a fresh directory has a
 working run before any credentials exist:

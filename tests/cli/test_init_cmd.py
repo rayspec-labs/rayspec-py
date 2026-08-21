@@ -427,6 +427,8 @@ def test_init_from_and_kind_together_is_a_usage_error(tmp_path: Path, home: Path
 
 
 def test_init_from_never_overwrites_without_force(tmp_path: Path, home: Path) -> None:
+    """An edited file of the example is a refusal, not a silent skip: half of an example is not
+    an example, and the next steps `--from` prints are only green for the whole thing."""
     target = tmp_path / "proj"
     target.mkdir()
     assert (
@@ -440,11 +442,107 @@ def test_init_from_never_overwrites_without_force(tmp_path: Path, home: Path) ->
     res = CliRunner().invoke(
         app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
     )
-    assert res.exit_code == 0, res.output
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
     assert workflow.read_text(encoding="utf-8") == "edited\n"
-    assert "exists" in res.output and "--force" in res.output
+    assert ".rayspec/workflows/hello_review.yaml" in res.output and "--force" in res.output
     res = CliRunner().invoke(
         app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill", "--force"]
     )
     assert res.exit_code == 0, res.output
     assert workflow.read_text(encoding="utf-8") != "edited\n"
+
+
+def test_init_from_the_same_example_twice_is_idempotent(tmp_path: Path, home: Path) -> None:
+    """Nothing differs, so nothing is refused: the second run keeps every file and says so."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    args = ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    assert CliRunner().invoke(app, args).exit_code == 0
+    res = CliRunner().invoke(app, args)
+    assert res.exit_code == 0, res.output
+    assert "nothing written" in res.output
+
+
+def test_init_from_refuses_to_land_on_a_generic_scaffold(tmp_path: Path, home: Path) -> None:
+    """`rayspec init` then `rayspec init --from <example>`.
+
+    The scaffold's `config.yaml` would be kept, so the example's model aliases would be missing
+    and both commands the tool then prints (`validate` and the dry run) would fail. Refuse
+    instead of reporting a scaffold that was only half applied.
+    """
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = (target / ".rayspec" / "config.yaml").read_text(encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert ".rayspec/config.yaml" in res.output and "--force" in res.output
+    assert (target / ".rayspec" / "config.yaml").read_text(encoding="utf-8") == config
+    assert not (target / ".rayspec" / "workflows" / "pr_review.yaml").exists()
+    assert not (target / "stubs.yaml").exists()
+
+
+def test_init_from_refuses_to_land_on_another_example(tmp_path: Path, home: Path) -> None:
+    """The stub file of the example already there would be kept, and the printed dry run would
+    then script the wrong workflow."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert (
+        CliRunner()
+        .invoke(app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"])
+        .exit_code
+        == 0
+    )
+    stubs = (target / "stubs.yaml").read_text(encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert "stubs.yaml" in res.output and "--force" in res.output
+    assert (target / "stubs.yaml").read_text(encoding="utf-8") == stubs
+
+
+def test_init_from_with_force_over_a_scaffold_lands_a_working_project(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--force is the documented way through, so it has to produce the working project the
+    refusal promised: the printed dry run and `rayspec validate` both run green."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill", "--force"]
+    )
+    assert res.exit_code == 0, res.output
+    monkeypatch.chdir(target)
+    assert CliRunner().invoke(app, ["validate"]).exit_code == 0
+    command = _printed_dry_run(res.output)
+    run = CliRunner().invoke(app, command[1:])
+    assert run.exit_code == 0, f"{command}\n{run.output}"
+
+
+def test_init_from_keeps_an_existing_readme_and_drops_the_step_that_names_it(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory that already has a README is the common case for trying an example inside an
+    existing repository: the example's own README is documentation, so keep the user's, say so,
+    and do not print a next step that would open the wrong file."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "README.md").write_text("# my project\n", encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 0, res.output
+    assert (target / "README.md").read_text(encoding="utf-8") == "# my project\n"
+    assert "warning:" in res.output and "README.md" in res.output
+    assert "open README.md" not in res.output
+    monkeypatch.chdir(target)
+    command = _printed_dry_run(res.output)
+    assert CliRunner().invoke(app, command[1:]).exit_code == 0

@@ -1435,26 +1435,37 @@ CLI surface:
   behaviour and the same `error: cannot write the scaffold: …` mapping as `scaffold()`; the
   kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
-  `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars).
-  The corpus is package data: `pyproject.toml`'s wheel target lists `examples` in `only-include`
+  `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars);
+  with no corpus at all the error is `no examples are packaged with this build` instead.
+- An example is applied **whole or not at all**. Before anything is written,
+  `example_conflicts(root, name)` lists the files the target already holds with *different*
+  content; a non-empty list without `--force` is exit 2 naming them, because writing the rest
+  around a kept `config.yaml` or stub file leaves a project whose own printed next steps fail.
+  Identical files are not conflicts (re-running the same example is idempotent) and neither are
+  the documentation-only files of `EXAMPLE_OPTIONAL = {"README.md"}`: an existing README is kept,
+  a stderr `warning:` says so, and `example_next_steps(..., readme=False)` drops the step that
+  would open it.
+- The corpus is package data: `pyproject.toml`'s wheel target lists `examples` in `only-include`
   and remaps it with `sources` (`"examples" = "rayspec/examples"`), so `--from` works from a bare
   `uv tool install rayspec`; in a source checkout `examples_root()` falls back to the repository
   directory four levels above the module (guarded by a sibling `pyproject.toml`). The remap goes
-  through the ordinary file selection **on purpose** — `force-include` copies a directory verbatim,
-  ignoring both the VCS ignore rules and `exclude`, so a release cut from a checkout that has been
-  used would publish its `.rayspec/.env` and `.rayspec/runs/`. The wheel target's `exclude` names
-  those two paths under `examples/` as well, because `.gitignore` anchors them at the repository
-  root only. `tests/cli/test_init_cmd.py` builds a wheel from a staged copy with that local state
-  planted and asserts the corpus is in and the state is out. Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`,
-  `examples_root() -> Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with
-  a `.rayspec/`), `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
-  `scaffold_example(root, name, *, force=False) -> list[ScaffoldFile]`, `example_catalogue() ->
-  [(name, description)]`, `unknown_example_hint(name)`, `example_dry_run(name) -> str | None`,
-  `example_next_steps(name, *, skill=True)`. `example_dry_run` reads the example's `checks.yaml`
-  and renders the **first scenario that scripts the agents** as a shell command (`rayspec run <wf>
-  [-i k=v]* [--allow-unsupported] --dry-run --stubs <file>`, `shlex.quote`d; scenarios that
-  declare `validate:`/`run: false` or carry a non-scalar input are skipped) — the printed next
-  step is therefore a command the example's own checks assert green, and
+  through the ordinary file selection **on purpose**: `force-include` copies a directory verbatim,
+  ignoring the VCS ignore rules and `exclude` alike, so a release cut from a checkout that has
+  been used would publish its `.rayspec/.env` and `.rayspec/runs/`. The wheel target's `exclude`
+  names those two paths under `examples/` as well, because `.gitignore` anchors them at the
+  repository root only. `tests/cli/test_init_cmd.py` builds a wheel from a staged copy with that
+  local state planted and asserts the corpus is in and the state is out.
+- Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`, `EXAMPLE_OPTIONAL`, `examples_root() ->
+  Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with a `.rayspec/`),
+  `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
+  `example_conflicts(root, name) -> list[str]`, `scaffold_example(root, name, *, force=False) ->
+  list[ScaffoldFile]`, `example_catalogue() -> [(name, description)]`, `unknown_example_hint()`,
+  `example_dry_run(name) -> str | None`, `example_next_steps(name, *, skill=True, readme=True)`.
+  `example_dry_run` reads the example's `checks.yaml` and renders the **first scenario that
+  scripts the agents** as a shell command (`rayspec run <wf> [-i k=v]* [--allow-unsupported]
+  --dry-run --stubs <file>`, `shlex.quote`d; scenarios that declare `validate:`/`run: false`,
+  carry a non-scalar input or would print the value of a `secret: true` input are skipped) — the
+  printed next step is therefore a command the example's own checks assert green, and
   `tests/cli/test_init_cmd.py` runs the printed line for every example.
 - `rayspec doctor [--probe] [--provider ID]... [--json] [--root DIR]` loads `.env` + config like
   the project commands (tolerant: a broken config is the failed `config` check, not a crash) and
