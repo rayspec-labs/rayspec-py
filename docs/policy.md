@@ -32,6 +32,35 @@ All three are read; a missing file is simply an absent layer. `RAYSPEC_POLICY` i
 it was named explicitly, so pointing it at a file that does not exist is an error rather than a
 silently skipped guardrail. The same file reached through two layers is loaded once.
 
+**The project layer is found under `--root`, not next to the workflow file.** `<project>` is the
+project root of the invocation — the directory `--root` names, or the one discovered from the
+working directory — so `rayspec validate some/other/checkout/.rayspec/workflows/w.yaml --root .`
+validates that document against *this* project's policy and never reads the one sitting beside it.
+That is deliberate (the policy belongs to the checkout you are running from, not to whatever file
+you point at), and it is why every command says which layers it actually read.
+
+### Which layers are in force
+
+`rayspec validate`, `rayspec plan` and `rayspec run` each print one line naming the policy files
+they read, before anything else they have to say:
+
+```
+$ rayspec validate nightly
+nightly (.rayspec/workflows/nightly.yaml): OK
+  policy: .rayspec/policy.yaml, ~/.rayspec/policy.yaml
+```
+
+When no layer is in force, the line says so and names the paths that were searched — unshortened,
+so the root the discovery ran against is visible:
+
+```
+  policy: none in force (searched /srv/ci/build/.rayspec/policy.yaml, ~/.rayspec/policy.yaml)
+```
+
+"Silently absent" is the worst failure mode a guardrail has: a policy file that is one directory
+too high, or a `--root` pointing somewhere else, otherwise looks exactly like a policy that is
+being obeyed. `--json` carries the same information as `policy: {layers, searched}`.
+
 ### Most-restrictive-wins
 
 Layers do not override each other, because no layer can *loosen* another. They combine:
@@ -104,11 +133,29 @@ Where the resolved provider cannot express a denial — the Codex adapter only u
 `deny: [web]` — nothing is folded in and `rayspec validate` warns that the restriction is
 advisory on that provider. See [Honest enforcement](#honest-enforcement) below.
 
-### `provider_options` is a pass-through, so policy inspects it
+### `provider_options` cannot remove a control
 
-An agent's `provider_options:` block is handed to the adapter as-is and applied *over* the options
-rayspec computed. Four lines of YAML would therefore hand the denied tools, the access level or a
-denied model straight back:
+A control is only real if the party it constrains cannot remove it. An agent's `provider_options:`
+block is handed to the adapter as-is, so without care four lines of YAML *inside the very workflow
+a policy governs* would hand the denied tools, the access level, a denied model or an excluded MCP
+server straight back. Two mechanisms stop that, and both are needed.
+
+**The adapter never lets a raw option replace a value rayspec computed.** Every field the adapter
+derives from an agent's neutral fields — `tools`, `allowed_tools`, `disallowed_tools`,
+`permission_mode`, `model`, `system_prompt`, `setting_sources`, `strict_mcp_config`, the limits —
+is adapter-owned: naming it under `provider_options` is ignored, with a warning on the run. The
+Codex adapter does the same for the `config` keys it computes (`model`, `sandbox_mode`,
+`approval_policy`, `web_search`, `tools.web_search`). The rule is mechanical, not a list of the
+dangerous ones: if `build_options` sets it, `provider_options` cannot. Change it through the
+neutral field, which is the field policy and code review both look at.
+
+Two keys are deliberately *merged* rather than replaced, because adding to what rayspec computed
+is a real need: `env` and `mcp_servers` (`config.mcp_servers` on Codex). rayspec's own entries win
+on a name collision.
+
+**Policy checks the merged keys, and the workflow's own controls too.** While any control is in
+force, naming a `provider_options` key that would undo it is a load-time error quoting both the
+option and the line that imposed the control:
 
 ```yaml
 provider_options:
@@ -116,12 +163,15 @@ provider_options:
     allowed_tools: [Bash, WebSearch]     # refused while a layer sets tools.deny
     permission_mode: bypassPermissions   # refused while a layer sets tools.deny or access.max
     model: claude-opus-4-1               # refused while a layer sets models.deny
+    mcp_servers: {evil: {...}}           # refused while a layer sets mcp.allow_servers
+    disallowed_tools: []                 # refused on an agent with network: off
 ```
 
-While a layer restricts `tools.deny`, `access.max` or `models.deny`, naming a provider option that
-overwrites that field is a load-time error quoting both the option and the policy line. Without a
-policy in force nothing is being subverted, so the block passes through untouched — a control is
-only worth refusing an escape hatch for when the control exists.
+The last line is the one worth dwelling on: `network: off` is a *workflow* control, not a policy
+key, so it is checked with no policy file at all — which is the common case, and the case where an
+unprotected control does the most damage. The table the check is derived from
+(`POLICY_CONTROLLED_OPTIONS` in `policy/enforce.py`) has one entry per control and covers both
+kinds; a control added without an entry there is an escape hatch waiting to be found.
 
 ## The worktree change guard
 
@@ -239,7 +289,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | raw pass-through to the SDK; policy refuses keys that would overwrite a controlled field | same |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; policy refuses keys that would undo a control | same, for the `config` keys the adapter computes |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the

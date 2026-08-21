@@ -93,7 +93,10 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
 | `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/isolation.md#--repo)) |
 
-Console output is one line per finished step (`✓ review succeeded 4.1s · 1.2k tok · $0.03`;
+On **stderr**, before the run starts, comes the policy line — `policy: .rayspec/policy.yaml`, or
+`policy: none in force (searched …)` — followed by the `warnings:` block, so neither ends up in
+piped stdout. Console output on stdout is one line per finished step
+(`✓ review succeeded 4.1s · 1.2k tok · $0.03`;
 a step replayed from the resume cache prints `↺ review reused (4.1s)`), plus run/workspace/
 decision lines and the final `■ run <id> <status>` line, then a summary: the `outputs:` table,
 the worktree path and branch, the `decide with: rayspec approve|reject|resume <id>` hint when
@@ -149,10 +152,13 @@ regexes such as `^[a-z][a-z0-9_]*$` and `[...]` in messages survive — exit 2 w
 errors. A name that is neither a discovered workflow nor a file is `error: unknown workflow
 '<name>'` (exit 2). An empty project prints `no workflows found (nothing to validate)` plus the
 `rayspec init` hint (exit 0). `--allow-unsupported` turns capability mismatches into warnings.
-A workflow with `secret: true` inputs gets a dim marker line under its status —
-`secret inputs: token (secret; env-only, never persisted)`. `--json`: `[{name, path, ok, errors:
-[...], warnings: [...], secret_inputs: [...], problems: [...]}]` (exit 2 when any entry has
-errors); `errors` is one string per problem and `path` is the workflow's label
+Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
+~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
+found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
+discovered against `--root`, see [policy.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md)). A workflow with `secret: true` inputs
+gets a dim marker line too — `secret inputs: token (secret; env-only, never persisted)`.
+`--json`: `[{name, path, ok, errors: [...], warnings: [...], secret_inputs: [...],
+policy: {layers, searched}, problems: [...]}]` (exit 2 when any entry has errors); `errors` is one string per problem and `path` is the workflow's label
 (`.rayspec/workflows/<name>.yaml`) even when the file fails to load (`null` only when the target
 is neither a discovered name nor a file). `problems` is the same list as objects — `{path, line,
 location, field, message, hint}`, one per problem, `path` never `null` — so a schema mistake can
@@ -195,7 +201,8 @@ rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output
 rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
 
-Show what a run would do without executing: the workflow hash and isolation, inputs with their
+Show what a run would do without executing: the workflow hash and isolation, the policy layers in
+force (`policy: …`, exactly as `rayspec validate` prints it), inputs with their
 resolved values — each input on its own line: the value, `missing (required)`, `undefined`
 (optional without a default) or `'<raw>' (invalid: <why>)`; one problem per input (a required
 input whose value was rejected is `invalid`, never also `missing`) and one bad input never hides
@@ -213,8 +220,8 @@ without a nudge). Exit 2 on validation or input errors.
 state: ok|missing|invalid|undefined, problem, secret}}, input_errors, agents: [{name, provider, model,
 effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
 providers: {id: {structured_output, cost_reporting, cost: provider|table|none, priced_models,
-unpriced_models, disabled_models, pricing_error?}}, errors, warnings, unsupported}` (a secret
-input's `value` is `"<secret>"`, `secret: true`).
+unpriced_models, disabled_models, pricing_error?}}, policy: {layers, searched}, errors, warnings,
+unsupported}` (a secret input's `value` is `"<secret>"`, `secret: true`).
 
 #### `--render`: see what the agent will receive
 

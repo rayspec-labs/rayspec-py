@@ -513,6 +513,11 @@ from rayspec.providers.codex import (
     error_info_code,  # (TurnError | None) -> "serverOverloaded" | "httpConnectionFailed" | ... | None
     usage_from_breakdown,  # (TokenUsageBreakdown) -> Usage
     usage_delta,  # (current, previous) -> Usage  (field-wise, clamped at 0)
+    ADAPTER_OWNED_CONFIG,  # (("model",), ("sandbox_mode",), ("approval_policy",), ("web_search",),
+    #   ("tools","web_search")) — provider_options.codex.config key paths the adapter computes from
+    #   the agent's neutral fields; dropped with a warning event. NOT config.mcp_servers: that is
+    #   merged under req.mcp_servers (and checked by policy's mcp.allow_servers). settings.config
+    #   (providers.codex.config in config.yaml) belongs to the machine owner and is NOT filtered.
 )
 from rayspec.providers._schema import (
     for_openai_strict,  # (schema) -> (strict_schema, warnings): additionalProperties:false on every
@@ -526,7 +531,7 @@ from rayspec.providers._schema import (
 Request mapping: `thread_start(cwd=req.cwd, model=req.model, sandbox=read_only|workspace_write|
 full_access per access, approval_mode=deny_all (or provider_options.codex.approval_mode), developer_
 instructions (append) | base_instructions (replace), config={**settings.config, **provider_options.
-codex.config, "mcp_servers": {name: {command,args,env} | {url,http_headers}} from req.mcp_servers,
+codex.config minus ADAPTER_OWNED_CONFIG, "mcp_servers": {name: {command,args,env} | {url,http_headers}} from req.mcp_servers,
 "web_search": "disabled" when tools.deny has web}, ephemeral only via provider_options.codex.ephemeral
 (probes))`; `resume_session` → `thread_resume(id, same kwargs)`, `+ fork_session` → `thread_fork`.
 `thread.turn(prompt, output_schema=for_openai_strict(schema), effort=ReasoningEffort(effort with
@@ -805,8 +810,14 @@ from rayspec.policy import (
     #   (value, (PolicySource, ...)) | None
     check_policy,  # (resolved, effective, *, capabilities_for=None, trusted=None) -> PolicyReport
     check_agent_controls,  # (resolved, *, capabilities_for=None) -> PolicyReport  (network:/commands:)
+    check_provider_options,  # (resolved, effective=None) -> PolicyReport — the escape-hatch check;
+    #   runs whether or not a policy file exists (workflow controls are controls too)
+    agent_control_sources,  # (agent) -> {control key: (PolicySource, ...)} — what the AGENT itself
+    #   restricts ("network: off"), in the shape EffectivePolicy.control_sources() returns
+    policy_note,  # (layers, searched) -> "policy: a, b" | "policy: none in force (searched …)"
     PolicyReport,  # .errors/.warnings: [PolicyProblem(where, message, location)], .ok,
-    #   .tool_denials: {agent key: (entry, ...)} — what the caller folds into tools.deny
+    #   .tool_denials: {agent key: (entry, ...)} — what the caller folds into tools.deny,
+    #   .policy_layers/.policy_searched: the layers read / the paths looked at
     TrustStore,  # .load(project_root) -> TrustStore; .entries, .entry_for(label),
     #   .is_trusted(resolved), .problem_for(resolved) -> str|None, .add(resolved) -> (store, replaced),
     #   .remove(label) -> (store, removed), .save()  (atomic; empty list removes the file)
@@ -814,8 +825,10 @@ from rayspec.policy import (
     TRUSTED_FILENAME, trusted_path,  # "<project>/.rayspec/trusted.yaml"
     COMMAND_POLICY_CAPABILITY,  # "command_policy" — what a provider declares in caps.extra when
     #   it can enforce an agent `commands:` block (no shipped adapter does; validate warns)
-    POLICY_CONTROLLED_OPTIONS,  # {policy key: {provider id: (option key path, ...)}} — the
-    #   `provider_options` keys an adapter applies straight over a policy-controlled field
+    POLICY_CONTROLLED_OPTIONS,  # {control key: {provider id: (option key path, ...)}} — the
+    #   `provider_options` keys an adapter applies straight over a controlled field. ONE table for
+    #   both kinds of control: the policy.yaml keys (`tools.deny`, `access.max`, `models.deny`,
+    #   `mcp.allow_servers`) and the workflow's own (`network: off`)
     ACCESS_ORDER, access_rank,
 )
 ```
@@ -837,7 +850,10 @@ Accessors (this is the seam consumers code against — never the raw documents; 
 `access_exceeded(level)`, `tool_denied(entry)`, `mcp_denied(server)`, `trust_required()`, plus
 `allowed_providers()`, `allowed_mcp_servers()`, `max_access()`, `denied_tools()`, `change_guard()`,
 `control_sources()` (policy key → the layers restricting it, for checks that only need to know a
-restriction EXISTS) and `workspace_sources()` for display and injection. Adding a block to `Policy` means adding its merge rule in
+restriction EXISTS; its keys are the keys of `POLICY_CONTROLLED_OPTIONS`) and `workspace_sources()`
+for display and injection. `EffectivePolicy.labels` / `.searched` (additive) are the layers in
+force and the paths that were looked at — the searched list is NOT shortened against the project
+root, because "which root was this discovered against" is what it exists to answer. Adding a block to `Policy` means adding its merge rule in
 `policy/layers.py` and an accessor here — a key without a merge rule would let a lower layer widen
 a higher one.
 
@@ -855,10 +871,25 @@ denied entries the resolved provider can express are folded into that agent's `t
 (`PolicyReport.tool_denials`, applied with `dataclasses.replace` the way the effort-alias rewrite
 already does); what a provider cannot express becomes a warning saying the restriction is advisory
 there. `trust.require` loads the project `TrustStore` and refuses a workflow that is not listed at
-its current `ResolvedWorkflow.hash`. `provider_options` is a raw pass-through the adapters apply
-*over* the computed options, so while a layer sets `tools.deny` / `access.max` / `models.deny` an
-agent naming a key from `POLICY_CONTROLLED_OPTIONS` for its own provider is an error — otherwise
-the workflow could remove the control that governs it.
+its current `ResolvedWorkflow.hash`.
+
+**`provider_options` may not remove a control.** It is a raw pass-through the adapters apply *over*
+the computed options, so an agent naming a key from `POLICY_CONTROLLED_OPTIONS` for its own
+provider is an error while the matching control is in force. `check_provider_options` runs on
+EVERY `apply_policy`, including when no policy file exists, because `agent_control_sources`
+contributes the workflow's own controls (`network: off`) — a control the workflow sets on itself
+is still a control it must not be able to shed. Adding a control means adding its entry to
+`POLICY_CONTROLLED_OPTIONS` in the same commit; a control without one is an escape hatch. Two
+provider option keys are MERGED rather than replaced and stay usable (`env`, `mcp_servers` /
+`config.mcp_servers`) — which is precisely why `mcp.allow_servers` has to be checked against them.
+
+**The layers in force are named on every command.** `PolicyReport.policy_layers` /
+`.policy_searched` ride out of `apply_policy` into `ValidationReport.policy_layers` /
+`.policy_searched` (additive) and `ValidationReport.policy_note`; `validate`, `plan` and `run`
+print that one line, and `validate --json` / `plan --json` carry `policy: {layers, searched}`. A
+guardrail that is silently absent — a `policy.yaml` one directory too high, a `--root` pointing
+elsewhere — is indistinguishable from one being obeyed unless something says which files were
+read.
 
 Additive to `schema/agent.py`: `AgentDef.network: Literal["on","off"] | None = None` and
 `AgentDef.commands: CommandsSpec | None = None` (`CommandsSpec{allow, deny: list[regex]}`; every
@@ -1081,8 +1112,12 @@ event); `workspace-write` → `acceptEdits`, `allowed_tools=["Bash",*web,*explic
 `output_format={"type":"json_schema","schema":…}` (the engine validates `AgentResult.structured`);
 `resume_session`/`fork_session` → `resume`/`fork_session`; `include_partial_messages=True`; `stderr=` keeps the last
 40 lines (in `ProviderError.hint` and `AgentResult.raw["stderr_tail"]`); `provider_options`: keys in
-`ADAPTER_OWNED_OPTIONS` (`stderr cwd cli_path resume fork_session output_format include_partial_messages`) are
-ignored with a warning event; `MERGED_OPTIONS` (`env`, `mcp_servers`) are merged UNDER the computed mapping (env
+`ADAPTER_OWNED_OPTIONS` are ignored with a warning event — and that set is now defined MECHANICALLY as
+every field `build_options` passes to `ClaudeAgentOptions` minus `MERGED_OPTIONS`, i.e. `tools allowed_tools
+disallowed_tools permission_mode model system_prompt setting_sources strict_mcp_config effort thinking max_turns
+max_budget_usd output_format resume fork_session cwd cli_path stderr include_partial_messages`, so a raw option can
+never replace a value rayspec derived from a neutral field (a test reads the constructor call and asserts the
+partition holds); `MERGED_OPTIONS` (`env`, `mcp_servers`) are merged UNDER the computed mapping (env
 precedence: CLIENT_APP < settings.env < provider_options.env < open(env) < req.env; `req.mcp_servers` win on name
 collision); every other `ClaudeAgentOptions` field is applied verbatim (unknown keys → warning event).
 Events: init → `session` (data session_id/model/tools/cwd/permission_mode); `text_delta` / `reasoning` from
