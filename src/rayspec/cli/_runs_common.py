@@ -672,14 +672,64 @@ def replay_script(ref: str, *, root: Path | None) -> StubScript:
 # --------------------------------------------------------------------------------------------------
 
 
+def record_root(ctx: RunsContext, run: RunRecord) -> Path:
+    """The project a stored run belongs to — its recorded root, else the command's own.
+
+    Answers *which* project; :func:`record_context` is what makes a command actually read that
+    one. Everything project-scoped about a resumed run (the workflow, its config, the lockfile,
+    the policy, the spend ledger) must agree on a single project, or one command consults two.
+    """
+    project_root = Path(run.project_root) if run.project_root else ctx.project_root
+    return project_root if project_root.is_dir() else ctx.project_root
+
+
+def record_context(ctx: RunsContext, run: RunRecord) -> RunsContext:
+    """``ctx`` re-resolved against the project ``run`` belongs to: **one run, one project**.
+
+    ``rayspec resume|approve|reject`` finds a run wherever it was recorded, so the directory the
+    command was typed in says nothing about the run. Re-scoping the context ONCE, right after the
+    lookup, is what keeps every project-scoped input agreeing on a single project: the workflow
+    and the models its agents resolve to (``config.tiers`` / ``config.aliases``), the lockfile
+    those models are checked against, the operator's policy, ``config.secrets``,
+    ``config.providers``, ``config.pricing`` and ``config.extensions`` all then come from the
+    run's project rather than from the caller's.
+
+    Getting this half-right is worse than not doing it at all: with the workflow loaded here and
+    the models resolved there, ``--locked`` — on by default under ``CI`` — refuses a run that
+    never drifted, naming a model nobody configured, and the documented way out of that refusal
+    is ``--no-locked``.
+
+    A run recorded in the caller's own project (the common case) is returned unchanged; the
+    project's ``config.yaml`` is only re-read when the roots really differ. A malformed
+    ``config.yaml`` in the run's project is exit 2 naming the file, as everywhere else.
+    """
+    from rayspec.cli.commands.run import project_slug_for
+    from rayspec.config import ConfigError, load_config
+
+    root = record_root(ctx, run)
+    if root == ctx.project_root:
+        return ctx
+    try:
+        config = load_config(root, home=ctx.home)
+    except ConfigError as exc:
+        fail(str(exc), hint=exc.hint)
+        raise AssertionError("unreachable") from None  # pragma: no cover
+    slug = run.project_slug or project_slug_for(root)
+    return RunsContext(
+        project_root=root,
+        home=ctx.home,
+        config=config,
+        slug=slug,
+        store=project_store(ctx.home, slug),
+    )
+
+
 def load_resolved_for(ctx: RunsContext, run: RunRecord) -> ResolvedWorkflow:
     """Re-load the run's workflow: by its recorded path (relative to the project root or the home),
     then by name. Raises :class:`RayspecError` when neither resolves."""
     from rayspec.loader import load_workflow
 
-    project_root = Path(run.project_root) if run.project_root else ctx.project_root
-    if not project_root.is_dir():
-        project_root = ctx.project_root
+    project_root = record_root(ctx, run)
     candidates: list[str | Path] = []
     label = run.workflow_path
     if label:
@@ -738,6 +788,7 @@ def resume_run(
     stub_script: StubScript | None = None,
     stubs_path: str | None = None,
     secret_provider: SecretProvider | None = None,
+    wait_slot: str | None = None,
     approve_classes: Sequence[str] = (),
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
@@ -757,6 +808,13 @@ def resume_run(
     same instance :func:`~rayspec.cli.commands.resume.resume_secret_inputs` already used, so a
     ``cmd:`` helper runs at most once per command; one is built here only when the caller has
     none.
+
+    ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
+    does, because it starts the same agents.
+
+    ``ctx`` is re-scoped to the run's project (:func:`record_context`) before anything
+    project-scoped is read, so the second half of a run gets the same config, policy and
+    ledger the first half did — whichever directory the resume was typed in.
     """
     import anyio
 
@@ -775,17 +833,27 @@ def resume_run(
     from rayspec.engine.context import RunOptions
     from rayspec.engine.errors import EngineError
     from rayspec.engine.runner import Runner
+    from rayspec.limits import (
+        SlotBusyError,
+        acquire_slots,
+        limits_for,
+        limits_policy,
+        run_envelope,
+        wait_seconds,
+        workflow_providers,
+    )
     from rayspec.providers.pricing import PriceTable
     from rayspec.secrets import SecretError, build_redactor, provider_for, used_config_secrets
 
     out = loader_common.err_console() if json_mode else loader_common.console()
+    ctx = record_context(ctx, run)  # everything below is read for the RUN's project
+    project_root = ctx.project_root
     if resolved is None:
         try:
             resolved = load_resolved_for(ctx, run)
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return EXIT_USAGE
-    project_root = Path(run.project_root) if Path(run.project_root).is_dir() else ctx.project_root
     workspace = workspace_from_record(run, project_root)
     # the run's secret sources — they feed the shell/python step env and, together with
     # the re-supplied secret inputs, the one redactor every writer goes through. Only the
@@ -846,6 +914,31 @@ def resume_run(
         price_table = PriceTable.from_config(ctx.config.pricing)
     except RayspecError:
         price_table = None
+    # the operator's ceilings apply to the second half of a run exactly as to the first: a
+    # resume that would blow through the daily envelope pauses again rather than slipping past
+    # it, and it queues for a host run slot because it starts the same agents. A scheduler that
+    # polls paused runs and approves them is the commonest unattended shape there is, and it
+    # must not be the one that bypasses the caps. A dry run spends nothing and takes no slot.
+    policy = limits_policy(project_root, home=ctx.home)
+    loader_common.report_lines(
+        "policy warnings:", list(policy.warnings), style="yellow", printer=out.print
+    )
+    envelope = (
+        None
+        if run.dry_run
+        else run_envelope(
+            policy,
+            store_root=ctx.home / "projects" / (run.project_slug or ctx.slug),
+            run_id=run.run_id,
+        )
+    )
+    providers_used = workflow_providers(resolved)
+    try:
+        slot_wait = wait_seconds(wait_slot)
+    except (RayspecError, ValueError) as exc:
+        fail(f"--wait-slot: {exc}", hint="pass a duration (--wait-slot 30m) or `forever`")
+        return EXIT_USAGE
+    slot_limits = {} if run.dry_run else limits_for(policy.max_concurrent_runs, providers_used)
     runner = Runner(
         resolved,
         inputs=dict(inputs or {}),
@@ -860,9 +953,16 @@ def resume_run(
         resume_run_id=run.run_id,
         price_table=price_table,
         home=ctx.home,
+        envelope=envelope,
     )
     try:
-        result = runner.run_sync()
+        with acquire_slots(
+            ctx.home, providers_used, slot_limits, run_id=run.run_id, wait_s=slot_wait
+        ):
+            result = runner.run_sync()
+    except SlotBusyError as exc:
+        fail(str(exc), hint=exc.hint)
+        return EXIT_USAGE
     except EngineError as exc:
         fail(str(exc), hint=exc.hint)
         return EXIT_USAGE
@@ -1056,6 +1156,8 @@ __all__ = [
     "planned_step_paths",
     "project_store",
     "read_output_text",
+    "record_context",
+    "record_root",
     "recorded_calls",
     "release_workdir_lock",
     "replay_script",

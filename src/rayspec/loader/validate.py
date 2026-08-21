@@ -948,6 +948,8 @@ class _Validator:
             unsupported("budget_usd", agent.budget_usd, _cap_flag("budget_usd"))
         if agent.thinking is not None and not caps.thinking:
             unsupported("thinking", agent.thinking, _cap_flag("thinking"))
+        if agent.on_denial == "fail" and not caps.denial_reporting:
+            unsupported("on_denial", agent.on_denial, _cap_flag("denial_reporting"))
         if agent.mcp and not caps.mcp_servers:
             unsupported("mcp", "{" + ", ".join(sorted(agent.mcp)) + "}", _cap_flag("mcp_servers"))
         if agent.access not in {str(a) for a in caps.access_levels}:

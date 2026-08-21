@@ -14,7 +14,8 @@ import typer
 
 from rayspec.cli.commands._loader_common import JsonOption, OutputOption, RootOption, resolve_output
 from rayspec.cli.commands.approve import decide_and_resume
-from rayspec.cli.commands.resume import SecretInputsOption, StubsOption
+from rayspec.cli.commands.lock import LockedOption
+from rayspec.cli.commands.resume import SecretInputsOption, StubsOption, WaitSlotOption
 
 
 def register(app: typer.Typer) -> None:
@@ -34,6 +35,8 @@ def register(app: typer.Typer) -> None:
         ] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        locked: LockedOption = None,
+        wait_slot: WaitSlotOption = None,
         root: RootOption = None,
     ) -> None:
         """Reject the pending gate of a paused run (on_reject decides: cancel/continue/fail)."""
@@ -48,6 +51,8 @@ def register(app: typer.Typer) -> None:
             force=force,
             inputs=inputs,
             stubs=stubs,
+            locked=locked,
+            wait_slot=wait_slot,
         )
 
 

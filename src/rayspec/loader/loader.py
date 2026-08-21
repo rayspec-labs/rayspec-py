@@ -107,6 +107,8 @@ class ResolvedAgent:
     budget_usd: float | None
     tools: ToolsSpec
     thinking: bool | None
+    #: ``warn`` (record them) or ``fail`` (a refused tool call fails the step)
+    on_denial: str
     mcp: dict[str, McpServerDef]
     provider_options: dict[str, dict[str, Any]]
     source: str
@@ -705,6 +707,7 @@ class _Loader:
             budget_usd=definition.budget_usd,
             tools=definition.tools,
             thinking=definition.thinking,
+            on_denial=definition.on_denial,
             mcp=dict(definition.mcp),
             provider_options=dict(definition.provider_options),
             source=src.description,

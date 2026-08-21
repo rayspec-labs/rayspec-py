@@ -43,6 +43,8 @@ CAPABILITY_NOTES: dict[str, str] = {
     "effort_levels": "`effort:` values accepted",
     "effort_aliases": "effort values rewritten with a warning",
     "thinking": "`thinking: true` / `false` on the agent",
+    "denial_reporting": "the adapter reports the tool calls a turn was REFUSED, so "
+    "`on_denial: fail` can grade them",
     "mcp_servers": "`mcp:` servers on the agent",
     "env_injection": "`env:` on prompt steps",
     "images": "image inputs (not used by any YAML field in v1)",
