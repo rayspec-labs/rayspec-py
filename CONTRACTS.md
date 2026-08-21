@@ -1477,6 +1477,75 @@ CLI surface:
   built-in default. Precedence on a resume entry: explicit `--stubs` > explicit `--stubs-from` >
   the recorded `stubs_path`. No new field: the `RunRecord.toolchain` reservation stands.
 
+### CLI `costs` — the cost roll-up
+`src/rayspec/cli/commands/costs.py` (`rayspec costs [--since WHEN] [--workflow NAME] [--json]
+[--root]`). **Read-only consumer of the store**: it calls `store.list_runs()` and nothing else —
+no record format changes, no field is added, nothing is ever written and no `projects/<slug>`
+directory is created (`tests/cli/test_costs_cmd.py` hashes the whole `RAYSPEC_HOME` tree around
+the invocations). The per-run arithmetic is *not* reimplemented: `RunRecord.total_cost_usd()` /
+`total_usage()` for the numbers and `_runs_common.fmt_cost` / `run_cost_source` /
+`unpriced_steps` / `fmt_tokens` / `usage_dict` / `fmt_stamp` for the rendering, so a roll-up can
+never disagree with the `rayspec runs` lines it sums. **Nothing in scope is presented as complete
+when it is not**: an unpriced run, a priced run holding an unpriced step, a step cut off before
+it reported usage, a run still in flight and a `run.json` the store could not parse each get a
+counter and a line below the table. Scope is one project (`make_runs_context`), and the
+outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug minted).
+
+- `parse_since(text, *, now=None) -> datetime` — aware UTC cutoff from a window
+  (`45s|90m|24h|7d|2w`, decimals allowed) or an ISO-8601 date/timestamp (`2026-08-01`,
+  `…T06:30:00`, `…Z`, `…+02:00`; naive = UTC). `ValueError` otherwise (a negative window
+  included); the command turns it into exit 2 with `SINCE_HINT`.
+- `select_runs(records, *, since, workflow)` — `created_at >= since` (**inclusive** at the
+  cutoff) and an exact `workflow_name` match; newest first (the roll-up regroups and re-sorts —
+  the order is for callers that reuse the helper to list what was summed).
+- `cost_bucket(run)` — `unknown` when `total_cost_usd()` is `None`, else `run_cost_source(run)`.
+  `BUCKETS = (*COST_SOURCES, "unknown")` is the fixed print order. The `none` bucket is reachable
+  and is **not** remapped: a `run.json` written before `StepRecord.cost_source` existed carries a
+  cost without a source, and it is reported as stored rather than guessed at (docs/cli.md names
+  the bucket in prose).
+- `aggregate(records, *, label, incomplete=False) -> CostGroup(label, runs, runs_unknown_cost,
+  runs_partial_cost, runs_usage_unknown, runs_in_flight, usage, cost_usd, cost_source, buckets,
+  first_run_at, last_run_at)` — every record is counted; `cost_usd` is `None` when nothing in the
+  group is priced (never `0.0`); `cost_source = combine_cost_sources(sources of the priced runs,
+  unpriced=…)`, i.e. an unpriced *run* makes the group a lower bound exactly the way an unpriced
+  *step* makes a run one. Four counters, each a distinct reason a figure is not the whole truth:
+  `runs_unknown_cost` (no cost at all), `runs_partial_cost` (a *priced* run holding a step with
+  tokens and no price — `_runs_common.unpriced_steps`), `runs_usage_unknown` (a run holding a
+  step with `StepRecord.usage_unknown`: an attempt cut off before the adapter reported any usage,
+  which `unpriced_steps` cannot see because that step's `usage.total` is 0) and `runs_in_flight`
+  (`status in IN_FLIGHT = {running, paused}`). `unpriced` is set by `runs_unknown_cost`,
+  `runs_usage_unknown`, a run whose own source is `partial`, **or** `incomplete=True`;
+  `runs_in_flight` is reported but does not move the marker. `CostGroup.partial` = the cost is a
+  lower bound, `CostGroup.tokens_partial` = the token count is.
+- `build_report(records, *, unreadable=0) -> CostReport(groups, total, runs_unreadable)` — grouped
+  by workflow, most expensive first then by name; the sort key is tri-state
+  (`(cost_usd is None, -cost, label)`) so an unpriced group sorts after a real `$0.00` one.
+  Groups are never dropped: `sum(g.runs) == total.runs`. `unreadable` is passed as
+  `incomplete=` to the total's fold, so a store the command could not read completely can never
+  present an exact-looking sum. The command computes it as
+  `len(store.list_run_ids()) - len(store.list_runs())` (`list_runs` swallows an unparseable
+  `run.json` into a log warning; `list_run_ids` only lists dirs that have one).
+- Presentation: `costs_table(report)` (workflow · runs · tokens · cost · cost source, total row
+  last; the tokens cell is `≥…` when `tokens_partial`, `unknown` when nothing was reported at
+  all and `-` only for a genuine zero), `scope_line`, `empty_notice`, `unreadable_notice(count)`,
+  `partial_notices(report) -> list[str]` (one line per counter above, then the marker line — and
+  the marker line is only printed for a marker that is on screen: `no cost is known for any run
+  in scope` when `total.cost_usd is None`, `totals marked ≥ are a lower bound` when the total
+  renders with `≥`, nothing otherwise), `group_payload` / `costs_payload`.
+- `--json`: one object `{project, since, workflow, runs, runs_unknown_cost, runs_partial_cost,
+  runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{…}, cost_usd, cost_source,
+  cost_sources{…}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost,
+  runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source,
+  cost_sources{…}, first_run_at, last_run_at}]}`. The top level is the total over exactly the runs
+  in `workflows`; `cost_sources` counts every run once (zero buckets omitted); `runs_unreadable`
+  is top level only (an unreadable record cannot be attributed to a workflow) and `project` is
+  `null` outside a rayspec project — no slug is claimed there, on disk or in the output. Exit 0
+  with `runs: 0` when nothing is in scope (an unknown `--workflow` is a filter that matched
+  nothing, not an error) · exit 2 on a bad `--since`.
+- Deliberately out of scope (a follow-up would be a new command, not a flag here): cross-project,
+  per-team, per-repo, per-user or per-tag roll-ups and chargeback export formats. `--json` is the
+  seam for those.
+
 ### CLI `init` + `doctor`
 `src/rayspec/cli/commands/{init,doctor}.py`; scaffold templates are package data under
 `src/rayspec/cli/templates/<kind>/**` (read with `importlib.resources`; one directory per kind).

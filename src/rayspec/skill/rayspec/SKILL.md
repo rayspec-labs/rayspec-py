@@ -305,6 +305,7 @@ provider's `medium` tier. `access: read-only` cannot `allow` `edit`/`shell`.
 | `rayspec plan <wf>` | inputs, resolved agents, step order, capability + cost report | `--input k=v`, `--inputs-file`, `--json` | 0 / 2 |
 | `rayspec run <wf>` | run (or resume) a workflow | `--input`, `--inputs-file`, `--dry-run`, `--stubs f`, `--stubs-init f`, `--exec-shell`, `--yes`, `--no-interactive`, `--json`, `--quiet`, `--verbose`, `--fail-fast`, `--allow-unsupported`, `--worktree/--no-worktree`, `--base`, `--repo`, `--resume <id>`, `--force` | 0 1 2 3 4 130 |
 | `rayspec runs` | list runs (newest first) | `--all`, `--limit N`, `--json` | 0 |
+| `rayspec costs` | sum a project's runs by workflow (tokens, cost, cost-source breakdown) | `--since 7d`, `--workflow NAME`, `--json` | 0 / 2 |
 | `rayspec show <run>` | header, workspace, step table, warnings, outputs, pause state | `--json` | 0 / 2 |
 | `rayspec logs <run>` | lifecycle events; `--step <path>` = that step's transcript | `--step`, `--stream`, `--follow`, `--verbose`, `--json` | 0 / 2 |
 | `rayspec resume <run>` | re-run from the top with the reuse cache | `--force`, `--yes`, `--no-interactive`, `--json` | run's code / 2 |
