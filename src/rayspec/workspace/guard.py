@@ -10,14 +10,16 @@ block (:mod:`rayspec.policy`).
 The measurement is always against the run's ``base_sha`` and covers the whole repository, not the
 sub-directory a step happened to work in: an agent that rewrites half the repo does it wherever
 it likes. Untracked files count as additions, because "quietly wrote 400 new files" is exactly
-the case a diff against HEAD would miss.
+the case a diff against HEAD would miss — including files ``.gitignore`` hides, since ``.env``,
+a gitignored ``secrets/`` and a build directory are the paths most worth protecting. Renames
+count on both sides, so moving a file out of a protected directory is still a change to it.
 """
 
 from __future__ import annotations
 
 import fnmatch
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -140,9 +142,22 @@ def _top(workdir: Path) -> Path:
 
 
 def _tracked_changes(top: Path, base_sha: str) -> list[ChangedFile]:
+    """Parse ``git diff --numstat -z`` as a token stream rather than record by record.
+
+    ``-z`` writes a rename or a copy as THREE NUL-separated records — ``"<add>\t<del>\t"``, then
+    the old path, then the new one. Splitting on NUL and reading the third TAB field therefore
+    yields an empty path and silently drops both real ones; rename detection is on by default, so
+    ``git mv`` of a protected file would slip past the guard. Both sides of a rename are reported,
+    because moving a file *out* of a protected directory changes the protected path too; the line
+    counts go to the destination so a rename is not counted twice.
+    """
     result = run_git(["diff", "--numstat", "-z", base_sha, "--"], top)
+    records = result.stdout.split("\0")
     out: list[ChangedFile] = []
-    for record in result.stdout.split("\0"):
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
         if not record.strip():
             continue
         parts = record.split("\t")
@@ -150,14 +165,26 @@ def _tracked_changes(top: Path, base_sha: str) -> list[ChangedFile]:
             continue
         added, deleted, path = parts[0], parts[1], parts[2]
         binary = added == "-" or deleted == "-"
-        out.append(
-            ChangedFile(
-                path=path,
-                added=0 if binary else int(added or 0),
-                deleted=0 if binary else int(deleted or 0),
-                binary=binary,
-            )
+        counted = ChangedFile(
+            path=path,
+            added=0 if binary else int(added or 0),
+            deleted=0 if binary else int(deleted or 0),
+            binary=binary,
         )
+        if path:
+            out.append(counted)
+            continue
+        sides = [name for name in records[index : index + 2] if name]
+        index += 2
+        for position, name in enumerate(sides):
+            # the destination carries the line counts, the source is a touched path with none:
+            # one line delta, two paths a protected glob can match.
+            destination = position == len(sides) - 1
+            out.append(
+                replace(counted, path=name)
+                if destination
+                else ChangedFile(path=name, binary=binary)
+            )
     return out
 
 
@@ -180,8 +207,17 @@ def _count_lines(path: Path) -> tuple[int, bool]:
         return 0, False
 
 
-def _untracked_changes(top: Path) -> list[ChangedFile]:
-    result = run_git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z"], top)
+def _untracked_changes(top: Path, *, include_ignored: bool) -> list[ChangedFile]:
+    """Untracked files, by default including the ones ``.gitignore`` hides.
+
+    ``--exclude-standard`` would hide exactly the paths worth protecting — ``.env``, a gitignored
+    ``secrets/``, a build directory — so the guard does not pass it unless asked to. A repository
+    with a large ignored tree (``node_modules``, a virtualenv) is why the switch exists.
+    """
+    args = ["ls-files", "--others", "--full-name", "-z"]
+    if not include_ignored:
+        args.insert(2, "--exclude-standard")
+    result = run_git(args, top)
     out: list[ChangedFile] = []
     for rel in result.stdout.split("\0"):
         if not rel:
@@ -191,8 +227,18 @@ def _untracked_changes(top: Path) -> list[ChangedFile]:
     return out
 
 
-def diff_since(workdir: Path, base_sha: str, *, include_untracked: bool = True) -> ChangeSummary:
+def diff_since(
+    workdir: Path,
+    base_sha: str,
+    *,
+    include_untracked: bool = True,
+    include_ignored: bool = True,
+) -> ChangeSummary:
     """Measure the worktree containing ``workdir`` against ``base_sha``.
+
+    ``include_ignored`` keeps files that ``.gitignore`` hides in the measurement, which is the
+    default: an agent writing into a gitignored directory is exactly the case a guard is for.
+    Pass ``False`` in a repository whose ignored tree is large enough to make the walk pointless.
 
     Raises :class:`~rayspec.workspace.errors.GitError` when ``workdir`` is not in a work tree or
     ``base_sha`` is not a commit — a guard that cannot measure must never report "all clear".
@@ -200,7 +246,7 @@ def diff_since(workdir: Path, base_sha: str, *, include_untracked: bool = True) 
     top = _top(Path(workdir))
     files = _tracked_changes(top, base_sha)
     if include_untracked:
-        files.extend(_untracked_changes(top))
+        files.extend(_untracked_changes(top, include_ignored=include_ignored))
     files.sort(key=lambda f: f.path)
     return ChangeSummary(base_sha=base_sha, files=tuple(files))
 
@@ -213,13 +259,19 @@ def check_change_guard(
     max_changed_files: int | None = None,
     max_changed_lines: int | None = None,
     include_untracked: bool = True,
+    include_ignored: bool = True,
 ) -> ChangeGuardReport:
     """Measure the worktree and compare it with the guard's limits.
 
     Every broken limit is reported, not just the first: a step that both touched a protected path
     and rewrote too much should say so once, rather than one problem per re-run.
     """
-    summary = diff_since(workdir, base_sha, include_untracked=include_untracked)
+    summary = diff_since(
+        workdir,
+        base_sha,
+        include_untracked=include_untracked,
+        include_ignored=include_ignored,
+    )
     violations: list[GuardViolation] = []
     for pattern in protected_paths:
         hits = [f.path for f in summary.files if match_path(f.path, pattern)]

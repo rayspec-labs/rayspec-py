@@ -131,3 +131,62 @@ def test_a_non_git_directory_is_a_git_error(tmp_path: Path) -> None:
 )
 def test_glob_matching(path: str, pattern: str, expected: bool) -> None:
     assert match_path(path, pattern) is expected
+
+
+def test_a_rename_out_of_a_protected_directory_trips(repo: Path) -> None:
+    """`git mv` of a protected file is a change to it — the strongest claim the guard makes."""
+    (repo / ".github").mkdir()
+    (repo / ".github" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    git("add", ".", cwd=repo)
+    git("commit", "-q", "-m", "ci", cwd=repo)
+    base = base_of(repo)
+    git("mv", ".github/ci.yml", "ci.yml", cwd=repo)
+    report = check_change_guard(repo, base, protected_paths=[".github/**"])
+    assert not report.ok
+    assert ".github/ci.yml" in report.message
+
+
+def test_a_rename_never_produces_an_empty_path(repo: Path) -> None:
+    git("mv", "file0.txt", "renamed.txt", cwd=repo)
+    summary = diff_since(repo, base_of(repo))
+    assert "" not in [f.path for f in summary.files]
+    assert sorted(f.path for f in summary.files) == ["file0.txt", "renamed.txt"]
+    assert summary.changed_files == 2
+
+
+def test_a_rename_with_edits_keeps_both_paths(repo: Path) -> None:
+    git("mv", "file0.txt", "moved.txt", cwd=repo)
+    (repo / "moved.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    summary = diff_since(repo, base_of(repo))
+    assert sorted(f.path for f in summary.files) == ["file0.txt", "moved.txt"]
+
+
+def test_files_in_a_gitignored_directory_are_counted(repo: Path) -> None:
+    """`--exclude-standard` hides exactly the paths an agent is most likely to write into."""
+    (repo / ".gitignore").write_text("secrets/\n.env\n", encoding="utf-8")
+    git("add", ".gitignore", cwd=repo)
+    git("commit", "-q", "-m", "ignore", cwd=repo)
+    base = base_of(repo)
+    (repo / "secrets").mkdir()
+    (repo / "secrets" / "key.pem").write_text("k\n", encoding="utf-8")
+    (repo / ".env").write_text("TOKEN=x\n", encoding="utf-8")
+    summary = diff_since(repo, base)
+    assert sorted(f.path for f in summary.files) == [".env", "secrets/key.pem"]
+    report = check_change_guard(repo, base, protected_paths=["**/.env"])
+    assert not report.ok
+    assert ".env" in report.message
+
+
+def test_ignored_files_can_be_left_out(repo: Path) -> None:
+    (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    git("add", ".gitignore", cwd=repo)
+    git("commit", "-q", "-m", "ignore", cwd=repo)
+    (repo / "build").mkdir()
+    (repo / "build" / "out.js").write_text("x\n", encoding="utf-8")
+    summary = diff_since(repo, base_of(repo), include_ignored=False)
+    assert [f.path for f in summary.files] == []
+
+
+def test_the_git_directory_is_never_counted(repo: Path) -> None:
+    summary = diff_since(repo, base_of(repo))
+    assert not [f for f in summary.files if f.path.startswith(".git/")]
