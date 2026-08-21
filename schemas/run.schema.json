@@ -4,6 +4,44 @@
   "title": "RunRecord",
   "description": "One rayspec run record (<run dir>/run.json).",
   "$defs": {
+    "ActorInfo": {
+      "description": "Who acted — an identity for the ledger, never a credential and never a permission.\n\n``id`` is the resolved identity and ``source`` says where it came from (``env`` for\n``RAYSPEC_ACTOR``, ``git`` for the repository's ``user.email``, ``os`` for the operating\nsystem user, ``unknown`` when nothing answered). ``ci`` names the CI system the process ran\nunder when there is one, and ``provider_accounts`` maps a provider id to the account the\nenvironment NAMED — an account, never the key that authenticates it.\n:func:`rayspec.actor.resolve_actor` fills this in.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source": {
+          "default": "unknown",
+          "title": "Source",
+          "type": "string"
+        },
+        "ci": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ci"
+        },
+        "provider_accounts": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Provider Accounts",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "ActorInfo",
+      "type": "object"
+    },
     "ArtifactRef": {
       "description": "One file a step promised (``artifacts:``) and delivered.\n\n``path`` is the path as declared (in normal form), relative to the step's working directory;\n``ref`` is the run-dir-relative location of the copy the store kept (``artifacts/<step\npath>/<path>``, ``None`` for a store that keeps no copies). ``sha256``/``size`` describe the\nstored bytes — the file's content AFTER redaction, which differs from what the step wrote\nonly where a secret was found; a store that keeps no copy reports the same digest, over the\nbytes it would have kept. Only the path is recorded — the content of an artifact never\nenters a record or an event.",
       "properties": {
@@ -60,6 +98,17 @@
           "format": "date-time",
           "title": "Decided At",
           "type": "string"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -840,6 +889,17 @@
       ],
       "default": null,
       "title": "Toolchain"
+    },
+    "actor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ActorInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

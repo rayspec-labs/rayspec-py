@@ -77,6 +77,23 @@ class ArtifactRef(_Model):
     size: int = 0
 
 
+class ActorInfo(_Model):
+    """Who acted — an identity for the ledger, never a credential and never a permission.
+
+    ``id`` is the resolved identity and ``source`` says where it came from (``env`` for
+    ``RAYSPEC_ACTOR``, ``git`` for the repository's ``user.email``, ``os`` for the operating
+    system user, ``unknown`` when nothing answered). ``ci`` names the CI system the process ran
+    under when there is one, and ``provider_accounts`` maps a provider id to the account the
+    environment NAMED — an account, never the key that authenticates it.
+    :func:`rayspec.actor.resolve_actor` fills this in.
+    """
+
+    id: str
+    source: str = "unknown"
+    ci: str | None = None
+    provider_accounts: dict[str, str] = Field(default_factory=dict)
+
+
 class StepRecord(_Model):
     path: str
     id: str
@@ -149,6 +166,11 @@ class Decision(_Model):
     comment: str = ""
     by: str = "cli"
     decided_at: datetime = Field(default_factory=utcnow)
+    #: additive: who decided (:func:`rayspec.actor.resolve_actor` at the moment the decision was
+    #: recorded). ``by`` says through which door the decision came (``cli``, ``tty``, ``--yes``,
+    #: ``dry-run``), ``actor`` says whose hand it was — the two differ whenever somebody other
+    #: than the person who launched the run answers the gate. ``None`` in older records.
+    actor: ActorInfo | None = None
 
 
 class PauseInfo(_Model):
@@ -209,6 +231,10 @@ class RunRecord(_Model):
     #: describes the run's start: a resume never (re-)captures, and a record written before the
     #: field existed therefore keeps ``None`` rather than gaining a resume-time toolchain.
     toolchain: dict[str, Any] | None = None
+    #: additive: who launched the run (:func:`rayspec.actor.resolve_actor` at its FIRST start —
+    #: a resume never overwrites it, so the field keeps naming whoever set the run going).
+    #: ``None`` in records written before the field existed.
+    actor: ActorInfo | None = None
 
     def total_usage(self) -> Usage:
         total = Usage()
@@ -223,6 +249,7 @@ class RunRecord(_Model):
 
 __all__ = [
     "RUN_RECORD_SCHEMA_VERSION",
+    "ActorInfo",
     "ArtifactRef",
     "Decision",
     "EachInfo",

@@ -30,6 +30,7 @@ from typing import Any
 import anyio
 from anyio import to_thread
 
+from rayspec.actor import resolve_actor
 from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
@@ -57,7 +58,15 @@ from rayspec.loader.inputs import (
 from rayspec.providers.base import Provider, Usage
 from rayspec.schema import RunStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import PauseInfo, RunRecord, StepRecord, WorkspaceInfo, new_run_id, utcnow
+from rayspec.store.model import (
+    ActorInfo,
+    PauseInfo,
+    RunRecord,
+    StepRecord,
+    WorkspaceInfo,
+    new_run_id,
+    utcnow,
+)
 from rayspec.templating import Scope, StepView, TemplateEngine, TemplateRenderError
 
 
@@ -191,7 +200,10 @@ class Runner:
                 await to_thread.run_sync(self._refresh_head_sha)
             # the ``ps`` probe is a blocking subprocess call — keep it off the event loop
             pid_started_at = await to_thread.run_sync(process_start_time, os.getpid())
-            run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at)
+            # who is launching this — a git-config lookup, so it stays off the event loop too;
+            # a resume keeps the actor the record already carries and needs no lookup at all
+            actor = None if self.resume_run_id else await to_thread.run_sync(self._resolve_actor)
+            run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at, actor)
         except BaseException:
             self._release_lock()
             raise
@@ -297,6 +309,10 @@ class Runner:
 
     # -- internals ------------------------------------------------------------------------
 
+    def _resolve_actor(self) -> ActorInfo:
+        """Who is launching this run (blocking: reads the workdir's git configuration)."""
+        return resolve_actor(workdir=self.workspace.workdir)
+
     def _acquire_lock(self) -> None:
         """Take the workdir path lock (non-blocking) when a home is known.
 
@@ -356,12 +372,15 @@ class Runner:
             return
 
     def _prepare_record(
-        self, pid_started_at: str | None = None
+        self, pid_started_at: str | None = None, actor: ActorInfo | None = None
     ) -> tuple[RunRecord, dict[str, StepRecord], bool, bool]:
         """Create a fresh record or load the one to resume → (run, cache, mismatch, resumed).
 
         ``pid_started_at`` is this process's start time (:func:`process_start_time`, computed by
         the caller off the event loop), recorded next to ``pid`` for ``rayspec cancel``.
+        ``actor`` is who launched the run (also resolved off the event loop — it may shell out
+        to ``git config``); it is stamped on a FRESH record only, so a resume by somebody else
+        never rewrites who started the run.
         """
         workflow = self.resolved.workflow
         if self.resume_run_id:
@@ -449,6 +468,9 @@ class Runner:
             host=socket.gethostname(),
             workspace=self.workspace.info(),
             dry_run=bool(self.options.dry_run),
+            # who set this run going — resolved once, at the first start, and never rewritten
+            # by a resume (``_prepare_record`` returns early above for a resumed run)
+            actor=actor,
         )
         self.store.create(run)
         return run, {}, False, False
