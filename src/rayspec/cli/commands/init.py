@@ -234,7 +234,9 @@ def example_dry_run(name: str) -> str | None:
     An example ships a ``checks.yaml`` of scenarios (workflow, inputs, stub script) that the
     repository asserts on every commit; the first scenario that scripts the agents is therefore a
     command that is *known* to be green, which is exactly what a fresh project needs as its first
-    step. Scenarios with non-scalar inputs are skipped — they cannot be written as ``-i k=v``.
+    step. Scenarios with non-scalar inputs are skipped — they cannot be written as ``-i k=v`` —
+    and so are scenarios that supply a ``secret: true`` input, whose value must never be printed
+    onto a command line.
     """
     root = examples_root()
     if root is None:
@@ -244,20 +246,51 @@ def example_dry_run(name: str) -> str | None:
     if not isinstance(checks, list):
         return None
     for case in checks:
-        command = _dry_run_command(case)
+        command = _dry_run_command(root, name, case)
         if command is not None:
             return command
     return None
 
 
-def _dry_run_command(case: Any) -> str | None:
+def secret_inputs(root: Traversable, example: str, workflow: Any) -> frozenset[str] | None:
+    """Names of the ``secret: true`` inputs declared by ``example``'s ``workflow`` document.
+
+    Read with a plain YAML load for the same reason as the catalogue: the corpus is package data
+    rather than a project the loader can resolve, and a workflow that deliberately fails to
+    validate must still answer this question. ``None`` means *could not tell* (no such document,
+    unreadable, not a mapping) — a caller that was about to render the workflow's inputs must
+    then render none of them.
+    """
+    if not isinstance(workflow, str) or not workflow:
+        return None
+    for suffix in (".yaml", ".yml"):
+        data = _load_yaml(root / example / PROJECT_DIR / "workflows" / f"{workflow}{suffix}")
+        if isinstance(data, dict):
+            declared = data.get("inputs")
+            if not isinstance(declared, dict):
+                return frozenset()
+            return frozenset(
+                name
+                for name, spec in declared.items()
+                if isinstance(spec, dict) and spec.get("secret") is True
+            )
+    return None
+
+
+def _dry_run_command(root: Traversable, example: str, case: Any) -> str | None:
     if not isinstance(case, dict) or "validate" in case or case.get("run") is False:
         return None
     workflow, stubs = case.get("workflow"), case.get("stubs")
     if not isinstance(workflow, str) or not isinstance(stubs, str):
         return None
+    inputs = case.get("inputs") or {}
+    secrets = secret_inputs(root, example, workflow) if inputs else frozenset()
+    if secrets is None:
+        return None  # the declaration cannot be read, so no input of it may be rendered
     parts = ["rayspec", "run", workflow]
-    for key, raw in (case.get("inputs") or {}).items():
+    for key, raw in inputs.items():
+        if key in secrets:
+            return None  # `-i NAME=VALUE` is the CLI channel for a secret: never print one
         if isinstance(raw, bool):
             value = "true" if raw else "false"
         elif isinstance(raw, str | int | float):

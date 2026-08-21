@@ -790,7 +790,9 @@ that already has one still works.
 
 The next steps `--from` prints end with the example's own scripted dry run — the exact command
 (inputs included) that this repository asserts green on every commit, so a fresh directory has a
-working run before any credentials exist:
+working run before any credentials exist. A scenario that supplies a `secret: true` input is
+never rendered: `-i NAME=VALUE` is the channel for a secret, and the printed line would put its
+value on the terminal and in your shell history.
 
 ```
 next steps:

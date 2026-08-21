@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.cli.commands import _loader_common as common
+from rayspec.cli.commands import init as init_mod
 from rayspec.cli.commands.init import (
     SCAFFOLD_FILES,
     TEMPLATE_KINDS,
@@ -369,6 +370,41 @@ def test_wheel_ships_the_examples_and_no_local_state(tmp_path: Path) -> None:
         assert any(n.startswith(f"rayspec/examples/{name}/.rayspec/") for n in names), name
     leaked = [n for n in names if n.endswith(".env") or "/runs/" in n]
     assert leaked == [], leaked
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_no_example_scenario_renders_a_secret_input(name: str) -> None:
+    """`-i NAME=VALUE` is the documented channel for a `secret: true` input, so a printed dry run
+    that rendered one would put the value on the terminal and in the shell history.
+
+    Every scenario of every example is checked, not just the one that happens to come first in
+    the file — otherwise the safety here is scenario ordering rather than code.
+    """
+    root = init_mod.examples_root()
+    assert root is not None
+    data = yaml.safe_load((root / name / "checks.yaml").read_text(encoding="utf-8"))
+    for case in data.get("checks") or []:
+        command = init_mod._dry_run_command(root, name, case)
+        if command is None:
+            continue
+        secrets = init_mod.secret_inputs(root, name, case.get("workflow"))
+        assert secrets is not None, (name, case.get("id"))
+        for key, value in (case.get("inputs") or {}).items():
+            assert f"-i {key}=" not in command or key not in secrets, (case.get("id"), command)
+            if key in secrets:
+                assert str(value) not in command, (case.get("id"), command)
+
+
+def test_the_webhook_example_still_prints_a_dry_run_without_its_secret() -> None:
+    """The example that has a secret input keeps a printed dry run — the scenario that supplies
+    the secret is skipped, not the whole example."""
+    root = init_mod.examples_root()
+    assert root is not None
+    data = yaml.safe_load((root / "notify_webhook" / "checks.yaml").read_text(encoding="utf-8"))
+    with_secret = next(c for c in data["checks"] if "webhook_url" in (c.get("inputs") or {}))
+    assert init_mod._dry_run_command(root, "notify_webhook", with_secret) is None
+    command = init_mod.example_dry_run("notify_webhook")
+    assert command is not None and "webhook_url" not in command
 
 
 @pytest.mark.parametrize("name", sorted(example_names()))
