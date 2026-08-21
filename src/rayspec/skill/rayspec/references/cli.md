@@ -192,6 +192,7 @@ includes or provider capabilities — `rayspec validate` stays authoritative. Se
 rayspec plan <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
              [--allow-unsupported] [--json | --output FORMAT]
 rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output FORMAT]
+rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
 
 Show what a run would do without executing: the workflow hash and isolation, inputs with their
@@ -238,6 +239,7 @@ rayspec plan review_pr --render --step assess --stubs .rayspec/dryrun/stubs.yaml
 
 Options:
 
+- `--risk` — Report what the run would be allowed to do (runs nothing).
 - `--render` — Show the rendered prompt/script bodies instead of the plan.
 - `--step` `<path>` — With `--render`: render only this step path.
 - `--stubs` `<file>` — With `--render`: stub script supplying the upstream step outputs.
@@ -249,6 +251,58 @@ With `--json` the usual plan payload gains `stubs` (the file, or `null`) and `re
 `[{path, def_path, kind, agent, model, provider, text, env, step_env, error, warnings}]`, where
 `path` is the *record* path the preview bound (`build[1]/echo`, `fan[0]/work`) and `def_path`
 the definition path.
+
+#### `--risk`: what the run would be allowed to do
+
+`rayspec plan <workflow> --risk` reports what a run of this workflow could reach, read off the
+workflow document itself. It is meant to be read **before** approving a run — by the person about
+to type `rayspec approve`, or in review of a workflow somebody else wrote.
+
+It **runs nothing**: no step body is executed, no provider is contacted, no socket is opened and
+no file is written. The price of reading rather than running is that the analysis is textual — a
+body is matched as written, before templates are rendered, so a command assembled at run time is
+not seen. The report says what a workflow *declares*.
+
+Findings, worst first, each with where it is, the evidence, and what to do about it:
+
+| Category | Severity | What it means |
+|---|---|---|
+| `agent-access` | high | an agent runs with `access: full` — it may read and write outside the workspace |
+| `mcp-command` | high | an agent's MCP server is a program started on this machine |
+| `shell-pipe-to-shell` | high | a body pipes something downloaded into a shell |
+| `shell-push` | high | a body runs `git push` / `git merge` / `git rebase` / `gh pr merge` |
+| `shell-force` | high | `--force`, `git reset --hard`, `git clean -f` |
+| `shell-delete` | high | `rm -rf`, `git branch -D`, `find … -delete` |
+| `shell-publish` | high | `npm publish`, `twine upload`, `cargo publish`, `docker push`, `gh release create`, … |
+| `shell-privilege` | high | `sudo`, `chown`, `chmod 777` |
+| `outside-workspace` | high | a `cwd:` outside the workspace, or a body naming `~/`, `$HOME`, `Path.home()`, `/etc`, `/usr`, … |
+| `mcp-remote` | medium | an agent's MCP server is reached over the network |
+| `shell-network` | medium | `curl`, `wget`, `ssh`, `rsync`, `requests`, `socket`, … |
+| `shell-install` | medium | the step installs code it did not bring with it |
+| `shell-credentials` | medium | `gh auth`, `docker login`, `aws configure`, … |
+| `python-process` | medium | a `python:` body shells out, so what it runs cannot be read off the workflow |
+| `no-isolation` | medium | `isolation: none` — steps run in the project directory itself |
+| `reject-ignored` | medium | a gate with `on_reject: continue` — rejecting it does not stop the run |
+| `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) holds shut |
+| `waivable-gate` | low | a gate `--yes` approves — the policy does not mark its class `allow_yes: false` |
+
+A gate whose class the policy marks `allow_yes: false` is *not* reported: it is a real gate.
+
+```
+$ rayspec plan release_check --risk
+risk report release_check  .rayspec/workflows/release_check.yaml
+  2 high · 1 medium · 0 low
+
+  high   publish  shell-publish
+         shell: gh release create "v$VERSION" --generate-notes
+         → the run can publish an artefact the world can install; this is the step to gate with
+           an approval class the policy locks
+```
+
+The report is advisory: it never changes the exit code, which stays 0 unless the workflow has
+validation or input errors (2). `--json` adds `risk: [{severity, category, where, detail,
+advice}]` to the usual plan payload, which is the form to gate a pipeline on. `--risk` and
+`--render` are different views and are refused together.
 
 ### `rayspec test`
 

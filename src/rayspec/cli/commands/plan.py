@@ -4,6 +4,10 @@
 Two views over the same loaded workflow:
 
 * the default plan — resolved inputs, agents, step order and the capability report;
+* ``--risk`` — a static report of what the run would be *allowed* to do: agents that can leave
+  the workspace, bodies that push/merge/delete/fetch, MCP servers, steps that work outside the
+  workspace and gates anything could waive. The analysis is :mod:`rayspec.risk`, which reads
+  the resolved workflow and runs nothing;
 * ``--render`` — the prompt bodies and shell/python scripts *as the agent would receive
   them*, with upstream values taken from a ``--stubs`` script (or a visible ``<path output>``
   placeholder) and every ``${RAYSPEC_V<n>}`` slot printed next to its value. ``--step`` narrows
@@ -21,6 +25,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from rayspec import risk as risk_report
 from rayspec.cli.commands import _loader_common as common
 from rayspec.cli.commands import _pricing_common as pricing
 from rayspec.cli.commands._loader_common import (
@@ -38,6 +43,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.cli.commands.eval import echo_block
 from rayspec.config import Config
 from rayspec.engine import context_rebuild
+from rayspec.engine.approval_classes import ApprovalClasses, ClassRules
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import SECRET_PLACEHOLDER
@@ -382,6 +388,47 @@ def print_render(out: Any, rows: list[dict[str, Any]], *, source: str) -> None:
             out.print(f"  [yellow]warning:[/yellow] {safe_markup(warning, keep_newlines=False)}")
 
 
+def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, ClassRules]:
+    """The operator's approval-class rules, so a gate the policy already holds shut is not
+    reported as waivable.
+
+    The seam itself lives with the run command (imported lazily: a plan should not pull the
+    whole runner in to read a report).
+    """
+    from rayspec.cli.commands.run import policy_class_rules as impl
+
+    return impl(project_root, home)
+
+
+#: How each severity is coloured in the report.
+_SEVERITY_STYLE = {"high": "red", "medium": "yellow", "low": "cyan"}
+
+
+def print_risk(out: Any, rw: ResolvedWorkflow, findings: list[risk_report.Finding]) -> None:
+    """The human ``--risk`` view: a count line, then one block per finding, worst first.
+
+    Every interpolated value goes through :func:`~rayspec.textsafe.safe_markup`: a shell body is
+    quoted verbatim as evidence and may contain anything at all.
+    """
+    out.print(f"[bold]risk report[/bold] {rw.workflow.name}  [dim]{safe_markup(rw.label)}[/dim]")
+    if not findings:
+        out.print("  no risks found: nothing in this workflow leaves the workspace by itself")
+        return
+    tally = risk_report.counts(findings)
+    summary = " · ".join(f"{tally[name]} {name}" for name in risk_report.SEVERITIES)
+    out.print(f"  {summary}")
+    for finding in findings:
+        style = _SEVERITY_STYLE.get(finding.severity, "white")
+        out.print("")
+        out.print(
+            f"  [{style}]{finding.severity:<6}[/{style}] "
+            f"[bold]{safe_markup(finding.where)}[/bold]  "
+            f"[dim]{safe_markup(finding.category)}[/dim]"
+        )
+        out.print(f"         {safe_markup(finding.detail, keep_newlines=False)}", highlight=False)
+        out.print(f"         [dim]→ {safe_markup(finding.advice, keep_newlines=False)}[/dim]")
+
+
 def _load_stub_script(path: Path | None) -> StubScript | None:
     """Load a ``--stubs`` YAML script (usage error, exit 2, when it cannot be read/parsed)."""
     if path is None:
@@ -415,6 +462,13 @@ def register(app: typer.Typer) -> None:
                 "--render", help="Show the rendered prompt/script bodies instead of the plan."
             ),
         ] = False,
+        risk: Annotated[
+            bool,
+            typer.Option(
+                "--risk",
+                help="Report what the run would be allowed to do (runs nothing).",
+            ),
+        ] = False,
         step: Annotated[
             str | None,
             typer.Option(
@@ -436,6 +490,11 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Show what a run would do: inputs, resolved agents, step order, capability report."""
         json_ = resolve_output(output, json_)
+        if render and risk:
+            fail(
+                "--risk and --render are different views of the same workflow",
+                hint="run them one at a time",
+            )
         if (step is not None or stubs is not None) and not render:
             fail(
                 "--step and --stubs only apply to --render",
@@ -471,6 +530,12 @@ def register(app: typer.Typer) -> None:
         warnings = [*rw.warnings, *report.warnings]
         if caps.warning:
             warnings.append(caps.warning)
+        findings: list[risk_report.Finding] = []
+        if risk:
+            findings = risk_report.analyse(
+                rw,
+                classes=ApprovalClasses(rules=policy_class_rules(ctx.project_root, ctx.home)),
+            )
         rendered: list[dict[str, Any]] = []
         if render:
             script = _load_stub_script(stubs)
@@ -518,11 +583,23 @@ def register(app: typer.Typer) -> None:
             if render:
                 payload["render"] = rendered
                 payload["stubs"] = str(stubs) if stubs is not None else None
+            if risk:
+                payload["risk"] = risk_report.to_json(findings)
             out.print(json.dumps(payload, ensure_ascii=False), markup=False, highlight=False)
             if report.errors or input_errors:
                 raise typer.Exit(code=2)
             return
 
+        if risk:
+            print_risk(out, rw, findings)
+            report_lines("warnings:", warnings, style="yellow", printer=out.print)
+            if report.errors:
+                error_lines(report.errors)
+            if input_errors:
+                error_lines(input_errors)
+            if report.errors or input_errors:
+                raise typer.Exit(code=2)
+            return
         if render:
             out.print(f"[bold]workflow[/bold] {rw.workflow.name}  [dim]{rw.label}[/dim]")
             print_render(
