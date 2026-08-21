@@ -363,6 +363,11 @@ def _restore_originals(out: Any, data: Any, error: ValidationError) -> bool:
     Returns True when at least one location changed, so :meth:`Redactor.redact_dump` knows
     whether another round can make progress. A location pydantic reports below the leaf (the
     ``"int"`` tail of a union) is resolved to the deepest element that exists in both dumps.
+
+    Only a SCALAR is ever put back. An error reported against a whole object or list says
+    nothing about which of its fields is the problem, and restoring the subtree would put every
+    secret inside it back too — better an unreadable record (which :meth:`Redactor.redact_dump`
+    warns about) than a readable one with the value in it.
     """
     changed = False
     for entry in error.errors():
@@ -376,9 +381,11 @@ def _restore_originals(out: Any, data: Any, error: ValidationError) -> bool:
         if target is None:
             continue
         container_out, container_data, key = target
-        if container_out[key] != container_data[key]:
-            container_out[key] = container_data[key]
-            changed = True
+        original = container_data[key]
+        if isinstance(original, dict | list) or container_out[key] == original:
+            continue
+        container_out[key] = original
+        changed = True
     return changed
 
 

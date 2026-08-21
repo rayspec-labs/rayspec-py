@@ -4,8 +4,10 @@ opt-in builtin detectors."""
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from rayspec.redact import (
     MIN_REDACTABLE_LEN,
@@ -193,3 +195,24 @@ def test_only_a_partial_secret_prefix_is_held_back() -> None:
     stream = StreamRedactor(_r(token=SECRET))
     assert stream.feed(f"line\n{SECRET[:6]}") == "line\n"
     assert stream.feed(f"{SECRET[6:]}\n") == "[REDACTED:token]\n"
+
+
+# -- redact_dump ------------------------------------------------------------------------------
+
+
+class _Doc(BaseModel):
+    """A record shape with one structural number and one free-form container."""
+
+    n: int
+    free: dict[str, Any]
+
+
+def test_redact_dump_keeps_a_free_form_number_redacted_and_a_structural_one_intact() -> None:
+    red = _r(pin="4242")
+    dumped = red.redact_dump(_Doc(n=4242, free={"pin": 4242, "note": "id 4242"}))
+    assert dumped == {"n": 4242, "free": {"pin": "[REDACTED:pin]", "note": "id [REDACTED:pin]"}}
+    assert _Doc.model_validate(dumped)
+
+
+def test_redact_dump_without_secrets_is_the_plain_dump() -> None:
+    assert NULL_REDACTOR.redact_dump(_Doc(n=1, free={"a": 2})) == {"n": 1, "free": {"a": 2}}
