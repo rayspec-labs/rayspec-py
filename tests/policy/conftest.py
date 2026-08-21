@@ -43,3 +43,19 @@ class Tree:
 @pytest.fixture
 def tree(tmp_path: Path) -> Tree:
     return Tree(tmp_path)
+
+
+def validated(tree: Tree, text: str, *, name: str = "wf", **kwargs):
+    """Load ``text`` as a workflow of ``tree`` and validate it against the real capabilities."""
+    from rayspec.loader import load_workflow, validate_workflow
+    from rayspec.providers.capabilities import BUILTIN_CAPABILITIES
+
+    tree.workflow(name, text)
+    rw = load_workflow(name, project_root=tree.root, home=tree.home)
+    report = validate_workflow(
+        rw,
+        capabilities_for=BUILTIN_CAPABILITIES.get,
+        provider_ids=sorted(BUILTIN_CAPABILITIES),
+        **kwargs,
+    )
+    return rw, report

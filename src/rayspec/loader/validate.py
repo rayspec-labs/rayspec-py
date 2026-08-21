@@ -14,6 +14,7 @@ import json
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from rayspec.errors import RayspecError, UnsupportedFeatureError
@@ -24,6 +25,7 @@ from rayspec.loader.secrets import (
     secret_reference_message,
     secret_whole_inputs_message,
 )
+from rayspec.policy import EffectivePolicy, check_policy, load_policy
 from rayspec.providers.base import TOOL_GROUPS, ProviderCapabilities
 from rayspec.schema import (
     RESERVED_ROOTS,
@@ -37,6 +39,7 @@ from rayspec.schema import (
     ShellStep,
     StepModel,
     StopStep,
+    ToolsSpec,
 )
 from rayspec.schema.base import suggest
 from rayspec.schema.common import OnUnsupported
@@ -257,12 +260,14 @@ class _Validator:
         template_checker: TemplateChecker | None,
         warn_unsupported: bool,
         provider_ids: Sequence[str],
+        policy: EffectivePolicy | None = None,
     ):
         self.rw = resolved
         self.caps_for = capabilities_for
         self.checker = template_checker
         self.warn_unsupported = warn_unsupported
         self.provider_ids = list(provider_ids)
+        self.policy = policy
         self.report = ValidationReport()
         self._caps_cache: dict[str, ProviderCapabilities | None] = {}
         self._agent_checked: set[str] = set()
@@ -288,7 +293,43 @@ class _Validator:
         )
         self._check_graph(scope)
         self._check_outputs(self.rw.workflow.outputs, scope, where_prefix="outputs")
+        self._check_policy()
         return self.report
+
+    # -- policy (the ONE policy call site in the loader) ---------------------------------------
+
+    def _check_policy(self) -> None:
+        """Apply the ``policy.yaml`` layers (see :mod:`rayspec.policy` and ``docs/policy.md``).
+
+        This is the only place the loader consults policy. A violation is reported here, at load
+        time, with the workflow's own ``file:line`` *and* the policy layer that imposed the
+        restriction — so a run the policy forbids never starts and never spends money finding
+        out. Discovery is local: ``$RAYSPEC_POLICY``, the project file, the user file, nothing
+        else. Denials the policy imposes on an agent's tools are folded into that agent's
+        ``tools.deny`` here, which is what turns the policy from a check into enforcement.
+        """
+        effective = self.policy
+        if effective is None:
+            effective = load_policy(self._policy_root(), home=self.rw.home)
+        if effective.is_empty:
+            return
+        outcome = check_policy(self.rw, effective, capabilities_for=self.caps_for)
+        for problem in outcome.errors:
+            self.report.error(problem.where, problem.message, location=problem.location)
+        for problem in outcome.warnings:
+            self.report.warn(problem.where, problem.message, location=problem.location)
+        for key, entries in sorted(outcome.tool_denials.items()):
+            agent = self.rw.agents[key]
+            deny = [*agent.tools.deny, *(e for e in entries if e not in agent.tools.deny)]
+            tools = ToolsSpec(allow=list(agent.tools.allow), deny=deny)
+            self.rw.agents[key] = dataclasses.replace(agent, tools=tools)
+
+    def _policy_root(self) -> Path:
+        """The project root the policy layers are discovered against."""
+        if self.rw.project_root is not None:
+            return self.rw.project_root
+        base = self.rw.base_dir
+        return base.parent if base.name == ".rayspec" else base
 
     # -- graphs -------------------------------------------------------------------------------
 
@@ -1057,6 +1098,7 @@ def validate_workflow(
     template_checker: TemplateChecker | None = None,
     on_unsupported: OnUnsupported = "error",
     provider_ids: Iterable[str] = (),
+    policy: EffectivePolicy | None = None,
 ) -> ValidationReport:
     """Validate a loaded workflow; never raises.
 
@@ -1065,6 +1107,10 @@ def validate_workflow(
     ``template_checker`` enables compile + reference checks. Capability mismatches are errors
     unless ``on_unsupported == "warn"`` or the workflow sets ``defaults.on_unsupported: warn``.
     ``provider_ids`` are used to name alternatives in the fix hint.
+
+    ``policy`` are the ``policy.yaml`` layers to enforce; the default (``None``) discovers them
+    from the workflow's own project root, ``$RAYSPEC_HOME`` and ``$RAYSPEC_POLICY``. Pass an
+    empty :class:`~rayspec.policy.EffectivePolicy` to validate without any policy at all.
     """
     warn = on_unsupported == "warn" or resolved.workflow.defaults.on_unsupported == "warn"
     validator = _Validator(
@@ -1073,6 +1119,7 @@ def validate_workflow(
         template_checker=template_checker,
         warn_unsupported=warn,
         provider_ids=list(provider_ids),
+        policy=policy,
     )
     try:
         return validator.run()

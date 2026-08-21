@@ -170,6 +170,11 @@ class ResolvedWorkflow:
     source_files: list[Path]
     warnings: list[str]
     step_locations: dict[str, StepLocation]
+    #: the roots the document was loaded from — what the policy layers are discovered against
+    #: (``None`` for a ``ResolvedWorkflow`` built by hand; the validator then falls back to
+    #: ``base_dir`` and ``$RAYSPEC_HOME``)
+    project_root: Path | None = None
+    home: Path | None = None
 
     # -- navigation ---------------------------------------------------------------------------
 
@@ -786,6 +791,8 @@ def load_workflow(
         source_files=sorted(loader.source_files, key=loader.label),
         warnings=loader.warnings,
         step_locations=loader.step_locations,
+        project_root=project_root,
+        home=home,
     )
 
 
