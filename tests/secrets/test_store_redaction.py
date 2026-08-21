@@ -207,3 +207,95 @@ def test_the_redactor_is_part_of_the_run_store_protocol(tmp_path: Path) -> None:
     assert "redactor" in RunStore.__annotations__
     store: RunStore = _store(tmp_path, Redactor.build({"token": SECRET}))
     assert store.redactor.redact(SECRET) == "[REDACTED:token]"
+
+
+# -- the record is redacted as a VALUE, never as serialised text --------------------------------
+
+
+def test_a_numeric_secret_keeps_run_json_parseable(tmp_path: Path) -> None:
+    """Redacting the serialised text rewrites ``"budget": 4242`` to an unquoted marker and the
+    checkpoint stops parsing — taking ``show``/``resume``/``runs`` down with it."""
+    store = _store(tmp_path, Redactor.build({"pin": "4242"}))
+    run = _run()
+    run.outputs = {"budget": 4242, "note": "account 4242 is the one"}
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert json.loads(text)  # parses at all
+    assert "4242" not in text
+    assert store.load("r1").outputs == {
+        "budget": "[REDACTED:pin]",
+        "note": "account [REDACTED:pin] is the one",
+    }
+
+
+def test_a_numeric_secret_does_not_eat_a_longer_number(tmp_path: Path) -> None:
+    """``91234`` merely CONTAINS the secret; replacing the digits inside it would leave
+    ``9[REDACTED:pin]`` where a JSON number belongs."""
+    store = _store(tmp_path, Redactor.build({"pin": "1234"}))
+    run = _run()
+    run.outputs = {"other": 91234, "exact": 1234}
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert json.loads(text)
+    assert store.load("r1").outputs == {"other": 91234, "exact": "[REDACTED:pin]"}
+
+
+def test_a_structural_number_equal_to_a_secret_is_left_alone(tmp_path: Path) -> None:
+    """A step duration that happens to equal the secret is a coincidence, not a leak: turning it
+    into a marker string would only make the record unreadable."""
+    store = _store(tmp_path, Redactor.build({"pin": "1234"}))
+    run = _run()
+    run.steps["s"] = StepRecord(id="s", path="s", kind="shell", duration_ms=1234)
+    run.outputs = {"leak": 1234}
+    store.create(run)
+    reloaded = store.load("r1")
+    assert reloaded.steps["s"].duration_ms == 1234
+    assert reloaded.outputs == {"leak": "[REDACTED:pin]"}
+
+
+def test_a_secret_with_quotes_and_newlines_never_reaches_run_json(tmp_path: Path) -> None:
+    value = 'a"b\\c\nd\te'
+    store = _store(tmp_path, Redactor.build({"token": value}))
+    run = _run()
+    run.outputs = {"echoed": f"<<{value}>>"}
+    run.reason = f"failed on {value}"
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert json.loads(text)
+    assert value not in text and json.dumps(value)[1:-1] not in text
+
+
+def test_a_unicode_secret_never_reaches_run_json(tmp_path: Path) -> None:
+    value = "pässwörd-ﬁ-🔐"
+    store = _store(tmp_path, Redactor.build({"token": value}))
+    run = _run()
+    run.outputs = {"echoed": value}
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert json.loads(text)
+    assert value not in text
+
+
+def test_a_numeric_secret_keeps_events_jsonl_parseable(tmp_path: Path) -> None:
+    store = _store(tmp_path, Redactor.build({"pin": "4242"}))
+    store.create(_run())
+    store.append_event(
+        "r1", RunEvent(type=EventType.WARNING, run_id="r1", data={"budget": 4242, "n": 94242})
+    )
+    line = (store.run_dir("r1") / "events.jsonl").read_text().strip()
+    assert json.loads(line)["data"] == {"budget": "[REDACTED:pin]", "n": 94242}
+    assert list(store.read_events("r1"))  # still readable through the store
+
+
+def test_a_numeric_secret_keeps_stream_jsonl_parseable(tmp_path: Path) -> None:
+    store = _store(tmp_path, Redactor.build({"pin": "4242"}))
+    store.create(_run())
+    store.append_stream(
+        "r1", "s", StreamRecord(kind="tool_call", name="t 4242", data={"arg": 4242})
+    )
+    store.flush_streams("r1")
+    line = (store.step_dir("r1", "s") / "stream.jsonl").read_text().strip()
+    parsed = json.loads(line)
+    assert parsed["data"] == {"arg": "[REDACTED:pin]"}
+    assert parsed["name"] == "t [REDACTED:pin]"
+    assert parsed["attempt"] == 1

@@ -6,7 +6,10 @@ through and nothing about runs, stores, sinks or configuration; the callers wire
 
 * :class:`~rayspec.store.file.FileRunStore` redacts every byte it writes (``run.json``,
   ``events.jsonl``, ``stream.jsonl``, output files) — a writer that goes through the store is
-  covered automatically;
+  covered automatically. Anything JSON-shaped goes through :meth:`Redactor.redact_dump` /
+  :meth:`Redactor.redact_obj`, which work on the PARSED value: replacing a secret in the
+  serialised text turns a bare JSON token (a numeric secret) into an unquoted marker and leaves
+  a file that no longer parses;
 * the shared subprocess runner redacts ``stdout.log``/``stderr.log`` and the stdout/stderr
   stream records as they are produced;
 * :class:`RedactingSink` wraps the event sinks so the console and ``--json`` are covered too.
@@ -27,14 +30,19 @@ names them so a caller can warn.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ValidationError
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from rayspec.events.model import RunEvent, StreamRecord
+
+_log = logging.getLogger(__name__)
 
 #: The replacement text; ``name`` is the secret's name or the detector that matched.
 REDACTION = "[REDACTED:{name}]"
@@ -45,6 +53,9 @@ PEM_MAX_BODY = 8192
 #: Upper bound on what a :class:`StreamRedactor` holds back for a detector, per detector; the
 #: name is kept because it is the documented worst case of the short-token detectors.
 DETECTOR_HOLD = 512
+#: How often :meth:`Redactor.redact_dump` may undo a substitution a model cannot hold. Every
+#: round puts back everything the validator complained about, so one is nearly always enough.
+_MAX_UNDO_ROUNDS = 8
 
 #: Opt-in builtin detectors (``config.redact.detectors``) — off by default on purpose: a false
 #: positive in a run log is worse than the gap. Every pattern is BOUNDED, because the bound is
@@ -207,33 +218,116 @@ class Redactor:
             text = pattern.sub(REDACTION.format(name=name), text)
         return text
 
-    def redact_obj(self, value: Any) -> Any:
+    def redact_obj(self, value: Any, *, numbers: bool = True) -> Any:
         """:meth:`redact` applied to every string inside a JSON-shaped value.
 
         A *number* that IS a secret (a numeric account id, a PIN, a numeric token) becomes the
         marker string: redacting the serialised text instead would replace a bare JSON token
-        with ``[REDACTED:…]`` and leave an invalid document behind.
+        with ``[REDACTED:…]`` and leave an invalid document behind. Only a number whose whole
+        text equals a secret is replaced — rewriting the digits *inside* a longer number would
+        produce the same broken document.
+
+        ``numbers=False`` leaves every number alone. It is for the caller that has just
+        discovered a substitution landed in a position where a string is not admissible (see
+        :meth:`redact_dump`): there the match is a coincidence rather than a leak.
         """
         if not self:
             return value
         if isinstance(value, str):
             return self.redact(value)
         if isinstance(value, Mapping):
-            return {k: self.redact_obj(v) for k, v in value.items()}
+            return {k: self.redact_obj(v, numbers=numbers) for k, v in value.items()}
         if isinstance(value, list | tuple):
-            return [self.redact_obj(v) for v in value]
+            return [self.redact_obj(v, numbers=numbers) for v in value]
         if isinstance(value, bool) or value is None:
             return value  # `true`/`null` are too common to match a value against
-        if isinstance(value, int | float):
+        if numbers and isinstance(value, int | float):
             text = str(value)
             for needle, replacement in self.literals:
                 if needle == text:
                     return replacement
         return value
 
+    def redact_dump(self, model: BaseModel) -> Any:
+        """``model`` as a JSON-able mapping with every secret replaced in the PARSED values.
+
+        This is what a writer must persist a record through. Redacting the *serialised* text
+        instead corrupts the document whenever a secret is a bare JSON token: a numeric secret
+        rewrites ``"budget": 4242`` to an unquoted ``"budget": [REDACTED:pin]``, and the file
+        no longer parses — a checkpoint that cannot be read back is worse than the leak it was
+        trying to prevent.
+
+        A substitution that would make the dump invalid *for its model* is undone at exactly the
+        field it broke, and nowhere else: a structural number (a duration, a token count, an exit
+        code) that happens to equal a secret is a coincidence rather than a leak, and it cannot
+        hold a marker string. Every free-form value keeps its redaction. If the dump is still
+        invalid after that, the redacted form is written anyway and the caller is warned — a
+        persisted secret is the worse outcome.
+        """
+        data = model.model_dump(mode="json")
+        if not self:
+            return data
+        out = self.redact_obj(data)
+        cls = type(model)
+        for _ in range(_MAX_UNDO_ROUNDS):
+            error = _validation_error(cls, out)
+            if error is None:
+                return out
+            if not _restore_originals(out, data, error):
+                break
+        _log.warning(
+            "redaction leaves this %s unreadable; writing it redacted anyway, because a "
+            "persisted secret is worse than an unreadable record",
+            cls.__name__,
+        )
+        return out
+
     def stream(self) -> StreamRedactor:
         """A fresh :class:`StreamRedactor` over this redactor."""
         return StreamRedactor(self)
+
+
+def _validation_error(cls: type[BaseModel], data: Any) -> ValidationError | None:
+    """The error ``data`` fails ``cls`` with, ``None`` when it parses back (:meth:`redact_dump`)."""
+    try:
+        cls.model_validate(data)
+    except ValidationError as exc:
+        return exc
+    return None
+
+
+def _member(container: Any, key: Any) -> bool:
+    """True when ``key`` addresses an element of the mapping/sequence ``container``."""
+    if isinstance(container, dict):
+        return key in container
+    if isinstance(container, list):
+        return isinstance(key, int) and -len(container) <= key < len(container)
+    return False
+
+
+def _restore_originals(out: Any, data: Any, error: ValidationError) -> bool:
+    """Put the original value back at every location ``error`` complains about.
+
+    Returns True when at least one location changed, so :meth:`Redactor.redact_dump` knows
+    whether another round can make progress. A location pydantic reports below the leaf (the
+    ``"int"`` tail of a union) is resolved to the deepest element that exists in both dumps.
+    """
+    changed = False
+    for entry in error.errors():
+        target: tuple[Any, Any, Any] | None = None
+        cursor_out, cursor_data = out, data
+        for part in entry["loc"]:
+            if not (_member(cursor_out, part) and _member(cursor_data, part)):
+                break
+            target = (cursor_out, cursor_data, part)
+            cursor_out, cursor_data = cursor_out[part], cursor_data[part]
+        if target is None:
+            continue
+        container_out, container_data, key = target
+        if container_out[key] != container_data[key]:
+            container_out[key] = container_data[key]
+            changed = True
+    return changed
 
 
 #: The shared no-op redactor (a store or sink without secrets uses this).

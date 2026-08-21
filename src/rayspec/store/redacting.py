@@ -165,10 +165,13 @@ class RedactingStore:
         secret value is a number (a PIN, a numeric account id) is a bare JSON token, and
         replacing it in the serialised text would leave a document that no longer parses —
         turning a checkpoint write into a run-ending :class:`ValidationError`.
+        :meth:`~rayspec.redact.Redactor.redact_dump` is what keeps the copy a valid record: a
+        marker cannot land in a field that only holds a number, so re-validating it here cannot
+        fail on a coincidence.
         """
         if not self.redactor:
             return run
-        return type(run).model_validate(self.redactor.redact_obj(run.model_dump(mode="json")))
+        return type(run).model_validate(self.redactor.redact_dump(run))
 
     def _output(self, content: str, *, kind: str) -> str:
         """Redact one output body.

@@ -63,7 +63,7 @@ import threading
 from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, TextIO, TypeVar, cast
+from typing import Any, BinaryIO, TextIO, TypeVar, cast
 
 from pydantic import ValidationError
 
@@ -222,10 +222,16 @@ class FileRunStore:
 
         The run directory skeleton (``steps/``, ``artifacts/``, ``tmp/``) is ensured as well, so
         a run saved without :meth:`create` is still a complete run dir.
+
+        The record is redacted on the PARSED values (:meth:`~rayspec.redact.Redactor.redact_dump`)
+        and serialised afterwards. Redacting the serialised text instead breaks the checkpoint
+        for a secret that is a bare JSON token: ``"budget": 4242`` becomes an unquoted
+        ``[REDACTED:pin]``, ``run.json`` stops parsing and ``show``/``resume``/``runs`` go down
+        with it.
         """
         run_dir = self.run_dir(run.run_id)
         _ensure_skeleton(run_dir)
-        payload = self.redactor.redact(run.model_dump_json(indent=2) + "\n")
+        payload = _record_json(run, self.redactor)
         with self._save_lock:
             tmp = run_dir / f"{RUN_JSON}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
             try:
@@ -464,9 +470,7 @@ class FileRunStore:
                 self.flush_streams(run_id, event.step_path)
             elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
                 self.flush_streams(run_id)
-        self._append_line(
-            self.run_dir(run_id) / EVENTS_JSONL, self.redactor.redact(event.to_json())
-        )
+        self._append_line(self.run_dir(run_id) / EVENTS_JSONL, _event_json(event, self.redactor))
 
     def append_stream(self, run_id: str, step_path: str, record: StreamRecord) -> None:
         """Append one stream record to ``steps/<path>/stream.jsonl`` (one line, flushed).
@@ -480,9 +484,7 @@ class FileRunStore:
         """
         if self.redactor:
             record = self._redact_stream(run_id, step_path, record)
-        self._append_line(
-            self.step_dir(run_id, step_path) / STREAM_JSONL, self.redactor.redact(record.to_json())
-        )
+        self._append_line(self.step_dir(run_id, step_path) / STREAM_JSONL, record.to_json())
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
         """Write the text a :meth:`append_stream` boundary buffer is still holding back.
@@ -497,20 +499,27 @@ class FileRunStore:
             tail = stream.flush()
             if tail:
                 record = StreamRecord(kind=key[2], attempt=key[3], text=tail)
-                self._append_line(
-                    self.step_dir(run_id, key[1]) / STREAM_JSONL,
-                    self.redactor.redact(record.to_json()),
-                )
+                self._append_line(self.step_dir(run_id, key[1]) / STREAM_JSONL, record.to_json())
 
     def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
-        """``record`` with its ``text`` passed through the step's boundary-safe buffer."""
-        if not record.text:
-            return record
-        key = (run_id, step_path, record.kind, record.attempt)
-        stream = self._stream_redactors.get(key)
-        if stream is None:
-            stream = self._stream_redactors[key] = StreamRedactor(self.redactor)
-        return record.model_copy(update={"text": stream.feed(record.text)})
+        """``record`` with every part that can carry a value redacted.
+
+        ``text`` goes through the step's boundary-safe buffer; ``data`` and ``name`` are
+        redacted as PARSED values, so a tool argument that is a numeric secret becomes the
+        marker instead of an unquoted token in the middle of the line.
+        """
+        update: dict[str, Any] = {}
+        if record.text:
+            key = (run_id, step_path, record.kind, record.attempt)
+            stream = self._stream_redactors.get(key)
+            if stream is None:
+                stream = self._stream_redactors[key] = StreamRedactor(self.redactor)
+            update["text"] = stream.feed(record.text)
+        if record.data:
+            update["data"] = self.redactor.redact_obj(record.data)
+        if record.name:
+            update["name"] = self.redactor.redact(record.name)
+        return record.model_copy(update=update) if update else record
 
     def read_events(self, run_id: str) -> Iterator[RunEvent]:
         """Iterate ``events.jsonl`` (empty if absent).
@@ -559,6 +568,32 @@ class FileRunStore:
         if not path.resolve(strict=False).is_relative_to(run_dir.resolve(strict=False)):
             raise ValueError(f"output_ref {output_ref!r} escapes the run directory")
         return path
+
+
+def _record_json(run: RunRecord, redactor: Redactor) -> str:
+    """The bytes of ``run.json``: the record serialised with every secret VALUE replaced.
+
+    Without a redactor pydantic serialises directly — the fast path a run with no secrets
+    takes. With one the JSON-able dump is redacted first and serialised afterwards; see
+    :meth:`~rayspec.redact.Redactor.redact_dump` for why the serialised text is never redacted
+    instead.
+    """
+    if not redactor:
+        return run.model_dump_json(indent=2) + "\n"
+    return json.dumps(redactor.redact_dump(run), indent=2, ensure_ascii=False) + "\n"
+
+
+def _event_json(event: RunEvent, redactor: Redactor) -> str:
+    """One ``events.jsonl`` line: the event with its ``data`` redacted as parsed values.
+
+    ``data`` is the only free-form part of a :class:`~rayspec.events.model.RunEvent` and
+    therefore the only one that can carry a value; type, run id, timestamp and step path are
+    structural. Redacting the serialised line instead would rewrite a numeric value in ``data``
+    into an unquoted marker and tear the line.
+    """
+    if not redactor or not event.data:
+        return event.to_json()
+    return event.model_copy(update={"data": redactor.redact_obj(event.data)}).to_json()
 
 
 def _check_run_id(run_id: str) -> str:
