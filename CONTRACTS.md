@@ -1000,10 +1000,10 @@ from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
     #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
-    #   per graph, for the scope it is running:
+    #   per graph, for the scope it is running — and NEVER options.fail_fast or a root-only
+    #   accessor, because the policy differs per sibling list:
     #     RunContext.fail_fast_for(scope)  = options.fail_fast OR scope.on_step_failure == "fail_fast"
     #     RunContext.keep_going_for(scope) = scope.on_step_failure == "continue" AND NOT options.fail_fast
-    #   (RunContext.fail_fast / .keep_going are the same two for the ROOT workflow's own steps.)
     #   The flag may only ever TIGHTEN: it enables fail-fast and beats "continue", and never
     #   downgrades a workflow that asked for fail_fast. "drain" = 1.0.0 behaviour.
     #   keep_going relaxes draining caused by a FAILURE only — a pause/stop still halts new work,
@@ -1015,6 +1015,15 @@ from rayspec.engine.context import (
     #   the parent scope's. So each:/loop: bodies always inherit (they share their parent's
     #   Defaults) and an include:d workflow that writes the key governs its own body — lexical,
     #   like defaults.timeout, unlike the run-wide defaults.max_parallel.
+    #   NESTING ONLY TIGHTENS. context.ON_STEP_FAILURE_ORDER = ("continue", "drain", "fail_fast")
+    #   is the strictness order; context.strictest_on_step_failure(*policies) picks the maximum.
+    #   ExecScope.on_step_failure_floor (additive, context.on_step_failure_floor) is the strictest
+    #   policy this scope or an enclosing one STATED, and a stated policy is clamped to at least
+    #   that floor — an include:d block can make its own body more careful than the run that
+    #   included it, never less. The floor is what enclosing workflows STATED (context.
+    #   stated_on_step_failure reads pydantic's model_fields_set), not what was in force for them:
+    #   a run that never writes the key has asked for nothing, so a block may still state
+    #   "continue" for its own body while the run keeps the "drain" default.
     #   NOT the same knob as each.on_failure: continue, which is per-ITEM (does a failed item
     #   fail the each step?) — see docs/schema.md under `each:`.
     #   DESIGN RULE (deliberate, not inherited from v1.0.0): the --fail-fast

@@ -5,6 +5,9 @@ The policy is lexically scoped, like ``defaults.timeout``: an ``include:``d work
 one governs its own body, one that says nothing inherits the including run's, and ``--fail-fast``
 tightens every scope from the outside. ``loop:``/``each:`` bodies share their parent's defaults
 and therefore always inherit.
+
+Nesting only ever TIGHTENS (``continue < drain < fail_fast``): a block may make its own body more
+careful than the run that includes it, never less.
 """
 
 from __future__ import annotations
@@ -12,7 +15,11 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from rayspec.engine.context import RunOptions
+from rayspec.engine.context import (
+    ON_STEP_FAILURE_ORDER,
+    RunOptions,
+    strictest_on_step_failure,
+)
 from rayspec.engine.scheduler import run_graph
 from rayspec.schema import StepStatus
 
@@ -56,7 +63,8 @@ async def test_included_workflow_governs_its_own_body(harness: Harness) -> None:
     await run_graph(g.graph, g.scope, g.ctx)
     statuses = harness.statuses(g.run.run_id)
     assert statuses["run_block/bad"] == "failed"
-    # the root drains by default; the body said ``continue``, so its own branches keep going
+    # the root never wrote the key, so it asked for nothing and sets no floor; the body
+    # said ``continue``, so its own branches keep going
     assert statuses["run_block/later"] == "succeeded"
 
 
@@ -122,3 +130,64 @@ async def test_cli_fail_fast_still_tightens_an_included_body(harness: Harness) -
     with anyio.fail_after(5):
         await run_graph(g.graph, g.scope, g.ctx)
     assert harness.statuses(g.run.run_id)["run_block/later"] != "succeeded"
+
+
+# --------------------------------------------------------------------------------------------------
+# nesting only ever tightens
+# --------------------------------------------------------------------------------------------------
+
+
+def test_the_strictness_order_is_written_down() -> None:
+    """``continue < drain < fail_fast``: the order every nested scope is clamped against."""
+    assert ON_STEP_FAILURE_ORDER == ("continue", "drain", "fail_fast")
+    assert strictest_on_step_failure("continue", "fail_fast") == "fail_fast"
+    assert strictest_on_step_failure("drain", "continue") == "drain"
+    assert strictest_on_step_failure("drain", "drain") == "drain"
+
+
+async def test_an_included_workflow_cannot_relax_the_including_run(harness: Harness) -> None:
+    """``continue`` in a block never loosens a run that asked for ``fail_fast``.
+
+    ``on_step_failure`` is a blast-radius control: the root author asked for new work to stop the
+    moment something fails. A block that states ``continue`` may only tighten, so the strictest of
+    the two stands and the block's independent branch is not scheduled after ``bad`` failed.
+    """
+    harness.workflow("block", BLOCK.format(policy="continue"))
+    harness.workflow("t", wf("  - {id: run_block, include: block}\n", on_step_failure="fail_fast"))
+    g = make_graph_harness(harness, harness.load("t"))
+    with anyio.fail_after(5):
+        await run_graph(g.graph, g.scope, g.ctx)
+    statuses = harness.statuses(g.run.run_id)
+    assert statuses["run_block/bad"] == "failed"
+    assert statuses["run_block/later"] == "skipped", "a block must not relax the run's fail_fast"
+
+
+async def test_an_included_workflow_cannot_relax_a_run_that_drains(harness: Harness) -> None:
+    """The same rule one notch down: ``continue`` in a block does not undo the run's ``drain``."""
+    harness.workflow("block", BLOCK.format(policy="continue"))
+    harness.workflow("t", wf("  - {id: run_block, include: block}\n", on_step_failure="drain"))
+    g = make_graph_harness(harness, harness.load("t"))
+    await run_graph(g.graph, g.scope, g.ctx)
+    statuses = harness.statuses(g.run.run_id)
+    assert statuses["run_block/later"] == "skipped"
+    assert harness.record(g.run.run_id).steps["run_block/later"].skip_reason == "run_failed"
+
+
+async def test_a_nested_include_cannot_relax_an_outer_block(harness: Harness) -> None:
+    """Tightening accumulates: an inner block sees the strictest policy of every enclosing scope."""
+    harness.workflow("inner", BLOCK.format(policy="continue"))
+    harness.workflow(
+        "outer",
+        """
+rayspec: 1
+name: outer
+defaults:
+  on_step_failure: drain
+steps:
+  - {id: nested, include: inner}
+""",
+    )
+    harness.workflow("t", wf("  - {id: run_block, include: outer}\n"))
+    g = make_graph_harness(harness, harness.load("t"))
+    await run_graph(g.graph, g.scope, g.ctx)
+    assert harness.statuses(g.run.run_id)["run_block/nested/later"] == "skipped"

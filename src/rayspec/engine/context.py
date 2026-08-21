@@ -258,19 +258,61 @@ class StepOutcome:
     event_data: dict[str, Any] = field(default_factory=dict)
 
 
+#: ``defaults.on_step_failure`` from the most permissive to the most restrictive. A failure
+#: policy is a blast-radius control, so it may only ever be TIGHTENED from the outside in:
+#: ``continue`` keeps scheduling after a failure, ``drain`` launches nothing new, ``fail_fast``
+#: also cancels what is already running.
+ON_STEP_FAILURE_ORDER: tuple[str, ...] = ("continue", "drain", "fail_fast")
+
+
+def strictest_on_step_failure(*policies: str) -> str:
+    """The most restrictive of ``policies`` under :data:`ON_STEP_FAILURE_ORDER`."""
+    return max(policies, key=ON_STEP_FAILURE_ORDER.index)
+
+
+def stated_on_step_failure(defaults: Defaults) -> str | None:
+    """``defaults.on_step_failure`` when the workflow WROTE the key, else ``None``.
+
+    Writing the key is a statement; not writing it accepts the ``drain`` default. The two are
+    not the same thing, which is why this reads ``model_fields_set`` rather than the value.
+    """
+    if "on_step_failure" not in defaults.model_fields_set:
+        return None
+    return defaults.on_step_failure
+
+
+def on_step_failure_floor(defaults: Defaults, parent: ExecScope | None) -> str:
+    """The strictest policy this scope or any enclosing one STATED — the floor nesting may not
+    go below. ``continue`` (the bottom of :data:`ON_STEP_FAILURE_ORDER`) means none did."""
+    stated = stated_on_step_failure(defaults) or ON_STEP_FAILURE_ORDER[0]
+    below = ON_STEP_FAILURE_ORDER[0] if parent is None else parent.on_step_failure_floor
+    return strictest_on_step_failure(stated, below)
+
+
 def effective_on_step_failure(defaults: Defaults, parent: ExecScope | None) -> str:
     """The failure policy in force for a scope whose defaults are ``defaults``.
 
     ``defaults.on_step_failure`` is lexically scoped, like ``defaults.timeout`` and unlike the
     run-wide ``defaults.max_parallel``: an ``include:``d workflow that *states* a policy governs
     its own body, and one that says nothing inherits the including run's. ``loop:``/``each:``
-    bodies share their parent's defaults, so they always inherit. The ``--fail-fast`` flag is not
-    part of this — it is an operator override that tightens every scope
+    bodies share their parent's defaults, so they always inherit.
+
+    A stated policy may only ever TIGHTEN what an enclosing workflow stated
+    (:data:`ON_STEP_FAILURE_ORDER`, :func:`on_step_failure_floor`). ``on_step_failure: fail_fast``
+    on the root workflow says "when something fails, stop launching agents and shell steps at
+    once", and that is a guarantee about the whole run: a vendored block writing ``continue`` must
+    not be able to take it away and keep spending tokens in somebody else's workspace. The floor
+    is what enclosing scopes *stated*, not what was in force for them — a run that never mentions
+    the key has asked for nothing, so a block may still state ``continue`` for its own body. The
+    ``--fail-fast`` flag is outside this scoping and tightens every scope at once
     (:meth:`RunContext.fail_fast_for`).
     """
-    if parent is None or "on_step_failure" in defaults.model_fields_set:
+    stated = stated_on_step_failure(defaults)
+    if parent is None:
         return defaults.on_step_failure
-    return parent.on_step_failure
+    if stated is None:
+        return parent.on_step_failure
+    return strictest_on_step_failure(parent.on_step_failure_floor, stated)
 
 
 class ExecScope:
@@ -302,6 +344,9 @@ class ExecScope:
         self.parent = parent
         #: why running steps were cancelled (set by the scheduler before cancelling a graph)
         self.cancel_reason: str | None = None
+        #: the strictest policy this scope or an enclosing one STATED — see
+        #: :func:`on_step_failure_floor`
+        self.on_step_failure_floor: str = on_step_failure_floor(defaults, parent)
         #: ``drain`` | ``fail_fast`` | ``continue`` for THIS sibling list — see
         #: :func:`effective_on_step_failure`
         self.on_step_failure: str = effective_on_step_failure(defaults, parent)
@@ -777,20 +822,6 @@ class RunContext:
             return True
         return scope.on_step_failure == "fail_fast"
 
-    @property
-    def keep_going(self) -> bool:
-        """:meth:`keep_going_for` for the ROOT workflow's own steps."""
-        if self.options.fail_fast:
-            return False
-        return self.resolved.workflow.defaults.on_step_failure == "continue"
-
-    @property
-    def fail_fast(self) -> bool:
-        """:meth:`fail_fast_for` for the ROOT workflow's own steps."""
-        if self.options.fail_fast:
-            return True
-        return self.resolved.workflow.defaults.on_step_failure == "fail_fast"
-
     # -- run-level circuit breaker --------------------------------------------------------
 
     @property
@@ -990,6 +1021,7 @@ __all__ = [
     "CAP_KNOBS",
     "CAP_REASON_PREFIXES",
     "LEAF_KINDS",
+    "ON_STEP_FAILURE_ORDER",
     "REUSABLE_KINDS",
     "CapBreach",
     "ExecScope",
@@ -1007,7 +1039,10 @@ __all__ = [
     "error_info",
     "is_cap_reason",
     "merge_cost_source",
+    "on_step_failure_floor",
     "sha256_json",
+    "stated_on_step_failure",
+    "strictest_on_step_failure",
     "time_reason",
     "totals_of",
     "usage_from_mapping",

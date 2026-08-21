@@ -418,6 +418,14 @@ failed items under `continue`. Attribute `items`: `[{index, item, status, output
 > workflow is therefore a statement, not a default — it tightens a run that asked for `continue`.
 > `--fail-fast` on the command line is not part of this scoping: it is an operator override that
 > tightens every scope at once.
+>
+> **Nesting only tightens.** The three policies are ordered `continue` < `drain` < `fail_fast`,
+> and an included workflow may only move *up* that order from what an enclosing workflow stated.
+> `on_step_failure: fail_fast` on your root workflow is a blast-radius control — "when something
+> fails, launch nothing new" — so a block you vendored cannot write `continue` and quietly hand
+> your budget and your workspace back to the failing run; the block's body runs `fail_fast` too.
+> The floor is what enclosing workflows *stated*: a run that never mentions the key has asked for
+> nothing, so a block may still state `continue` for its own body.
 
 > **Two different `continue`s — they do not mean the same thing.** `each.on_failure: continue`
 > (here) is about **items**: a failed item does not fail the `each` step. `defaults.on_step_failure:
