@@ -32,6 +32,7 @@
   "steps": {
     "changed": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -71,6 +72,7 @@
     },
     "checkout": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -110,6 +112,7 @@
     },
     "comment": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -149,6 +152,7 @@
     },
     "review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -188,6 +192,7 @@
     },
     "review/claude_review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -230,6 +235,7 @@
     },
     "review/codex_review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "table",
       "cost_usd": 0.00432,
@@ -272,6 +278,7 @@
     },
     "review/judge": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -314,6 +321,7 @@
     },
     "review/lint": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

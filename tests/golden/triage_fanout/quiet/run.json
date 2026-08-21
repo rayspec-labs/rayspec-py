@@ -38,6 +38,7 @@
   "steps": {
     "alert": {
       "approved": null,
+      "artifacts": [],
       "attempts": 0,
       "cost_source": "none",
       "cost_usd": null,
@@ -77,6 +78,7 @@
     },
     "cleanup": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -116,6 +118,7 @@
     },
     "digest": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -158,6 +161,7 @@
     },
     "summarize": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -197,6 +201,7 @@
     },
     "triage": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -240,6 +245,7 @@
     },
     "triage[0]/classify": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -282,6 +288,7 @@
     },
     "triage[0]/view": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -321,6 +328,7 @@
     },
     "triage[1]/classify": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -363,6 +371,7 @@
     },
     "triage[1]/view": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

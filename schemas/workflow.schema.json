@@ -410,6 +410,15 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
+        },
         "approve": {
           "anyOf": [
             {
@@ -522,6 +531,24 @@
             }
           ],
           "description": "A token count (500000) or a string ('500k', '1.5M')."
+        },
+        "timeout_total": {
+          "default": null,
+          "title": "Timeout Total",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
         }
       },
       "title": "Defaults",
@@ -595,6 +622,15 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "each": {
           "title": "Each",
@@ -736,6 +772,15 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "include": {
           "title": "Include",
@@ -977,6 +1022,15 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
+        },
         "loop": {
           "$ref": "#/$defs/LoopSpec"
         }
@@ -1119,6 +1173,15 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "retry": {
           "anyOf": [
@@ -1295,6 +1358,15 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "retry": {
           "anyOf": [
@@ -1479,6 +1551,15 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
+        },
         "retry": {
           "anyOf": [
             {
@@ -1651,6 +1732,15 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "title": "Artifacts",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "stop": {
           "$ref": "#/$defs/StopSpec"

@@ -4,6 +4,42 @@
   "title": "RunRecord",
   "description": "One rayspec run record (<run dir>/run.json).",
   "$defs": {
+    "ArtifactRef": {
+      "description": "One file a step promised (``artifacts:``) and delivered.\n\n``path`` is the path as declared (in normal form), relative to the step's working directory;\n``ref`` is the run-dir-relative location of the copy the store kept (``artifacts/<step\npath>/<path>``, ``None`` for a store that keeps no copies). ``sha256``/``size`` describe the\nstored bytes — the file's content AFTER redaction, which differs from what the step wrote\nonly where a secret was found; a store that keeps no copy reports the same digest, over the\nbytes it would have kept. Only the path is recorded — the content of an artifact never\nenters a record or an event.",
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "default": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "Decision": {
       "properties": {
         "approved": {
@@ -372,6 +408,13 @@
           "default": false,
           "title": "Usage Unknown",
           "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactRef"
+          },
+          "title": "Artifacts",
+          "type": "array"
         },
         "error": {
           "anyOf": [

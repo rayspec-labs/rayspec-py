@@ -31,6 +31,7 @@
   "steps": {
     "claude_review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -73,6 +74,7 @@
     },
     "codex_review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "table",
       "cost_usd": 0.00432,
@@ -115,6 +117,7 @@
     },
     "judge": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -157,6 +160,7 @@
     },
     "lint": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

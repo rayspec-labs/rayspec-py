@@ -44,15 +44,20 @@ outputs: {}               # name → template (deep-rendered when the run succee
 | `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **including inside `each:`/`loop:`/`include:` bodies** — the policy is run-level and global. **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
 | `budget_usd` | `null` | Run-level **cost cap** (circuit breaker): a positive USD amount (`1.5`, `"1.50"`, `"$1.50"`). Measured over the whole run from per-step cost — provider-reported, or estimated from the pricing table (`~$`); steps without any known cost cannot trip it. See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#run-level-budget-circuit-breaker). |
 | `max_tokens` | `null` | Run-level **token cap**: a positive integer or `"500k"` / `"1.5M"` (input + output tokens of every step, always known). Same breaker semantics as `budget_usd`. Shown by `rayspec plan`. |
+| `timeout_total` | `null` | Run-level **wall-clock cap**: a [duration](#durations) > 0 (`30m`, `2h`). Measured from the run's *original* start, so a resume keeps counting — `2h` is two hours of run, not two hours per attempt. Same breaker semantics as `budget_usd`; not to be confused with `timeout` above, which is per attempt of one step. |
 
 When a cap is exceeded no new step starts (pending steps are skipped with `skip_reason:
-budget_exceeded`; `join: always` steps and resume replays still run), running steps finish
-(drain), and the run ends `failed` with reason
-`budget exceeded (tokens 12,000 > max_tokens 10,000)` (exit 1). Raise the cap and resume
+budget_exceeded`; `join: always` steps and resume replays still run) — a step that is already
+waiting for a `max_parallel` slot is asked again when it gets one, so a backlog does not outlive
+the cap — running steps finish (drain), and the run ends `failed` with reason
+`budget exceeded (tokens 12,000 > max_tokens 10,000)` — or
+`time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` for `timeout_total` (exit 1). The
+three caps are one breaker: whichever trips first ends the run the same way. Raise the cap and resume
 (`rayspec resume <run> --force` — the workflow hash changed): finished steps are replayed and
 count towards the new cap, the rest runs. Caps apply to the root workflow only (an included
-workflow's `defaults.budget_usd`/`max_tokens` are ignored); the per-agent `budget_usd` is a
-different thing (one prompt step's native budget where the provider supports it).
+workflow's `defaults.budget_usd`/`max_tokens`/`timeout_total` are ignored); the per-agent
+`budget_usd` is a different thing (one prompt step's native budget where the provider supports
+it).
 
 ### `inputs`
 
@@ -300,6 +305,7 @@ Exactly one kind key per step. Fields that are valid on every kind:
 | `timeout` | `null` | [duration](#durations) > 0; per attempt for leaves, whole-step for composites; falls back to `defaults.timeout` |
 | `always_run` | `false` | ignore the resume cache (re-run on `--resume`) |
 | `allow_failure` | `false` | a failure is recorded as `failed` + `tolerated: true` (`ok: false`); joins treat it as satisfied; the run status is unaffected |
+| `artifacts` | `[]` | files this step promises to write, relative to its working directory (`cwd:` for `shell:`/`python:`, else the run's workdir). Checked after the step succeeds — a missing one, one that is not a regular file, or one outside the run's workspace, **fails the step** — then copied into the run directory and recorded with a sha256. Absolute paths, `~`, `..` and control characters are refused when the workflow loads, and so is `{{ … }}`: the entry is **not templated** — name a fixed file and put what varies per item in the step's `cwd:`, which *is* rendered. The same file declared twice is kept once. See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#declared-artifacts). |
 
 Leaf steps (`prompt`, `shell`, `python`) add:
 

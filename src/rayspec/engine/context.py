@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,7 +35,7 @@ from typing import Any
 import anyio
 from anyio import to_thread
 
-from rayspec.engine.approval import ApprovalPrompt
+from rayspec.engine.approval import ApprovalPrompt, humanize_duration
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
@@ -43,9 +43,10 @@ from rayspec.events.base import EventSink
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
+from rayspec.redact import Redactor
 from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import ErrorInfo, RunRecord, StepRecord
+from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord
 from rayspec.templating import (
     Scope,
     StepView,
@@ -62,6 +63,9 @@ REUSABLE_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python", "approv
 LEAF_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python"})
 #: ``skip_reason`` of steps that were not started because the run-level cap tripped.
 BUDGET_SKIP_REASON = "budget_exceeded"
+
+#: How much of an artifact is read at a time when the store keeps no copy of it.
+_ARTIFACT_CHUNK_BYTES = 1 << 20
 
 
 def budget_reason(
@@ -85,6 +89,23 @@ def budget_reason(
     if not parts:
         return None
     return f"budget exceeded ({', '.join(parts)})"
+
+
+def time_reason(elapsed_s: float | None, defaults: Defaults) -> str | None:
+    """``time limit exceeded (elapsed 2h 1m > timeout_total 2h 0m)`` when the run has been
+    going longer than ``defaults.timeout_total``, else ``None``.
+
+    The third run-level circuit breaker beside :func:`budget_reason`: same trip rule (strictly
+    greater), same consequence (no new step starts, running ones drain, the run ends failed).
+    ``elapsed_s`` is measured from the run's original start, so it survives a resume.
+    """
+    cap = defaults.timeout_total
+    if cap is None or elapsed_s is None or elapsed_s <= cap:
+        return None
+    return (
+        f"time limit exceeded (elapsed {humanize_duration(elapsed_s * 1000)} "
+        f"> timeout_total {humanize_duration(cap * 1000)})"
+    )
 
 
 def utcnow() -> datetime:
@@ -553,6 +574,51 @@ class RunContext:
             record.output_kind = kind
             record.output_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
+    async def write_artifacts(self, record: StepRecord, files: Sequence[tuple[str, Path]]) -> None:
+        """Copy the step's declared artifacts into the run dir and stamp ``record.artifacts``.
+
+        ``files`` is ``(declared path, absolute path)`` per artifact, already checked by
+        :mod:`rayspec.engine.executors.artifacts`. The copies go through the store (redacted,
+        ``0600``, atomic) in a worker thread under the persistence lock, like every other file
+        the run writes. A store that cannot keep a copy is not a step failure: the promise was
+        kept, so the artifact is recorded without a ``ref`` and a warning says why.
+        """
+        if not files:
+            return
+        async with self.lock:
+            warnings = await to_thread.run_sync(self._write_artifacts, record, list(files))
+        for message in warnings:
+            await self.warn(message)
+
+    def _write_artifacts(self, record: StepRecord, files: list[tuple[str, Path]]) -> list[str]:
+        """Store each artifact; returns the warnings the caller must emit."""
+        writer: Any = getattr(self.store, "write_artifact", None)
+        refs: list[ArtifactRef] = []
+        warnings: list[str] = []
+        for declared, path in files:
+            if callable(writer):
+                try:
+                    info: Any = writer(self.run.run_id, record.path, declared, path)
+                except OSError as exc:
+                    warnings.append(
+                        f"could not keep a copy of artifact {declared!r} of step "
+                        f"{record.path}: {exc}"
+                    )
+                else:
+                    refs.append(
+                        ArtifactRef(
+                            path=declared,
+                            ref=info.artifact_ref,
+                            sha256=info.sha256,
+                            size=info.size,
+                        )
+                    )
+                    continue
+            digest, size = _digest_of(path, self.store.redactor)
+            refs.append(ArtifactRef(path=declared, ref=None, sha256=digest, size=size))
+        record.artifacts = refs
+        return warnings
+
     async def save_run(self) -> None:
         """Save ``run.json`` (worker thread, under the persistence lock)."""
         async with self.lock:
@@ -633,9 +699,31 @@ class RunContext:
 
     @property
     def caps_set(self) -> bool:
-        """Whether the root workflow sets ``defaults.budget_usd`` or ``defaults.max_tokens``."""
+        """Whether the root workflow sets any run-level cap (``budget_usd`` / ``max_tokens`` /
+        ``timeout_total``)."""
         defaults = self.resolved.workflow.defaults
-        return defaults.budget_usd is not None or defaults.max_tokens is not None
+        return (
+            defaults.budget_usd is not None
+            or defaults.max_tokens is not None
+            or defaults.timeout_total is not None
+        )
+
+    @property
+    def time_capped(self) -> bool:
+        """Whether the root workflow sets ``defaults.timeout_total`` (the wall-clock cap)."""
+        return self.resolved.workflow.defaults.timeout_total is not None
+
+    def elapsed_s(self) -> float | None:
+        """Wall-clock seconds since the run's ORIGINAL start, or ``None`` before it started.
+
+        ``RunRecord.started_at`` is stamped once and kept by every resume entry, so a run with
+        ``timeout_total: 2h`` gets two hours of run — not two hours per attempt. Time spent
+        waiting at an approval gate is part of it.
+        """
+        started = self.run.started_at
+        if started is None:
+            return None
+        return max(0.0, (utcnow() - started).total_seconds())
 
     def budget_totals(self, pending: StepRecord | None = None) -> tuple[Usage, float | None, str]:
         """``(usage, cost_usd, cost_source)`` over the records accounted in this run (finished or
@@ -652,22 +740,30 @@ class RunContext:
         return totals_of(self.run.steps.values())
 
     async def check_budget(self, *, pending: StepRecord | None = None) -> str | None:
-        """Compare the run totals (:meth:`budget_totals`) with the root ``defaults`` caps; the
-        first time they are exceeded, remember the reason, emit a ``warning`` and return it.
-        Later calls just return the remembered reason."""
+        """Compare the run totals (:meth:`budget_totals`) and the elapsed wall clock
+        (:meth:`elapsed_s`) with the root ``defaults`` caps; the first time one of them is
+        exceeded, remember the reason, emit a ``warning`` and return it. Later calls just return
+        the remembered reason.
+
+        The cost/token caps and ``timeout_total`` are ONE breaker: whichever trips first sets
+        :attr:`budget_exceeded`, and the run drains and ends ``failed`` the same way."""
         if self.budget_exceeded is not None:
             return self.budget_exceeded
         if not self.caps_set:
             return None
+        defaults = self.resolved.workflow.defaults
         usage, cost, source = self.budget_totals(pending)
-        reason = budget_reason(usage, cost, source, self.resolved.workflow.defaults)
+        knob = "defaults.budget_usd / defaults.max_tokens"
+        reason = budget_reason(usage, cost, source, defaults)
+        if reason is None:
+            reason = time_reason(self.elapsed_s(), defaults)
+            knob = "defaults.timeout_total"
         if reason is None:
             return None
         self.budget_exceeded = reason
         await self.warn(
             f"{reason}: no new steps start, running steps finish; the run ends failed — "
-            "raise defaults.budget_usd / defaults.max_tokens and resume (--force: the workflow "
-            "hash changes)"
+            f"raise {knob} and resume (--force: the workflow hash changes)"
         )
         return reason
 
@@ -686,6 +782,33 @@ class RunContext:
 # --------------------------------------------------------------------------------------------------
 # helpers shared by scheduler/executors
 # --------------------------------------------------------------------------------------------------
+
+
+def _digest_of(path: Path, redactor: Redactor) -> tuple[str, int]:
+    """``(sha256, size)`` of a file as the store would KEEP it, read in chunks.
+
+    Used when the store keeps no copy: the record still describes what the step produced. The
+    bytes are streamed through ``redactor`` exactly as :meth:`FileRunStore.write_artifact` does,
+    so ``sha256``/``size`` mean the same thing whichever store is installed — and a file that
+    carried a ``secret: true`` value leaves no digest of the secret behind either.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    stream = redactor.stream() if redactor else None
+
+    def feed(text: str) -> None:
+        nonlocal size
+        data = text.encode("utf-8", "surrogateescape")
+        digest.update(data)
+        size += len(data)
+
+    with open(path, "rb") as fh:
+        while chunk := fh.read(_ARTIFACT_CHUNK_BYTES):
+            text = chunk.decode("utf-8", "surrogateescape")
+            feed(stream.feed(text) if stream is not None else text)
+        if stream is not None:
+            feed(stream.flush())
+    return digest.hexdigest(), size
 
 
 def error_info(
@@ -783,6 +906,7 @@ __all__ = [
     "error_info",
     "merge_cost_source",
     "sha256_json",
+    "time_reason",
     "totals_of",
     "usage_from_mapping",
     "utcnow",

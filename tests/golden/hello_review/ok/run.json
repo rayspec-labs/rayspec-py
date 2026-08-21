@@ -27,6 +27,7 @@
   "steps": {
     "review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

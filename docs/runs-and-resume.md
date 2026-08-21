@@ -35,6 +35,7 @@ runs/<run-id>/
     stdout.log, stderr.log      shell/python: attempt 1 starts the file, later attempts append under "--- attempt N ---"
     context.json                the template context the step saw (what RAYSPEC_CONTEXT points at)
   artifacts/                    yours (RAYSPEC_ARTIFACTS_DIR)
+    <step path>/<declared path> a copy of every file a step promised under `artifacts:`
   tmp/                          scratch (spill files of oversized {{ }} values)
 ```
 
@@ -120,6 +121,49 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 `rayspec run --json` prints both streams interleaved on stdout (stream records wrapped as
 `{"type": "stream", "step_path", "record"}`); the final summary object is the last stdout line
 (see [cli.md](cli.md#rayspec-run)).
+
+### Declared artifacts
+
+A step can name the files it promises to write:
+
+```yaml
+- id: report
+  shell: "mkdir -p build && ./scripts/report.sh > build/report.md"
+  artifacts: [build/report.md]
+```
+
+- Paths are relative to the step's **working directory** (its `cwd:` for `shell:`/`python:`,
+  otherwise the run's workdir). Absolute paths, `~`, `..` and control characters are refused when
+  the workflow is loaded, with the file and line of the step. So is `{{ … }}`: an entry is a
+  literal file name, **not a template**. When the name varies per `each:` item, keep the file
+  name fixed and template the step's `cwd:` instead (that one *is* rendered per item):
+
+  ```yaml
+  - id: fan
+    each: "['api', 'web']"
+    as: name
+    steps:
+      - id: build
+        shell: "mkdir -p out/{{ name }} && ./build.sh > out/{{ name }}/report.md"
+        cwd: "out/{{ name }}"
+        artifacts: [report.md]
+  ```
+- They are checked once the step has **succeeded**: a declared file that is missing, is not a
+  regular file (a directory, a FIFO, a socket, a device node), or resolves outside the working
+  directory (a symlink) **fails the step**, with a reason naming the path. A file outside the
+  run's **workspace** is refused too, even when the step's `cwd:` points there: `cwd:` is
+  rendered at run time and may name any directory on the machine, and `artifacts:` is a promise
+  about the workspace, not a way to copy arbitrary files into the run directory. That is the whole point — a promise that can be broken silently is
+  not worth declaring. The step's own output is kept, so you can still read what it printed.
+- Every artifact is copied into the run directory (`artifacts/<step path>/<declared path>`,
+  `0600`, redacted like every other file the store writes) and recorded on the step as
+  `{path, ref, sha256, size}`. The run stays readable after the worktree is gone. Keep them
+  small: a build tree belongs in the workspace, not in the run directory.
+- Only the **path** is recorded. The content of an artifact is never read into a record, an
+  event, a template context or a step output — a downstream step that wants the content reads
+  the file.
+- A resumed step that is replayed from the cache keeps the artifacts it was recorded with (they
+  are not re-checked), and a `--dry-run` checks nothing at all: nothing was really produced.
 
 ## Recording a run as a stub script
 
@@ -289,14 +333,16 @@ defaults:
   max_tokens: 2M         # or 2000000 / "500k"
 ```
 
-- After every leaf step finishes (and between retry attempts) the engine sums the tokens
+- After every leaf step finishes, between retry attempts, and again when a leaf takes its
+  `max_parallel` slot, the engine sums the tokens
   (input + output) and the cost of every step of this run — provider-reported cost, else the
   pricing-table estimate (`~$`); a step without any known cost counts 0 towards `budget_usd`
   (tokens are always known).
 - The first time a cap is exceeded a `warning` event is emitted and the breaker **trips**: no new
   step starts anywhere (pending steps — leaves, composites, gates — are recorded `skipped` with
-  `skip_reason: budget_exceeded`; a loop starts no further iteration; a failed attempt is not
-  retried), **running steps finish** (drain, no cancellation), and the run ends `failed` with
+  `skip_reason: budget_exceeded`; a leaf that was already queued for a `max_parallel` slot is
+  re-checked when it gets one and skips too; a loop starts no further iteration; a failed attempt
+  is not retried), **running steps finish** (drain, no cancellation), and the run ends `failed` with
   `reason: budget exceeded (cost ~$5.120 > budget_usd $5.000)` / `(tokens 2,104,331 >
   max_tokens 2,000,000)` — exit **1**. Composites whose body hit the cap fail with a `budget` /
   `body` error naming it. As in every drain, `join: always` steps still run (whatever their kind:
@@ -309,6 +355,34 @@ defaults:
 - `rayspec plan` prints the caps next to the isolation (`budget_usd $5.00  max_tokens
   2,000,000`; `--json`: `budget_usd`, `max_tokens`).
 
+### Wall-clock cap (`timeout_total`)
+
+`defaults.timeout_total` is the same breaker measured in time instead of money or tokens:
+
+```yaml
+defaults:
+  timeout_total: 2h        # or "90m" / 5400
+```
+
+- The clock starts when the run starts and **keeps counting across resumes**: it is measured
+  from `run.json`'s original `started_at`, which a resume entry never rewrites. `2h` therefore
+  means two hours of *run*, not two hours per attempt — including the time a run spent waiting
+  at an approval gate. Resuming a run that has already used its budget of time starts nothing
+  and ends `failed` right away; finished steps are still replayed.
+- The cap is checked when a step finishes **and when a step takes its `max_parallel` slot**, so
+  it never cancels anything: a step that is running when the clock runs out is allowed to finish,
+  and every step that had not started yet is skipped (`skip_reason: budget_exceeded`, the same
+  drain as above) — including one that was already queued behind `max_parallel`, which is why a
+  fan-out cannot keep launching work for hours after a `2h` cap ran out. It is a *circuit
+  breaker*, not a kill switch — use `timeout:` (per attempt, per step) or `stop:` if you need
+  one.
+- The run ends `failed` with
+  `reason: time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` — exit **1**. That also
+  holds when the drain reaches a `stop:` step: a tripped cap outranks the stop's own status, so
+  a `join: always` `stop: {status: succeeded}` cleanup step cannot report a capped run as
+  successful (its `outputs:` are not published either). Raise the
+  cap and resume with `--force` (the workflow hash changed) to continue where it stopped.
+
 ## Security notes
 
 The run store is sensitive data: `run.json` holds the inputs (except `secret: true` inputs,
@@ -319,8 +393,10 @@ and `outputs` are in clear text. So:
 
 - **Permissions.** Everything a run writes under `$RAYSPEC_HOME` is private regardless of the
   umask: the directories created on the way (`$RAYSPEC_HOME`, `projects/<slug>/`, `locks/`,
-  `runs/<id>/`, `steps/<path>/`) are `0700`; `run.json`, `events.jsonl`, `output.txt|json`,
-  `prompt.txt`, `stream.jsonl`, `steps/<path>/context.json`, `stdout.log`/`stderr.log` and the workdir lock
+  `runs/<id>/`, `steps/<path>/`, `artifacts/<step path>/`) are `0700`; `run.json`,
+  `events.jsonl`, `output.txt|json`,
+  `prompt.txt`, `stream.jsonl`, `steps/<path>/context.json`, `stdout.log`/`stderr.log`, the
+  copies of declared `artifacts:` and the workdir lock
   files (`locks/*.lock`) are `0600`. Directories that already exist (a `~/.rayspec` you created
   by hand, an older store) are never re-chmodded — tighten them yourself if you share the
   machine: `chmod -R go-rwx ~/.rayspec`. The one remaining umask-mode writer is

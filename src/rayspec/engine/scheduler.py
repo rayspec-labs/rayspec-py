@@ -48,6 +48,7 @@ from rayspec.engine.context import (
     view_of,
 )
 from rayspec.engine.errors import RunControl, RunPaused
+from rayspec.engine.executors.artifacts import collect_artifacts
 from rayspec.engine.graph import FAILED_LIKE, StepGraph, join_decision
 from rayspec.engine.retry import TIMEOUT_ERROR_TYPE, delay_for, policy_for, should_retry
 from rayspec.events.model import EventType
@@ -268,6 +269,16 @@ async def _execute(
         EventType.STEP_STARTED, step_path=record.path, kind=kind, attempt=record.attempts + 1
     )
     await ctx.save_record(record)
+    outcome = await _dispatch(step, scope, ctx, record, kind)
+    # the files the step promised under ``artifacts:`` must be there — a broken promise turns a
+    # succeeded outcome into a failed one (never a retry: the file is missing, not flaky)
+    return await collect_artifacts(step, scope, ctx, outcome)
+
+
+async def _dispatch(
+    step: StepModel, scope: ExecScope, ctx: RunContext, record: StepRecord, kind: str
+) -> StepOutcome:
+    """Hand the step to its executor: leaf retry loop, gate, or one attempt with a timeout."""
     executor = _executor_for(ctx, kind)
     if kind in LEAF_KINDS:
         return await run_leaf(step, scope, ctx, record, executor)
@@ -315,12 +326,21 @@ async def run_leaf(
         rec.cost_usd = cost_total
         rec.cost_source = source_total
 
+    last: StepOutcome | None = None
     while True:
         timeout = ctx.timeout_for(step, scope)
         async with ctx.runtime.leaf_permit():
             # Only once the permit is held does the attempt exist: a leaf cancelled while it
             # queues for a ``max_parallel`` slot / the launch gate keeps the totals its record
             # carries (earlier attempts, the previous run) and is not counted as an attempt.
+            if step.join != "always" and await ctx.check_budget(pending=record) is not None:
+                # The run-level cap may have tripped while this attempt waited for a slot. The
+                # ready-set gate cannot see a step that is already queued, and a queued step has
+                # not started — so the breaker is ASKED again here (not just read: the clock can
+                # run out with no step finishing), or a wall-clock cap would keep launching the
+                # backlog long after it ran out. A retry keeps the failure it already has; a
+                # first attempt is recorded like any other step the cap skipped.
+                return last if last is not None else _skipped(record, BUDGET_SKIP_REASON)
             record.attempts += 1
             attempts_this_run += 1
             attempt = record.attempts
@@ -349,6 +369,7 @@ async def run_leaf(
             except Exception as exc:
                 outcome = _failed(record, error_info(exc, type_="engine"))
         accumulate(outcome.record)
+        last = outcome
         rec = outcome.record
         if rec.status is StepStatus.FAILED and await ctx.check_budget(pending=rec) is not None:
             return outcome  # a retry is a new start — not once the cap tripped
@@ -489,8 +510,11 @@ async def finish(outcome: StepOutcome, step: StepModel, scope: ExecScope, ctx: R
     scope.views[step.id] = view_of(outcome, step)
     rec = outcome.record
     ctx.accounted_paths.add(rec.path)
-    if rec.kind in LEAF_KINDS and (rec.usage.total or rec.cost_usd is not None):
-        await ctx.check_budget()  # totals changed (a fresh leaf or a replayed record)
+    spent = rec.kind in LEAF_KINDS and (rec.usage.total or rec.cost_usd is not None)
+    if spent or ctx.time_capped:
+        # the totals changed (a fresh leaf or a replayed record) — or the wall clock may have
+        # run out while this step ran, which no step's usage would show
+        await ctx.check_budget()
     data: dict[str, Any] = {
         "status": str(rec.status.value),
         "duration_ms": rec.duration_ms,

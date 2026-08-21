@@ -247,6 +247,9 @@ class Runner:
         if not resumed and run.toolchain is None:  # the SDK/CLI/models in effect, once
             run.toolchain = await capture_toolchain(ctx)
             await ctx.save_run()
+        # a resumed run whose ``defaults.timeout_total`` already expired starts nothing: the
+        # clock runs from the ORIGINAL start, so the breaker has to be asked before the graph
+        await ctx.check_budget()
 
         engine_error: BaseException | None = None
 
@@ -503,17 +506,20 @@ class Runner:
             reason = f"awaiting approval at {ctx.paused.step_path}"
             if failed:
                 reason += f" ({len(failed)} step(s) already failed: {_failure_reason()})"
+        elif ctx.budget_exceeded is not None:
+            # the run-level cap tripped — failed with the cap as the reason (exit 1);
+            # resumable once the cap is raised (replayed records count towards it again).
+            # Ranked ABOVE ``stopped``: a run that blew its cost, token or time cap keeps
+            # draining, so it reaches a ``join: always`` ``stop: {status: succeeded}`` (the
+            # finally idiom) — and a capped run must never report success to its caller.
+            status = RunStatus.FAILED
+            reason = ctx.budget_exceeded
         elif ctx.stopped is not None and failed:
             status = RunStatus.FAILED
             reason = _failure_reason()
         elif ctx.stopped is not None:
             status = RunStatus(ctx.stopped.status)
             reason = ctx.stopped.reason or f"stopped by {ctx.stopped.step_path}"
-        elif ctx.budget_exceeded is not None:
-            # the run-level cap tripped — failed with the cap as the reason (exit 1);
-            # resumable once the cap is raised (replayed records count towards it again)
-            status = RunStatus.FAILED
-            reason = ctx.budget_exceeded
         elif failed:
             status = RunStatus.FAILED
             reason = _failure_reason()

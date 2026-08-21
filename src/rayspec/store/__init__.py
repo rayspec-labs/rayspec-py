@@ -26,10 +26,12 @@ from rayspec.store.file import (
     RunExistsError,
     StoreError,
     UnknownRunIdError,
+    WrittenArtifact,
     WrittenOutput,
 )
 from rayspec.store.model import (
     RUN_RECORD_SCHEMA_VERSION,
+    ArtifactRef,
     Decision,
     EachInfo,
     ErrorInfo,
@@ -47,6 +49,7 @@ from rayspec.store.redacting import RedactingStore
 __all__ = [
     "RUN_RECORD_SCHEMA_VERSION",
     "AmbiguousRunIdError",
+    "ArtifactRef",
     "CorruptRunError",
     "Decision",
     "EachInfo",
@@ -65,6 +68,7 @@ __all__ = [
     "StoreRegistration",
     "UnknownRunIdError",
     "WorkspaceInfo",
+    "WrittenArtifact",
     "WrittenOutput",
     "create_store",
     "list_stores",
