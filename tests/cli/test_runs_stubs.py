@@ -366,20 +366,30 @@ def test_a_retried_failure_is_not_recorded_as_a_sequence(
 # -- CLI surface ------------------------------------------------------------------------------
 
 
-def test_redact_is_not_a_silent_no_op(cli: CliRunner, seeded: Seeded) -> None:
-    """`--redact` is not wired yet: it must never look like it worked.
+def test_redact_is_refused_for_a_reason_that_is_true(cli: CliRunner, seeded: Seeded) -> None:
+    """`--redact` must never look like it worked, and must not blame missing plumbing.
 
-    The Redactor itself ships — but it can only replace values it is *given*, and secret
-    values are deliberately never persisted, so recording cannot recover them.
+    The Redactor ships and every writer goes through it. What the flag asks for is a recording
+    command that obtains secret values, which rayspec deliberately does not do — so the refusal
+    is permanent and says so, rather than promising a later build.
     """
     result = cli.invoke(
         app, ["runs", "stubs", SUCCEEDED_ID, "--redact", "--root", str(seeded.project)]
     )
     assert result.exit_code == 2, result.output
-    assert "not wired yet" in result.output
-    # the reason must be the real one, not the stale "redactor does not exist" claim
-    assert "never persisted" in result.output
+    assert "refused, not unimplemented" in result.output
+    assert "never given secret values" in result.output
+    # nothing that describes the refusal as a gap a later build closes
+    assert "not wired" not in result.output
+    assert "not available" not in result.output
     assert "steps:" not in result.output  # and it printed no script
+
+
+def test_the_redact_help_does_not_promise_a_later_build(cli: CliRunner, seeded: Seeded) -> None:
+    result = cli.invoke(app, ["runs", "stubs", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "not wired" not in result.output
+    assert "not available" not in result.output
 
 
 def test_writing_to_a_missing_directory_is_a_usage_error(cli: CliRunner, seeded: Seeded) -> None:

@@ -458,6 +458,18 @@ class _Validator:
             self._check_template(
                 step.approve.message, f"steps.{path}.approve.message", path, scope, allowed
             )
+            if step.approve.auto_if is not None:
+                # an expression field, checked exactly like `when:` — including the secret
+                # placement rule: `eval_bool` names the offending value in its error, so a
+                # secret reference here would be a secret in a persisted step error
+                self._check_expr(
+                    step.approve.auto_if,
+                    f"steps.{path}.approve.auto_if",
+                    path,
+                    ("approve", "auto_if"),
+                    scope=scope,
+                    allowed=allowed,
+                )
         elif isinstance(step, StopStep):
             self._check_no_timeout(step, path)
             if step.stop.reason is not None:

@@ -13,6 +13,10 @@ supplied again on every resume; attempts continue), the workdir path lock (``hom
 resume),
 provider open/close per run, and the final ``run.finished`` event. The workspace itself (worktrees,
 ``--repo``) is a parallel scope: the CLI passes a :class:`Workspace` (default: in place).
+
+It also closes the redaction boundary: before the first byte of a run is written the runner makes
+the store's :class:`~rayspec.redact.Redactor` cover the run's own secrets, so an embedder cannot
+get it wrong by omission (:meth:`Runner._install_redactor`).
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ from rayspec.loader.inputs import (
     split_secret_inputs,
 )
 from rayspec.providers.base import Provider, Usage
+from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR
 from rayspec.schema import RunStatus
 from rayspec.store.base import RunStore
 from rayspec.store.model import PauseInfo, RunRecord, StepRecord, WorkspaceInfo, new_run_id, utcnow
@@ -171,6 +176,55 @@ class Runner:
         self.home = Path(home) if home is not None else None
         self.ctx: RunContext | None = None
         self._lock: Any = None
+        #: names this run declared secret whose value is too short to redact, discovered while
+        #: installing the boundary and announced once the run can emit events
+        self._unredactable: tuple[str, ...] = ()
+
+    # -- the redaction boundary -------------------------------------------------------------
+
+    def _install_redactor(self) -> None:
+        """Make the store's redactor cover every value THIS run knows, before anything is written.
+
+        The boundary must not depend on the caller having wired it. A store arrives with
+        :data:`~rayspec.redact.NULL_REDACTOR` and an embedder following ``docs/extending.md``
+        never assigns one, so a run that knows a secret installs what it needs itself: the
+        ``secret: true`` inputs it was given plus the ``config.secrets`` values it hands to
+        ``shell:``/``python:`` steps (:attr:`RunOptions.config_secrets`).
+
+        A redactor the caller DID install is extended, never replaced — the CLI's also carries
+        the opt-in detectors and values this run cannot see. A store that will not accept one
+        makes the run refuse to start: a workflow with a secret input and no way to redact it
+        must not write a single byte.
+
+        The two sets of values are handed over as PAIRS, not merged into one mapping: an input
+        name and a ``config.secrets`` name are independent namespaces that can collide, and
+        merging by name would drop one of the two values from the redactor while
+        ``process_env`` still exports both to the step. Everything the run knows goes through
+        :meth:`~rayspec.redact.Redactor.extend`, including values already covered, so that a
+        value too short to redact is recorded in ``skipped`` and can be announced — an embedded
+        run must not be quieter than the CLI about the one case where redaction does nothing.
+        """
+        secrets = [*self.options.config_secrets.items(), *self.secret_inputs.items()]
+        if not secrets:
+            return
+        current = getattr(self.store, "redactor", None)
+        if current is None:
+            current = NULL_REDACTOR
+        updated = current.extend(secrets)
+        if updated is current:  # the caller's redactor already knows every value and every name
+            return
+        try:
+            self.store.redactor = updated
+        except (AttributeError, TypeError) as exc:
+            names = sorted({name for name, value in secrets if not current.covers(value)})
+            raise EngineError(
+                f"{type(self.store).__name__} does not accept a redactor, so the secret "
+                f"value(s) {', '.join(names or sorted({n for n, _ in secrets}))} could not be "
+                f"kept out of the run directory",
+                hint="use a store whose `redactor` attribute can be assigned (every store "
+                "rayspec builds can), or run a workflow without secret inputs",
+            ) from exc
+        self._unredactable = tuple(n for n in updated.skipped if n not in current.skipped)
 
     # -- entry points ---------------------------------------------------------------------
 
@@ -183,6 +237,7 @@ class Runner:
         workflow = self.resolved.workflow
         runtime = Runtime(workflow.defaults.max_parallel)
         configure_default_executor(runtime.max_parallel)
+        self._install_redactor()  # before the first byte is written, the lock file included
         self._acquire_lock()
         try:
             if self.resume_run_id:
@@ -237,6 +292,13 @@ class Runner:
             resume_count=run.resume_count,
             workdir=str(self.workspace.workdir),
         )
+        if self._unredactable:
+            # the CLI prints the same fact before the run starts; an embedder only has events
+            await ctx.warn(
+                f"{', '.join(self._unredactable)} is shorter than {MIN_REDACTABLE_LEN} "
+                "characters and is therefore not redacted — it can appear in the run store, "
+                "the logs and the console"
+            )
         if self.workspace.isolation != "none":
             await ctx.emit(
                 EventType.WORKSPACE_CREATED,

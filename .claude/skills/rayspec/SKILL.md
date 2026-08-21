@@ -201,7 +201,7 @@ shell/python default none), `env:` (templated, str-coerced) and `output_schema`.
 | any failed (untolerated) | skip (`upstream_failed`) | skip | run |
 | run draining / cancelled | skip (`run_failed`) | skip | run |
 
-Exception: under fail-fast every pending step is skipped `run_failed`, `join: always` included — the task group is already torn down. `always` is finally-semantics under `drain`/`continue` only.
+The last row holds however the list ended: under fail-fast and after a `stop:` the running siblings are cancelled first and the `join: always` steps then run on their own, so `always` is finally-semantics everywhere. After a cancellation the skipped leftovers all read `stopped`; after a failure they keep `upstream_failed`/`upstream_skipped` and fall back to `run_failed`.
 
 `defaults.on_step_failure` picks what a failed step does to its siblings:
 **`drain`** (default) — running steps finish, nothing new starts except `join: always` steps.
@@ -210,7 +210,8 @@ flag may only ever *tighten*: it overrides `drain` and `continue`, never the rev
 **`continue`** — independent branches keep being scheduled; only the failed step's downstream
 cone skips. All three still end the run `failed` (exit 1) — `continue` is not `allow_failure`,
 and it is a different knob from `each.on_failure: continue`, which is per *item*. The policy is
-run-level and global, so it also applies inside `each:`/`loop:`/`include:` bodies.
+lexically scoped: it applies inside `each:`/`loop:`/`include:` bodies too, except that an
+`include:`d workflow which states its own `on_step_failure` governs its own body.
 
 **Inputs**: types `string` (default) `integer` `number` `boolean` `array` `object`; `required`
 (cannot have a `default`), `default`, `enum`, `items`, `properties`, `description`. Supplied by

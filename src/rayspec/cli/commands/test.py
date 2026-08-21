@@ -35,6 +35,7 @@ from rayspec.cli.commands._loader_common import (
     make_context,
     resolve_output,
 )
+from rayspec.cli.commands.run import approval_classes_for
 from rayspec.testing import discover_suites, run_case
 from rayspec.testing.report import (
     CaseResult,
@@ -184,7 +185,14 @@ def register(app: typer.Typer) -> None:
         results: list[CaseResult] = []
         for suite, case_spec in pairs:
             result = run_case(
-                suite, case_spec, home=ctx.home, exec_shell=exec_shell, keep_run_dir=False
+                suite,
+                case_spec,
+                home=ctx.home,
+                exec_shell=exec_shell,
+                keep_run_dir=False,
+                # the operator's rules, not the case file's: `--exec-shell` runs a gated body
+                # for real, so a class held shut holds here too
+                approval_classes=approval_classes_for(suite.root, ctx.home),
             )
             results.append(result)
             if not json_:

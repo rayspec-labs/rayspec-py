@@ -37,7 +37,7 @@ outputs: {}               # name → template (deep-rendered when the run succee
 | `timeout` | `null` | Per-attempt timeout applied to every step that sets none (a [duration](#durations)). |
 | `max_parallel` | `4` | Leaf steps (prompt/shell/python) running at once, run-wide. |
 | `on_unsupported` | `error` | `error` or `warn`: what a provider-capability mismatch is at validation time (`--allow-unsupported` also downgrades). |
-| `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **including inside `each:`/`loop:`/`include:` bodies** — the policy is run-level and global. **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
+| `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **inside `each:`/`loop:`/`include:` bodies too** — the policy is lexically scoped, and an `include:`d workflow that states its own value governs its body (see the note under [`each:`](#each)). **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
 | `budget_usd` | `null` | Run-level **cost cap** (circuit breaker): a positive USD amount (`1.5`, `"1.50"`, `"$1.50"`). Measured over the whole run from per-step cost — provider-reported, or estimated from the pricing table (`~$`); steps without any known cost cannot trip it. See [runs-and-resume.md](runs-and-resume.md#run-level-budget-circuit-breaker). |
 | `max_tokens` | `null` | Run-level **token cap**: a positive integer or `"500k"` / `"1.5M"` (input + output tokens of every step, always known). Same breaker semantics as `budget_usd`. Shown by `rayspec plan`. |
 | `timeout_total` | `null` | Run-level **wall-clock cap**: a [duration](#durations) > 0 (`30m`, `2h`). Measured from the run's *original* start, so a resume keeps counting — `2h` is two hours of run, not two hours per attempt. Same breaker semantics as `budget_usd`; not to be confused with `timeout` above, which is per attempt of one step. |
@@ -204,6 +204,15 @@ chunks is caught too: a stream holds back the tail that could still *grow* into 
 (and nothing else, so a live log never lags behind a long-running step), and the buffer is
 flushed when the step finishes — what `stream.jsonl` reassembles to is always exactly what the
 step produced.
+
+Anything JSON-shaped — `run.json`, `events.jsonl`, a `json` step output — is redacted on its
+**parsed value**, never on the serialised text: a secret that is a bare JSON token (a number,
+`true`, `null`) becomes the quoted marker, so the document stays well-formed and the run stays
+readable. Object **keys** are replaced beside their values, because a structured result can put
+a value in the key position just as easily. What is left alone is the run record's own
+structure — a field name, the step paths the steps are keyed by — and a *structural* number: a
+duration, a token count or an exit code never holds a value you supplied, it cannot hold a marker
+string either, and corrupting the checkpoint over a coincidence protects nobody.
 
 Be clear about what this is:
 
@@ -411,20 +420,31 @@ empty list succeeds with `[]`. Inside the body: `<as>` (the item), `each.index` 
 failed items under `continue`. Attribute `items`: `[{index, item, status, output, error}]`. With
 `on_failure: fail` the step fails after every item finished.
 
-> **Scoping caveat.** `defaults.on_step_failure` is resolved from the **root** workflow only. An
-> `include:`d workflow that declares its own value is ignored in both directions — unlike
-> `defaults.timeout`, which *is* lexically scoped to the body. Set the policy on the root
-> workflow.
+> **Scoping.** `defaults.on_step_failure` is lexically scoped, like `defaults.timeout` and unlike
+> the run-wide `defaults.max_parallel`: an `include:`d workflow that *states* a policy governs its
+> own body, and one that says nothing inherits the including run's. `each:`/`loop:` bodies share
+> their parent's defaults, so they always inherit. Writing `on_step_failure: drain` in an included
+> workflow is therefore a statement, not a default — it tightens a run that asked for `continue`.
+> `--fail-fast` on the command line is not part of this scoping: it is an operator override that
+> tightens every scope at once.
+>
+> **Nesting only tightens.** The three policies are ordered `continue` < `drain` < `fail_fast`,
+> and an included workflow may only move *up* that order from what an enclosing workflow stated.
+> `on_step_failure: fail_fast` on your root workflow is a blast-radius control — "when something
+> fails, launch nothing new" — so a block you vendored cannot write `continue` and quietly hand
+> your budget and your workspace back to the failing run; the block's body runs `fail_fast` too.
+> The floor is what enclosing workflows *stated*: a run that never mentions the key has asked for
+> nothing, so a block may still state `continue` for its own body.
 
 > **Two different `continue`s — they do not mean the same thing.** `each.on_failure: continue`
 > (here) is about **items**: a failed item does not fail the `each` step. `defaults.on_step_failure:
 > continue` (run level) is about **steps**: a failed step does not stop its independent siblings
-> from being scheduled — including inside an `each`/`loop`/`include` body, since the run-level
-> policy is global. They are independent and compose:
+> from being scheduled — inside an `each`/`loop`/`include` body too, unless the included workflow
+> states a policy of its own. They are independent and compose:
 >
 > | | `each.on_failure` | `defaults.on_step_failure` |
 > |---|---|---|
-> | scope | one `each:` step | the whole run, bodies included |
+> | scope | one `each:` step | every sibling list the policy is in force for |
 > | governs | does a failed **item** fail the `each` step? | does a failed **step** stop its independent siblings? |
 > | `continue` means | tolerate the item, `null` in the output slot | keep scheduling; the run **still fails** |
 >
@@ -473,7 +493,8 @@ that map at load time.
 
 Ends the run with `status` (`succeeded` · `failed` · `cancelled`, default `cancelled`) and the
 rendered `reason`. Running siblings are cancelled (`interrupted`, skip reason `stopped`), pending
-ones `skipped`. `succeeded` still renders the workflow `outputs:`. Exit code 0 / 1 / 4.
+ones `skipped` (`stopped`) — except `join: always` steps, which still run, so a cancelled run
+reaches its cleanup. `succeeded` still renders the workflow `outputs:`. Exit code 0 / 1 / 4.
 
 ## Join truth table
 
@@ -488,11 +509,21 @@ succeeded.
 | ≥ 1 failed (untolerated, incl. interrupted/rejected) | skip (`upstream_failed`) | skip | run |
 | run draining (a sibling failed) or cancelled | skip (`run_failed`) | skip | run |
 
-> **Exception — fail-fast.** Under `--fail-fast` (or `defaults.on_step_failure: fail_fast`) the run cancels immediately and *every* pending step is skipped `run_failed`, **including `join: always`** ones: once the task group is torn down there is nothing left to run them in. So `always` gives you finally-semantics under `drain` and `continue`, but not under fail-fast. Whether that is the behaviour we want is still an open question.
+The last row holds however the sibling list ended. Under `drain` and `continue` the `join: always`
+steps run as the remaining work is skipped; under `--fail-fast` (or `defaults.on_step_failure:
+fail_fast`) and after a `stop:` the running siblings are cancelled first and the `join: always`
+steps then run on their own — `always` is finally-semantics everywhere. Cleanup steps do not
+cancel each other: one that fails leaves the others to run, and one that *pauses* (a `join: always`
+`approve:` gate) ends the wind-down and leaves the rest of the list for the resumed run.
+
+The reason recorded for the steps that are skipped depends on why the list ended: after a
+cancellation (`stop:`, a rejected gate) they are all `stopped` — nothing on those branches failed —
+while after a failure they keep the reason the table gives (`upstream_failed` / `upstream_skipped`),
+falling back to `run_failed` when nothing about their own `needs` explains the skip.
 
 Then `when:` is evaluated. A failure anywhere in a sibling list puts that list into **drain**:
 nothing new starts except `join: always` steps, running siblings finish; `--fail-fast` cancels
-them instead.
+them instead and then runs the `join: always` steps.
 
 ## Status vocabulary
 

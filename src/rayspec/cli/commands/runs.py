@@ -261,7 +261,7 @@ def register(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--redact",
-                help="Redact secret values while recording (not wired yet — exits 2).",
+                help="Refused: a recording is never given secret values to redact (exits 2).",
             ),
         ] = False,
         force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
@@ -269,18 +269,22 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Write a stub script from a stored run (replay it with `run --dry-run --stubs`)."""
         if redact:
-            # Never a silent no-op: the flag redacts nothing yet, so it always refuses rather than
-            # exiting 0 on a run that happens to have no secrets.
-            #
-            # `rayspec.redact.Redactor` DOES ship — but it can only replace values it is
-            # given, and a run's secret values are deliberately never persisted. So recording
-            # cannot reconstruct them from the run directory: the caller would have to re-supply
-            # them, exactly like `resume` does. Whether a *recording* command should ask for
-            # secrets is still an open design question.
+            # A settled decision, not a gap waiting for plumbing. `rayspec.redact.Redactor`
+            # ships and every writer already goes through it; what `--redact` asks for is
+            # something else — may a RECORDING command obtain secret values? A redactor
+            # replaces only values it is given, and a run's are never persisted, so `stubs`
+            # would have to demand them the way `resume` does, in order to write a file whose
+            # whole purpose is to be committed. Exact-match redaction cannot promise that a
+            # value a step transformed is gone, so the flag would advertise a safety it cannot
+            # keep. It therefore always refuses — never a silent no-op on a run that happens
+            # to have no secrets — and a run that HAS secret inputs is refused just below.
             fail(
-                "--redact is not wired yet: the redactor can only replace values it is given, and "
-                "a run's secret values are never persisted, so recording cannot recover them",
-                hint="record a run that has no secret inputs",
+                "--redact is refused, not unimplemented: a recording is never given secret "
+                "values. rayspec would have to ask you for them, the way `resume` does, to "
+                "write a file you are meant to commit — and exact-match redaction cannot "
+                "promise that a value a step transformed is gone",
+                hint="record a run that has no secret inputs; what such a run stored was "
+                "already redacted when it was written",
             )
         rc = common.make_runs_context(group_root(ctx, root))
         store, record = common.lookup_run(rc, run)
