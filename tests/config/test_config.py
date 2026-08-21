@@ -1,5 +1,6 @@
 """Config loading: RAYSPEC_HOME, config.yaml merge, .env loading."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -234,3 +235,70 @@ def test_default_tiers_are_read_only():
         DEFAULT_TIERS["claude"]["small"] = DEFAULT_TIERS["claude"]["large"]  # type: ignore[index]
     assert Config().resolve_tier("claude", "small") is not None
     assert Config().resolve_tier("claude", "small").model == "haiku"  # type: ignore[union-attr]
+
+
+def test_load_env_reports_what_it_applied_to_the_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seam that keeps ``.env`` configuration out of an identity.
+
+    ``load_env`` is the only thing that copies a ``.env`` into ``os.environ``, so it is where
+    the record is taken — that is what makes the rule hold for a file rayspec learns to read
+    later, instead of for a list of files somebody remembered to enumerate.
+    """
+    from rayspec.procenv import env_file_origin, forget_env_file_values, operator_env
+
+    home = tmp_path / "home"
+    home.mkdir()
+    root = tmp_path / "proj"
+    (root / ".rayspec").mkdir(parents=True)
+    (home / ".env").write_text("RAYSPEC_TEST_A=home\n")
+    (root / ".rayspec" / ".env").write_text("RAYSPEC_TEST_B=project\n")
+    forget_env_file_values()
+    monkeypatch.delenv("RAYSPEC_TEST_A", raising=False)
+    monkeypatch.delenv("RAYSPEC_TEST_B", raising=False)
+    try:
+        load_env(root, home=home, include_project=True)
+        assert env_file_origin("RAYSPEC_TEST_A") == str(home / ".env")
+        assert env_file_origin("RAYSPEC_TEST_B") == str(root / ".rayspec" / ".env")
+        left = operator_env()
+        assert "RAYSPEC_TEST_A" not in left and "RAYSPEC_TEST_B" not in left
+        # and the value is still in the real environment: this is about evidence, not about
+        # taking configuration away
+        assert os.environ["RAYSPEC_TEST_B"] == "project"
+    finally:
+        forget_env_file_values()
+        for name in ("RAYSPEC_TEST_A", "RAYSPEC_TEST_B"):
+            os.environ.pop(name, None)
+
+
+def test_load_env_into_a_callers_mapping_reports_nothing(tmp_path: Path) -> None:
+    # a mapping the caller owns is not the process environment, and nobody is identified from it
+    from rayspec.procenv import env_file_origin, forget_env_file_values
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("RAYSPEC_TEST_C=home\n")
+    forget_env_file_values()
+    environ: dict[str, str] = {}
+    load_env(tmp_path / "proj", home=home, environ=environ)
+    assert environ == {"RAYSPEC_TEST_C": "home"}
+    assert env_file_origin("RAYSPEC_TEST_C", environ) is None
+
+
+def test_an_env_file_never_overrides_an_exported_variable_and_nothing_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rayspec.procenv import env_file_origin, forget_env_file_values
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("RAYSPEC_TEST_D=from-file\n")
+    forget_env_file_values()
+    monkeypatch.setenv("RAYSPEC_TEST_D", "from-shell")
+    try:
+        load_env(tmp_path / "proj", home=home)
+        assert os.environ["RAYSPEC_TEST_D"] == "from-shell"
+        assert env_file_origin("RAYSPEC_TEST_D") is None
+    finally:
+        forget_env_file_values()

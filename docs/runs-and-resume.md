@@ -28,6 +28,7 @@ unique prefix.
 runs/<run-id>/
   run.json                      RunRecord — rewritten atomically after every step
   events.jsonl                  lifecycle events, one JSON object per line
+  audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1 (see below)
   steps/<path>/                 one directory per executed step (build[2]/implement → steps/build[2]/implement/)
     output.txt | output.json    the step's output (written BEFORE the record that points at it)
     prompt.txt                  prompt steps: the rendered prompt: body, written BEFORE the provider call (StepRecord.prompt_ref; `rayspec explain --full`; a write that fails is a warning, never a failed step)
@@ -53,11 +54,16 @@ runs/<run-id>/
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
+  "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run: an exported
+             "provider_accounts": {}, "declared_id": null},        // RAYSPEC_ACTOR, else the OS user. A
+                                                                   // RAYSPEC_ACTOR from a .env is refused
+                                                                   // and kept as declared_id (see below)
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
                 "branch": "rayspec/review-ikd7", "base_branch": "main", "base_sha": "…", "head_sha": "…"},   // last record write (pause/end/resume)
-  "pause": null,                          // {token, step, message, requested_at, decision{approved, comment, by, decided_at}}
+  "pause": null,                          // {token, step, message, requested_at,
+                                          //  decision{approved, comment, by, decided_at, actor}}
   "outputs": {"verdict": "approve", "summary": "…"},
   "cost_source": "none",                  // run level: provider | table | partial | none (see "Failures, retries and timeouts")
   "toolchain": {"rayspec": "1.0.0", "python": "3.12.8", "platform": "macOS-15.5-arm64",   // what was in effect at
@@ -121,6 +127,142 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 `rayspec run --json` prints both streams interleaved on stdout (stream records wrapped as
 `{"type": "stream", "step_path", "record"}`); the final summary object is the last stdout line
 (see [cli.md](cli.md#rayspec-run)).
+
+### Who ran it
+
+`run.json` carries an `actor`: **who** set the run going. It is resolved once, at the run's first
+start, and never rewritten — a resume by somebody else leaves it naming whoever launched it.
+
+| field | what it is |
+|---|---|
+| `id` | the identity itself |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user), `unknown` |
+| `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
+| `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
+| `declared_id` | a `RAYSPEC_ACTOR` a `.env` file asked for and did **not** get, kept as a claim; `null` normally |
+
+Resolution order is `RAYSPEC_ACTOR` > the OS user. Set `RAYSPEC_ACTOR` in the shell you launch a
+run from, or in a scheduler or CI job, whenever you want the ledger to name a person or a bot
+rather than the account that happens to own the process — an email address, a team name, anything
+that identifies the hand.
+
+#### Which sources are allowed, and why
+
+**An identity is only evidence if the audited code could not have chosen it.** That is one rule
+about the *source* of a value, not a list of attacks, and it is worth stating as a table because
+the answer is not obvious for any of these:
+
+| source | trusted for an identity? | why |
+|---|---|---|
+| the process environment **as the operator exported it** | yes | it lives in the process that launches the run or answers the gate; a step is a child of that process and cannot write it |
+| the operating-system user | yes | read from the account database (POSIX `pwd`), not from `$USER` |
+| a `RAYSPEC_ACTOR` rayspec loaded from `$RAYSPEC_HOME/.env` | **no** | `$RAYSPEC_HOME` is exported into every step: `printf 'RAYSPEC_ACTOR=…' > "$RAYSPEC_HOME/.env"` is one line, and the file is applied by *every* later command |
+| a `RAYSPEC_ACTOR` rayspec loaded from `<project>/.rayspec/.env` | **no** | it is a file in the tree the run works in, applied by `run`/`resume`/`approve`/`reject` |
+| `git config user.email`, any scope | **no** | a run's steps execute as you, with your `$HOME` and inside the repository the worktree came from, so `git config [--global] user.email …` is one command in one step |
+
+A run's `shell:` steps and its agents execute as you (`workspace-write` is a permission mode of
+the agent, not an operating-system sandbox). So every "no" above is one line in one step away
+from choosing the name stamped on your next `rayspec approve` — and it would be rendered as a
+machine-derived identity, which reads as *more* trustworthy than a self-declared one, not less.
+
+**How the rule is enforced**, because this is the part that has to keep holding: `.env` files
+are copied into the process environment by exactly one function, and that function reports every
+variable it applied, and from which file. Identity resolution then subtracts that set from the
+environment before it looks at anything. So the guarantee is not "these two filenames are
+special" — it is "rayspec never identifies you from a value rayspec itself put there", which
+holds for a `.env` location added later, too. Every field of `actor` is resolved that way, not
+only `id`: a planted `GITHUB_ACTIONS` would otherwise make a laptop run read as CI, and a planted
+`ANTHROPIC_ACCOUNT` would put somebody else's team in the record.
+
+A refused `RAYSPEC_ACTOR` is not swallowed. It is recorded as `declared_id` — a claim, next to
+the identity that was actually used — and every command that loads the file says so on stderr:
+
+```console
+$ rayspec approve 20260821-2228-5xwm "LGTM"
+warning: RAYSPEC_ACTOR in /home/you/.rayspec/.env is not used as an identity — a workflow step
+can write that file. Export RAYSPEC_ACTOR in the shell that runs rayspec instead.
+```
+
+`rayspec audit` then shows both: `approved by you (cli) — a .env declared
+'security-team@corp.invalid', which is not an identity`.
+
+If you want a per-project identity, set `RAYSPEC_ACTOR` in your shell, your scheduler or your CI
+job — that is a decision of yours, taken outside the run, which is exactly what makes it worth
+recording. Putting it in a `.rayspec/.env` that is committed to the repository does not work, and
+that is deliberate: the file is chosen by whoever pushed the checkout.
+
+`.env` files keep working for everything else. They exist so a project can supply configuration
+and they still do — `ANTHROPIC_BASE_URL`, an API key, whatever a step needs. The narrowing is to
+*identity only*; nothing else about `.env` changed.
+
+#### What this does not give you
+
+Worth saying plainly, because a guarantee that is described wider than it is built is worse than
+none:
+
+- **It is not tamper-evidence.** The run directory is yours, so anything that can run as you can
+  edit `run.json` after the fact. The rule above is about the moment a value is *recorded*: at
+  that moment it came from the operator, not from the run. `rayspec audit` re-resolves the
+  decision row from the record's actor, but its header line is read straight out of `run.json`.
+- **It is not authentication.** Nobody proved they are `alice@example.com`; the operator's shell
+  said so. An identity here names a hand for a log — it never grants a permission.
+- **A `.env` a run wrote still supplies configuration.** `$RAYSPEC_HOME/.env` in particular is
+  applied by every rayspec command, so a step that writes it changes the environment of your
+  later commands (a proxy URL, say). That is the same trust boundary the file always had — it is
+  a file on your machine — but the identity rule does not fix it, and this build does not either.
+  Keep an eye on it the way you would on `~/.bashrc`; `rayspec doctor` lists both files.
+
+It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
+password to build it — a provider *account* comes only from a variable that names one, never from
+the one that carries the secret — and nothing in rayspec grants an authorisation because of it.
+
+Every decision carries its own actor too, next to `by`:
+
+- `by` says which door the decision came through: `cli` (`rayspec approve`/`reject`), `tty` (the
+  terminal prompt of the run itself), `--yes`, `dry-run`;
+- `actor` says whose hand it was. For a decision recorded by `rayspec approve`/`reject` it is
+  whoever ran that command — often not the person who launched the run. For a gate answered in the
+  run's own terminal it is the run's actor.
+
+`pause.decision` holds it while the run is paused, and the `run.decision` event in `events.jsonl`
+keeps it afterwards (the pause slot is cleared the moment the gate consumes the decision, the event
+log is not).
+
+### The local audit log
+
+`RAYSPEC_AUDIT_LOG=1` adds `audit.jsonl` to the run directory: one line per fact, in the order the
+store learned it.
+
+```json
+{"ts": "2026-08-21T09:14:02+00:00", "kind": "command", "step": "build[1]/implement",
+ "detail": "pytest -q", "data": {"attempt": 1}}
+```
+
+| `kind` | one row per |
+|---|---|
+| `run` | the run being created (with the actor), started/resumed, its workspace, a pause, the final status |
+| `step` | a step starting, retrying, finishing (its kind, not its body — the rendered body is not stored with the run; `rayspec explain` re-renders it) |
+| `command` | a command an agent ran — a `command_start` record, or a tool call carrying a command line (`data.tool` names the tool: the Claude adapter reports a shell command as a `Bash` tool call) |
+| `tool` | a tool an agent called that ran nothing itself — an edit, a read, a search (arguments in `data.input`, capped) |
+| `file` | a file an agent reported changing |
+| `warning` | a warning or error, from the engine or from an agent |
+| `approval` | a decision — `detail` is `approved by alice@example.com (cli)`, and `data` carries `approved`, `comment`, `by` and `actor` |
+
+`detail` is the one-line summary and is capped; `data` carries the structured extras. Progress
+events (loop iterations, `each` items) are deliberately absent: they say how far a run got, not what
+it did. The file is written **through the run store**, so the redactor covers it like everything
+else under the run directory — over the row's values rather than its serialised text, so a numeric
+secret becomes the marker instead of corrupting the JSON.
+
+The ledger can never cost a run anything: `run.json`, `events.jsonl` and each step's
+`stream.jsonl` are written first, and a ledger write that fails (a full disk, a read-only mount)
+is a warning in the log and nothing more.
+
+Two honest limits. The ledger is **append-only in behaviour, not tamper-evident**: rows are only
+ever appended, and nothing about the file proves it was not edited afterwards — anybody who can read
+a run directory can also write to it. And it is **local**: one file per run, on one machine, for one
+user. `rayspec audit <run>` renders the same rows straight from `events.jsonl` and the step streams,
+so you get the ledger whether or not the file was enabled.
 
 ### Declared artifacts
 
@@ -601,6 +743,45 @@ that never ran `rayspec lock` is not broken by setting a variable — while an e
 refuses a missing one. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
 stored run and the lockfile talk about the same agents.
 
+## Publishing the run branch
+
+A run that pauses at three in the morning has done real work in a worktree on one machine.
+`RAYSPEC_PUSH_BRANCH` makes rayspec push that work somewhere you can see it:
+
+```bash
+RAYSPEC_PUSH_BRANCH=1 rayspec run nightly --no-interactive       # push to origin
+RAYSPEC_PUSH_BRANCH=upstream rayspec run nightly                 # or to another remote
+```
+
+The hook fires when the run **pauses** and when it **ends** (whatever the final status), and it
+publishes `rayspec/<workflow>-<shortid>` — the branch the run's worktree is on.
+
+**It publishes commits, and rayspec makes none.** A push moves what is committed; work an agent
+left in the worktree is not on the branch and does not leave the machine. Workflows that want
+their work published commit it themselves (`shell: git add -A && git commit -m …`). If the
+worktree is still dirty at push time you get a warning saying how many changes stayed behind —
+`pushed rayspec/x to origin, but 3 uncommitted change(s) in the worktree were not published`.
+
+Rules it keeps, deliberately:
+
+- **Opt-in.** Nothing is pushed unless the variable is set. `1`/`true`/`yes`/`on` mean `origin`;
+  any other value names the remote.
+- **Only an isolated run.** An in-place run (`--no-worktree`, a non-git directory) is on *your*
+  branch — pushing that would be a surprise, so it never happens. A `--dry-run` publishes nothing.
+- **It never forces.** If somebody else moved the remote branch on, git rejects the push and
+  rayspec leaves it alone.
+- **It never asks you anything.** The push runs with `BatchMode=yes` and no askpass helper, so a
+  locked ssh key or a missing credential fails immediately and becomes the warning below,
+  instead of stalling a finishing run for a minute or opening a dialog. It writes no upstream
+  configuration either: a throwaway branch leaves nothing behind in your repository's config.
+- **It fails soft.** No remote, no such branch, a rejected push, a timeout (60s), no `git` at all:
+  every one of them is a `warning` event on the finished run (`rayspec show` lists it under
+  `warnings:`). The run's status and exit code are exactly what they would have been without the
+  hook — a push is not part of the run's outcome, and a broken remote must never turn a succeeded
+  run into a failed one.
+
+A successful push is silent: `git ls-remote <remote> 'refs/heads/rayspec/*'` is the confirmation.
+
 ## Security notes
 
 The run store is sensitive data: `run.json` holds the inputs (except `secret: true` inputs,
@@ -628,14 +809,20 @@ and `outputs` are in clear text. So:
   `run.json`, `events.jsonl` `run.finished`, every later step's `context.json`, and on the console
   / in `show`) — and so is whatever a script *prints*, secret or not. Agent steps cannot receive
   secret inputs in v1.
-- **Project `.rayspec/.env` trust.** A checkout's `.rayspec/.env` is controlled by whoever pushed
-  the repository and can redirect credentials (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `*_PROXY`)
-  or reconfigure git (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`). Inspection commands (`doctor`,
-  `validate`, `plan`, `workflows`, `agents`, `runs`, `costs`, `show`, `logs`, …) never load it; only
-  `run`, `resume`, `approve` and `reject` apply it — into the process environment that reaches
-  step, provider and git subprocesses — and they say so on stderr (`env: loaded N variables from
-  .rayspec/.env (project)`). `rayspec doctor` lists the file (`project .env` row) so you can read
-  it before the first run. `~/.rayspec/.env` (yours) is loaded by every project command.
+- **`.env` trust.** A checkout's `.rayspec/.env` is controlled by whoever pushed the repository
+  and can redirect credentials (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `*_PROXY`) or
+  reconfigure git (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`). Inspection commands (`doctor`, `validate`,
+  `plan`, `workflows`, `agents`, `runs`, `costs`, `show`, `logs`, …) never load it; only `run`,
+  `resume`, `approve` and `reject` apply it — into the process environment that reaches step,
+  provider and git subprocesses — and they say so on stderr, naming the variables (`env: loaded N
+  variables from .rayspec/.env (project): NAME, NAME`).
+  `~/.rayspec/.env` (yours) is loaded by **every** project command and is not announced, so read
+  it if you have not looked lately: `$RAYSPEC_HOME` is exported into every workflow step, which
+  makes that file writable by anything you run. `rayspec doctor` lists both (`home .env` and
+  `project .env` rows), with the variable counts, so you can check before the first run.
+  Neither file can supply an identity — see [Who ran it](#who-ran-it) — but both can still supply
+  configuration, which is what they are for, and that is a boundary you are trusting the way you
+  trust `~/.bashrc`.
 - **`cancel` pid check.** A `running` record keeps the engine's pid; after a crash or reboot the
   pid may belong to an unrelated process. `rayspec cancel` signals only a process whose start
   time equals the recorded `pid_started_at` (exact; older records without the field skip this)

@@ -121,7 +121,9 @@ def test_run_applies_the_project_env_and_says_so(
     )
     assert result.exit_code == 0, result.output + result.stderr
     assert "FROM_ENV=from-project" in result.stdout
-    assert "env: loaded 1 variable from .rayspec/.env (project)" in result.stderr
+    assert "env: loaded 1 variable from .rayspec/.env (project): RAYSPEC_TEST_ENV" in (
+        result.stderr
+    )
     assert "env: loaded" not in result.stdout
 
 
@@ -138,7 +140,9 @@ def test_project_env_wins_over_home_env_for_execution_commands(
     )
     assert result.exit_code == 0, result.output + result.stderr
     assert "FROM_ENV=from-project" in result.stdout, result.stdout
-    assert "env: loaded 1 variable from .rayspec/.env (project)" in result.stderr, result.stderr
+    assert "env: loaded 1 variable from .rayspec/.env (project): RAYSPEC_TEST_ENV" in (
+        result.stderr
+    ), result.stderr
     assert os.environ.get("RAYSPEC_TEST_HOME_ENV") == "home"
     # already-set process variables are never overridden by either file
     monkeypatch.setenv("RAYSPEC_TEST_ENV", "from-shell")

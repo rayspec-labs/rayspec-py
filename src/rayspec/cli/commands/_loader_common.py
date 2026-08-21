@@ -26,6 +26,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from rayspec.actor import ACTOR_ENV
 from rayspec.config import (
     Config,
     ConfigError,
@@ -40,6 +41,7 @@ from rayspec.loader import discover_workflows, find_project_root
 from rayspec.loader.discovery import YAML_SUFFIXES
 from rayspec.loader.loader import import_optional
 from rayspec.loader.validate import CapabilitiesFor, TemplateChecker
+from rayspec.procenv import env_file_origin
 from rayspec.providers.base import ProviderCapabilities
 from rayspec.schema import SchemaError
 
@@ -292,7 +294,11 @@ def make_context(root: Path | None, *, project_env: bool | None = None) -> Conte
     (:data:`EXECUTION_COMMANDS`, detected from the click context); ``~/.rayspec/.env`` is always
     applied. Both files are applied in ONE :func:`load_env` call so the documented precedence
     holds (project wins over the home file; neither overrides a variable the shell already set).
-    When project variables are applied a dim one-line notice counting them goes to stderr.
+    When project variables are applied a dim one-line notice NAMING them goes to stderr — a
+    count alone does not let anybody see that the one variable applied was ``RAYSPEC_ACTOR``.
+
+    A ``RAYSPEC_ACTOR`` from either file gets a real warning, because it is the one variable
+    these files may not decide: see :func:`warn_about_declared_actor`.
     """
     if root is not None and not root.is_dir():
         fail(f"--root {str(root)!r} is not a directory")
@@ -303,20 +309,54 @@ def make_context(root: Path | None, *, project_env: bool | None = None) -> Conte
     try:
         applied = load_env(project_root, home=home, include_project=project_env)
         if project_env:
-            count = len(set(applied) & _project_env_keys(project_root, home))
-            if count:
+            names = sorted(set(applied) & _project_env_keys(project_root, home))
+            if names:
                 err_console().print(
                     Text(
-                        f"env: loaded {count} variable{'s' if count != 1 else ''} from "
-                        ".rayspec/.env (project)",
+                        f"env: loaded {len(names)} variable{'s' if len(names) != 1 else ''} "
+                        f"from .rayspec/.env (project): {_named(names)}",
                         style="dim",
                     )
                 )
+        warn_about_declared_actor()
         config = load_config(project_root, home=home)
     except ConfigError as exc:
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
     return Context(project_root=project_root, home=home, config=config)
+
+
+#: Longest list of variable names printed in full before the notice says "and N more".
+_MAX_NAMED_ENV = 8
+
+
+def _named(names: list[str]) -> str:
+    """``A, B, C`` — names only, never values, and never more than :data:`_MAX_NAMED_ENV`."""
+    if len(names) <= _MAX_NAMED_ENV:
+        return ", ".join(names)
+    shown = ", ".join(names[:_MAX_NAMED_ENV])
+    return f"{shown} and {len(names) - _MAX_NAMED_ENV} more"
+
+
+def warn_about_declared_actor() -> None:
+    """Say out loud that a ``.env``'s ``RAYSPEC_ACTOR`` is not who rayspec thinks you are.
+
+    Both ``.env`` files are files a workflow step can write — ``$RAYSPEC_HOME`` is exported into
+    every step, and the project file sits in the tree the run works in — so neither may name the
+    person a decision is attributed to. The value is refused, not applied on top of; the warning
+    exists so that somebody who put it there on purpose learns why nothing happened, and so that
+    somebody who did NOT put it there sees that something did.
+    """
+    origin = env_file_origin(ACTOR_ENV)
+    if origin is None:
+        return
+    err_console().print(
+        Text(
+            f"warning: {ACTOR_ENV} in {origin} is not used as an identity — a workflow step can "
+            f"write that file. Export {ACTOR_ENV} in the shell that runs rayspec instead.",
+            style="yellow",
+        )
+    )
 
 
 def _project_env_keys(project_root: Path, home: Path) -> set[str]:

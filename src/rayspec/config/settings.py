@@ -10,6 +10,13 @@ boundary can print ``error: <path>:<line>: …`` and exit 2.
 ``<project>/.rayspec/.env`` belongs to whoever pushed the checkout and is applied only when the
 caller passes ``include_project=True`` (the execution commands ``run``/``resume``/``approve``/
 ``reject``) — inspection commands never see it.
+
+Neither file is trusted for an **identity**. A running workflow can write both of them — the
+home file through the ``$RAYSPEC_HOME`` every step has exported, the project file because it is
+in the tree the run works in — so :func:`load_env` reports everything it applies to
+:func:`rayspec.procenv.note_env_file_values`, and identity resolution subtracts exactly that set
+again. Configuration keeps working; only "who acted" refuses to come from a file the audited run
+could have written. See :mod:`rayspec.procenv`.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from typing import Any
 from rayspec.config.model import Config
 from rayspec.config.paths import rayspec_home
 from rayspec.errors import LoaderError
+from rayspec.procenv import is_process_environ, note_env_file_values
 from rayspec.schema import SchemaError
 
 
@@ -198,21 +206,33 @@ def load_env(
     (``ANTHROPIC_BASE_URL``, ``GIT_CONFIG_*`` …): only the execution commands opt in.
     Variables already present in ``environ`` are kept unless ``override`` is true. Returns the
     variables that were actually applied. Raises :class:`ConfigError` for an unreadable file.
+
+    Everything applied to the *process* environment is reported to
+    :func:`rayspec.procenv.note_env_file_values` together with the file it came from. That is
+    what lets :func:`rayspec.procenv.operator_env` hand identity resolution the environment as
+    the operator set it: a run can write either ``.env``, so a variable rayspec copied out of
+    one is configuration, never evidence of who acted. Loading into a caller's own mapping
+    reports nothing — that mapping is not what anybody is identified from.
     """
     home = rayspec_home() if home is None else home
     root = Path.cwd() if project_root is None else project_root
     target: MutableMapping[str, str] = os.environ if environ is None else environ
     user_path, project_path = env_paths(root, home)
     paths = [user_path, project_path] if include_project else [user_path]
-    values: dict[str, str] = {}
+    # value plus the file it came from, project over home
+    values: dict[str, tuple[str, str]] = {}
     for path in paths:
         if path.exists():
-            values.update(parse_env_text(_read_text(path, what=".env")))
+            origin = str(path)
+            for key, value in parse_env_text(_read_text(path, what=".env")).items():
+                values[key] = (value, origin)
     applied: dict[str, str] = {}
-    for key, value in values.items():
+    for key, (value, origin) in values.items():
         if override or key not in target:
             target[key] = value
             applied[key] = value
+            if is_process_environ(target):
+                note_env_file_values({key: value}, origin=origin)
     return applied
 
 

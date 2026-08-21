@@ -12,10 +12,14 @@ project's runs and worktrees. The commands that read a project (`run`, `validate
 `.rayspec/config.yaml`. The **project** `.rayspec/.env` is a credential surface controlled by
 whoever pushed the checkout (`ANTHROPIC_BASE_URL`, `GIT_CONFIG_*`, …), so only the commands that
 execute steps apply it — `run`, `resume`, `approve`, `reject` — and they print one dim
-`env: loaded N variables from .rayspec/.env (project)` line on stderr when they do (project wins
-over the home file there too); the inspection commands (`doctor`, `validate`, `plan`, `workflows`,
-`agents`, `providers`, `runs`, `costs`, `show`, `logs`, `worktrees`, `projects`) never load it
-(`rayspec doctor` lists the file in a `project .env` row instead). `providers`, `projects *`,
+`env: loaded N variables from .rayspec/.env (project): NAME, NAME` line on stderr when they do,
+naming the variables (project wins over the home file there too); the inspection commands
+(`doctor`, `validate`, `plan`, `workflows`, `agents`, `providers`, `runs`, `costs`, `show`,
+`logs`, `worktrees`, `projects`) never load it (`rayspec doctor` lists both files instead, in a
+`home .env` and a `project .env` row). Neither file may supply an **identity**: a `RAYSPEC_ACTOR`
+loaded from either is refused with a `warning:` on stderr and kept only as `actor.declared_id`,
+because a workflow step can write both — see
+[runs-and-resume.md](runs-and-resume.md#who-ran-it). `providers`, `projects *`,
 `worktrees *` and `version` do **not** load any `.env` (`worktrees` reads `config.yaml` only to
 resolve `--repo`), so variables they need — e.g. `RAYSPEC_HOME` or git credentials — must come
 from the shell. A malformed `config.yaml` or `.env` (either layer: YAML syntax, an unsafe tag, a
@@ -755,6 +759,22 @@ Options:
 - `--verbose` — Also show internal/raw SDK records of a step stream.
 - `--raw` — Print stored text unescaped (control characters and escape sequences included) — debugging only.
 - `--json` / `--output json` — Machine-readable output: raw JSONL — events as stored in `events.jsonl`, stream records as `{"type": "stream", "step_path": …, "record": {…}}`.
+- `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
+
+### `rayspec audit`
+
+```
+rayspec audit [OPTIONS] {run}    # --output table|json (--json is the older spelling)
+```
+
+Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (created, started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. An approval row names both halves — `approved by alice@example.com (cli)` — because `by` says which door the decision came through (`cli` for `rayspec approve`/`reject`, `tty` for the run's own prompt, `--yes`, `dry-run`) and the actor says whose hand it was. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch; a `--dry-run` rehearsal is marked `dry run — nothing was executed`, because it called no provider and ran no shell body. Where a `.env` file tried to supply a `RAYSPEC_ACTOR`, both the header and the approval row say so — `approved by you (cli) — a .env declared 'security-team@corp.invalid', which is not an identity` — because that value was refused (a workflow step can write those files: see [runs-and-resume.md](runs-and-resume.md#which-sources-are-allowed-and-why)). Two honest limits: the header's actor is read straight out of `run.json`, while the approval row is re-resolved from the decision, so on a record somebody edited after the fact the two can disagree — and the decision row's guarantee is about the moment it was *recorded*, not about the file afterwards.
+
+The rows are derived from the run's own `run.json` (its creation, which is where the actor is recorded), `events.jsonl` and per-step `stream.jsonl` — the same derivation an enabled `audit.jsonl` stores (see [runs-and-resume.md](runs-and-resume.md#the-local-audit-log)), so a rendered ledger and a stored one always agree. A step whose stream cannot be read is a `warning` row saying so, never a silently empty step. Reading only: the command never writes to the run directory, never re-runs anything and never contacts a network service. It is a report over the files of **one** run on **this** machine — it proves nothing about them (anybody who can read a run directory can also edit it) and knows nothing about other runs, projects or people. Every cell is untrusted text, printed with control characters and terminal escape sequences removed.
+
+Options:
+
+- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps, which are rayspec running a command itself. A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
+- `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, dry_run, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec explain`

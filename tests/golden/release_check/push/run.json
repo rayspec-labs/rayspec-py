@@ -1,4 +1,10 @@
 {
+  "actor": {
+    "ci": null,
+    "id": "<actor>",
+    "provider_accounts": {},
+    "source": "<source>"
+  },
   "cost_source": "none",
   "created_at": "<ts>",
   "dry_run": true,

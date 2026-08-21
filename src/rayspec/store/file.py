@@ -11,6 +11,7 @@ Layout::
     <root>/runs/<run-id>/
         run.json                      RunRecord.model_dump_json() — atomically replaced
         events.jsonl                  lifecycle RunEvents (one JSON object per line)
+        audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1
         steps/<step-path>/            StepPath.fs_path(); nested like ``build[2]/implement``
             output.txt | output.json  the step output (write-ahead: written before run.json)
             prompt.txt                prompt steps: the rendered prompt handed to the provider
@@ -52,6 +53,14 @@ and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
 ``stream.jsonl`` reassembles to is therefore exactly what the step produced — redaction moves
 chunk boundaries, it never drops text. That is the whole point of routing new writes through the
 store: a writer that opens a file under the run dir directly is not covered.
+
+The optional ``audit.jsonl`` (:func:`audit_log_enabled`) is one row per governance-relevant
+fact — the run and who started it, its steps, the commands and tools its agents used, the files
+they changed, the approvals and who made them. It is derived from what already flows through
+:meth:`FileRunStore.create`, :meth:`~FileRunStore.append_event` and
+:meth:`~FileRunStore.append_stream`, and redacted over its VALUES rather than its serialised
+text. It is a **log**: append-only in behaviour, with nothing about the file proving it was not
+edited afterwards, and strictly local to one run.
 """
 
 from __future__ import annotations
@@ -66,7 +75,7 @@ import re
 import shutil
 import stat
 import threading
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, TextIO, TypeVar, cast
@@ -102,7 +111,270 @@ _ARTIFACT_CHUNK_BYTES = 1 << 20
 PROMPT_TXT = "prompt.txt"
 EVENTS_JSONL = "events.jsonl"
 STREAM_JSONL = "stream.jsonl"
+#: The optional local ledger (see :func:`audit_log_enabled`).
+AUDIT_JSONL = "audit.jsonl"
+#: Environment variable that turns the ledger on for every run of this process.
+AUDIT_ENV = "RAYSPEC_AUDIT_LOG"
+#: Longest ``detail`` an audit row keeps (a tool argument can be a whole file).
+AUDIT_DETAIL_CAP = 1000
+#: Values of :data:`AUDIT_ENV` that mean "off".
+_AUDIT_FALSY = frozenset({"", "0", "false", "no", "off"})
 _RUN_SUBDIRS = ("steps", "artifacts", "tmp")
+
+#: Lifecycle events that become an audit row, and the row kind each one gets.
+_AUDIT_EVENT_KINDS: dict[EventType, str] = {
+    EventType.RUN_STARTED: "run",
+    EventType.RUN_RESUMED: "run",
+    EventType.RUN_PAUSED: "run",
+    EventType.RUN_FINISHED: "run",
+    EventType.WORKSPACE_CREATED: "run",
+    EventType.RUN_DECISION: "approval",
+    EventType.STEP_STARTED: "step",
+    EventType.STEP_RETRY: "step",
+    EventType.STEP_FINISHED: "step",
+    EventType.WARNING: "warning",
+}
+
+#: Keys under which a ``tool_call`` carries the command it executes. Adapters disagree about
+#: the shape — the Claude adapter spreads the tool input across ``data``, the others nest it
+#: under ``data["input"]`` — so both are looked at (:func:`tool_command`).
+_COMMAND_ARG_KEYS = ("command", "cmd", "script")
+
+#: Stream record kinds that become an audit row, and the row kind each one gets. Deltas,
+#: transcripts and usage reports are NOT here: the ledger answers "what did it DO", and the
+#: full text is one file away in ``stream.jsonl``. A ``tool_call`` that carries a command line
+#: is promoted to a ``command`` row by :func:`audit_entry_for_stream`.
+_AUDIT_STREAM_KINDS: dict[str, str] = {
+    "command_start": "command",
+    "tool_call": "tool",
+    "file_change": "file",
+    "warning": "warning",
+    "error": "warning",
+}
+
+
+#: The stream record kinds the ledger keeps — the prefilter ``rayspec audit`` hands to
+#: :meth:`FileRunStore.read_stream` so a multi-megabyte transcript is never parsed record by
+#: record only to be thrown away.
+AUDIT_STREAM_KINDS: frozenset[str] = frozenset(_AUDIT_STREAM_KINDS)
+
+
+def audit_log_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether :data:`AUDIT_ENV` asks for a local ``audit.jsonl`` next to the run.
+
+    Off by default: the ledger is a convenience for somebody who wants one file per run they can
+    read or keep, not a second copy of the transcript everybody pays for.
+    """
+    env = os.environ if env is None else env
+    value = env.get(AUDIT_ENV)
+    return value is not None and value.strip().lower() not in _AUDIT_FALSY
+
+
+def _raw_detail(text: Any) -> str:
+    """A row's ``detail`` exactly as it came off the event or the record.
+
+    Deliberately unshortened: the redactor matches a secret **literally**, so collapsing the
+    whitespace out of a PEM key or cutting a long token in half here would leave a value the
+    redactor can no longer recognise. Shaping is :func:`finish_audit_row`'s job, afterwards.
+    """
+    return str(text or "")
+
+
+def _shape_detail(text: Any) -> str:
+    """One capped line of plain text for an audit row's ``detail`` — redacted text only."""
+    line = " ".join(str(text or "").split())
+    if len(line) > AUDIT_DETAIL_CAP:
+        line = line[: AUDIT_DETAIL_CAP - 1] + "…"
+    return line
+
+
+def finish_audit_row(row: dict[str, Any], redactor: Redactor = NULL_REDACTOR) -> dict[str, Any]:
+    """A raw ledger row, **redacted first and shaped second** — never the other way round.
+
+    :func:`audit_entry_for_event` and :func:`audit_entry_for_stream` return the row with its
+    text untouched; this is what turns it into the row that is written or printed. The order is
+    the whole point: redaction is exact match, so a multi-line secret survives a whitespace
+    collapse and an overlong one survives a truncation, and either would then be persisted.
+
+    ``redactor`` defaults to the no-op, which is right for a caller re-deriving rows from files
+    the store already redacted on the way in (``rayspec audit``).
+    """
+    row = dict(redactor.redact_obj(row)) if redactor else dict(row)
+    data = row.get("data")
+    if isinstance(data, Mapping):
+        shaped = dict(data)
+        if isinstance(shaped.get("input"), str):
+            shaped["input"] = _shape_detail(shaped["input"])
+        row["data"] = shaped
+    row["detail"] = _shape_detail(row.get("detail"))
+    return row
+
+
+def _decision_detail(data: Mapping[str, Any]) -> str:
+    """``approved by alice@example.com (cli)`` — the decision, whose it was, and how it came in.
+
+    All three belong on the line a person actually reads. ``by`` is the door the decision came
+    through (``cli`` for ``rayspec approve``/``reject``, ``tty`` for the run's own terminal
+    prompt, ``--yes``, ``dry-run``) and the actor is the identity behind it; a row that says
+    only "approved" cannot tell a human sign-off from an auto-approval.
+
+    A ``declared_id`` — an identity a ``.env`` file asked for and was refused, because the run
+    can write that file — is appended when there is one. The ledger row is where somebody reads
+    what happened, so an attempt to name the approver belongs on it.
+    """
+    detail = "approved" if data.get("approved") else "rejected"
+    actor = data.get("actor")
+    actor = actor if isinstance(actor, Mapping) else {}
+    who = actor.get("id")
+    if who:
+        detail += f" by {who}"
+    by = data.get("by")
+    if by:
+        detail += f" ({by})"
+    declared = actor.get("declared_id")
+    if declared:
+        detail += f" — a .env declared {declared!r}, which is not an identity"
+    return detail
+
+
+def audit_entry_for_create(run: RunRecord) -> dict[str, Any]:
+    """The ledger's first row: the run being created — and the one fact no event carries, WHO.
+
+    Shared by the store (which appends it) and ``rayspec audit`` (which re-derives it), so the
+    stored ledger and the rendered one hold the same rows.
+    """
+    return {
+        "ts": run.created_at.isoformat(),
+        "kind": "run",
+        "step": None,
+        "detail": "created",
+        "data": {
+            "workflow": run.workflow_name,
+            "project_slug": run.project_slug,
+            "dry_run": run.dry_run,
+            "actor": None if run.actor is None else run.actor.model_dump(mode="json"),
+        },
+    }
+
+
+def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
+    """The ledger row for one lifecycle event, or ``None`` when it carries no governance fact.
+
+    Rows are ``{ts, kind, step, detail, data}``: ``kind`` is one of ``run``/``step``/
+    ``approval``/``warning``, ``detail`` is the one-line summary and ``data`` the event's own
+    payload. Progress events (loop iterations, ``each`` items) are deliberately dropped — they
+    say how far a run got, not what it did.
+
+    The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
+    """
+    kind = _AUDIT_EVENT_KINDS.get(event.type)
+    if kind is None:
+        return None
+    data = dict(event.data)
+    if event.type is EventType.RUN_DECISION:
+        detail = _decision_detail(data)
+    elif event.type is EventType.WARNING:
+        detail = _raw_detail(data.get("message") or data.get("warning"))
+    elif event.type is EventType.STEP_FINISHED:
+        detail = _raw_detail(data.get("status") or "finished")
+    elif event.type is EventType.STEP_STARTED:
+        detail = _raw_detail(f"started ({data.get('kind') or 'step'})")
+    elif event.type is EventType.STEP_RETRY:
+        detail = _raw_detail(f"retry {data.get('attempt')}")
+    elif event.type is EventType.RUN_FINISHED:
+        detail = _raw_detail(f"finished ({data.get('status') or 'unknown'})")
+    elif event.type is EventType.WORKSPACE_CREATED:
+        detail = _raw_detail(data.get("branch") or data.get("workdir"))
+    else:
+        detail = event.type.value.split(".", 1)[1]
+    return {
+        "ts": event.ts.isoformat(),
+        "kind": kind,
+        "step": event.step_path,
+        "detail": detail,
+        "data": data,
+    }
+
+
+def tool_arguments(record: StreamRecord) -> Mapping[str, Any] | None:
+    """The arguments of a ``tool_call`` record, whichever shape the adapter used.
+
+    ``data["input"]`` when it is there (the Codex adapter, the stub, a tool denial), otherwise
+    ``data`` itself (the Claude adapter spreads the tool input across it). ``None`` when the
+    call carried no arguments at all.
+    """
+    nested = record.data.get("input")
+    if isinstance(nested, Mapping):
+        return nested
+    if nested is not None:
+        return {"input": nested}
+    return record.data or None
+
+
+def tool_command(record: StreamRecord) -> str | None:
+    """The command line a ``tool_call`` executes, or ``None`` when it executes nothing.
+
+    ``Bash``, ``shell``, a Codex ``local_shell``, an MCP tool that runs something: they differ
+    in name but all carry the command under one of :data:`_COMMAND_ARG_KEYS`, as a string or an
+    argv list. Matching on the argument rather than on the tool name is what keeps the ledger
+    from being provider-specific — ``command_start`` records only ever come from Codex, so
+    without this a Claude run would answer "what was executed?" with nothing at all.
+    """
+    arguments = tool_arguments(record)
+    if arguments is None:
+        return None
+    for key in _COMMAND_ARG_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list) and value and all(isinstance(part, str) for part in value):
+            return " ".join(value)
+    return None
+
+
+def audit_entry_for_stream(step_path: str, record: StreamRecord) -> dict[str, Any] | None:
+    """The ledger row for one stream record, or ``None`` for the kinds the ledger ignores.
+
+    A ``command_start`` becomes a ``command`` row (the command line), a ``tool_call`` a ``tool``
+    row (the tool name, with its arguments in ``data``), a ``file_change`` a ``file`` row (the
+    path) and a ``warning``/``error`` a ``warning`` row. A ``tool_call`` that carries a command
+    line (:func:`tool_command`) becomes a ``command`` row instead, with the tool's name in
+    ``data["tool"]`` — what was executed is the same fact whichever adapter reported it.
+
+    The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
+    """
+    kind = _AUDIT_STREAM_KINDS.get(record.kind)
+    if kind is None:
+        return None
+    if record.kind == "command_start":
+        detail = _raw_detail(record.data.get("command") or record.text)
+        data: dict[str, Any] = {"attempt": record.attempt}
+    elif record.kind == "tool_call":
+        data = {"attempt": record.attempt, "call_id": record.call_id}
+        arguments = tool_arguments(record)
+        command = tool_command(record)
+        if command is not None:  # a tool that runs a command IS the run executing something
+            kind = "command"
+            detail = _raw_detail(command)
+            data["tool"] = record.name
+        else:
+            detail = _raw_detail(record.name or "tool")
+        if arguments is not None:
+            data["input"] = json.dumps(arguments, ensure_ascii=False, default=str)
+    elif record.kind == "file_change":
+        first = record.text.strip().splitlines()
+        detail = _raw_detail(record.name or (first[0] if first else ""))
+        data = {"attempt": record.attempt}
+    else:
+        detail = _raw_detail(record.text)
+        data = {"attempt": record.attempt, "level": record.kind}
+    return {
+        "ts": record.ts.isoformat(),
+        "kind": kind,
+        "step": step_path,
+        "detail": detail,
+        "data": data,
+    }
 
 
 class StoreError(RayspecError):
@@ -177,7 +449,9 @@ class FileRunStore:
     volumes (a few deltas per second); per-path handles/locks are a later optimisation.
     """
 
-    def __init__(self, root: Path, *, redactor: Redactor = NULL_REDACTOR):
+    def __init__(
+        self, root: Path, *, redactor: Redactor = NULL_REDACTOR, audit: bool | None = None
+    ):
         self.root = Path(root)
         self.runs_root = self.root / "runs"
         self._save_lock = threading.Lock()
@@ -187,6 +461,9 @@ class FileRunStore:
         #: secrets are known, so the CLI assigns the real redactor to this attribute at run
         #: start; ``NULL_REDACTOR`` (the default) is a no-op the writers skip entirely.
         self.redactor: Redactor = redactor
+        #: ``True``/``False`` pin the local ledger on or off; ``None`` (the default) asks
+        #: :data:`AUDIT_ENV` at write time, so a process that exports it mid-flight is honoured.
+        self.audit: bool | None = audit
         self._stream_redactors: dict[tuple[str, str, str, int], StreamRedactor] = {}
 
     # -- paths --------------------------------------------------------------------------------
@@ -217,11 +494,16 @@ class FileRunStore:
     # -- run.json -----------------------------------------------------------------------------
 
     def create(self, run: RunRecord) -> None:
-        """Create the run directory skeleton and write the first ``run.json``."""
+        """Create the run directory skeleton and write the first ``run.json``.
+
+        With the local ledger enabled this is also its first row: the workflow, the project and
+        — the fact no event carries — WHO started the run.
+        """
         run_dir = self.run_dir(run.run_id)
         if run_dir.exists():
             raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}")
         self.save(run)
+        self._append_audit(run.run_id, audit_entry_for_create(run))
 
     def save(self, run: RunRecord) -> None:
         """Atomically persist the whole record: tmp file + fsync + ``os.replace``.
@@ -477,6 +759,50 @@ class FileRunStore:
             elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
                 self.flush_streams(run_id)
         self._append_line(self.run_dir(run_id) / EVENTS_JSONL, _event_json(event, self.redactor))
+        self._append_audit(run_id, audit_entry_for_event(event))
+
+    def _append_audit(self, run_id: str, entry: dict[str, Any] | None) -> None:
+        """Append one ledger row to ``audit.jsonl`` — values redacted, never the serialised text.
+
+        A no-op unless the ledger is enabled. :func:`finish_audit_row` redacts the row's VALUES
+        (:meth:`~rayspec.redact.Redactor.redact_obj`), so a numeric secret becomes the marker
+        instead of corrupting the JSON, and a complete string is matched in one piece — there is
+        no chunk boundary here for a value to hide across — and only then shortens the ``detail``
+        to one capped line.
+
+        The ledger is a log, not evidence: rows are appended in the order the store learns them
+        and nothing about the file proves it was not edited afterwards.
+
+        It is also an opt-in convenience, so it may never cost the run an authoritative file: a
+        write that fails is a warning and nothing else.
+        """
+        if entry is None or not (audit_log_enabled() if self.audit is None else self.audit):
+            return
+        path = self.run_dir(run_id) / AUDIT_JSONL
+        try:
+            payload = finish_audit_row(entry, self.redactor)
+            self._append_line(path, json.dumps(payload, ensure_ascii=False, default=str))
+        except OSError as exc:
+            _log.warning("%s: could not append to %s (%s)", path, AUDIT_JSONL, exc)
+
+    def read_audit(self, run_id: str) -> Iterator[dict[str, Any]]:
+        """Iterate the rows of ``audit.jsonl`` (empty when the ledger was never enabled).
+
+        A torn trailing line ends the iteration and an unreadable middle line is skipped, both
+        with a warning — the same tolerance :meth:`read_events` and :meth:`read_stream` have.
+        """
+        path = self.run_dir(run_id) / AUDIT_JSONL
+        for line, terminated in _iter_lines(path):
+            try:
+                row = json.loads(line)
+            except ValueError as exc:
+                if not terminated:
+                    _log.warning("%s: ignoring torn trailing line (%s)", path, exc)
+                    return
+                _log.warning("%s: skipping unreadable line (%s)", path, exc)
+                continue
+            if isinstance(row, dict):
+                yield row
 
     def append_stream(self, run_id: str, step_path: str, record: StreamRecord) -> None:
         """Append one stream record to ``steps/<path>/stream.jsonl`` (one line, flushed).
@@ -488,9 +814,15 @@ class FileRunStore:
         :meth:`flush_streams` — which :meth:`append_event` calls on ``step.finished`` and
         ``run.finished``/``run.paused``, so a finished stream is always complete on disk.
         """
+        # derived from the ORIGINAL record: a boundary buffer may hold back the tail of the
+        # very command the ledger is about, and a whole value redacts more reliably than a chunk
+        entry = audit_entry_for_stream(step_path, record)
         if self.redactor:
             record = self._redact_stream(run_id, step_path, record)
+        # the transcript first: the ledger is a convenience and must not pre-empt the file the
+        # run is actually judged by
         self._append_line(self.step_dir(run_id, step_path) / STREAM_JSONL, record.to_json())
+        self._append_audit(run_id, entry)
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
         """Write the text a :meth:`append_stream` boundary buffer is still holding back.
@@ -828,6 +1160,10 @@ def _fsync_dir(path: Path) -> None:
 
 
 __all__ = [
+    "AUDIT_DETAIL_CAP",
+    "AUDIT_ENV",
+    "AUDIT_JSONL",
+    "AUDIT_STREAM_KINDS",
     "EVENTS_JSONL",
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
@@ -841,6 +1177,13 @@ __all__ = [
     "StoreError",
     "UnknownRunIdError",
     "WrittenOutput",
+    "audit_entry_for_create",
+    "audit_entry_for_event",
+    "audit_entry_for_stream",
+    "audit_log_enabled",
+    "finish_audit_row",
     "open_private",
     "secure_mkdir",
+    "tool_arguments",
+    "tool_command",
 ]
