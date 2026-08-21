@@ -209,11 +209,31 @@ class Redactor:
 
     def redact(self, text: str) -> str:
         """``text`` with every known value (and enabled shape) replaced."""
-        if not text or not self:
+        return self.redact_shapes(self.redact_values(text))
+
+    def redact_values(self, text: str) -> str:
+        """``text`` with every known VALUE replaced; the detector shapes are left alone.
+
+        The half :class:`StreamRedactor` applies before it measures its boundary: a known value
+        is an exact string, so a complete occurrence can be replaced the moment it is whole,
+        whereas a detector shape may still be growing (see :meth:`redact_shapes`).
+        """
+        if not text or not self.literals:
             return text
         for needle, replacement in self.literals:
             if needle in text:
                 text = text.replace(needle, replacement)
+        return text
+
+    def redact_shapes(self, text: str) -> str:
+        """``text`` with every enabled detector SHAPE replaced; known values are left alone.
+
+        Only ever applied to text a :class:`StreamRedactor` has decided to release: a shape
+        matched on a partial buffer would replace the prefix of a token and let its tail
+        through.
+        """
+        if not text or not self.patterns:
+            return text
         for name, pattern in self.patterns:
             text = pattern.sub(REDACTION.format(name=name), text)
         return text
@@ -340,10 +360,11 @@ class StreamRedactor:
     A secret split across two ``text_delta`` chunks (``ghp_SEC`` + ``RET…``) matches neither
     chunk on its own, so :meth:`feed` holds back the tail that could still *grow* into a match —
     the longest suffix that is a proper prefix of a known value, or that a detector's shape is
-    still in the middle of. Text that cannot be part of any secret is returned immediately, so a
-    live log or console tree never lags behind a long-running step. The concatenation of
-    everything ``feed``/``flush`` return equals the redaction of the concatenation of everything
-    fed in; only the chunk *boundaries* move.
+    still in the middle of. Complete values are replaced before that tail is measured, so a
+    value that overlaps itself cannot look like one still being written. Text that cannot be
+    part of any secret is returned immediately, so a live log or console tree never lags behind
+    a long-running step. The concatenation of everything ``feed``/``flush`` return equals the
+    redaction of the concatenation of everything fed in; only the chunk *boundaries* move.
 
     A caller MUST :meth:`flush` at the end of the stream (the store does it when the step
     finishes), otherwise a pending partial value is dropped.
@@ -361,19 +382,28 @@ class StreamRedactor:
         return self._redactor
 
     def feed(self, text: str) -> str:
-        """The safe prefix of everything fed so far that has not been returned yet."""
+        """The safe prefix of everything fed so far that has not been returned yet.
+
+        Known values are replaced BEFORE the boundary is measured. Measuring first is what a
+        self-overlapping value defeats: ``4242424242`` ends with its own eight-character
+        prefix, so the buffer looked like a value still being written, the boundary was drawn
+        two characters in — and those two characters were released raw while the rest waited
+        for a continuation that never came. Replacing complete matches first leaves the
+        boundary to do the only job it can do, which is to wait for a value that really is
+        still incomplete.
+        """
         if not self._redactor:
             return text
         if not text:
             return ""
-        buffered = self._pending + text
+        buffered = self._redactor.redact_values(self._pending + text)
         hold = self._hold(buffered)
         if hold >= len(buffered):
             self._pending = buffered
             return ""
         cut = len(buffered) - hold
         self._pending = buffered[cut:]
-        return self._redactor.redact(buffered[:cut])
+        return self._redactor.redact_shapes(buffered[:cut])
 
     def _hold(self, text: str) -> int:
         """How many trailing characters of ``text`` could still become part of a match."""

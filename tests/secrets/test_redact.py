@@ -96,6 +96,27 @@ def test_stream_redactor_splits_at_every_offset() -> None:
         assert out == "xx[REDACTED:token]yy", cut
 
 
+@pytest.mark.parametrize("secret", ["4242424242", "abcabcabc", "aaaa", "xyxyxy"])
+def test_a_self_overlapping_secret_is_never_cut_in_half(secret: str) -> None:
+    """A value whose own prefix is also its suffix (a repeating token, a numeric PIN) used to
+    fool the boundary buffer: the hold was measured against the longest *partial* prefix, so a
+    COMPLETE match that started before the cut had its head emitted raw."""
+    red = _r(tok=secret)
+    assert red.stream().feed(secret) + red.stream().flush() == "[REDACTED:tok]"
+    text = f"[{secret}]"
+    for cut in range(len(text) + 1):
+        stream = red.stream()
+        out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
+        assert out == "[[REDACTED:tok]]", (secret, cut)
+
+
+def test_a_self_overlapping_secret_fed_one_character_at_a_time(secret: str = "4242424242") -> None:
+    red = _r(tok=secret)
+    stream = red.stream()
+    out = "".join(stream.feed(char) for char in f"a{secret}b") + stream.flush()
+    assert out == "a[REDACTED:tok]b"
+
+
 def test_stream_redactor_preserves_text_without_secrets() -> None:
     stream = StreamRedactor(_r(token=SECRET))
     out = "".join(stream.feed(c) for c in "hello world") + stream.flush()
