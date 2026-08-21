@@ -36,7 +36,12 @@ from rayspec.cli.commands._loader_common import (
     console,
     resolve_output,
 )
-from rayspec.store.file import FileRunStore, audit_entry_for_event, audit_entry_for_stream
+from rayspec.store.file import (
+    FileRunStore,
+    audit_entry_for_event,
+    audit_entry_for_stream,
+    finish_audit_row,
+)
 from rayspec.store.model import RunRecord
 from rayspec.textsafe import safe_text
 
@@ -79,7 +84,7 @@ def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
     for event in store.read_events(run.run_id):
         entry = audit_entry_for_event(event)
         if entry is not None:
-            rows.append(entry)
+            rows.append(finish_audit_row(entry))
     for path in run.steps:
         try:
             records = list(store.read_stream(run.run_id, path))
@@ -88,7 +93,7 @@ def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
         for record in records:
             entry = audit_entry_for_stream(path, record)
             if entry is not None:
-                rows.append(entry)
+                rows.append(finish_audit_row(entry))
     rows.sort(key=_row_time)
     return rows
 

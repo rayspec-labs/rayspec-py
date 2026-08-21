@@ -163,11 +163,12 @@ def test_the_ledger_never_carries_a_secret(
 
 def test_a_long_detail_is_capped(home: Path, tmp_path: Path) -> None:
     from rayspec.events.model import StreamRecord
-    from rayspec.store.file import AUDIT_DETAIL_CAP, audit_entry_for_stream
+    from rayspec.store.file import AUDIT_DETAIL_CAP, audit_entry_for_stream, finish_audit_row
 
     entry = audit_entry_for_stream("a", StreamRecord(kind="command_start", text="x" * 5000))
     assert entry is not None
-    assert len(entry["detail"]) <= AUDIT_DETAIL_CAP
+    assert len(entry["detail"]) == 5000  # the row is raw until it is finished
+    assert len(finish_audit_row(entry)["detail"]) <= AUDIT_DETAIL_CAP
 
 
 def test_read_audit_round_trips_and_tolerates_a_torn_line(
@@ -204,3 +205,80 @@ def test_the_ledger_is_off_for_an_explicitly_disabled_store(
     )
     store.create(run)
     assert not (store.run_dir(run.run_id) / AUDIT_JSONL).exists()
+
+
+# A secret is not always a short single-line token: a PEM key has newlines, a service-account
+# blob has runs of whitespace, and both are longer than a row's detail is allowed to be.
+MULTILINE_SECRET = "-----BEGIN KEY-----\nAAAABBBBCCCC\n-----END KEY-----"
+SPACED_SECRET = "service   account    key    value"
+OVERLONG_SECRET = "sk-" + "y" * 1300
+
+
+@pytest.fixture
+def ledger_store(home: Path) -> FileRunStore:
+    """A store with the ledger pinned on and a run to append to."""
+    from rayspec.schema import RunStatus
+    from rayspec.store.model import RunRecord
+
+    store = FileRunStore(home / "shapes", audit=True)
+    store.create(
+        RunRecord(
+            run_id="20260821-000000-bbbb",
+            workflow_name="w",
+            workflow_path="w.yaml",
+            workflow_hash="a" * 64,
+            project_slug="local/x",
+            project_root=str(home),
+            status=RunStatus.RUNNING,
+        )
+    )
+    return store
+
+
+@pytest.mark.parametrize(
+    "secret", [SECRET, MULTILINE_SECRET, SPACED_SECRET, OVERLONG_SECRET], ids=lambda s: str(len(s))
+)
+def test_the_ledger_redacts_a_secret_of_any_shape(ledger_store: FileRunStore, secret: str) -> None:
+    from rayspec.events.model import StreamRecord
+    from rayspec.redact import Redactor
+
+    run_id = "20260821-000000-bbbb"
+    ledger_store.redactor = Redactor.build({"token": secret})
+    ledger_store.append_stream(
+        run_id, "leak", StreamRecord(kind="error", text=f"boom {secret} end")
+    )
+    raw = (ledger_store.run_dir(run_id) / AUDIT_JSONL).read_text()
+    assert secret not in raw
+    assert "".join(secret.split()) not in "".join(raw.split())
+    assert "[REDACTED:token]" in raw
+
+
+def test_a_capped_detail_is_still_redacted(ledger_store: FileRunStore) -> None:
+    from rayspec.events.model import StreamRecord
+    from rayspec.redact import Redactor
+    from rayspec.store.file import AUDIT_DETAIL_CAP
+
+    run_id = "20260821-000000-bbbb"
+    ledger_store.redactor = Redactor.build({"token": OVERLONG_SECRET})
+    ledger_store.append_stream(
+        run_id, "leak", StreamRecord(kind="error", text=f"{OVERLONG_SECRET} tail")
+    )
+    (row,) = [r for r in ledger_store.read_audit(run_id) if r["kind"] == "warning"]
+    assert row["detail"] == "[REDACTED:token] tail"
+    assert len(row["detail"]) <= AUDIT_DETAIL_CAP
+
+
+def test_a_tool_argument_is_redacted_before_it_is_capped(ledger_store: FileRunStore) -> None:
+    from rayspec.events.model import StreamRecord
+    from rayspec.redact import Redactor
+
+    run_id = "20260821-000000-bbbb"
+    ledger_store.redactor = Redactor.build({"token": OVERLONG_SECRET})
+    ledger_store.append_stream(
+        run_id,
+        "leak",
+        StreamRecord(kind="tool_call", name="Read", data={"input": {"key": OVERLONG_SECRET}}),
+    )
+    raw = (ledger_store.run_dir(run_id) / AUDIT_JSONL).read_text()
+    assert OVERLONG_SECRET[:200] not in raw
+    assert "[REDACTED:token]" in raw

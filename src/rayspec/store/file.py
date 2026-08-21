@@ -152,12 +152,44 @@ def audit_log_enabled(env: Mapping[str, str] | None = None) -> bool:
     return value is not None and value.strip().lower() not in _AUDIT_FALSY
 
 
-def _audit_detail(text: Any) -> str:
-    """One capped line of plain text for an audit row's ``detail``."""
+def _raw_detail(text: Any) -> str:
+    """A row's ``detail`` exactly as it came off the event or the record.
+
+    Deliberately unshortened: the redactor matches a secret **literally**, so collapsing the
+    whitespace out of a PEM key or cutting a long token in half here would leave a value the
+    redactor can no longer recognise. Shaping is :func:`finish_audit_row`'s job, afterwards.
+    """
+    return str(text or "")
+
+
+def _shape_detail(text: Any) -> str:
+    """One capped line of plain text for an audit row's ``detail`` — redacted text only."""
     line = " ".join(str(text or "").split())
     if len(line) > AUDIT_DETAIL_CAP:
         line = line[: AUDIT_DETAIL_CAP - 1] + "…"
     return line
+
+
+def finish_audit_row(row: dict[str, Any], redactor: Redactor = NULL_REDACTOR) -> dict[str, Any]:
+    """A raw ledger row, **redacted first and shaped second** — never the other way round.
+
+    :func:`audit_entry_for_event` and :func:`audit_entry_for_stream` return the row with its
+    text untouched; this is what turns it into the row that is written or printed. The order is
+    the whole point: redaction is exact match, so a multi-line secret survives a whitespace
+    collapse and an overlong one survives a truncation, and either would then be persisted.
+
+    ``redactor`` defaults to the no-op, which is right for a caller re-deriving rows from files
+    the store already redacted on the way in (``rayspec audit``).
+    """
+    row = dict(redactor.redact_obj(row)) if redactor else dict(row)
+    data = row.get("data")
+    if isinstance(data, Mapping):
+        shaped = dict(data)
+        if isinstance(shaped.get("input"), str):
+            shaped["input"] = _shape_detail(shaped["input"])
+        row["data"] = shaped
+    row["detail"] = _shape_detail(row.get("detail"))
+    return row
 
 
 def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
@@ -167,6 +199,8 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     ``approval``/``warning``, ``detail`` is the one-line summary and ``data`` the event's own
     payload. Progress events (loop iterations, ``each`` items) are deliberately dropped — they
     say how far a run got, not what it did.
+
+    The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
     """
     kind = _AUDIT_EVENT_KINDS.get(event.type)
     if kind is None:
@@ -175,17 +209,17 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     if event.type is EventType.RUN_DECISION:
         detail = "approved" if data.get("approved") else "rejected"
     elif event.type is EventType.WARNING:
-        detail = _audit_detail(data.get("message") or data.get("warning"))
+        detail = _raw_detail(data.get("message") or data.get("warning"))
     elif event.type is EventType.STEP_FINISHED:
-        detail = _audit_detail(data.get("status") or "finished")
+        detail = _raw_detail(data.get("status") or "finished")
     elif event.type is EventType.STEP_STARTED:
-        detail = _audit_detail(f"started ({data.get('kind') or 'step'})")
+        detail = _raw_detail(f"started ({data.get('kind') or 'step'})")
     elif event.type is EventType.STEP_RETRY:
-        detail = _audit_detail(f"retry {data.get('attempt')}")
+        detail = _raw_detail(f"retry {data.get('attempt')}")
     elif event.type is EventType.RUN_FINISHED:
-        detail = _audit_detail(f"finished ({data.get('status') or 'unknown'})")
+        detail = _raw_detail(f"finished ({data.get('status') or 'unknown'})")
     elif event.type is EventType.WORKSPACE_CREATED:
-        detail = _audit_detail(data.get("branch") or data.get("workdir"))
+        detail = _raw_detail(data.get("branch") or data.get("workdir"))
     else:
         detail = event.type.value.split(".", 1)[1]
     return {
@@ -203,25 +237,27 @@ def audit_entry_for_stream(step_path: str, record: StreamRecord) -> dict[str, An
     A ``command_start`` becomes a ``command`` row (the command line), a ``tool_call`` a ``tool``
     row (the tool name, with its arguments in ``data``), a ``file_change`` a ``file`` row (the
     path) and a ``warning``/``error`` a ``warning`` row.
+
+    The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
     """
     kind = _AUDIT_STREAM_KINDS.get(record.kind)
     if kind is None:
         return None
     if record.kind == "command_start":
-        detail = _audit_detail(record.data.get("command") or record.text)
+        detail = _raw_detail(record.data.get("command") or record.text)
         data: dict[str, Any] = {"attempt": record.attempt}
     elif record.kind == "tool_call":
-        detail = _audit_detail(record.name or "tool")
+        detail = _raw_detail(record.name or "tool")
         arguments = record.data.get("input")
         data = {"attempt": record.attempt, "call_id": record.call_id}
         if arguments is not None:
-            data["input"] = _audit_detail(json.dumps(arguments, ensure_ascii=False, default=str))
+            data["input"] = json.dumps(arguments, ensure_ascii=False, default=str)
     elif record.kind == "file_change":
         first = record.text.strip().splitlines()
-        detail = _audit_detail(record.name or (first[0] if first else ""))
+        detail = _raw_detail(record.name or (first[0] if first else ""))
         data = {"attempt": record.attempt}
     else:
-        detail = _audit_detail(record.text)
+        detail = _raw_detail(record.text)
         data = {"attempt": record.attempt, "level": record.kind}
     return {
         "ts": record.ts.isoformat(),
@@ -629,17 +665,18 @@ class FileRunStore:
     def _append_audit(self, run_id: str, entry: dict[str, Any] | None) -> None:
         """Append one ledger row to ``audit.jsonl`` — values redacted, never the serialised text.
 
-        A no-op unless the ledger is enabled. Redaction runs over the row's VALUES
+        A no-op unless the ledger is enabled. :func:`finish_audit_row` redacts the row's VALUES
         (:meth:`~rayspec.redact.Redactor.redact_obj`), so a numeric secret becomes the marker
         instead of corrupting the JSON, and a complete string is matched in one piece — there is
-        no chunk boundary here for a value to hide across.
+        no chunk boundary here for a value to hide across — and only then shortens the ``detail``
+        to one capped line.
 
         The ledger is a log, not evidence: rows are appended in the order the store learns them
         and nothing about the file proves it was not edited afterwards.
         """
         if entry is None or not (audit_log_enabled() if self.audit is None else self.audit):
             return
-        payload = self.redactor.redact_obj(entry) if self.redactor else entry
+        payload = finish_audit_row(entry, self.redactor)
         self._append_line(
             self.run_dir(run_id) / AUDIT_JSONL,
             json.dumps(payload, ensure_ascii=False, default=str),
@@ -1001,6 +1038,7 @@ __all__ = [
     "audit_entry_for_event",
     "audit_entry_for_stream",
     "audit_log_enabled",
+    "finish_audit_row",
     "open_private",
     "secure_mkdir",
 ]
