@@ -81,7 +81,8 @@ semantic changes without updating every consumer in the same PR.
   the loader's *types* only under `TYPE_CHECKING`; nothing else in rayspec is imported, and it
   performs no IO beyond reading `policy.yaml` and reading/writing `.rayspec/trusted.yaml`.
 - `loader/validate.py` → `policy` (one call site, `_Validator._check_policy`). No other module
-  under `loader/` imports `policy`.
+  under `loader/` imports `policy`. In the CLI only `cli/commands/resume.py` does, in
+  `refuse_policy_violations` — the shared resume/approve/reject guard.
 - `cli` → everything; no business logic in the CLI layer.
 - Concurrency: anyio only (ruff `TID251` enforces the banned asyncio APIs).
 
@@ -786,8 +787,13 @@ the injectable ``clock`` so tests call ``render()`` directly (no timers).
 from rayspec.policy import (
     Policy,  # StrictModel document: providers{allow: list|None}, models{deny: list[glob]},
     #   access{max: read-only|workspace-write|full|None}, tools{deny: list}, mcp{allow_servers:
-    #   list|None}, workspace{protected_paths, max_changed_files, max_changed_lines},
+    #   list|None}, workspace{protected_paths, max_changed_files, max_changed_lines} (ADVISORY —
+    #   parsed and merged, but nothing runs the change guard in this build; validate warns),
     #   trust{require: bool}. Every block is RESTRICTIVE ONLY — there is no key that grants.
+    apply_policy,  # (resolved, *, capabilities_for=None, policy=None) -> PolicyReport — the ONE
+    #   entry point: discovers the layers, runs the checks, folds the denials into the agents.
+    #   Anything about to RUN a resolved workflow calls it, validating or not; idempotent.
+    policy_root,  # (resolved) -> Path   problem_line,  # (PolicyProblem) -> "where: message (at …)"
     load_policy,  # (project_root, *, home=None, environ=None) -> EffectivePolicy   (PolicyError)
     policy_paths,  # (project_root, home=None, environ=None) -> (PolicyPath(name, path), ...)
     POLICY_ENV,  # "RAYSPEC_POLICY"; POLICY_FILENAME "policy.yaml"; LAYER_NAMES highest first
@@ -808,6 +814,8 @@ from rayspec.policy import (
     TRUSTED_FILENAME, trusted_path,  # "<project>/.rayspec/trusted.yaml"
     COMMAND_POLICY_CAPABILITY,  # "command_policy" — what a provider declares in caps.extra when
     #   it can enforce an agent `commands:` block (no shipped adapter does; validate warns)
+    POLICY_CONTROLLED_OPTIONS,  # {policy key: {provider id: (option key path, ...)}} — the
+    #   `provider_options` keys an adapter applies straight over a policy-controlled field
     ACCESS_ORDER, access_rank,
 )
 ```
@@ -817,20 +825,28 @@ first, and precedence decides only the order restrictions are *reported* in): `$
 INTERSECT, `models.deny` / `tools.deny` / `workspace.protected_paths` UNITE, `access.max` and the
 two `workspace` caps take the MINIMUM, `trust.require` is an OR. A missing file is an absent layer;
 a file `$RAYSPEC_POLICY` names that does not exist is a `PolicyError` (a guardrail must not vanish
-silently), as is any file that exists but cannot be read or parsed. The same file reached through
+silently), as is any file that exists but cannot be read or parsed and any path that exists in some
+other shape — a dangling symlink, a symlink loop, a directory, an unreadable parent. Only a genuine
+`ENOENT` is a silently absent layer (`Path.is_file()` is not used: it answers `False` for all of
+those alike). The same file reached through
 two layers is loaded once, under the highest-precedence name. **Nothing fetches policy: there is no
 key, flag or variable that reads it from a server, names an organisation or joins a registry.**
 
 Accessors (this is the seam consumers code against — never the raw documents; each returns the
 `PolicySource`s that REFUSE, empty meaning allowed): `provider_denied(id)`, `model_denied(model)`,
 `access_exceeded(level)`, `tool_denied(entry)`, `mcp_denied(server)`, `trust_required()`, plus
-`allowed_providers()`, `allowed_mcp_servers()`, `max_access()`, `denied_tools()`, `change_guard()`
-for display and injection. Adding a block to `Policy` means adding its merge rule in
+`allowed_providers()`, `allowed_mcp_servers()`, `max_access()`, `denied_tools()`, `change_guard()`,
+`control_sources()` (policy key → the layers restricting it, for checks that only need to know a
+restriction EXISTS) and `workspace_sources()` for display and injection. Adding a block to `Policy` means adding its merge rule in
 `policy/layers.py` and an accessor here — a key without a merge rule would let a lower layer widen
 a higher one.
 
-Enforcement is one pass in `loader/validate.py` (`_Validator._check_policy`, called last in
-`run()`), so `validate`, `plan`, `run` and `rayspec test` refuse the same workflows. Additive:
+Enforcement is `apply_policy`. `loader/validate.py` calls it once (`_Validator._check_policy`,
+last in `run()`) and only *reports* what it found, so `validate`, `plan`, `run` and `rayspec test`
+refuse the same workflows; `cli/commands/resume.py` calls it in `refuse_policy_violations`, inside
+the shared `guard_workflow_unchanged`, so `resume`/`approve`/`reject` refuse them too and the half
+of a run after a gate keeps the policy's tool denials. Enforcement must never again depend on a
+*different* function having been called first. Additive:
 `validate_workflow(..., policy: EffectivePolicy | None = None)` — `None` discovers the layers from
 the workflow's own roots, an empty `EffectivePolicy()` validates without any policy. Messages carry
 BOTH locations: the workflow field (`(at <file>:<line>)`, as every validation message does) and the
@@ -839,7 +855,10 @@ denied entries the resolved provider can express are folded into that agent's `t
 (`PolicyReport.tool_denials`, applied with `dataclasses.replace` the way the effort-alias rewrite
 already does); what a provider cannot express becomes a warning saying the restriction is advisory
 there. `trust.require` loads the project `TrustStore` and refuses a workflow that is not listed at
-its current `ResolvedWorkflow.hash`.
+its current `ResolvedWorkflow.hash`. `provider_options` is a raw pass-through the adapters apply
+*over* the computed options, so while a layer sets `tools.deny` / `access.max` / `models.deny` an
+agent naming a key from `POLICY_CONTROLLED_OPTIONS` for its own provider is an error — otherwise
+the workflow could remove the control that governs it.
 
 Additive to `schema/agent.py`: `AgentDef.network: Literal["on","off"] | None = None` and
 `AgentDef.commands: CommandsSpec | None = None` (`CommandsSpec{allow, deny: list[regex]}`; every
@@ -870,8 +889,9 @@ maintains it; `check` exits 1 when anything drifted (the gate a scheduled job pu
 ```python
 from rayspec.workspace import (
     check_change_guard,  # (workdir, base_sha, *, protected_paths=(), max_changed_files=None,
-    #   max_changed_lines=None, include_untracked=True) -> ChangeGuardReport
-    diff_since,  # (workdir, base_sha, *, include_untracked=True) -> ChangeSummary  (GitError)
+    #   max_changed_lines=None, include_untracked=True, include_ignored=True) -> ChangeGuardReport
+    diff_since,  # (workdir, base_sha, *, include_untracked=True, include_ignored=True)
+    #   -> ChangeSummary  (GitError)
     match_path,  # (posix path, glob) -> bool
     ChangeSummary,  # base_sha, files: (ChangedFile, ...), .changed_files, .changed_lines, .render()
     ChangedFile,  # path, added, deleted, binary, untracked; .lines, .render()
@@ -880,12 +900,18 @@ from rayspec.workspace import (
 )
 ```
 Measurement only — it reads no policy file, fails no step and writes nothing; the limits come from
-`policy.yaml`'s `workspace:` block. It measures the whole work tree (`git rev-parse --show-toplevel`
-from `workdir`) against `base_sha`: `git diff --numstat -z` plus `git ls-files --others
---exclude-standard` (untracked files count as additions — "wrote 400 new files" is what a diff
-against `HEAD` misses; a binary file is one changed file and zero lines, as git counts it). Every
-broken limit is reported, not just the first. A `workdir` outside a work tree or an unknown
-`base_sha` is a `GitError`: a guard that cannot measure must never report "all clear".
+`policy.yaml`'s `workspace:` block, which **nothing enforces in this build** (the executor call does
+not exist yet, and the policy pass warns whenever a layer sets the key). It measures the whole work
+tree (`git rev-parse --show-toplevel` from `workdir`) against `base_sha`: `git diff --numstat -z`
+plus `git ls-files --others` (untracked files count as additions — "wrote 400 new files" is what a
+diff against `HEAD` misses; a binary file is one changed file and zero lines, as git counts it).
+Two parsing rules are load-bearing: the `-z` numstat stream is read as TOKENS, because a rename is
+three NUL records and both of its paths are reported (line counts on the destination) so a `git mv`
+out of a protected directory still trips `protected_paths`; and `--exclude-standard` is NOT passed
+by default, because `.env`, a gitignored `secrets/` and build directories are the paths most worth
+protecting (`include_ignored=False` opts out). Every broken limit is reported, not just the first.
+A `workdir` outside a work tree or an unknown `base_sha` is a `GitError`: a guard that cannot
+measure must never report "all clear".
 
 ### workspace
 ```python

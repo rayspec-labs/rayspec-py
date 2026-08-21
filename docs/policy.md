@@ -10,7 +10,10 @@ Three properties hold throughout:
 
 * **Load time, not run time.** Every policy key is checked while the workflow is being loaded, so
   a violation is an error with a file and a line before a single token is spent. `rayspec run`,
-  `rayspec plan`, `rayspec validate` and `rayspec test` all refuse the same workflows.
+  `rayspec plan`, `rayspec validate` and `rayspec test` all refuse the same workflows — and so do
+  `rayspec resume`, `rayspec approve` and `rayspec reject`, which re-load the workflow to continue
+  a paused run. The second half of a run is subject to the policy in force *now*; pausing at a gate
+  is not a way past a guardrail.
 * **The deciding layer is always named.** "denied by policy" with nothing else is useless to the
   person who has to fix it, so every message quotes the policy file and line that denies, and what
   to do about it.
@@ -73,7 +76,10 @@ trust:
 
 An unknown key is an error naming the file and the line, with a "did you mean" for near misses. A
 policy file that cannot be read or parsed is an error too — it is never treated as an empty
-policy, because a guardrail that silently disappears is worse than none.
+policy, because a guardrail that silently disappears is worse than none. That covers the shapes a
+`policy.yaml` ends up in after a bad checkout or a moved home directory: a dangling symlink, a
+symlink loop, a directory or an unreadable parent are each an error naming the path and what it
+is. A path that is genuinely absent is the only silent case, because that is the ordinary one.
 
 ### What a violation looks like
 
@@ -98,7 +104,32 @@ Where the resolved provider cannot express a denial — the Codex adapter only u
 `deny: [web]` — nothing is folded in and `rayspec validate` warns that the restriction is
 advisory on that provider. See [Honest enforcement](#honest-enforcement) below.
 
+### `provider_options` is a pass-through, so policy inspects it
+
+An agent's `provider_options:` block is handed to the adapter as-is and applied *over* the options
+rayspec computed. Four lines of YAML would therefore hand the denied tools, the access level or a
+denied model straight back:
+
+```yaml
+provider_options:
+  claude:
+    allowed_tools: [Bash, WebSearch]     # refused while a layer sets tools.deny
+    permission_mode: bypassPermissions   # refused while a layer sets tools.deny or access.max
+    model: claude-opus-4-1               # refused while a layer sets models.deny
+```
+
+While a layer restricts `tools.deny`, `access.max` or `models.deny`, naming a provider option that
+overwrites that field is a load-time error quoting both the option and the policy line. Without a
+policy in force nothing is being subverted, so the block passes through untouched — a control is
+only worth refusing an escape hatch for when the control exists.
+
 ## The worktree change guard
+
+**Read this first: nothing runs the guard in this build.** It ships as a library
+(`rayspec.workspace.guard`) and `workspace:` is parsed, merged and reported, but no executor calls
+it, so no step fails on it today. A policy file that sets a `workspace:` key gets a warning from
+`rayspec validate` saying exactly that. The rest of this section describes the measurement, not a
+promise that a run is currently stopped by it.
 
 `workspace:` bounds how much of the repository a run may rewrite. The guard measures the whole
 worktree against the run's `base_sha`:
@@ -108,7 +139,14 @@ worktree against the run's `base_sha`:
   separator also matches a bare file name in any directory.
 * **`max_changed_files`** / **`max_changed_lines`** — size caps. Untracked files count as
   additions, because "quietly wrote 400 new files" is exactly what a diff against `HEAD` misses;
-  a binary file counts as a changed file and no lines, the way git counts it.
+  a binary file counts as a changed file and no lines, the way git counts it. Files `.gitignore`
+  hides count too — `.env`, a gitignored `secrets/`, a build directory are the paths most worth
+  protecting — which `diff_since(..., include_ignored=False)` turns off for a repository whose
+  ignored tree makes the walk pointless.
+* **Renames count on both sides.** Moving a file out of a protected directory is a change to the
+  protected path as well as to the new one, so `git mv .github/ci.yml ci.yml` trips
+  `protected_paths: ['.github/**']`. The line counts go to the destination, so a rename is not
+  measured twice.
 
 When a limit is exceeded the report names every limit that broke, with the numbers behind it and a
 short diff summary:
@@ -121,10 +159,9 @@ change guard: 2 limit(s) exceeded since 4bba429fd0a1
 ```
 
 The measurement lives in `rayspec.workspace` (`check_change_guard`, `diff_since`, `match_path`)
-and works on anything that is a git worktree with a base commit. Be clear about what ships here:
-in this build the guard is a library and the limits are a policy key — the engine does not yet run
-it after each `prompt:` step, so nothing fails a step on it today. Read the section above as a
-description of the measurement, not as a promise that a run is currently stopped by it.
+and works on anything that is a git worktree with a base commit. Wiring it into the prompt executor
+is one call; until that exists, `workspace:` is a recorded intention and `rayspec validate` says so
+on every run that sets it.
 
 ## Trusted workflows
 
@@ -201,6 +238,8 @@ This is the part that matters more than the feature list.
 | `tools.deny` | folded into the agent's tool policy | only `web` — anything else is advisory, with a warning |
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
+| `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
+| `provider_options:` | raw pass-through to the SDK; policy refuses keys that would overwrite a controlled field | same |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the
