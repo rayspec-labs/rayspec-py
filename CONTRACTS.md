@@ -42,6 +42,9 @@ src/rayspec/
                (one case through Runner + StubProvider + CollectingSink), report.py (the
                four-line failure, JUnit, --json) + cli/commands/test.py; scripts/check_examples.py
                keeps only the coverage matrix and one CLI contract smoke per suite
+  registry.py   store/sink/approval registries (entry points + builtins) +
+               store/redacting.py (the redaction boundary a plugin store sits behind) +
+               cli/plugins.py (the `rayspec.cli_plugins` group) + cli/commands/plugins.py
 ```
 
 "Frozen" means: additive changes only (new optional fields, new helpers), never renames or
@@ -1750,6 +1753,75 @@ it neither opens a provider that no step uses nor puts a CLI subprocess on the c
 `None` in older records. `rayspec show` prints it as the
 `toolchain:` block (`show.toolchain_lines(run)`); `show --json` already carries it inside `record`.
 There is deliberately no `--strict-toolchain` resume guard.
+
+### plugin entry points — `registry.py`, `cli/plugins.py`, `store/redacting.py`
+Four entry-point groups, all with the fixed precedence of `providers/registry.py` (builtins can
+never be shadowed; a programmatic registration beats an entry point; anything that fails to load,
+has the wrong type or names an id different from its entry-point name is skipped with a
+`RuntimeWarning` — never an exception into the CLI):
+
+| group | value | resolved by |
+|---|---|---|
+| `rayspec.cli_plugins` | `module:register` (a callable `register(app: typer.Typer) -> None`) | `rayspec.cli.app.build_app()` |
+| `rayspec.stores` | `module:REGISTRATION` (`StoreRegistration`) | `rayspec.registry.create_store` |
+| `rayspec.sinks` | `module:REGISTRATION` (`SinkRegistration`) | `rayspec.registry.create_sink` |
+| `rayspec.approvals` | `module:REGISTRATION` (`ApprovalRegistration`) | `rayspec.registry.create_approval` |
+
+```python
+from rayspec.registry import (
+    KIND_GROUPS, GROUP_KINDS,          # kind ("store"|"sink"|"approval") <-> entry-point group
+    StoreContext,                      # (root, home, project_slug="", settings={})
+    SinkContext,                       # (console=None, stream=None, verbose=False, quiet=False, settings={})
+    ApprovalContext,                   # (interactive=True, settings={})
+    StoreRegistration, SinkRegistration, ApprovalRegistration,   # (id, display_name, factory)
+    BUILTIN_STORES,                    # file
+    BUILTIN_SINKS,                     # console, json, quiet, null
+    BUILTIN_APPROVALS,                 # console
+    UnknownExtensionError,             # RayspecError + LookupError; .hint carries did-you-mean
+    DiscoveryProblem, discovery_problems, is_registered, reset_registry,
+    get_store, list_stores, register_store, create_store,        # + the sink/approval triples
+)
+# re-exported where they belong: rayspec.store.{create_store,list_stores,register_store,
+#   StoreContext,StoreRegistration,RedactingStore} and rayspec.events.{create_sink,list_sinks,
+#   register_sink,SinkContext,SinkRegistration} (the events ones stay lazy: importing the models
+#   still must not load rich)
+```
+`rayspec.cli.app`: `build_app()` builds a fresh app (builtins by pkgutil, then plugins); the
+module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
+`PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app)`,
+`loaded_cli_plugins()`, `reset_cli_plugins()`, `command_names(app)`, `installed_plugins()`
+(`InstalledPlugin(group, name, value, distribution, version, status, detail)` — what
+`rayspec plugins [--json]` prints). A CLI plugin may not shadow a builtin command name (the
+command is removed again and reported), may not replace the root callback (the replacement is
+dropped), and anything it registered before raising is rolled back — `rayspec --help` exits 0
+with a broken plugin installed. Cost: nothing is imported when the group is empty (~2 ms scan).
+
+**Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
+in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record
+(`create`/`save`), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
+value), the prompt (`write_prompt`), the events (`data`) and the stream records (a
+`StreamRedactor` per `(run_id, step_path, kind, attempt)`, flushed on `step.finished`/
+`run.finished`/`run.paused` exactly as `FileRunStore` does) BEFORE the wrapped store sees them —
+so a plugin store never receives a secret and cannot persist one. Members outside the reviewed
+surface are NOT forwarded: `READ_THROUGH` (root, runs_root, exists, resolve_run_id, list_run_ids,
+read_events, read_stream, delete_run) passes through, `WRITE_THROUGH` (write_prompt,
+write_output_with_sha) passes through a redacting wrapper and keeps `hasattr` answering for the
+wrapped store, everything else raises `AttributeError` — a store write added later has to be
+implemented on the boundary. The builtin `FileRunStore` is exempt because it applies the same
+`Redactor` inside itself (closer to the bytes); the exemption is a property of the builtin table,
+not a flag a registration can set. Sinks keep their existing boundary: the CLI wraps EVERY sink
+of a run — configured plugins included — in `RedactingSink`.
+
+Additive in `config`: `Config.extensions: ExtensionsSpec` (`sinks: list[str] = []`,
+`approval: str | None = None`, `settings: dict[str, dict[str, Any]] = {}`,
+`.settings_for(id)`), exported as `rayspec.config.ExtensionsSpec`. `extensions.sinks` are
+ADDITIONAL observers built next to the CLI's own sink (`cli/commands/run.py: configured_sinks`),
+in configuration order; `extensions.approval` replaces the interactive prompt
+(`configured_approval` — `None`, i.e. the builtin `ConsoleApprovalPrompt`, when unset, so the
+default path is byte-identical to before); an unknown id is a usage error (exit 2) with
+did-you-mean before the run starts. There is deliberately no `store:` key: the run-management
+commands read `$RAYSPEC_HOME/projects/<slug>/runs/` directly, so a non-file store is an
+embedding seam (`Runner(store=create_store(...))`) until they go through the registry too.
 
 ### engine/context_rebuild + CLI `explain` / `eval` / `plan --render`
 ```python

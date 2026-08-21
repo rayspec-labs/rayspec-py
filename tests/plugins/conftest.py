@@ -52,8 +52,15 @@ def install_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
         entry_points: Mapping[str, Mapping[str, str]],
     ) -> None:
         for module_name, source in modules.items():
-            (site / f"{module_name}.py").write_text(source, encoding="utf-8")
+            *package, leaf = module_name.split(".")
+            directory = site
+            for part in package:  # a dotted name becomes a real package directory
+                directory = directory / part
+                directory.mkdir(exist_ok=True)
+                (directory / "__init__.py").touch()
+            (directory / f"{leaf}.py").write_text(source, encoding="utf-8")
             written.append(module_name)
+            written.extend(".".join(package[: n + 1]) for n in range(len(package)))
         info = site / f"{dist_name.replace('-', '_')}-{version}.dist-info"
         info.mkdir()
         (info / "METADATA").write_text(
