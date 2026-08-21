@@ -136,6 +136,17 @@ def _walk_project(node: Traversable, prefix: str = "") -> list[tuple[str, Traver
     return sorted(found, key=lambda item: item[0])
 
 
+def _names(root: Traversable) -> tuple[str, ...]:
+    """Sorted example names below an already-resolved corpus root (one directory scan)."""
+    return tuple(
+        sorted(
+            child.name
+            for child in root.iterdir()
+            if child.is_dir() and (child / PROJECT_DIR).is_dir() and not child.name.startswith(".")
+        )
+    )
+
+
 def example_names() -> tuple[str, ...]:
     """Sorted names of the shipped example projects (``rayspec init --from <name>``).
 
@@ -143,14 +154,7 @@ def example_names() -> tuple[str, ...]:
     other loose file is not one. Empty when the corpus is missing.
     """
     root = examples_root()
-    if root is None:
-        return ()
-    names = [
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and (child / PROJECT_DIR).is_dir() and not child.name.startswith(".")
-    ]
-    return tuple(sorted(names))
+    return () if root is None else _names(root)
 
 
 def example_files(name: str) -> list[tuple[str, Traversable]]:
@@ -161,7 +165,7 @@ def example_files(name: str) -> list[tuple[str, Traversable]]:
     :class:`LookupError` for an unknown name — the CLI turns that into the catalogue.
     """
     root = examples_root()
-    if root is None or name not in example_names():
+    if root is None or name not in _names(root):
         raise LookupError(name)
     return _walk_project(root / name)
 
@@ -205,13 +209,17 @@ def example_catalogue() -> list[tuple[str, str]]:
 
     The description is the first workflow's ``description:`` — read with a plain YAML load, not
     the loader, because the catalogue must render even for an example that deliberately fails to
-    validate (``unsupported_demo``).
+    validate (``unsupported_demo``). The corpus root and the name list are resolved once for the
+    whole catalogue rather than once per example.
     """
-    return [(name, _example_description(name)) for name in example_names()]
+    root = examples_root()
+    if root is None:
+        return []
+    return [(name, _example_description(root, name)) for name in _names(root)]
 
 
-def _example_description(name: str) -> str:
-    for rel, node in example_files(name):
+def _example_description(root: Traversable, name: str) -> str:
+    for rel, node in _walk_project(root / name):
         if not rel.startswith(f"{PROJECT_DIR}/workflows/"):
             continue
         data = _load_yaml(node)
@@ -304,13 +312,36 @@ def _dry_run_command(root: Traversable, example: str, case: Any) -> str | None:
     return " ".join(parts)
 
 
+def example_refuses_validation(name: str) -> bool:
+    """Whether this example ships a workflow ``rayspec validate`` is *meant* to reject.
+
+    One example demonstrates the validator itself (a step asking for a capability its provider
+    does not have); its ``checks.yaml`` declares that with ``validate: error``. The next-steps
+    block has to say so, because an unexplained page of errors on step one of a first five
+    minutes reads as a broken install.
+    """
+    root = examples_root()
+    if root is None:
+        return False
+    data = _load_yaml(root / name / "checks.yaml")
+    checks = data.get("checks") if isinstance(data, dict) else None
+    if not isinstance(checks, list):
+        return False
+    return any(isinstance(case, dict) and case.get("validate") == "error" for case in checks)
+
+
 def example_next_steps(name: str, *, skill: bool = True, readme: bool = True) -> list[str]:
     """The commands to try after ``rayspec init --from <name>``.
 
     ``readme=False`` drops the line that opens the example's ``README.md`` — with an existing
     README kept in its place, that step would open somebody else's document.
     """
-    lines = ["rayspec validate                        # schema, graph, references, capabilities"]
+    note = (
+        "this example refuses on purpose — see README.md"
+        if example_refuses_validation(name)
+        else "schema, graph, references, capabilities"
+    )
+    lines = [f"rayspec validate                        # {note}"]
     dry_run = example_dry_run(name)
     if dry_run is not None:
         lines.append(f"{dry_run}   # scripted agents, no login needed")
@@ -434,8 +465,11 @@ def next_steps(kind: str, *, skill: bool = True) -> list[str]:
     return lines
 
 
-def unknown_example_hint(name: str) -> str:
-    """The ``hint:`` line an unknown ``--from`` prints: the catalogue plus a did-you-mean."""
+def unknown_example_hint() -> str:
+    """The ``hint:`` line an unknown ``--from`` prints: every example with its description.
+
+    The did-you-mean belongs to the error line, not here — the hint is the catalogue.
+    """
     rows = example_catalogue()
     if not rows:
         return "no examples are packaged with this build"
@@ -501,13 +535,19 @@ def register(app: typer.Typer) -> None:
                 "--from and --kind are mutually exclusive: an example ships its own workflow",
                 hint=f"rayspec init --from {from_}",
             )
-        if from_ is not None and from_ not in example_names():
-            hint = unknown_example_hint(from_)
-            match = suggest(from_, list(example_names()))
-            message = f"unknown example {from_!r}"
-            if match is not None:
-                message += f"; did you mean {match!r}?"
-            fail(message, hint=hint)
+        if from_ is not None:
+            names = example_names()
+            if not names:
+                fail(
+                    "no examples are packaged with this build",
+                    hint="reinstall rayspec, or scaffold the generic project with `rayspec init`",
+                )
+            if from_ not in names:
+                match = suggest(from_, list(names))
+                message = f"unknown example {from_!r}"
+                if match is not None:
+                    message += f"; did you mean {match!r}?"
+                fail(message, hint=unknown_example_hint())
         target = (root or Path.cwd()).resolve()
         if from_ is not None and not force:
             conflicts = example_conflicts(target, from_)

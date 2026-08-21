@@ -373,6 +373,28 @@ def test_wheel_ships_the_examples_and_no_local_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(example_names()))
+def test_init_from_only_prints_validate_as_a_step_that_passes(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rayspec validate` is step one of a stranger's first five minutes, so it must either pass
+    or come with the reason it does not — one example refuses on purpose, and a red wall of
+    capability errors with no explanation reads as a broken install."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    printed = next(
+        line for line in res.output.splitlines() if line.strip().startswith("rayspec validate")
+    )
+    monkeypatch.chdir(target)
+    validated = CliRunner().invoke(app, ["validate"])
+    if validated.exit_code == 0:
+        assert "on purpose" not in printed, printed
+    else:
+        assert "on purpose" in printed, f"{printed}\n{validated.output}"
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
 def test_no_example_scenario_renders_a_secret_input(name: str) -> None:
     """`-i NAME=VALUE` is the documented channel for a `secret: true` input, so a printed dry run
     that rendered one would put the value on the terminal and in the shell history.
@@ -451,6 +473,23 @@ def test_init_from_near_miss_suggests_the_right_example(tmp_path: Path, home: Pa
     res = CliRunner().invoke(app, ["init", "--from", "hello_reviw", "--root", str(tmp_path)])
     assert res.exit_code == 2, res.output
     assert "did you mean 'hello_review'?" in res.output
+
+
+def test_init_from_without_a_packaged_corpus_blames_the_build(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial install has no corpus at all. Saying `unknown example 'hello_review'` blames the
+    user's spelling for it; the first line has to name the real problem."""
+    monkeypatch.setattr(init_mod, "examples_root", lambda: None)
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(tmp_path), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert "no examples are packaged with this build" in res.output
+    assert "unknown example" not in res.output
+    assert not (tmp_path / ".rayspec").exists()
 
 
 def test_init_from_and_kind_together_is_a_usage_error(tmp_path: Path, home: Path) -> None:

@@ -1460,7 +1460,10 @@ CLI surface:
   `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
   `example_conflicts(root, name) -> list[str]`, `scaffold_example(root, name, *, force=False) ->
   list[ScaffoldFile]`, `example_catalogue() -> [(name, description)]`, `unknown_example_hint()`,
-  `example_dry_run(name) -> str | None`, `example_next_steps(name, *, skill=True, readme=True)`,
+  `example_dry_run(name) -> str | None`, `example_refuses_validation(name) -> bool` (the example
+  ships a workflow `validate` is meant to reject — its `checks.yaml` says `validate: error`, and
+  the printed `rayspec validate` step then carries "this example refuses on purpose"),
+  `example_next_steps(name, *, skill=True, readme=True)`,
   `secret_inputs(root, example, workflow) -> frozenset[str] | None` (`None` = the declaration
   could not be read, so none of that scenario's inputs may be rendered).
   `example_dry_run` reads the example's `checks.yaml` and renders the **first scenario that

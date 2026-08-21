@@ -767,14 +767,15 @@ directory instead of the generic template: its `.rayspec/` tree, its stub script
 `README.md`, all verbatim. The examples ship inside the wheel, so this works from a
 `uv tool install rayspec` with no checkout of the repository. `--from` and `--kind` are mutually
 exclusive (an example brings its own workflow), and an unknown name is a usage error (exit 2)
-that lists every example with its description and a `did you mean …?` when the name is close:
+that lists every example with its description and a `did you mean …?` when the name is close
+(a build with no corpus at all says `error: no examples are packaged with this build` instead):
 
 ```
 $ rayspec init --from helo_review
 error: unknown example 'helo_review'; did you mean 'hello_review'?
 hint: available examples (rayspec init --from <name>):
-  fix_issue         Fix a GitHub issue: implement, review and iterate until the reviewer approves.
-  hello_review      Review a file or directory with a single prompt step — the smallest useful workflow.
+  fix_issue         Triage a GitHub issue, fix it in a self-healing loop until the tests …
+  hello_review      Review a file or directory with a single prompt step — the smallest …
   …
 ```
 
