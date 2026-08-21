@@ -1104,6 +1104,15 @@ def _validate_setting_sources(raw: Any) -> list[str] | None:
     return sources
 
 
+#: Longest denial wording kept on a record: it is a human note, not data anything reads, and a
+#: step may collect one per refused call.
+DENIAL_REASON_MAX = 300
+
+
+def _short(text: str) -> str:
+    return text if len(text) <= DENIAL_REASON_MAX else text[: DENIAL_REASON_MAX - 1] + "\u2026"
+
+
 def denial_of(denial: Any) -> Denial:
     """One Claude ``permission_denials`` entry as the neutral :class:`Denial`.
 
@@ -1115,10 +1124,10 @@ def denial_of(denial: Any) -> Denial:
         call_id = denial.get("tool_use_id")
         return Denial(
             tool=str(name) if name else "unknown",
-            reason=str(denial.get("message") or "permission denied"),
+            reason=_short(str(denial.get("message") or "permission denied")),
             call_id=str(call_id) if call_id else None,
         )
-    return Denial(tool="unknown", reason=f"permission denied: {denial}")
+    return Denial(tool="unknown", reason=_short(f"permission denied: {denial}"))
 
 
 def _denial_event(denial: Any) -> AgentEvent:

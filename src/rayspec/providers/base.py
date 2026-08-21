@@ -101,6 +101,10 @@ class ProviderCapabilities:
     effort_levels: frozenset[str]
     effort_aliases: Mapping[str, str] = field(default_factory=dict, hash=False, compare=True)
     thinking: bool = False
+    #: additive: whether the adapter reports the tool calls a turn had REFUSED (see
+    #: :class:`Denial`). ``on_denial: fail`` depends on it — an adapter that cannot tell a
+    #: refused call from a normal one can never honour it, so the validator refuses the agent.
+    denial_reporting: bool = False
     mcp_servers: bool = False
     env_injection: bool = False
     images: bool = False

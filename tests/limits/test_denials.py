@@ -95,6 +95,13 @@ def test_claude_permission_denials_map_onto_the_neutral_shape() -> None:
     assert denial_of("something odd").tool == "unknown"
 
 
+def test_a_denial_reason_is_a_note_not_a_data_dump() -> None:
+    from rayspec.providers.claude import DENIAL_REASON_MAX, denial_of
+
+    denial = denial_of({"tool_name": "Bash", "message": "x" * 5000})
+    assert len(denial.reason) == DENIAL_REASON_MAX and denial.reason.endswith("\u2026")
+
+
 def test_codex_sandbox_errors_map_onto_the_same_shape() -> None:
     from enum import Enum
 
@@ -155,3 +162,71 @@ async def test_no_denials_is_not_a_failure_even_with_on_denial_fail(project: Pro
     result = await project.run("t", providers={"claude": DenyingProvider()})
     assert result.status is RunStatus.SUCCEEDED, result.reason
     assert project.record(result.run_id).steps["a"].denials == []
+
+
+# -- capability discipline ----------------------------------------------------------------------
+
+
+DENIAL_WF = """
+rayspec: 1
+name: t
+agents:
+  worker:
+    provider: {provider}
+    on_denial: fail
+steps:
+  - {{id: a, prompt: "do it", agent: worker}}
+"""
+
+
+def test_on_denial_fail_is_refused_on_a_provider_that_cannot_report_denials(
+    project: Project,
+) -> None:
+    """A policy silently ignored on a provider that cannot honour it is not a policy."""
+    from rayspec.loader import validate_workflow
+    from rayspec.providers.capabilities import CLAUDE_CAPABILITIES, CODEX_CAPABILITIES
+
+    caps = {"claude": CLAUDE_CAPABILITIES, "codex": CODEX_CAPABILITIES}
+    project.workflow("t", DENIAL_WF.format(provider="codex"))
+    report = validate_workflow(
+        project.load("t"), capabilities_for=caps.get, provider_ids=("claude", "codex")
+    )
+    assert not report.ok
+    assert any("on_denial" in e for e in report.errors), report.errors
+    assert any("claude" in e for e in report.errors)  # the adapter that can
+
+    warned = validate_workflow(project.load("t"), capabilities_for=caps.get, on_unsupported="warn")
+    assert warned.ok and any("on_denial" in w for w in warned.warnings)
+
+    project.workflow("u", DENIAL_WF.format(provider="claude").replace("name: t", "name: u"))
+    assert validate_workflow(project.load("u"), capabilities_for=caps.get).ok
+
+
+def test_on_denial_warn_is_fine_everywhere(project: Project) -> None:
+    from rayspec.loader import validate_workflow
+    from rayspec.providers.capabilities import CODEX_CAPABILITIES
+
+    project.workflow("t", DENIAL_WF.format(provider="codex").replace("fail", "warn"))
+    report = validate_workflow(
+        project.load("t"), capabilities_for={"codex": CODEX_CAPABILITIES}.get
+    )
+    assert report.ok, report.errors
+
+
+def test_a_recovered_error_does_not_become_a_denial() -> None:
+    """`state.last_error` collects every error the stream reported, retried ones included — a
+    turn that COMPLETED was not refused anything."""
+    from enum import Enum
+
+    from rayspec.providers.codex import turn_denials
+
+    class Code(Enum):
+        sandbox = "sandboxError"
+
+    info = type("Info", (), {"root": Code.sandbox})()
+    error = type("Error", (), {"codex_error_info": info, "message": "write blocked"})()
+    state = type("State", (), {"last_error": error})()
+    completed = type("Turn", (), {"error": None})()
+    assert turn_denials(completed, state) == ()
+    failed = type("Turn", (), {"error": error})()
+    assert [d.tool for d in turn_denials(failed, state)] == ["shell"]
