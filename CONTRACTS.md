@@ -2243,7 +2243,10 @@ from rayspec.store.file import (
 )
 # FileRunStore(root, *, redactor=NULL_REDACTOR, audit: bool | None = None)
 #   audit: True/False pin the ledger on/off; None (default) asks AUDIT_ENV at write time
-#   .read_audit(run_id) -> Iterator[dict]  torn trailing line ends it, bad middle line skipped
+#   .read_audit(run_id) -> Iterator[dict]  torn trailing line ends it, bad middle line skipped.
+#     A read-back utility for the ledger FILE. `rayspec audit` deliberately does not use it: it
+#     re-derives the rows from run.json/events/streams, so it works whether or not the ledger
+#     was ever enabled, and the two agree row for row.
 # Rows are appended by create() (kind "run", detail "created", data.actor), append_event()
 #   and append_stream(); row kinds: run | step | command | tool | file | warning | approval.
 #   Progress events (loop.iteration, each.item) produce no row. A stream row is derived from the
