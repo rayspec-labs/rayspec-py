@@ -13,6 +13,10 @@ supplied again on every resume; attempts continue), the workdir path lock (``hom
 resume),
 provider open/close per run, and the final ``run.finished`` event. The workspace itself (worktrees,
 ``--repo``) is a parallel scope: the CLI passes a :class:`Workspace` (default: in place).
+
+It also closes the redaction boundary: before the first byte of a run is written the runner makes
+the store's :class:`~rayspec.redact.Redactor` cover the run's own secrets, so an embedder cannot
+get it wrong by omission (:meth:`Runner._install_redactor`).
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ from rayspec.loader.inputs import (
     split_secret_inputs,
 )
 from rayspec.providers.base import Provider, Usage
+from rayspec.redact import NULL_REDACTOR
 from rayspec.schema import RunStatus
 from rayspec.store.base import RunStore
 from rayspec.store.model import PauseInfo, RunRecord, StepRecord, WorkspaceInfo, new_run_id, utcnow
@@ -172,6 +177,44 @@ class Runner:
         self.ctx: RunContext | None = None
         self._lock: Any = None
 
+    # -- the redaction boundary -------------------------------------------------------------
+
+    def _install_redactor(self) -> None:
+        """Make the store's redactor cover every value THIS run knows, before anything is written.
+
+        The boundary must not depend on the caller having wired it. A store arrives with
+        :data:`~rayspec.redact.NULL_REDACTOR` and an embedder following ``docs/extending.md``
+        never assigns one, so a run that knows a secret installs what it needs itself: the
+        ``secret: true`` inputs it was given plus the ``config.secrets`` values it hands to
+        ``shell:``/``python:`` steps (:attr:`RunOptions.config_secrets`).
+
+        A redactor the caller DID install is extended, never replaced — the CLI's also carries
+        the opt-in detectors and values this run cannot see. A store that will not accept one
+        makes the run refuse to start: a workflow with a secret input and no way to redact it
+        must not write a single byte.
+        """
+        secrets: dict[str, Any] = {**self.options.config_secrets, **self.secret_inputs}
+        if not secrets:
+            return
+        current = getattr(self.store, "redactor", None)
+        missing = {
+            name: value
+            for name, value in secrets.items()
+            if current is None or not current.covers(value)
+        }
+        if not missing:
+            return
+        try:
+            self.store.redactor = (current or NULL_REDACTOR).extend(missing)
+        except (AttributeError, TypeError) as exc:
+            raise EngineError(
+                f"{type(self.store).__name__} does not accept a redactor, so the secret "
+                f"value(s) {', '.join(sorted(missing))} could not be kept out of the run "
+                f"directory",
+                hint="use a store whose `redactor` attribute can be assigned (every store "
+                "rayspec builds can), or run a workflow without secret inputs",
+            ) from exc
+
     # -- entry points ---------------------------------------------------------------------
 
     def run_sync(self) -> RunResult:
@@ -183,6 +226,7 @@ class Runner:
         workflow = self.resolved.workflow
         runtime = Runtime(workflow.defaults.max_parallel)
         configure_default_executor(runtime.max_parallel)
+        self._install_redactor()  # before the first byte is written, the lock file included
         self._acquire_lock()
         try:
             if self.resume_run_id:

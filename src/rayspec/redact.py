@@ -33,7 +33,7 @@ import json
 import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -301,6 +301,38 @@ class Redactor:
             cls.__name__,
         )
         return out
+
+    def covers(self, value: Any) -> bool:
+        """True when :meth:`redact` would remove ``value`` from any text it appears in.
+
+        A value shorter than :data:`MIN_REDACTABLE_LEN` counts as covered: it is deliberately
+        never redacted, so there is nothing a caller could add to change that.
+        """
+        text = value if isinstance(value, str) else str(value)
+        if len(text) < MIN_REDACTABLE_LEN:
+            return True
+        return self.redact(text) != text
+
+    def extend(self, secrets: Mapping[str, Any]) -> Redactor:
+        """This redactor plus ``{name: value}`` — the same detectors, the union of the literals.
+
+        Used where a value becomes known after the redactor was built (the engine adds the
+        run's own secrets to whatever the caller installed). Returns ``self`` when there is
+        nothing to add, so the common path allocates nothing.
+        """
+        added = Redactor.build(secrets)
+        known = {needle for needle, _ in self.literals}
+        fresh = [pair for pair in added.literals if pair[0] not in known]
+        skipped = tuple(dict.fromkeys(self.skipped + added.skipped))
+        if not fresh and skipped == self.skipped:
+            return self
+        literals = sorted([*self.literals, *fresh], key=lambda pair: len(pair[0]), reverse=True)
+        return replace(
+            self,
+            literals=tuple(literals),
+            skipped=skipped,
+            max_len=max((len(n) for n, _ in literals), default=0),
+        )
 
     def stream(self) -> StreamRedactor:
         """A fresh :class:`StreamRedactor` over this redactor."""
