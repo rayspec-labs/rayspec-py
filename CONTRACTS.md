@@ -1456,8 +1456,9 @@ CLI surface:
   to a file (refusing an existing one without `--force`; the write is atomic and any `OSError` is
   exit 2 `cannot write <path>: …`) or to stdout; prints `workflow_drift_warning` and
   `recording_notes` on stderr; exit 2 for a run with `secret_inputs` (naming them) and **always**
-  for `--redact` (not available until the redactor ships — the flag never silently records an
-  un-redacted script).
+  for `--redact` — a permanent refusal, not a gap: a recording command is never given secret
+  values, so the flag never silently records an un-redacted script and never promises a later
+  build.
 - `rayspec runs diff <a> <b> [--json] [--exit-code] [--outputs] [--steps] [--across-projects]
   [--root]` — two runs of
   ONE workflow. `RunDiff.changed` (what `--exit-code` returns 1 on) covers the run status, the set

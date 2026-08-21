@@ -470,9 +470,11 @@ script is a plain file meant to be committed.
 Options:
 
 - `--output` / `-o` `<path>` — Write the script here instead of stdout.
-- `--redact` — Redact secret values while recording. **Not available in this build**: the flag
-  always exits 2 (it never silently records an un-redacted script), and a run with secret inputs
-  is refused either way.
+- `--redact` — **Refused** (exit 2), and permanently so: a recording command is never given
+  secret values. A redactor replaces only values it is *given*, a run's are never persisted, and
+  asking you for them in order to write a file you are meant to commit is not a trade rayspec
+  makes — exact-match redaction cannot promise that a value a step transformed is gone. A run
+  with secret inputs is refused outright; a run without them has nothing to redact.
 - `--force` — Overwrite an existing file.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
