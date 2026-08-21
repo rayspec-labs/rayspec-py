@@ -159,10 +159,16 @@ class RedactingStore:
     # -- internals ------------------------------------------------------------------------
 
     def _record(self, run: RunRecord) -> RunRecord:
-        """A copy of ``run`` with every secret replaced, built the way the file store does it."""
+        """A copy of ``run`` with every secret replaced.
+
+        Redacted on the PARSED value for the same reason :meth:`_output` is: an input whose
+        secret value is a number (a PIN, a numeric account id) is a bare JSON token, and
+        replacing it in the serialised text would leave a document that no longer parses —
+        turning a checkpoint write into a run-ending :class:`ValidationError`.
+        """
         if not self.redactor:
             return run
-        return type(run).model_validate_json(self.redactor.redact(run.model_dump_json()))
+        return type(run).model_validate(self.redactor.redact_obj(run.model_dump(mode="json")))
 
     def _output(self, content: str, *, kind: str) -> str:
         """Redact one output body.

@@ -1805,7 +1805,8 @@ rolled back whole and reported. Cost: nothing is imported when the group is empt
 
 **Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
 in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record
-(`create`/`save`), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
+(`create`/`save` — on the parsed value, so a secret that is a bare JSON token cannot make the
+record unparseable), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
 value), the prompt (`write_prompt`), the events (`data`) and the stream records (a
 `StreamRedactor` per `(run_id, step_path, kind, attempt)`, flushed on `step.finished`/
 `run.finished`/`run.paused` exactly as `FileRunStore` does) BEFORE the wrapped store sees them —

@@ -209,3 +209,19 @@ def test_create_store_wraps_a_plugin_store_but_not_the_builtin(tmp_path: Path) -
     plugin_store.redactor = Redactor.build({"token": SECRET})
     _feed(plugin_store)
     assert SECRET not in plugin_store.inner.everything()
+
+
+NUMERIC = "12345678"
+
+
+def test_a_numeric_secret_in_a_record_does_not_break_the_write() -> None:
+    """A secret that is a bare JSON token has to be replaced on the value, not on the text."""
+    inner = RecordingStore()
+    store = RedactingStore(inner, Redactor.build({"pin": NUMERIC}))
+    record = _run_record().model_copy(update={"inputs": {"count": int(NUMERIC), "note": NUMERIC}})
+
+    store.create(record)
+
+    (seen,) = inner.records
+    assert seen.inputs == {"count": "[REDACTED:pin]", "note": "[REDACTED:pin]"}
+    json.loads(seen.model_dump_json())  # still a well-formed record
