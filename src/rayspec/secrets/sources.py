@@ -167,13 +167,25 @@ def _cmd_failed(
 
 
 def _describe(spec: SecretSourceSpec) -> str:
-    """A source description safe to print (names the *source*, never the value)."""
+    """A source description safe to print (names the *source*, never the value).
+
+    ``cmd:`` is the one that needs care. ``env``/``file`` name a location, but a command line can
+    *carry* the credential rather than fetch it — ``curl -H "Authorization: Bearer ghp_…"`` is a
+    perfectly ordinary way to write one, and printing it verbatim put a live token in
+    ``rayspec doctor`` output that the issue template asks people to paste into a public tracker.
+    Only the program is named; the arguments are counted, not shown.
+    """
     if spec.env is not None:
         return f"env {spec.env}"
     if spec.file is not None:
         return f"file {spec.file}"
-    cmd = spec.cmd if isinstance(spec.cmd, str) else shlex.join(spec.cmd or [])
-    return f"cmd {cmd}"
+    argv = shlex.split(spec.cmd) if isinstance(spec.cmd, str) else list(spec.cmd or [])
+    if not argv:
+        return "cmd (empty)"
+    program, args = argv[0], argv[1:]
+    if not args:
+        return f"cmd {program}"
+    return f"cmd {program} (+{len(args)} argument{'s' if len(args) != 1 else ''}, not shown)"
 
 
 def describe_sources(specs: Mapping[str, SecretSourceSpec]) -> tuple[tuple[str, str], ...]:

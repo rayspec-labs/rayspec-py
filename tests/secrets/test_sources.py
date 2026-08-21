@@ -135,7 +135,11 @@ def test_describe_sources_never_shows_a_value(tmp_path: Path) -> None:
         source="<test>",
     )
     rows = describe_sources(config.secrets)
-    assert rows == (("A", "env GH_TOKEN"), ("B", f"file {path}"), ("C", "cmd printf x"))
+    assert rows == (
+        ("A", "env GH_TOKEN"),
+        ("B", f"file {path}"),
+        ("C", "cmd printf (+1 argument, not shown)"),
+    )
     assert all("file-value" not in row[1] for row in rows)
 
 
@@ -185,3 +189,23 @@ def test_a_secret_name_may_not_shadow_path() -> None:
     with pytest.raises(Exception) as exc:
         Config.parse({"secrets": {"PATH": {"env": "A"}}}, source="<test>")
     assert "PATH" in str(exc.value)
+
+
+def test_describe_never_echoes_a_credential_passed_on_the_command_line() -> None:
+    """A `cmd:` source may CARRY the secret rather than fetch it — describing it must not leak it.
+
+    `rayspec doctor` prints these descriptions, and the bug-report template asks people to paste
+    doctor output into a public tracker. A command line like
+    `curl -H "Authorization: Bearer ghp_…"` is an ordinary way to write a secret source, so the
+    arguments are counted rather than shown.
+    """
+    token = "ghp_ReAlLoOkInGtOkEn_ABC123"
+    for cmd in (
+        f'curl -s -H "Authorization: Bearer {token}" https://x/t',
+        ["curl", "-H", f"Authorization: Bearer {token}", "https://x/t"],
+    ):
+        config = Config.parse({"secrets": {"DEPLOY": {"cmd": cmd}}}, source="<test>")
+        described = describe_sources(config.secrets)[0][1]
+        assert token not in described, described
+        assert "Authorization" not in described, described
+        assert described.startswith("cmd curl"), described
