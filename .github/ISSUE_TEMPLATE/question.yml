@@ -1,0 +1,28 @@
+name: Question
+description: Ask how something is meant to work
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Nothing here is required except the question itself. The
+        [documentation](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/README.md)
+        answers most "how do I" questions, and `rayspec validate` / `rayspec plan` explain a good
+        deal about a workflow before it runs — but if they left you stuck, this is the right place.
+        Something you believe is exploitable goes to
+        [SECURITY.md](https://github.com/rayspec-labs/rayspec-py/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do
+      description: The goal in your own words, and where the documentation left off.
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you have tried
+      description: A workflow snippet, a command line, an error message — whatever you have.
+      render: yaml
+    validations:
+      required: false

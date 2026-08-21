@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a change to what rayspec does
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        If this adds a field to the workflow schema, please read
+        [the constitution](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/constitution.md)
+        first. It is the admissibility test every schema request is measured against, it says no
+        more often than yes, and its case-law table may already have decided this one.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The problem in terms of your workflow, before any proposed solution.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What you tried today
+      description: >-
+        A `shell:`/`python:` step, an agent field, `provider_options:`, `defaults:`, an
+        `include:` — and why it did not do the job.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would add
+      description: Sketch the YAML or the command line as you would want to write it.
+      render: yaml
+    validations:
+      required: false
+  - type: checkboxes
+    id: admissibility
+    attributes:
+      label: If this is a new schema field, the admissibility test
+      description: All three must hold. Leave them unticked if the proposal is not a schema field.
+      options:
+        - label: The engine has to see the value to schedule, gate, isolate, retry or account for a step
+        - label: It is data the engine reads, not a new expression surface it has to evaluate
+        - label: It cannot already be expressed with a step, an agent field, `provider_options:` or `defaults:`
