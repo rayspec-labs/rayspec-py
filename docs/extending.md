@@ -291,7 +291,9 @@ replaced by `[REDACTED:<name>]` in the events and stream records your sink sees.
 redact again, and do not read secrets out of the environment to "un-redact" anything.
 
 A sink may run a command; it may not open a socket. Notification sinks are therefore `exec:`-shaped
-— the engine spawns a process and never makes a network call itself (`docs/constitution.md`).
+— the engine spawns a process and opens no socket of its own (`docs/constitution.md`). The one
+network operation the engine initiates at all is the opt-in `RAYSPEC_PUSH_BRANCH` hook, and that is
+a spawned `git push` too.
 `examples/notify_webhook` delivers a webhook from a `shell:` step, which is the idiom.
 
 ## Approval prompts

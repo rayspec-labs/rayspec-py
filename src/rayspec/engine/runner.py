@@ -34,6 +34,7 @@ from typing import Any
 import anyio
 from anyio import to_thread
 
+from rayspec.actor import resolve_actor
 from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
@@ -67,7 +68,15 @@ from rayspec.providers.base import Provider, Usage
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR
 from rayspec.schema import RunStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import PauseInfo, RunRecord, StepRecord, WorkspaceInfo, new_run_id, utcnow
+from rayspec.store.model import (
+    ActorInfo,
+    PauseInfo,
+    RunRecord,
+    StepRecord,
+    WorkspaceInfo,
+    new_run_id,
+    utcnow,
+)
 from rayspec.templating import Scope, StepView, TemplateEngine, TemplateRenderError
 
 
@@ -255,7 +264,11 @@ class Runner:
                 await to_thread.run_sync(self._refresh_head_sha)
             # the ``ps`` probe is a blocking subprocess call — keep it off the event loop
             pid_started_at = await to_thread.run_sync(process_start_time, os.getpid())
-            run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at)
+            # who is launching this — an account-database lookup, which a directory service
+            # can make slow, so it stays off the event loop too; a resume keeps the actor the
+            # record already carries and needs no lookup at all
+            actor = None if self.resume_run_id else await to_thread.run_sync(self._resolve_actor)
+            run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at, actor)
         except BaseException:
             self._release_lock()
             raise
@@ -369,6 +382,65 @@ class Runner:
         return result
 
     # -- internals ------------------------------------------------------------------------
+
+    async def _publish_branch(self, ctx: RunContext) -> None:
+        """Push the run's branch when ``RAYSPEC_PUSH_BRANCH`` asks for it — best effort.
+
+        The point is that a run left alone on a schedule leaves its committed work somewhere
+        visible: the branch is pushed when the run pauses and when it ends, so the laptop is not
+        the only copy. Only an isolated run publishes — an in-place run is on the user's own
+        branch and pushing that would be a surprise — and a dry run publishes nothing.
+
+        A push moves commits, and rayspec commits nothing by itself: if the worktree still holds
+        uncommitted work, that work did NOT leave the machine, and the run says so rather than
+        letting a successful push read as "it is backed up".
+
+        The push happens after the run's outcome is already decided, so it may never influence
+        it: every failure (no remote, a rejected push, a timeout, no git at all) becomes a
+        warning event on the finished run, and the status and the exit code are what they would
+        have been without the hook.
+        """
+        from rayspec.loader.loader import import_optional
+
+        module = import_optional("rayspec.workspace.git")
+        push_remote = getattr(module, "push_remote", None) if module is not None else None
+        push_branch = getattr(module, "push_branch", None) if module is not None else None
+        if push_remote is None or push_branch is None:
+            return
+        workspace = self.workspace
+        remote = push_remote()
+        if (
+            remote is None
+            or self.options.dry_run
+            or workspace.isolation == "none"
+            or not workspace.branch
+        ):
+            return
+        branch, workdir = workspace.branch, workspace.workdir
+        try:
+            outcome = await to_thread.run_sync(lambda: push_branch(workdir, branch, remote=remote))
+        except Exception as exc:  # a hook must not be able to break a finished run
+            await ctx.warn(f"could not push {branch} to {remote}: {exc}")
+            return
+        if not outcome.pushed:
+            await ctx.warn(f"could not push {branch} to {remote}: {outcome.reason}")
+        elif outcome.uncommitted:
+            # a push publishes commits; rayspec makes none, so this work stayed on the machine
+            await ctx.warn(
+                f"pushed {branch} to {remote}, but {outcome.uncommitted} uncommitted change(s) "
+                "in the worktree were not published"
+            )
+
+    def _resolve_actor(self) -> ActorInfo:
+        """Who is launching this run (blocking: an account-database lookup can be slow).
+
+        Resolved from the environment **as the operator set it** and from the operating-system
+        user only — never from the workspace the run is about to write to, never from a git
+        configuration (one ``shell:`` step rewrites one in any scope), and never from a variable
+        rayspec copied out of a ``.env`` file (a step can write those files too, and the home
+        one persists into every later run). See :func:`rayspec.actor.resolve_actor`.
+        """
+        return resolve_actor()
 
     async def _settle_envelope(
         self, ctx: RunContext, status: RunStatus, cost: float | None
@@ -505,12 +577,15 @@ class Runner:
             return
 
     def _prepare_record(
-        self, pid_started_at: str | None = None
+        self, pid_started_at: str | None = None, actor: ActorInfo | None = None
     ) -> tuple[RunRecord, dict[str, StepRecord], bool, bool]:
         """Create a fresh record or load the one to resume → (run, cache, mismatch, resumed).
 
         ``pid_started_at`` is this process's start time (:func:`process_start_time`, computed by
         the caller off the event loop), recorded next to ``pid`` for ``rayspec cancel``.
+        ``actor`` is who launched the run (also resolved off the event loop — an account-database
+        lookup can be slow); it is stamped on a FRESH record only, so a resume by somebody else
+        never rewrites who started the run.
         """
         workflow = self.resolved.workflow
         if self.resume_run_id:
@@ -598,6 +673,9 @@ class Runner:
             host=socket.gethostname(),
             workspace=self.workspace.info(),
             dry_run=bool(self.options.dry_run),
+            # who set this run going — resolved once, at the first start, and never rewritten
+            # by a resume (``_prepare_record`` returns early above for a resumed run)
+            actor=actor,
         )
         self.store.create(run)
         return run, {}, False, False
@@ -721,6 +799,7 @@ class Runner:
             run.pid = None
         await to_thread.run_sync(self._refresh_head_sha)  # pause / run end
         run.workspace = self.workspace.info()
+        await self._publish_branch(ctx)  # opt-in, best effort — never changes ``status``
         run.cost_source = cost_source
         await self._settle_envelope(ctx, status, cost)
         self._release_lock()  # released on every final status — a resume takes it again

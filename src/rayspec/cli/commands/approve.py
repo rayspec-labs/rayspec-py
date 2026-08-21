@@ -14,6 +14,7 @@ from typing import Annotated
 
 import typer
 
+from rayspec.actor import resolve_actor
 from rayspec.cli import _runs_common as common
 from rayspec.cli.commands._loader_common import (
     JsonOption,
@@ -40,10 +41,25 @@ from rayspec.store.model import Decision, RunRecord
 def record_decision(
     store: FileRunStore, run: RunRecord, *, approved: bool, comment: str, by: str = "cli"
 ) -> Decision:
-    """Write ``pause.decision`` of a paused ``run`` (callers validate the status first)."""
+    """Write ``pause.decision`` of a paused ``run`` (callers validate the status first).
+
+    The decision is stamped with the identity of whoever is running this command
+    (:func:`rayspec.actor.resolve_actor`) — the person answering a gate is often not the one who
+    launched the run, and the ledger has to be able to tell them apart. That identity comes from
+    the environment **as the operator set it** and from the operating-system user. It never
+    comes from anything the run being approved could have written: not a git configuration, not
+    its workspace, and not ``$RAYSPEC_HOME/.env`` or ``<project>/.rayspec/.env``, both of which
+    this command applies to its own environment as configuration and neither of which may name
+    a person.
+    """
     if run.pause is None:
         raise ValueError(f"run {run.run_id} has no pending gate")
-    decision = Decision(approved=approved, comment=comment, by=by)
+    decision = Decision(
+        approved=approved,
+        comment=comment,
+        by=by,
+        actor=resolve_actor(),
+    )
     run.pause.decision = decision
     store.save(run)
     return decision

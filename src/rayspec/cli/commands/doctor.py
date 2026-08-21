@@ -31,6 +31,7 @@ from rich.table import Table
 from rich.text import Text
 
 from rayspec import __version__
+from rayspec.actor import ACTOR_ENV
 from rayspec.cli.commands import _pricing_common as pricing
 from rayspec.cli.commands._loader_common import (
     JsonOption,
@@ -40,9 +41,17 @@ from rayspec.cli.commands._loader_common import (
     fail,
     resolve_output,
 )
-from rayspec.config import Config, load_config, load_env, project_env_info, rayspec_home
+from rayspec.config import (
+    Config,
+    load_config,
+    load_env,
+    parse_env_text,
+    project_env_info,
+    rayspec_home,
+)
 from rayspec.errors import RayspecError
 from rayspec.loader import discover_workflows, find_project_root
+from rayspec.procenv import env_file_origin
 from rayspec.providers.registry import create_provider, get_registration, list_registrations
 
 CheckStatus = Literal["ok", "warn", "fail", "info"]
@@ -272,6 +281,30 @@ def _project_check(start: Path, project_root: Path, home: Path) -> Check:
     return Check("project", "project", "ok", detail)
 
 
+def _home_env_check(home: Path) -> Check | None:
+    """``home .env`` row: ``$RAYSPEC_HOME/.env`` exists and is applied by EVERY command.
+
+    That is the point of the row. This file is loaded by every rayspec invocation, and
+    ``$RAYSPEC_HOME`` is exported into every workflow step — so a step that writes it changes the
+    environment of your later commands, and until you look, nothing says it is there. ``None``
+    when the file is absent.
+    """
+    path = home / ".env"
+    if not path.is_file():
+        return None
+    try:
+        count = len(parse_env_text(path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError):
+        count = 0
+    detail = f"{path} ({count} var{'s' if count != 1 else ''}, applied by every command)"
+    hint = None
+    if env_file_origin(ACTOR_ENV) == str(path):
+        detail += f" — including {ACTOR_ENV}"
+        hint = f"{ACTOR_ENV} here is not used as an identity: a workflow step can write this file"
+        return Check("home.env", "home .env", "warn", detail, hint=hint)
+    return Check("home.env", "home .env", "info", detail)
+
+
 def _project_env_check(project_root: Path) -> Check | None:
     """``project .env`` row: the checkout's ``.rayspec/.env`` exists — it is NOT loaded by
     ``doctor`` (or any inspection command); only ``run``/``resume``/``approve``/``reject`` apply
@@ -358,6 +391,7 @@ def environment_checks(
         _home_check(home),
         config_check,
         _project_check(start, project_root, home),
+        *filter(None, [_home_env_check(home)]),
         *filter(None, [_project_env_check(project_root)]),
         *filter(None, [_secrets_check(config, project_root)]),
         _tool_check(

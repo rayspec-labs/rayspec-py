@@ -64,7 +64,7 @@ from rayspec.engine.errors import RunPaused, RunStopped
 from rayspec.events.model import EventType
 from rayspec.schema import ApproveStep, StepModel, StepStatus
 from rayspec.schema.steps import ApproveSpec
-from rayspec.store.model import Decision, ErrorInfo, PauseInfo, StepRecord
+from rayspec.store.model import ActorInfo, Decision, ErrorInfo, PauseInfo, StepRecord
 from rayspec.templating import TemplateRenderError
 
 #: Characters of each need's output handed to the prompt for ``[v]iew``.
@@ -163,6 +163,7 @@ async def run_approve(
         )
     answer: ApprovalAnswer | None = None
     by = "cli"
+    actor: ActorInfo | None = ctx.run.actor  # a gate answered here belongs to the run's actor
     decision = stored_decision(ctx, path, record.attempts)
     if (
         decision is not None
@@ -176,6 +177,7 @@ async def run_approve(
     if decision is not None:
         answer = ApprovalAnswer(decision.approved, decision.comment)
         by = decision.by
+        actor = decision.actor or actor  # ``rayspec approve|reject`` records its own actor
     else:
         record.attempts += 1
         automatic: str | None = None
@@ -216,6 +218,9 @@ async def run_approve(
         approved=answer.approved,
         comment=answer.comment,
         by=by,
+        # the DURABLE record of who approved: ``run.pause`` (and with it the stored decision)
+        # is cleared the moment the gate consumes it, the event log is not
+        actor=actor.model_dump(mode="json") if actor is not None else None,
     )
     record.approved = answer.approved
     outcome = StepOutcome(record=record, output=answer.comment or "", output_kind="text")

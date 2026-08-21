@@ -59,6 +59,11 @@ MASKED_KEYS: dict[str, Any] = {
     "base_sha": "<sha>",
     "head_sha": "<sha>",
     "rayspec_version": "<version>",
+    # RunRecord.actor / the run.decision event's actor: who launched the run or answered the
+    # gate. That is a property of the machine's user (or of the checkout's git config), not of
+    # the run under test — on another laptop it is a different string. Masked whole, so the
+    # placeholder keeps the JSON type (a mapping) without pinning anybody's email into the repo.
+    "actor": {"id": "<actor>", "source": "<source>", "ci": None, "provider_accounts": {}},
     # RunRecord.toolchain records what was in effect for the run:
     # rayspec/python/platform versions and each provider's SDK + CLI. Every one of those is a
     # property of the MACHINE, not of the run under test — unmasked they make the corpus fail on

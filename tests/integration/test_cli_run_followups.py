@@ -171,7 +171,13 @@ def test_json_on_a_tty_still_prompts_at_gates(
     assert asked == ["gate"]
     lines = [json.loads(line) for line in res.stdout.splitlines() if line.strip()]
     decision = next(line for line in lines if line.get("type") == "run.decision")
-    assert decision["data"] == {"approved": True, "comment": "from tty", "by": "tty"}
+    assert {k: v for k, v in decision["data"].items() if k != "actor"} == {
+        "approved": True,
+        "comment": "from tty",
+        "by": "tty",
+    }
+    # a gate answered in the run's own terminal is attributed to the run's actor
+    assert decision["data"]["actor"]["id"]
     assert set(lines[-1]) == run_cmd.SUMMARY_KEYS and lines[-1]["status"] == "succeeded"
 
 
