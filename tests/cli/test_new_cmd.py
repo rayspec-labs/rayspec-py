@@ -127,6 +127,56 @@ def test_new_outside_a_project_points_at_init(tmp_path: Path, home: Path) -> Non
     assert not (empty / ".rayspec").exists()
 
 
+def test_new_workflow_refuses_a_root_that_is_not_a_project(project: Path, home: Path) -> None:
+    """An explicit --root names the project, it is not a place to start searching from.
+
+    Walking up from it turns a typo'd path into a write into the enclosing project, reported as
+    a relative path the user never named.
+    """
+    nested = project / "src" / "deeper"
+    nested.mkdir(parents=True)
+    res = CliRunner().invoke(app, ["new", "workflow", "sneaky", "--root", str(nested)])
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert "error:" in res.output and "rayspec init" in res.output
+    assert not (project / ".rayspec" / "workflows" / "sneaky.yaml").exists()
+    assert not (nested / ".rayspec").exists()
+
+
+def test_new_workflow_refuses_an_agent_that_is_not_there(project: Path, home: Path) -> None:
+    """--agent names an agent file. Writing a workflow that references a missing one exits 0 and
+    hands the user a document whose very next printed step (`rayspec validate`) fails."""
+    res = CliRunner().invoke(
+        app, ["new", "workflow", "wf1", "--agent", "does_not_exist", "--root", str(project)]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert "does_not_exist" in res.output and "rayspec new agent" in res.output
+    assert not (project / ".rayspec" / "workflows" / "wf1.yaml").exists()
+
+
+def test_new_workflow_agent_near_miss_names_the_real_one(project: Path, home: Path) -> None:
+    res = CliRunner().invoke(
+        app, ["new", "workflow", "wf1", "--agent", "reviewr", "--root", str(project)]
+    )
+    assert res.exit_code == 2, res.output
+    assert "did you mean 'reviewer'?" in res.output
+
+
+def test_new_workflow_accepts_an_agent_from_the_user_scope(project: Path, home: Path) -> None:
+    """`~/.rayspec/agents/<name>.yaml` resolves for every workflow of every project, so it is a
+    valid --agent target too."""
+    (home / "agents").mkdir(parents=True, exist_ok=True)
+    (home / "agents" / "helper.yaml").write_text(agent_text("helper"), encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["new", "workflow", "wf1", "--agent", "helper", "--root", str(project)]
+    )
+    assert res.exit_code == 0, res.output
+    assert CliRunner().invoke(app, ["validate", "--root", str(project)]).exit_code == 0
+
+
 def test_new_agent_adds_one_file_a_workflow_can_reference(project: Path, home: Path) -> None:
     before = _files(project)
     res = CliRunner().invoke(app, ["new", "agent", "critic", "--root", str(project)])

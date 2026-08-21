@@ -1520,22 +1520,27 @@ Jinja.
   `.rayspec/agents/<name>.yaml`. `rayspec new` with no subcommand ⇒ help, exit 2. Both print
   `created`/`overwrote  <relative path>` plus a next-steps block, and both refuse an existing file:
   exit 2 `error: <relative path> already exists` + `hint: pass --force to overwrite it`.
-- The project is `--root` or `find_project_root(cwd)` — the project-command walk-up, unlike
-  `init`'s cwd-only rule — and a directory without `.rayspec/` is exit 2 (`… is not a rayspec
-  project (no .rayspec/ directory)`, hint `rayspec init`): `new` grows a project, it never creates
-  one. `<name>` is checked with the loader's own validators (`validate_identifier` for a workflow,
-  `validate_name` for an agent) before anything is written, so the file name and the document's
-  `name:` cannot disagree.
+- The project is `--root` **itself**, else `find_project_root(None)` — the project-command
+  walk-up, unlike `init`'s cwd-only rule. `find_project_root` walks *up*, so an explicit `--root`
+  is never fed to it: a `--root` without `.rayspec/` would otherwise add the file to an enclosing
+  project and report it as a path relative to a root the user never named. Either way a directory
+  without `.rayspec/` is exit 2 (`… is not a rayspec project (no .rayspec/ directory)`, hint
+  `rayspec init`): `new` grows a project, it never creates one. `<name>` is checked with the
+  loader's own validators (`validate_identifier` for a workflow, `validate_name` for an agent)
+  before anything is written, so the file name and the document's `name:` cannot disagree.
 - With `--agent NAME` the workflow references `.rayspec/agents/<NAME>.yaml` and ships no inline
   `agents:` block (a second template); without it the workflow carries one inline agent named
-  `assistant`. The rendered workflow validates and dry-runs as written
-  (`tests/cli/test_new_cmd.py`).
+  `assistant`. The agent must already resolve — `agent_names(project)` = `discover_agents`, so
+  the user scope (`<RAYSPEC_HOME>/agents/`) counts — and an unknown name is exit 2
+  (`error: unknown agent '<n>'[; did you mean '<m>'?]`, hint `rayspec new agent <n>` /
+  `rayspec agents`) with nothing written: the rendered workflow validates and dry-runs as written
+  (`tests/cli/test_new_cmd.py`), which a reference to a missing agent would break.
 - Python surface: `KINDS = {kind: (subdir, template file)}`, `DEFAULT_DESCRIPTION`,
   `workflow_text(name, *, agent=None, description="")`, `agent_text(name)`, `yaml_scalar(text)`
   (a one-line YAML scalar, quoted when it must be — a `--description` arrives from a shell),
   `write_new(root, kind, name, text, *, force=False) -> NewFile(relative, path, action ∈
   created|overwritten)` (raises `FileExistsError`/`IsADirectoryError`/`OSError`),
-  `project_root_for(root)`.
+  `project_root_for(root)`, `agent_names(project) -> list[str]`.
 
 ### CLI `completion`
 `src/rayspec/cli/commands/completion.py` owns **everything** about shell completion; `app.py`

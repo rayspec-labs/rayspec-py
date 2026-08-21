@@ -813,12 +813,17 @@ Add one workflow to a project that already exists — `rayspec init` is for crea
 --dry-run`; the fresh workflow validates and dry-runs without any login. `<name>` is both the
 `name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, not a
 reserved context root such as `run`); anything else is a usage error naming the rule. `--agent
-NAME` references `.rayspec/agents/<NAME>.yaml` instead of writing an inline agent into the
-workflow. `--description TEXT` fills the `description:` (quoted for YAML when it needs to be).
+NAME` references `.rayspec/agents/<NAME>.yaml` (or `~/.rayspec/agents/<NAME>.yaml`) instead of
+writing an inline agent into the workflow; that file has to exist, because a workflow pointing at
+a missing agent fails the `rayspec validate <name>` the command itself prints next — an unknown
+name is exit 2 with a `did you mean …?` and a pointer at `rayspec new agent <name>`.
+`--description TEXT` fills the `description:` (quoted for YAML when it needs to be).
 An existing file is never touched: `error: .rayspec/workflows/<name>.yaml already exists` +
 `hint: pass --force to overwrite it`, exit 2. Without `--root` the project is found the way every
-project command finds it (walk up to the first `.rayspec/`, then `.git`, else the cwd); a
-directory with no `.rayspec/` is exit 2 pointing at `rayspec init`.
+project command finds it (walk up to the first `.rayspec/`, then `.git`, else the cwd). With
+`--root` that directory **is** the project and is not a place to start walking up from: a
+directory with no `.rayspec/` is exit 2 pointing at `rayspec init`, so a mistyped `--root` is an
+error instead of a file written into the enclosing project.
 
 ### `rayspec new agent`
 

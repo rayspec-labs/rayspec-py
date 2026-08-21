@@ -19,7 +19,8 @@ import yaml
 from rich.markup import escape
 
 from rayspec.cli.commands._loader_common import RootOption, console, fail
-from rayspec.loader import find_project_root
+from rayspec.loader import discover_agents, find_project_root
+from rayspec.schema.base import suggest
 from rayspec.schema.common import validate_identifier, validate_name
 
 #: Where a project keeps its documents, relative to the project root.
@@ -109,20 +110,35 @@ def write_new(root: Path, kind: str, name: str, text: str, *, force: bool = Fals
 
 
 def project_root_for(root: Path | None) -> Path:
-    """The project to add to: ``--root``, else the walk-up other project commands do.
+    """The project to add to: ``--root`` itself, else the walk-up other project commands do.
 
-    A directory without ``.rayspec/`` is a usage error rather than a silent scaffold — creating a
-    project is ``rayspec init``'s job, and guessing here would hide a typo'd ``--root``.
+    An explicit ``--root`` *names* the project and is taken as given. ``find_project_root`` walks
+    **up** from where it starts, so starting it at ``--root`` would add the file to an enclosing
+    project when the named directory has no ``.rayspec/`` — a typo'd path would land somewhere
+    the user never named and be reported as a path relative to it. Without ``--root`` the walk-up
+    is exactly what the other project commands do, so ``new`` works from a sub-directory.
+
+    A directory without ``.rayspec/`` is a usage error rather than a silent scaffold either way:
+    creating a project is ``rayspec init``'s job.
     """
     if root is not None and not root.is_dir():
         fail(f"--root {str(root)!r} is not a directory")
-    resolved = find_project_root(root)
+    resolved = root.resolve() if root is not None else find_project_root(None)
     if not (resolved / PROJECT_DIR).is_dir():
         fail(
             f"{resolved} is not a rayspec project (no {PROJECT_DIR}/ directory)",
             hint="run `rayspec init` here first, or pass --root <project>",
         )
     return resolved
+
+
+def agent_names(project: Path) -> list[str]:
+    """Every agent name ``agent: <name>`` resolves to in ``project``, project and user scope.
+
+    The loader looks in ``.rayspec/agents/`` first and in ``<RAYSPEC_HOME>/agents/`` second, so
+    both are valid ``--agent`` targets.
+    """
+    return [ref.name for ref in discover_agents(project)]
 
 
 def _checked_name(kind: str, name: str) -> str:
@@ -177,10 +193,21 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Add `.rayspec/workflows/<name>.yaml` to this project."""
         checked = _checked_name("workflow", name)
-        if agent is not None:
-            _checked_name("agent", agent)
+        checked_agent = _checked_name("agent", agent) if agent is not None else None
         project = project_root_for(root)
-        text = workflow_text(checked, agent=agent, description=description or "")
+        if checked_agent is not None:
+            known = agent_names(project)
+            if checked_agent not in known:
+                match = suggest(checked_agent, known)
+                message = f"unknown agent {checked_agent!r}"
+                if match is not None:
+                    message += f"; did you mean {match!r}?"
+                fail(
+                    message,
+                    hint=f"write it first with `rayspec new agent {checked_agent}`, or see what "
+                    "this project has with `rayspec agents`",
+                )
+        text = workflow_text(checked, agent=checked_agent, description=description or "")
         try:
             result = write_new(project, "workflow", checked, text, force=force)
         except FileExistsError as exc:
