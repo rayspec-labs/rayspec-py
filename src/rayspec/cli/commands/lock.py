@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -70,25 +71,38 @@ def locked_enabled(locked: bool | None, environ: Mapping[str, str] | None = None
 
 
 def enforce_lockfile(
-    ctx: Context, resolved: ResolvedWorkflow, *, locked: bool | None, json_mode: bool = False
+    ctx: Context,
+    resolved: ResolvedWorkflow,
+    *,
+    locked: bool | None,
+    project_root: Path | None = None,
+    json_mode: bool = False,
 ) -> None:
     """Exit 2 when ``--locked`` is in force and the workflow does not match the lockfile.
 
-    A missing lockfile is refused too: ``--locked`` is a promise that the models were pinned,
-    and "there is nothing to check" must not read as "everything is fine".
+    ``project_root`` is the project the workflow was LOADED from — with ``--repo`` that is the
+    prepared checkout, not the directory the command was typed in, and checking the caller's
+    lockfile there would validate a file that has nothing to do with the code being run.
+
+    A missing lockfile is refused when ``--locked`` was passed: the flag is a promise that the
+    models were pinned, and "there is nothing to check" must not read as "everything is fine".
+    The CI *default* is different — it may not break a project that never opted in, so with no
+    flag and no lockfile there is simply nothing to enforce.
     """
     if not locked_enabled(locked):
         return
+    root = project_root if project_root is not None else ctx.project_root
     try:
-        lockfile = load_lockfile(ctx.project_root)
+        lockfile = load_lockfile(root)
     except LockfileError as exc:
         fail(str(exc), hint=exc.hint)
         return
     if lockfile is None:
-        fail(
-            f"--locked: no lockfile at {short_path(lockfile_path(ctx.project_root), ctx)}",
-            hint="run `rayspec lock` and commit the file (it pins the model of every agent)",
-        )
+        if locked:
+            fail(
+                f"--locked: no lockfile at {short_path(lockfile_path(root), ctx)}",
+                hint="run `rayspec lock` and commit the file (it pins the model of every agent)",
+            )
         return
     drifts = check_locked(resolved, lockfile)
     if not drifts:

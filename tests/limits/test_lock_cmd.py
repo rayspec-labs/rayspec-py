@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -156,3 +157,53 @@ def test_a_malformed_lockfile_is_a_usage_error(root: Path) -> None:
     result = invoke("run", "t", "--dry-run", "--locked", "--root", str(root))
     assert result.exit_code == 2
     assert "workflows" in result.output
+
+
+def test_the_ci_default_leaves_a_project_without_a_lockfile_alone(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default must not break a project that never opted in — only the flag promises."""
+    monkeypatch.setenv("CI", "true")
+    assert invoke("run", "t", "--dry-run", "--root", str(root)).exit_code == 0
+    assert invoke("validate", "t", "--root", str(root)).exit_code == 0
+    assert invoke("plan", "t", "--root", str(root)).exit_code == 0
+    # an explicitly passed --locked still refuses a missing lockfile: that IS the promise
+    explicit = invoke("run", "t", "--dry-run", "--locked", "--root", str(root))
+    assert explicit.exit_code == 2 and "no lockfile" in explicit.output
+
+
+def _git_init(path: Path) -> None:
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+    ):
+        subprocess.run(args, cwd=path, check=True)
+
+
+def test_repo_checks_the_lockfile_of_the_repo_it_runs(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``--repo`` the workflow comes from the target — so must the lockfile."""
+    target = tmp_path / "target"
+    (target / ".rayspec" / "workflows").mkdir(parents=True)
+    (target / ".rayspec" / "workflows" / "t.yaml").write_text(
+        WORKFLOW.format(model="claude-sonnet-4-6"), encoding="utf-8"
+    )
+    assert invoke("lock", "--root", str(target)).exit_code == 0
+    drift(target)  # the target's workflow no longer matches its own lockfile
+    _git_init(target)
+
+    caller = tmp_path / "caller"
+    (caller / ".rayspec" / "workflows").mkdir(parents=True)
+    (caller / ".rayspec" / "workflows" / "t.yaml").write_text(
+        WORKFLOW.format(model="claude-opus-4-9"), encoding="utf-8"
+    )
+    assert invoke("lock", "--root", str(caller)).exit_code == 0  # pins the DRIFTED model
+
+    monkeypatch.setenv("CI", "true")
+    result = invoke(
+        "run", "t", "--dry-run", "--repo", str(target), "--root", str(caller), "--no-interactive"
+    )
+    assert result.exit_code == 2, result.output
+    assert "agents.reviewer" in result.output

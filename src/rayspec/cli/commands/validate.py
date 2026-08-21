@@ -142,7 +142,9 @@ def register(app: typer.Typer) -> None:
             except LockfileError as exc:
                 fail(str(exc), hint=exc.hint)
                 return
-            if lockfile is None:
+            if lockfile is None and locked:
+                # the flag promises the models were pinned; the CI default does not, so a
+                # project without a lockfile is simply not checked
                 fail(
                     "--locked: no lockfile at .rayspec/rayspec.lock",
                     hint="run `rayspec lock` and commit the file",
