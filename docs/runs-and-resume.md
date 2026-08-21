@@ -361,7 +361,10 @@ defaults:
   breaker*, not a kill switch — use `timeout:` (per attempt, per step) or `stop:` if you need
   one.
 - The run ends `failed` with
-  `reason: time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` — exit **1**. Raise the
+  `reason: time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` — exit **1**. That also
+  holds when the drain reaches a `stop:` step: a tripped cap outranks the stop's own status, so
+  a `join: always` `stop: {status: succeeded}` cleanup step cannot report a capped run as
+  successful (its `outputs:` are not published either). Raise the
   cap and resume with `--force` (the workflow hash changed) to continue where it stopped.
 
 ## Security notes

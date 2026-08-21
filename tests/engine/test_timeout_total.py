@@ -168,3 +168,21 @@ async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Ha
     assert run.steps["b"].attempts == 0  # queued, never attempted
     assert statuses["cleanup"] == "succeeded"  # join: always still drains
 
+
+async def test_the_tripped_clock_outranks_a_stop_step(harness: Harness) -> None:
+    """A ``stop: {status: succeeded}`` reached while draining must not report a capped run as
+    successful — the cap decides the run status, and its outputs are not published."""
+    harness.workflow(
+        "t",
+        "rayspec: 1\nname: t\ndefaults:\n  timeout_total: 0.05\n"
+        "outputs:\n  done: yes\nsteps:\n"
+        '  - {id: slow, prompt: "one"}\n'
+        '  - {id: bye, needs: [slow], join: always, stop: {status: succeeded, reason: "early"}}\n',
+    )
+    provider = StubProvider(script={"steps": {"slow": {"latency_ms": 120}}})
+    result = await harness.run("t", providers={"claude": provider})
+    assert result.status is RunStatus.FAILED and result.exit_code == 1
+    assert "time limit exceeded" in (result.reason or "")
+    run = harness.record(result.run_id)
+    assert run.status is RunStatus.FAILED and run.reason == result.reason
+    assert not run.outputs

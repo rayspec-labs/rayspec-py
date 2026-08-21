@@ -1163,7 +1163,9 @@ Semantics fixed here (tests in `tests/engine/`):
   treats a budget-skipped body step as a failing one (loop/each/include fail with
   `body_failure_message` = error | skip reason | status). `Runner._finalize`: after engine error /
   interrupted / paused / stopped, `ctx.budget_exceeded` ⇒ status `failed`, reason = the breaker
-  reason, exit 1. Resume replays count again (same cap ⇒ trips at once, finished steps stay
+  reason, exit 1. The breaker outranks `ctx.stopped`: a capped run keeps draining, so it reaches
+  a `join: always` `stop: {status: succeeded}` — and it must not report success (or publish
+  `outputs:`) to its caller. Ranked below `paused`, which is not a final status. Resume replays count again (same cap ⇒ trips at once, finished steps stay
   replayed); raising the cap changes the hash ⇒ `--force`, leaves are reused (fingerprints exclude
   defaults).
   `rayspec plan` prints `budget_usd $X  max_tokens N` after the isolation and adds `budget_usd` /
