@@ -30,6 +30,7 @@ the rules are :mod:`rayspec.engine.approval_classes`'.
 from __future__ import annotations
 
 import json
+import sys
 
 import anyio
 
@@ -39,6 +40,9 @@ from rayspec.engine.approval_classes import (
     BY_TTY,
     ApprovalClasses,
     automatic_by,
+    class_not_held,
+    gate_held,
+    no_terminal,
     out_of_band_refused,
     prompt_not_a_terminal,
     waiver_refused,
@@ -59,6 +63,19 @@ from rayspec.templating import TemplateRenderError
 
 #: Characters of each need's output handed to the prompt for ``[v]iew``.
 _VIEW_CAP = 200_000
+
+
+def at_a_terminal() -> bool:
+    """Whether this process is attached to a terminal, asked at the moment a gate is decided.
+
+    ``require_tty`` is checked against this rather than against ``options.interactive``, which is
+    a flag a caller sets. It cannot tell a person from a pty (``script``, ``expect``): what it
+    rules out is a gate answered by a process that has no terminal at all.
+    """
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, OSError, ValueError):  # stdin replaced, closed or detached
+        return False
 
 
 def gate_token(path: str, attempt: int) -> str:
@@ -131,6 +148,13 @@ async def run_approve(
 
     classes = ctx.options.approval_classes
     class_name = spec.class_
+    if class_name is not None and classes.unheld(class_name):
+        # the gate keeps the permissive default, but a class nobody defined must not pass for a
+        # lock: this is the one moment the operator's rules and the workflow's name are both here
+        await ctx.warn(
+            class_not_held(class_name, step_path=path, policy_in_force=classes.policy_in_force),
+            step_path=path,
+        )
     answer: ApprovalAnswer | None = None
     by = "cli"
     decision = stored_decision(ctx, path, record.attempts)
@@ -212,15 +236,20 @@ async def run_approve(
 async def _warn_refused(
     ctx: RunContext, spec: ApproveSpec, classes: ApprovalClasses, path: str
 ) -> None:
-    """Name the automatic approval this invocation asked for and the rule that refused it."""
+    """Say what the class did to this gate: refused a named waiver, or simply held it."""
     class_name = spec.class_
+    rules = classes.rules_for(class_name)
     waiver = automatic_by(
         classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run
     ) or (BY_AUTO_IF if spec.auto_if is not None else None)
     if waiver is None:
-        return  # nothing was waived: the gate would have asked anyway
+        # nothing was waived, so nothing was refused — but the gate is still being held by a
+        # rule, and a control that only speaks when it refuses something cannot be read off the
+        # event stream at all
+        await ctx.warn(gate_held(class_name, rules, step_path=path), step_path=path)
+        return
     await ctx.warn(
-        waiver_refused(class_name, classes.rules_for(class_name), waiver=waiver, step_path=path),
+        waiver_refused(class_name, rules, waiver=waiver, step_path=path),
         step_path=path,
     )
 
@@ -242,13 +271,13 @@ async def _ask(
         prompt = ctx.approval_prompt
         if prompt is None or not ctx.options.interactive:
             return None
-        if not classes.may_prompt(step.approve.class_):
-            # `extensions.approval` replaced the terminal prompt; `require_tty` does not accept
-            # a substitute, so the gate pauses instead of being answered by one
-            await ctx.warn(
-                prompt_not_a_terminal(step.approve.class_, step_path=record.path),
-                step_path=record.path,
-            )
+        class_name = step.approve.class_
+        if not classes.may_prompt(class_name, at_a_terminal=at_a_terminal()):
+            # `require_tty` accepts the built-in prompt of a process that has a terminal, and
+            # nothing else: neither a prompt `extensions.approval` replaced nor one asked from a
+            # process whose stdin is a pipe. Which of the two it is decides the message.
+            refused = prompt_not_a_terminal if not classes.terminal_prompt else no_terminal
+            await ctx.warn(refused(class_name, step_path=record.path), step_path=record.path)
             return None
         request = ApprovalRequest(
             run_id=ctx.run.run_id,
@@ -295,4 +324,4 @@ async def _pause(ctx: RunContext, record: StepRecord, message: str) -> StepOutco
     return StepOutcome(record=record, control=control)
 
 
-__all__ = ["gate_token", "run_approve", "run_cost_source", "stored_decision"]
+__all__ = ["at_a_terminal", "gate_token", "run_approve", "run_cost_source", "stored_decision"]

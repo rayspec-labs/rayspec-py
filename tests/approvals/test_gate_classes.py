@@ -187,3 +187,100 @@ async def test_a_class_the_policy_says_nothing_about_is_waived_by_yes(
     run = await gates.run("ship", options=RunOptions(yes=True, approval_classes=locked()))
     assert run.result.status is RunStatus.SUCCEEDED
     assert run.decision("gate")["by"] == "--yes"
+
+
+# --------------------------------------------------------------------------------------------
+# Failing open is allowed; failing open QUIETLY is not
+# --------------------------------------------------------------------------------------------
+
+
+async def test_a_class_the_policy_does_not_define_warns_that_the_gate_is_not_held(
+    tree: Tree, gates: Gates
+) -> None:
+    """One typo on either side — `relase` in the policy, `release` in the workflow — used to
+    remove the operator's control silently. The gate is still open, but it says so."""
+    ship(tree)
+    classes = ApprovalClasses(rules={"relase": LOCKED})
+    run = await gates.run("ship", options=RunOptions(yes=True, approval_classes=classes))
+    assert run.result.status is RunStatus.SUCCEEDED  # unchanged: an unknown class is permissive
+    warnings = run.warnings()
+    assert any("not defined by the operator policy" in w for w in warnings), warnings
+    assert any("'release'" in w for w in warnings), warnings
+
+
+async def test_a_class_with_no_policy_at_all_warns_too(tree: Tree, gates: Gates) -> None:
+    ship(tree)
+    run = await gates.run("ship", options=RunOptions(yes=True))
+    assert run.result.status is RunStatus.SUCCEEDED
+    assert any("no operator policy is in force" in w for w in run.warnings()), run.warnings()
+
+
+async def test_a_held_class_does_not_warn_about_being_unheld(tree: Tree, gates: Gates) -> None:
+    ship(tree)
+    run = await gates.run("ship", options=RunOptions(interactive=False, approval_classes=locked()))
+    assert_held(run)
+    assert not any("not held" in w for w in run.warnings()), run.warnings()
+
+
+async def test_a_gate_without_a_class_says_nothing_about_policy(tree: Tree, gates: Gates) -> None:
+    ship(tree, gate="")
+    run = await gates.run("ship", options=RunOptions(yes=True))
+    assert run.warnings() == []
+
+
+async def test_a_gate_that_simply_pauses_under_a_class_says_which_rule_holds_it(
+    tree: Tree, gates: Gates
+) -> None:
+    """No waiver was asked for, so nothing was refused — but the reason this gate cannot be
+    answered the usual way belongs in the event stream, not only in the operator's memory."""
+    ship(tree)
+    run = await gates.run(
+        "ship",
+        options=RunOptions(
+            interactive=False, approval_classes=ApprovalClasses(rules={"release": TTY_ONLY})
+        ),
+    )
+    assert_held(run)
+    held = [w for w in run.warnings() if "'release'" in w]
+    assert held, run.warnings()
+    assert any("require_tty: true" in w for w in held), held
+    assert any("rayspec resume" in w for w in held), held
+
+
+async def test_require_tty_refuses_a_prompt_asked_without_a_terminal(
+    tree: Tree, gates: Gates
+) -> None:
+    """The built-in prompt, an interactive run, nothing replaced — and no terminal. The rule
+    checks the terminal itself instead of trusting the caller's flags."""
+    ship(tree)
+    asker = Asker(ApprovalAnswer(True, "from cron"))
+    run = await gates.run(
+        "ship",
+        options=RunOptions(
+            interactive=True,
+            approval_classes=ApprovalClasses(rules={"release": TTY_ONLY}),
+        ),
+        prompt=asker,
+    )
+    assert_held(run)
+    assert asker.asked == []
+    assert any("this process has none" in w for w in run.warnings()), run.warnings()
+
+
+async def test_require_tty_asks_when_there_is_a_terminal(
+    tree: Tree, gates: Gates, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ship(tree)
+    monkeypatch.setattr("rayspec.engine.executors.approve.at_a_terminal", lambda: True)
+    asker = Asker(ApprovalAnswer(True, "shipping"))
+    run = await gates.run(
+        "ship",
+        options=RunOptions(
+            interactive=True,
+            approval_classes=ApprovalClasses(rules={"release": TTY_ONLY}),
+        ),
+        prompt=asker,
+    )
+    assert run.result.status is RunStatus.SUCCEEDED
+    assert asker.asked == ["gate"]
+    assert run.decision("gate")["by"] == "tty"

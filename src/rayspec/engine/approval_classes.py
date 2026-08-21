@@ -1,11 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """Approval classes — *what may approve a gate*, and what may never approve it automatically.
 
-An `approve:` step names a **class** (`approve: {class: release}`); an operator's policy file
-says what that class permits. The split is the whole point: a workflow decides *that* a gate
-exists, an operator decides *how strictly* it is held. A workflow can therefore never relax its
-own gate, which is what makes it safe to leave a workflow running on a schedule that is also
-allowed to publish a release.
+An `approve:` step names a **class** (`approve: {class: release}`); an operator's policy says
+what that class permits. The split is the whole point: a workflow decides *that* a gate exists,
+an operator decides *how strictly* it is held. A workflow can name a class but cannot define
+one, so it can never loosen a rule the operator set — which is what makes it safe to leave a
+workflow running on a schedule that is also allowed to publish a release.
+
+The converse is the limit of the mechanism, and it is not hidden: a class **nothing in force
+defines** — because there is no policy, because the operator spelled it differently, or because
+the workflow was edited — keeps the permissive default. The scope of the control is therefore
+chosen by name on both sides, and a name that does not match is reported by every caller that
+can see it (:func:`class_not_held`, `plan --risk`, and the gate itself) rather than passing for
+a lock. Holding *every* gate regardless of name is an operator-policy question, not one this
+module can answer.
 
 Two rules, in increasing strictness:
 
@@ -31,7 +39,7 @@ only through :func:`rules_from_policy`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -78,11 +86,25 @@ class ApprovalClasses:
     pre_approved: frozenset[str] = frozenset()
     terminal_prompt: bool = True
 
+    @property
+    def policy_in_force(self) -> bool:
+        """Whether an operator policy defines any approval class at all."""
+        return bool(self.rules)
+
     def rules_for(self, class_name: str | None) -> ClassRules:
         """The rules governing a gate of this class (the permissive default when unknown)."""
         if class_name is None:
             return DEFAULT_RULES
         return self.rules.get(class_name, DEFAULT_RULES)
+
+    def unheld(self, class_name: str | None) -> bool:
+        """Whether this gate names a class nothing in force says anything about.
+
+        Such a gate keeps the permissive default — a workflow naming a class the operator never
+        heard of must not be able to *invent* a restriction either — but every caller that can
+        say so out loud must, because the name reads like a lock and is not one.
+        """
+        return class_name is not None and class_name not in self.rules
 
     def may_approve_automatically(self, class_name: str | None) -> bool:
         """Whether a gate of this class may be approved without a human answering it."""
@@ -93,9 +115,18 @@ class ApprovalClasses:
         """Whether ``rayspec approve <run>`` may approve a gate of this class."""
         return not self.rules_for(class_name).require_tty
 
-    def may_prompt(self, class_name: str | None) -> bool:
-        """Whether this process's approval prompt may be asked about a gate of this class."""
-        return self.terminal_prompt or not self.rules_for(class_name).require_tty
+    def may_prompt(self, class_name: str | None, *, at_a_terminal: bool = True) -> bool:
+        """Whether this process's approval prompt may be asked about a gate of this class.
+
+        ``require_tty`` needs both halves of its name: the built-in terminal prompt
+        (``terminal_prompt``) *and* a process that really is attached to a terminal
+        (``at_a_terminal``, probed by the caller at the moment of asking rather than taken from
+        a flag). What it cannot tell apart is a person and a pty — see the caveat in
+        ``docs/runs-and-resume.md``.
+        """
+        if not self.rules_for(class_name).require_tty:
+            return True
+        return self.terminal_prompt and at_a_terminal
 
 
 def automatic_by(
@@ -134,6 +165,43 @@ def waiver_refused(
     )
 
 
+def class_not_held(class_name: str, *, step_path: str, policy_in_force: bool) -> str:
+    """Why naming this class did not hold the gate: nothing in force defines it."""
+    where = f"steps.{step_path}.approve.class"
+    waivers = "every automatic approval (--yes, --approve-class, auto_if) applies to it"
+    if policy_in_force:
+        return (
+            f"{where}: {class_name!r} is not defined by the operator policy, so the gate is not "
+            f"held — {waivers}; add the class to the policy, or check the spelling"
+        )
+    return (
+        f"{where}: names approval class {class_name!r}, but no operator policy is in force, so "
+        f"the gate is not held — {waivers}"
+    )
+
+
+def gate_held(class_name: str | None, rules: ClassRules, *, step_path: str) -> str:
+    """Why this gate is waiting rather than being answered the usual way.
+
+    Emitted when a class constrains a gate that pauses *without* anybody having asked for a
+    waiver: a control that only speaks when it refuses something is invisible in the event
+    stream, and a reader of ``stream.jsonl`` cannot tell a held pause from an ordinary one.
+    """
+    return (
+        f"{step_path}: approval class {class_name!r} holds this gate ({rules.named}); "
+        f"{_decide_instead(rules)}"
+    )
+
+
+def unheld_classes(gates: Iterable[tuple[str, str | None]], classes: ApprovalClasses) -> list[str]:
+    """One :func:`class_not_held` warning per ``(step path, class name)`` that is not held."""
+    return [
+        class_not_held(name, step_path=path, policy_in_force=classes.policy_in_force)
+        for path, name in gates
+        if name is not None and classes.unheld(name)
+    ]
+
+
 def out_of_band_refused(class_name: str | None, *, step_path: str) -> str:
     """Why a recorded ``rayspec approve`` decision was not accepted for this gate."""
     return (
@@ -149,6 +217,15 @@ def prompt_not_a_terminal(class_name: str | None, *, step_path: str) -> str:
         f"{step_path}: approval class {class_name!r} requires a terminal (require_tty: true), "
         "so the configured approval extension was not asked; the gate is paused — answer it "
         "with `rayspec resume <run>` from a terminal"
+    )
+
+
+def no_terminal(class_name: str | None, *, step_path: str) -> str:
+    """Why the built-in prompt was not asked: this process has no terminal to ask at."""
+    return (
+        f"{step_path}: approval class {class_name!r} requires a terminal (require_tty: true) "
+        "and this process has none; the gate is paused — answer it with `rayspec resume <run>` "
+        "from a terminal"
     )
 
 
@@ -190,8 +267,12 @@ __all__ = [
     "ApprovalClasses",
     "ClassRules",
     "automatic_by",
+    "class_not_held",
+    "gate_held",
+    "no_terminal",
     "out_of_band_refused",
     "prompt_not_a_terminal",
     "rules_from_policy",
+    "unheld_classes",
     "waiver_refused",
 ]

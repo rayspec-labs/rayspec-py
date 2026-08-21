@@ -43,7 +43,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.cli.commands.eval import echo_block
 from rayspec.config import Config
 from rayspec.engine import context_rebuild
-from rayspec.engine.approval_classes import ApprovalClasses, ClassRules
+from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, unheld_classes
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import SECRET_PLACEHOLDER
@@ -400,6 +400,13 @@ def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, Class
     return impl(project_root, home)
 
 
+def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
+    """``(step path, approval class)`` of every gate — the run command's helper, lazily."""
+    from rayspec.cli.commands.run import gate_classes as impl
+
+    return impl(rw)
+
+
 #: How each severity is coloured in the report.
 _SEVERITY_STYLE = {"high": "red", "medium": "yellow", "low": "cyan"}
 
@@ -532,15 +539,13 @@ def register(app: typer.Typer) -> None:
             input_exc = exc
         input_rows = _input_rows(rw, values, input_exc, inputs or [])
         providers_report = _provider_report(rw, caps, ctx.config)
-        warnings = [*rw.warnings, *report.warnings]
+        classes = ApprovalClasses(rules=policy_class_rules(ctx.project_root, ctx.home))
+        warnings = [*rw.warnings, *report.warnings, *unheld_classes(gate_classes(rw), classes)]
         if caps.warning:
             warnings.append(caps.warning)
         findings: list[risk_report.Finding] = []
         if risk:
-            findings = risk_report.analyse(
-                rw,
-                classes=ApprovalClasses(rules=policy_class_rules(ctx.project_root, ctx.home)),
-            )
+            findings = risk_report.analyse(rw, classes=classes)
         rendered: list[dict[str, Any]] = []
         if render:
             script = _load_stub_script(stubs)

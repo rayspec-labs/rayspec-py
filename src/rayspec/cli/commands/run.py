@@ -52,7 +52,7 @@ from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, vali
 from rayspec.loader.inputs import secret_input_names
 from rayspec.providers.pricing import PriceTable, cost_marker
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, RedactingSink, Redactor
-from rayspec.schema import PromptStep, RunStatus
+from rayspec.schema import ApproveStep, PromptStep, RunStatus
 from rayspec.secrets import (
     SecretError,
     build_redactor,
@@ -130,6 +130,15 @@ def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, Class
     return rules_from_policy(operator_policy(project_root, home))
 
 
+def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
+    """``(step path, approval class)`` of every gate in a workflow, includes and bodies too."""
+    return [
+        (path, step.approve.class_)
+        for path, step in rw.all_steps()
+        if isinstance(step, ApproveStep)
+    ]
+
+
 def approval_classes_for(
     project_root: Path,
     home: Path | None,
@@ -143,6 +152,36 @@ def approval_classes_for(
         pre_approved=frozenset(pre_approved),
         terminal_prompt=terminal_prompt,
     )
+
+
+def decide_hint(run_id: str, class_name: str | None, classes: ApprovalClasses) -> str:
+    """The ``decide with:`` line of a paused run.
+
+    A class that requires a terminal refuses a decision recorded by ``rayspec approve`` /
+    ``rayspec reject``, so a run held by one must not recommend them: pointing at the command
+    the tool is about to refuse is how a control teaches people to work around it.
+    """
+    if class_name is not None and not classes.may_decide_out_of_band(class_name):
+        return (
+            f"  decide with: rayspec resume {run_id} from a terminal "
+            f"(approval class {class_name!r} requires one)"
+        )
+    return (
+        f"  decide with: rayspec approve {run_id} [comment] · "
+        f"rayspec reject {run_id} [reason] · rayspec resume {run_id}"
+    )
+
+
+def paused_gate_class(rw: ResolvedWorkflow | None, step_path: str) -> str | None:
+    """The approval class of the gate a run paused at (its record path carries iteration
+    indices; a definition path does not)."""
+    if rw is None:
+        return None
+    wanted = "/".join(segment.split("[")[0] for segment in step_path.split("/"))
+    for path, name in gate_classes(rw):
+        if path == wanted:
+            return name
+    return None
 
 
 #: ``RunRecord.stubs_path`` prefix for a run launched with ``--stubs-from <run>``: there is
@@ -421,8 +460,14 @@ def worktree_lines(workspace: Workspace) -> list[str]:
     ]
 
 
-def print_summary(out: Console, result: RunResult, *, json_mode: bool) -> None:
+def print_summary(
+    out: Console, result: RunResult, *, json_mode: bool, pause_hint: str | None = None
+) -> None:
     """Outputs, workspace, pause hint, tokens/cost footer and next-step hints.
+
+    ``pause_hint`` replaces the ``decide with:`` line for a paused run; callers that know the
+    gate's approval class build it with :func:`decide_hint` so the line names only the commands
+    the class accepts.
 
     The final ``run <id> <status>`` line itself is printed by the console sink (``run.finished``),
     so the text summary does not repeat it; ``--json`` prints the summary object instead.
@@ -471,8 +516,9 @@ def print_summary(out: Console, result: RunResult, *, json_mode: bool) -> None:
             out.print(line, markup=False, highlight=False, soft_wrap=True)
     if result.status is RunStatus.PAUSED and result.pause is not None:
         out.print(
-            f"  decide with: rayspec approve {result.run_id} [comment] · "
-            f"rayspec reject {result.run_id} [reason] · rayspec resume {result.run_id}",
+            pause_hint
+            if pause_hint is not None
+            else decide_hint(result.run_id, None, ApprovalClasses()),
             markup=False,
             highlight=False,
         )
@@ -839,7 +885,16 @@ def register(app: typer.Typer) -> None:
             anyio.run(sinks.aclose, backend="asyncio")
         # --json: the summary object joins the JSONL events on stdout; console lines stay
         # on stderr
-        print_summary(common.console() if json_ else out, result, json_mode=json_)
+        print_summary(
+            common.console() if json_ else out,
+            result,
+            json_mode=json_,
+            pause_hint=decide_hint(
+                result.run_id,
+                paused_gate_class(rw, result.pause.step) if result.pause is not None else None,
+                options.approval_classes,
+            ),
+        )
         raise typer.Exit(code=result.exit_code)
 
 
@@ -1068,7 +1123,9 @@ __all__ = [
     "configured_approval",
     "configured_sinks",
     "cost_label",
+    "decide_hint",
     "failed_leaf_paths",
+    "gate_classes",
     "load_stub_script",
     "non_stub_agents",
     "operator_policy",

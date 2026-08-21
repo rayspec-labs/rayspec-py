@@ -323,6 +323,21 @@ def _agent_findings(rw: ResolvedWorkflow) -> Iterator[Finding]:
                 )
 
 
+def _lock_advice(class_name: str | None, classes: ApprovalClasses) -> str:
+    """What would actually make this gate a real gate — which depends on what it already says."""
+    if class_name is None:
+        return "give it a class the operator policy marks allow_yes: false"
+    if classes.policy_in_force:
+        return (
+            f"the operator policy does not hold approval class {class_name!r}; add "
+            f"allow_yes: false for it (or check the spelling on both sides)"
+        )
+    return (
+        f"no operator policy in force defines approval class {class_name!r}, so naming it "
+        "restricts nothing; the rule that would hold this gate is allow_yes: false for it"
+    )
+
+
 def _gate_findings(path: str, step: ApproveStep, classes: ApprovalClasses) -> Iterator[Finding]:
     spec = step.approve
     named = f"class {spec.class_}" if spec.class_ else "no approval class"
@@ -343,8 +358,19 @@ def _gate_findings(path: str, step: ApproveStep, classes: ApprovalClasses) -> It
             category="self-approving-gate",
             where=path,
             detail=f"auto_if: {spec.auto_if} ({named})",
-            advice="the gate approves itself whenever the condition holds; give it a class the "
-            "policy marks allow_yes: false if a human must see it",
+            advice="the gate approves itself whenever the condition holds; "
+            + _lock_advice(spec.class_, classes),
+        )
+        return
+    if classes.unheld(spec.class_):
+        # a named class reads like a lock; when nothing defines it, saying "give it a class"
+        # would advise the reader to add what is already there
+        yield Finding(
+            severity="medium",
+            category="unheld-class",
+            where=path,
+            detail=f"{named} (not held)",
+            advice=_lock_advice(spec.class_, classes),
         )
         return
     yield Finding(
@@ -353,7 +379,7 @@ def _gate_findings(path: str, step: ApproveStep, classes: ApprovalClasses) -> It
         where=path,
         detail=named,
         advice="--yes (and --approve-class, for a named class) approves this gate without "
-        "asking; give it a class the policy marks allow_yes: false to make it a real gate",
+        "asking; " + _lock_advice(spec.class_, classes),
     )
 
 

@@ -152,7 +152,7 @@ def test_a_classed_gate_the_policy_locks_is_not_reported_as_waivable(
               class: release
         """,
     )
-    assert "waivable-gate" in categories(tree.root, "gated")
+    assert "unheld-class" in categories(tree.root, "gated")  # nothing holds it yet
     monkeypatch.setattr(
         "rayspec.cli.commands.plan.policy_class_rules",
         lambda project_root, home: {
@@ -161,7 +161,9 @@ def test_a_classed_gate_the_policy_locks_is_not_reported_as_waivable(
             ).ClassRules(allow_yes=False)
         },
     )
-    assert "waivable-gate" not in categories(tree.root, "gated")
+    held = categories(tree.root, "gated")
+    assert "waivable-gate" not in held
+    assert "unheld-class" not in held
 
 
 def test_risk_executes_nothing(tree: Tree) -> None:
@@ -446,3 +448,36 @@ def test_a_raw_block_is_not_reported_as_templated(tree: Tree) -> None:
         """,
     )
     assert "templated-body" not in categories(tree.root, "raw")
+
+
+GATED = """
+rayspec: 1
+name: gated
+steps:
+  - id: build
+    shell: echo built
+  - id: gate
+    needs: [build]
+    approve:
+      message: ship it?
+      class: release
+"""
+
+
+def test_a_class_no_policy_holds_is_reported_as_such(tree: Tree) -> None:
+    """A named class reads like a lock. When nothing defines it, the report says so instead of
+    advising the reader to add the class that is already there."""
+    tree.workflow("gated", GATED)
+    found = [f for f in findings(tree.root, "gated") if f["category"] == "unheld-class"]
+    assert found, findings(tree.root, "gated")
+    assert "release" in found[0]["detail"]
+    assert found[0]["severity"] == "medium"
+    assert "release" in found[0]["advice"]
+    assert "give it a class" not in found[0]["advice"]
+
+
+def test_a_gate_with_no_class_still_reads_as_waivable(tree: Tree) -> None:
+    tree.workflow("plain", GATED.replace("      class: release\n", ""))
+    found = [f for f in findings(tree.root, "plain") if f["category"] == "waivable-gate"]
+    assert found, findings(tree.root, "plain")
+    assert "give it a class" in found[0]["advice"]

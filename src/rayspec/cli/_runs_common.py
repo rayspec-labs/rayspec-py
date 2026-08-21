@@ -765,6 +765,8 @@ def resume_run(
         approval_classes_for,
         approval_prompt_for,
         configured_approval,
+        decide_hint,
+        paused_gate_class,
         print_summary,
         warn_unredactable_secrets,
         workspace_from_record,
@@ -866,7 +868,16 @@ def resume_run(
     finally:
         anyio.run(sinks.aclose, backend="asyncio")
     # --json: the summary object joins the JSONL events on stdout (Rich progress stays on stderr)
-    print_summary(loader_common.console() if json_mode else out, result, json_mode=json_mode)
+    print_summary(
+        loader_common.console() if json_mode else out,
+        result,
+        json_mode=json_mode,
+        pause_hint=decide_hint(
+            result.run_id,
+            paused_gate_class(resolved, result.pause.step) if result.pause is not None else None,
+            options.approval_classes,
+        ),
+    )
     return result.exit_code
 
 

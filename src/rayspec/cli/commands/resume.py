@@ -31,7 +31,9 @@ from rayspec.cli.commands._loader_common import (
 )
 from rayspec.cli.commands.run import (
     ApproveClassOption,
+    approval_classes_for,
     load_stub_script,
+    paused_gate_class,
     refuse_stubs_for_real_agents,
 )
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
@@ -236,12 +238,23 @@ def register(app: typer.Typer) -> None:
                 ),
                 highlight=False,
             )
-            out.print(
-                f"  decide with `rayspec approve {record.run_id} [comment]` / "
-                f"`rayspec reject {record.run_id} [reason]`, or pass --yes to auto-approve",
-                markup=False,
-                highlight=False,
-            )
+            # the hint names only what this gate's approval class accepts: recommending a
+            # command the class refuses is how a control teaches people to work around it
+            classes = approval_classes_for(ctx.project_root, ctx.home)
+            gate_class = paused_gate_class(resolved, record.pause.step)
+            if not classes.may_decide_out_of_band(gate_class):
+                hint = (
+                    f"  answer it with `rayspec resume {record.run_id}` from a terminal "
+                    f"(approval class {gate_class!r} requires one)"
+                )
+            else:
+                hint = (
+                    f"  decide with `rayspec approve {record.run_id} [comment]` / "
+                    f"`rayspec reject {record.run_id} [reason]`"
+                )
+                if classes.may_approve_automatically(gate_class):
+                    hint += ", or pass --yes to auto-approve"
+            out.print(hint, markup=False, highlight=False)
             raise typer.Exit(code=EXIT_PAUSED)
         # secrets come after the pending-gate pointer (that is the more useful answer for a run
         # that wants approve/reject), still before anything is written
