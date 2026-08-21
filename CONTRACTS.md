@@ -1827,7 +1827,10 @@ Two new packages and one new loader module; nothing else moved.
   entry neither fails a run nor executes its `cmd:` helper),
   `build_redactor(config, {name: value}) -> Redactor`.
 - **`rayspec.redact`** — pure text transformation. `Redactor.build({name: value}, *,
-  detectors=()) -> Redactor` (`literals` longest-first, each value registered **twice** when its
+  detectors=()) -> Redactor` — `build` and `extend` also take `(name, value)` PAIRS
+  (`rayspec.redact.Secrets`), because `config.secrets` and the workflow's inputs are independent
+  namespaces that can use the same name for different values and a merge by name would drop one
+  of the values while the step still receives it — (`literals` longest-first, each value registered **twice** when its
   JSON-escaped form differs, so a writer of raw TEXT — `stdout.log`, an artifact, a step output
   that happens to contain JSON — still catches the escaped form; `MIN_REDACTABLE_LEN = 4` —
   shorter values are skipped and named in `.skipped`, which the CLI turns into a `warning:` line
@@ -1846,7 +1849,8 @@ Two new packages and one new loader module; nothing else moved.
   that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
   (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
-  is nothing to add) are how a later caller ADDS a value without discarding one already
+  is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
+  already knew everything) are how a later caller ADDS a value without discarding one already
   installed. `REDACTION = "[REDACTED:{name}]"`, `NULL_REDACTOR` (the shared no-op).
   `StreamRedactor.feed(text)` holds back only the tail that could still GROW into a match (the
   longest suffix that is a proper prefix of a known value, or a detector shape in progress) and
@@ -1909,9 +1913,14 @@ Additive changes to existing modules:
   resolved `config.secrets`, handed only to `shell:`/`python:` steps.
 - `engine/runner.py`: `Runner._install_redactor()` runs first in `run()`, before the workdir lock
   and before the record exists. It makes `store.redactor` cover every `secret: true` input the
-  run was given plus every `RunOptions.config_secrets` value, by `Redactor.extend` — a redactor
-  the caller installed is never replaced, and a redactor that already `covers` the values is left
-  alone, so the CLI path is a no-op. A store whose `redactor` cannot be assigned raises
+  run was given plus every `RunOptions.config_secrets` value, by `Redactor.extend` — as PAIRS,
+  so a `config.secrets` entry and an input of the same name both reach the redactor. A redactor
+  the caller installed is never replaced, and one that already knows every value and every name
+  is left alone (`extend` returns `self`), so the CLI path is a no-op. Everything else goes
+  through `extend`, including values `covers` reports as covered, so a value too short to redact
+  lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
+  emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
+  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
   `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
   caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
   by construction.

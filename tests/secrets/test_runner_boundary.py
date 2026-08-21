@@ -170,3 +170,63 @@ def test_a_workflow_without_secrets_leaves_the_store_alone(tmp_path: Path, proje
         project_root=project,
     ).run_sync()
     assert store.redactor is NULL_REDACTOR
+
+
+def test_a_value_too_short_to_redact_is_recorded_and_announced(
+    tmp_path: Path, project: Path
+) -> None:
+    """A short value is deliberately never redacted. The CLI says so at run start; an embedded
+    run used to be silent about it, because the run returned before it installed anything."""
+    home = tmp_path / "home"
+    home.mkdir()
+    store = FileRunStore(tmp_path / "store")
+    result = Runner(
+        _resolved(project, home),
+        inputs={"token": "ab"},
+        store=store,
+        project_root=project,
+    ).run_sync()
+    assert store.redactor.skipped == ("token",)
+    warnings = [
+        event.data.get("message", "")
+        for event in store.read_events(result.run_id)
+        if event.type.value == "warning"
+    ]
+    assert any("token" in message and "not redacted" in message for message in warnings)
+
+
+def test_a_config_secret_and_an_input_of_the_same_name_are_both_covered(
+    tmp_path: Path, project: Path
+) -> None:
+    """``config.secrets`` and the workflow's inputs are independent namespaces that can use the
+    same name for different values; merging them by name drops one value from the redactor
+    while the step still gets both."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (project / ".rayspec" / "workflows" / "both.yaml").write_text(
+        textwrap.dedent(
+            """
+            rayspec: 1
+            name: both
+            isolation: none
+            inputs:
+              token: { type: string, secret: true, required: true }
+            steps:
+              - id: echo
+                shell: 'printf "%s %s" "$token" "$RAYSPEC_INPUT_TOKEN"'
+            outputs:
+              v: "{{ steps.echo.output }}"
+            """
+        )
+    )
+    store = FileRunStore(tmp_path / "store")
+    result = Runner(
+        load_workflow("both", project_root=project, home=home, config=Config()),
+        inputs={"token": "INPUTVALUE_BBBBBBB"},
+        store=store,
+        project_root=project,
+        options=RunOptions(config_secrets={"token": "CONFIGVALUE_AAAAAAA"}),
+    ).run_sync()
+    assert result.exit_code == 0, result.reason
+    assert _files_containing(store.run_dir(result.run_id), "CONFIGVALUE_AAAAAAA") == []
+    assert _files_containing(store.run_dir(result.run_id), "INPUTVALUE_BBBBBBB") == []

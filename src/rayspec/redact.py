@@ -37,7 +37,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -58,6 +58,10 @@ DETECTOR_HOLD = 512
 #: How often :meth:`Redactor.redact_dump` may undo a substitution a model cannot hold. Every
 #: round puts back everything the validator complained about, so one is nearly always enough.
 _MAX_UNDO_ROUNDS = 8
+
+#: ``{name: value}`` or ``(name, value)`` pairs — pairs because two independent namespaces may
+#: use the same name for different values, and a mapping would keep only one of them.
+Secrets = Mapping[str, Any] | Iterable[tuple[str, Any]]
 
 #: Opt-in builtin detectors (``config.redact.detectors``) — off by default on purpose: a false
 #: positive in a run log is worse than the gap. Every pattern is BOUNDED, because the bound is
@@ -165,16 +169,25 @@ class Redactor:
     max_len: int = field(default=0)
 
     @classmethod
-    def build(cls, secrets: Mapping[str, Any], *, detectors: Sequence[str] = ()) -> Redactor:
+    def build(cls, secrets: Secrets, *, detectors: Sequence[str] = ()) -> Redactor:
         """A redactor for ``{name: value}`` plus the named builtin detectors.
 
         Non-string values are stringified (an integer secret input is still a secret); ``None``
         and values shorter than :data:`MIN_REDACTABLE_LEN` are skipped.
+
+        ``secrets`` may also be an iterable of ``(name, value)`` PAIRS. A caller that knows two
+        independent sets of secrets — the ``config.secrets`` table and the workflow's own
+        ``secret: true`` inputs — cannot merge them into one mapping first: the two namespaces
+        can use the same name for different values, and the merge would drop one of the values
+        from the redactor while the step still receives it.
         """
         literals: list[tuple[str, str]] = []
         skipped: list[str] = []
         seen: set[str] = set()
-        for name, raw in secrets.items():
+        items: Iterable[tuple[str, Any]] = (
+            cast("Mapping[str, Any]", secrets).items() if isinstance(secrets, Mapping) else secrets
+        )
+        for name, raw in items:
             if raw is None:
                 continue
             value = raw if isinstance(raw, str) else str(raw)
@@ -375,12 +388,14 @@ class Redactor:
             return True
         return self.redact(text) != text
 
-    def extend(self, secrets: Mapping[str, Any]) -> Redactor:
+    def extend(self, secrets: Secrets) -> Redactor:
         """This redactor plus ``{name: value}`` — the same detectors, the union of the literals.
 
         Used where a value becomes known after the redactor was built (the engine adds the
-        run's own secrets to whatever the caller installed). Returns ``self`` when there is
-        nothing to add, so the common path allocates nothing.
+        run's own secrets to whatever the caller installed). Takes the same pairs
+        :meth:`build` does. Returns ``self`` when there is nothing to add and no new name was
+        skipped, so the common path allocates nothing — and a caller can tell from the identity
+        of the result whether this redactor already knew everything.
         """
         added = Redactor.build(secrets)
         known = {needle for needle, _ in self.literals}
@@ -631,6 +646,7 @@ __all__ = [
     "REDACTION",
     "RedactingSink",
     "Redactor",
+    "Secrets",
     "StreamRedactor",
     "detector_patterns",
 ]
