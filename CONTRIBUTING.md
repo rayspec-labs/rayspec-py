@@ -44,16 +44,20 @@ Nothing else — dry runs and the whole test suite work without provider credent
 
 ## The gate
 
-Run this before every commit. CI runs the same four checks, so a green gate locally is a green CI:
+Run this before every commit — the same four checks CI runs, which it runs on 3.11, 3.12, 3.13
+and 3.14 rather than on your one interpreter:
 
 ```bash
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q -m 'not live'
 ```
 
-`uv run ruff format .` fixes formatting complaints. Then, depending on what you touched:
+`uv run ruff format .` fixes formatting complaints. CI does one more thing on **every pull
+request**, whatever you touched: it validates every example and the coverage matrix. Run that one
+too if you went anywhere near `docs/`, `examples/` or `.rayspec/`, together with whichever of the
+other three `--check` runs matches your change:
 
 ```bash
-uv run python scripts/check_examples.py --matrix --verbose   # docs/, examples/ or .rayspec/
+uv run python scripts/check_examples.py --matrix --verbose   # CI runs this on every pull request
 uv run python scripts/gen_skill.py --check                   # docs/ pages the packaged skill mirrors
 uv run python scripts/gen_schemas.py --check                 # src/rayspec/schema/ (JSON schemas)
 uv run python scripts/gen_capability_matrix.py --check       # provider capabilities (docs/providers.md)
@@ -79,7 +83,8 @@ pass. A pull request without a test that would have caught the bug will be asked
 - `tests/docs/` pins documentation claims that drift (the CLI reference, the capability matrix,
   links, the files this page is part of). If one fails, the doc changed and the claim did not.
 
-Live tests hit a real provider and are deselected by default:
+Live tests hit a real provider. They are skipped unless `RAYSPEC_LIVE=1` is set — a bare `pytest`
+still collects them — and the gate's `-m 'not live'` deselects them outright:
 
 ```bash
 RAYSPEC_LIVE=1 uv run pytest -m live        # needs a logged-in `claude` and/or `codex`
@@ -138,8 +143,9 @@ of them, anchors included.
   `fix(engine): keep a tolerated failure out of the run status`.
 - **Sign off every commit**: `git commit -s`. rayspec is Apache-2.0 and takes contributions under
   the [Developer Certificate of Origin](https://developercertificate.org/); the `Signed-off-by:`
-  trailer that flag adds is how you certify you have the right to submit the work. A commit without
-  it cannot be merged.
+  trailer that flag adds is how you certify you have the right to submit the work. Nothing in CI
+  checks for it, so I will ask you to sign off before I merge — `git rebase --signoff` fixes a
+  branch you already wrote.
 - Fill in the pull-request template: what changed, why, contract changes, the changelog lines your
   change deserves, and the test plan you actually ran.
 - `CHANGELOG.md` is folded in by the maintainer at release time — put your lines in the pull-request

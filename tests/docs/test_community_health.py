@@ -105,16 +105,45 @@ def _bullet(text: str, prefix: str) -> str:
     return ""
 
 
-def _ci_check_commands() -> list[str]:
-    """Every check the CI ``test`` job runs (``uv sync``/``uv python install`` are setup)."""
+def _ci_check_commands() -> list[tuple[str, str]]:
+    """``(job, command)`` for every check CI runs, in every job.
+
+    ``uv sync`` / ``uv python install`` are setup, not checks. Iterating all jobs (rather than the
+    one that runs the tests) is what makes a new CI job force a CONTRIBUTING.md edit.
+    """
     workflow: Any = yaml.safe_load(_text(CI_WORKFLOW))
-    steps = workflow["jobs"]["test"]["steps"]
     return [
-        step["run"]
-        for step in steps
+        (job, step["run"])
+        for job, spec in workflow["jobs"].items()
+        for step in spec["steps"]
         if "run" in step
         and step["run"].startswith("uv run")
         and not step["run"].startswith(("uv sync", "uv python"))
+    ]
+
+
+def _ci_test_job() -> str:
+    """The job that runs the test suite — the one the gate is a local copy of."""
+    jobs = {job for job, command in _ci_check_commands() if "pytest" in command}
+    assert len(jobs) == 1, f"expected exactly one CI job to run pytest, found {jobs}"
+    return jobs.pop()
+
+
+def _ci_python_matrix() -> list[str]:
+    """The interpreters that job runs on."""
+    workflow: Any = yaml.safe_load(_text(CI_WORKFLOW))
+    return [
+        str(version) for version in workflow["jobs"][_ci_test_job()]["strategy"]["matrix"]["python"]
+    ]
+
+
+def _contributing_commands() -> list[str]:
+    """Every command line CONTRIBUTING.md offers in a ``bash`` block."""
+    return [
+        line.strip()
+        for block in _bash_blocks(_text(CONTRIBUTING))
+        for line in block.splitlines()
+        if line.strip() and not line.strip().startswith("#")
     ]
 
 
@@ -240,11 +269,58 @@ def test_security_states_that_the_engine_opens_no_socket() -> None:
 
 
 def test_contributing_quotes_the_gate_exactly_as_ci_runs_it() -> None:
-    """The copy-pasteable gate must contain every check CI would fail the PR on."""
+    """The copy-pasteable gate must contain every check of the CI job that runs the tests."""
     gate = _normalise(_gate_command(_text(CONTRIBUTING)))
     assert gate, "CONTRIBUTING.md must present the gate as one copy-pasteable command line"
-    for command in _ci_check_commands():
-        assert _normalise(command) in gate, f"the gate in CONTRIBUTING.md omits CI's `{command}`"
+    test_job = _ci_test_job()
+    for job, command in _ci_check_commands():
+        if job == test_job:
+            assert _normalise(command) in gate, (
+                f"the gate in CONTRIBUTING.md omits CI's `{command}`"
+            )
+
+
+def test_the_gate_chains_nothing_ci_does_not_also_run() -> None:
+    """The gate is a promise about CI, so every link in the chain has to be a check CI runs."""
+    ci = {_normalise(command) for _job, command in _ci_check_commands()}
+    for part in _gate_command(_text(CONTRIBUTING)).split("&&"):
+        assert _normalise(part) in ci, f"the gate runs `{part.strip()}`, which CI does not"
+
+
+def test_contributing_names_every_check_ci_would_fail_the_pull_request_on() -> None:
+    """Every CI job, not just the one the gate mirrors.
+
+    A job whose command appears nowhere in CONTRIBUTING.md is drift a contributor discovers as a
+    red CI on a green local run, so adding one has to force an edit here.
+    """
+    offered = [_normalise(line) for line in _contributing_commands()]
+    for job, command in _ci_check_commands():
+        assert any(_normalise(command) in line for line in offered), (
+            f"CI job {job!r} runs `{command}`, which CONTRIBUTING.md never mentions"
+        )
+
+
+def test_contributing_says_what_ci_runs_beyond_the_gate() -> None:
+    """A green gate is not a green CI: CI runs the suite on four interpreters and validates every
+    example on every pull request. The gate section has to say so, or it promises too much."""
+    section = _flat(_section(_text(CONTRIBUTING), "## The gate"))
+    matrix = _ci_python_matrix()
+    for version in (matrix[0], matrix[-1]):
+        assert version in section, f"the gate section does not name the CI interpreter {version}"
+    assert "every pull request" in section, (
+        "the gate section must say that CI also validates the examples on every pull request"
+    )
+
+
+def test_contributing_does_not_promise_a_sign_off_check_ci_does_not_run() -> None:
+    """Nothing rejects an unsigned commit today — no DCO job, no DCO app. Sign-off is asked for by
+    hand, and a stated hard gate that does not exist is discovered as a bluff."""
+    ci = _text(CI_WORKFLOW)
+    enforced = "Signed-off-by" in ci or "dco" in ci.lower()
+    assert enforced or "cannot be merged" not in _text(CONTRIBUTING), (
+        "CONTRIBUTING.md claims an unsigned commit cannot be merged, but no CI job checks the "
+        "trailer — add the check, or say that I ask for the sign-off before merging"
+    )
 
 
 def test_contributing_names_the_generated_artifact_checks_that_exist() -> None:
@@ -273,10 +349,20 @@ def test_contributing_states_how_a_commit_is_accepted() -> None:
 
 
 def test_contributing_explains_how_to_run_the_live_tests() -> None:
-    """They are deselected by default and need credentials — say both, or nobody runs them."""
+    """They need credentials and they are skipped without them — say both, or nobody runs them.
+
+    "Deselected by default" would be wrong: ``addopts`` carries no marker filter, so a bare
+    ``pytest`` collects them and the ``RAYSPEC_LIVE`` skip is what keeps them from running.
+    """
     text = _text(CONTRIBUTING)
     assert "RAYSPEC_LIVE=1" in text
     assert "-m live" in text
+    meta: Any = tomllib.loads(_text(REPO_ROOT / "pyproject.toml"))
+    addopts = meta["tool"]["pytest"]["ini_options"]["addopts"]
+    assert "-m" not in addopts.split(), f"addopts now filters markers ({addopts!r}) — reword"
+    assert "deselected by default" not in text, (
+        "nothing deselects the live tests by default; they are skipped unless RAYSPEC_LIVE is set"
+    )
 
 
 def test_code_of_conduct_is_the_covenant_21_with_a_working_contact() -> None:
