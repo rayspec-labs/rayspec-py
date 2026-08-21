@@ -1213,8 +1213,14 @@ Semantics fixed here (tests in `tests/engine/`):
   2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
-  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged; the warning hint
-  names the knob that tripped. `scheduler.finish` asks the breaker after EVERY step when
+  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
+  EVERY cap that is over, not only the first: `context.cap_reasons(usage, cost, source, elapsed_s,
+  defaults) -> tuple[CapBreach, ...]` (`CapBreach(knobs, reason)`) reports them in `CAP_KNOBS`
+  order — the money caps (`defaults.budget_usd` / `defaults.max_tokens`, one sentence via
+  `budget_parts`/`budget_reason`) before `defaults.timeout_total` — and `check_budget` joins the
+  reasons with `"; "` and the knobs to raise with `" / "`. `context.is_cap_reason(reason)` says
+  whether a `RunRecord.reason` is one of them (`CAP_REASON_PREFIXES`).
+  `cap_reasons` is additive; `budget_reason`/`time_reason` keep their shape. `scheduler.finish` asks the breaker after EVERY step when
   `ctx.time_capped` (a shell-only run reports no usage), and `Runner.run` asks it once before
   the graph starts so a resumed run whose clock already expired starts nothing.
 - The breaker is asked at TWO points, and both are load-bearing: when a step becomes ready

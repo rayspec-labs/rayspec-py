@@ -338,6 +338,12 @@ defaults:
   (input + output) and the cost of every step of this run — provider-reported cost, else the
   pricing-table estimate (`~$`); a step without any known cost counts 0 towards `budget_usd`
   (tokens are always known).
+- The three caps are **one breaker** with one skip reason, so the reason text is what says which
+  of them fired. It names **every** cap that is over, in a fixed order — `budget_usd` and
+  `max_tokens` first (one sentence: they are one budget), `timeout_total` after them — and the
+  warning names exactly the knobs you would have to raise. `rayspec explain <run> <step>` repeats
+  the cap next to the step's `skip_reason: budget_exceeded`, which on its own would point at
+  money for a run that ran out of time.
 - The first time a cap is exceeded a `warning` event is emitted and the breaker **trips**: no new
   step starts anywhere (pending steps — leaves, composites, gates — are recorded `skipped` with
   `skip_reason: budget_exceeded`; a leaf that was already queued for a `max_parallel` slot is

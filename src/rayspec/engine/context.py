@@ -68,27 +68,92 @@ BUDGET_SKIP_REASON = "budget_exceeded"
 _ARTIFACT_CHUNK_BYTES = 1 << 20
 
 
-def budget_reason(
+#: The run-level caps in the order the breaker reports them — the documented precedence. The
+#: cost and token caps are one budget and are reported as one sentence; the wall clock follows.
+CAP_KNOBS: tuple[str, ...] = (
+    "defaults.budget_usd",
+    "defaults.max_tokens",
+    "defaults.timeout_total",
+)
+#: How a run-level breaker reason starts (``RunRecord.reason`` of a run a cap ended).
+CAP_REASON_PREFIXES: tuple[str, ...] = ("budget exceeded (", "time limit exceeded (")
+
+
+@dataclass(frozen=True, slots=True)
+class CapBreach:
+    """One run-level cap the run is over: the knobs to raise, and the one-line reason."""
+
+    knobs: tuple[str, ...]
+    reason: str
+
+
+def budget_parts(
     usage: Any, cost_usd: float | None, cost_source: str, defaults: Defaults
-) -> str | None:
-    """``budget exceeded (cost ~$0.40 > budget_usd $0.30, tokens 12,000 > max_tokens 10,000)``
-    when a run-level cap of ``defaults`` is exceeded by the totals, else ``None``.
+) -> list[tuple[str, str]]:
+    """``(knob, clause)`` for each money cap of ``defaults`` the totals exceed.
 
     Cost is the provider-reported figure or the pricing-table estimate (``~$``); a run without any
     known cost cannot trip ``budget_usd`` (tokens are always known).
     """
-    parts: list[str] = []
+    parts: list[tuple[str, str]] = []
     cap_cost = defaults.budget_usd
     if cap_cost is not None and cost_usd is not None and cost_usd > cap_cost:
         approx = {"table": "~", "partial": "≥"}.get(cost_source, "")
-        parts.append(f"cost {approx}${cost_usd:.3f} > budget_usd ${cap_cost:.3f}")
+        parts.append(
+            ("defaults.budget_usd", f"cost {approx}${cost_usd:.3f} > budget_usd ${cap_cost:.3f}")
+        )
     cap_tokens = defaults.max_tokens
     total = int(getattr(usage, "total", 0) or 0)
     if cap_tokens is not None and total > cap_tokens:
-        parts.append(f"tokens {total:,} > max_tokens {cap_tokens:,}")
+        parts.append(("defaults.max_tokens", f"tokens {total:,} > max_tokens {cap_tokens:,}"))
+    return parts
+
+
+def budget_reason(
+    usage: Any, cost_usd: float | None, cost_source: str, defaults: Defaults
+) -> str | None:
+    """``budget exceeded (cost ~$0.40 > budget_usd $0.30, tokens 12,000 > max_tokens 10,000)``
+    when a money cap of ``defaults`` is exceeded by the totals, else ``None``.
+    """
+    parts = budget_parts(usage, cost_usd, cost_source, defaults)
     if not parts:
         return None
-    return f"budget exceeded ({', '.join(parts)})"
+    return f"budget exceeded ({', '.join(clause for _, clause in parts)})"
+
+
+def cap_reasons(
+    usage: Any,
+    cost_usd: float | None,
+    cost_source: str,
+    elapsed_s: float | None,
+    defaults: Defaults,
+) -> tuple[CapBreach, ...]:
+    """Every run-level cap the run is over, in :data:`CAP_KNOBS` order.
+
+    The precedence is written down rather than merely deterministic: the money caps
+    (``budget_usd`` / ``max_tokens``, one sentence because they are one budget) come before the
+    wall clock (``timeout_total``), so the first breach is the primary reason. ALL of them are
+    reported — a cap that fired must never go unnamed because another one fired too, which is
+    what a step's ``skip_reason: budget_exceeded`` on its own cannot tell anybody.
+    """
+    breaches: list[CapBreach] = []
+    money = budget_parts(usage, cost_usd, cost_source, defaults)
+    if money:
+        breaches.append(
+            CapBreach(
+                knobs=tuple(knob for knob, _ in money),
+                reason=f"budget exceeded ({', '.join(clause for _, clause in money)})",
+            )
+        )
+    clock = time_reason(elapsed_s, defaults)
+    if clock is not None:
+        breaches.append(CapBreach(knobs=("defaults.timeout_total",), reason=clock))
+    return tuple(breaches)
+
+
+def is_cap_reason(reason: str | None) -> bool:
+    """Whether ``reason`` is what the run-level breaker writes (``RunRecord.reason``)."""
+    return reason is not None and reason.startswith(CAP_REASON_PREFIXES)
 
 
 def time_reason(elapsed_s: float | None, defaults: Defaults) -> str | None:
@@ -784,17 +849,16 @@ class RunContext:
             return None
         defaults = self.resolved.workflow.defaults
         usage, cost, source = self.budget_totals(pending)
-        knob = "defaults.budget_usd / defaults.max_tokens"
-        reason = budget_reason(usage, cost, source, defaults)
-        if reason is None:
-            reason = time_reason(self.elapsed_s(), defaults)
-            knob = "defaults.timeout_total"
-        if reason is None:
+        breaches = cap_reasons(usage, cost, source, self.elapsed_s(), defaults)
+        if not breaches:
             return None
+        # every cap that is over is named: one trip, one reason, no silent loser
+        reason = "; ".join(breach.reason for breach in breaches)
+        knobs = " / ".join(dict.fromkeys(knob for breach in breaches for knob in breach.knobs))
         self.budget_exceeded = reason
         await self.warn(
             f"{reason}: no new steps start, running steps finish; the run ends failed — "
-            f"raise {knob} and resume (--force: the workflow hash changes)"
+            f"raise {knobs} and resume (--force: the workflow hash changes)"
         )
         return reason
 
@@ -923,8 +987,11 @@ def sha256_json(value: Any) -> str:
 
 __all__ = [
     "BUDGET_SKIP_REASON",
+    "CAP_KNOBS",
+    "CAP_REASON_PREFIXES",
     "LEAF_KINDS",
     "REUSABLE_KINDS",
+    "CapBreach",
     "ExecScope",
     "ExecutorFn",
     "ProviderPool",
@@ -932,10 +999,13 @@ __all__ = [
     "RunOptions",
     "StepOutcome",
     "body_ids",
+    "budget_parts",
     "budget_reason",
+    "cap_reasons",
     "cost_source_of",
     "effective_on_step_failure",
     "error_info",
+    "is_cap_reason",
     "merge_cost_source",
     "sha256_json",
     "time_reason",
