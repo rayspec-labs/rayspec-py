@@ -190,3 +190,20 @@ def test_risk_and_render_are_different_views(risky: Path) -> None:
     res = risk(risky, "risky", "--render")
     assert res.exit_code == 2
     assert "--risk" in res.output
+
+
+def test_evidence_is_never_parsed_as_markup(tree: Tree) -> None:
+    """A shell body is quoted verbatim; it may contain anything, including Rich markup."""
+    tree.workflow(
+        "markup",
+        """
+        rayspec: 1
+        name: markup
+        steps:
+          - id: a
+            shell: "git push [/bold] origin main"
+        """,
+    )
+    res = risk(tree.root, "markup")
+    assert res.exit_code == 0, res.output
+    assert "git push [/bold] origin main" in res.output

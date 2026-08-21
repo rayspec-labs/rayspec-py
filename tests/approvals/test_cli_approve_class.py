@@ -100,3 +100,42 @@ def test_resume_takes_the_flag_too(project: Path, monkeypatch: pytest.MonkeyPatc
         ],
     )
     assert res.exit_code == 0, res.output
+
+
+LOCKED_GATE = """
+rayspec: 1
+name: locked
+isolation: none
+steps:
+  - id: build
+    shell: echo built
+  - id: gate
+    needs: [build]
+    approve:
+      message: publish?
+      class: release
+  - id: publish
+    needs: [gate]
+    shell: echo published
+"""
+
+
+def test_rayspec_approve_cannot_answer_a_require_tty_gate(
+    tree: Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rayspec approve` can be scripted from cron, so `require_tty` does not accept it —
+    and says so, pointing at the command that does."""
+    tree.workflow("locked", LOCKED_GATE)
+    monkeypatch.setattr(
+        "rayspec.cli.commands.run.policy_class_rules",
+        lambda project_root, home: {"release": ClassRules(allow_yes=False, require_tty=True)},
+    )
+    first = runner.invoke(app, ["run", "locked", "--root", str(tree.root), "--no-interactive"])
+    assert first.exit_code == 3, first.output
+    run_id = next(
+        line.split()[-1] for line in first.output.splitlines() if "rayspec resume" in line
+    )
+    res = runner.invoke(app, ["approve", run_id, "ship it", "--root", str(tree.root)])
+    assert res.exit_code == 3, res.output
+    assert "requires a terminal" in res.output
+    assert "rayspec resume" in res.output
