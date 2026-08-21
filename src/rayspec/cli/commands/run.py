@@ -14,7 +14,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar
 
 import anyio
 import typer
@@ -64,6 +64,10 @@ from rayspec.textsafe import safe_text
 if TYPE_CHECKING:
     from rayspec.providers.stub import StubScript
     from rayspec.store.model import RunRecord
+
+
+#: What :func:`_built` returns — the extension object a third-party factory produced.
+T = TypeVar("T")
 
 
 def _err(message: str) -> None:
@@ -860,19 +864,40 @@ def configured_sinks(
         return []
     from rayspec.registry import SinkContext, create_sink
 
-    return [
-        create_sink(
-            sink_id,
-            SinkContext(
-                console=out,
-                stream=sys.stdout,
-                verbose=verbose,
-                quiet=quiet,
-                settings=extensions.settings_for(sink_id),
-            ),
+    built: list[Any] = []
+    for sink_id in extensions.sinks:
+        context = SinkContext(
+            console=out,
+            stream=sys.stdout,
+            verbose=verbose,
+            quiet=quiet,
+            settings=extensions.settings_for(sink_id),
         )
-        for sink_id in extensions.sinks
-    ]
+        built.append(
+            _built("sink", sink_id, lambda sid=sink_id, ctx=context: create_sink(sid, ctx))
+        )
+    return built
+
+
+def _built(kind: str, extension_id: str, build: Callable[[], T]) -> T:
+    """``build()``, with anything a third-party factory raises turned into a usage error.
+
+    A factory is code rayspec did not write: letting a ``ValueError`` out of it would end the
+    command with a traceback and exit 1 — the code that means "the workflow failed", for a run
+    that was never created. Naming the extension makes it what it is, a configuration or
+    packaging problem, the way an unknown id already is.
+    """
+    try:
+        return build()
+    except RayspecError:
+        raise  # an unknown id already says exactly what is wrong
+    except Exception as exc:
+        raise RayspecError(
+            f"{kind} {extension_id!r} failed to build: {type(exc).__name__}: {exc}",
+            hint=f"this comes from the package providing the {kind}, not from rayspec — check "
+            f"`extensions.settings.{extension_id}` in config.yaml, or remove the id from "
+            "`extensions:` to run without it",
+        ) from exc
 
 
 def configured_approval(
@@ -900,8 +925,12 @@ def configured_approval(
     if not interactive:
         return None
     settings = extensions.settings_for(approval_id) if extensions else {}
-    return create_approval(
-        approval_id, ApprovalContext(console=console, interactive=True, settings=settings)
+    return _built(
+        "approval",
+        approval_id,
+        lambda: create_approval(
+            approval_id, ApprovalContext(console=console, interactive=True, settings=settings)
+        ),
     )
 
 

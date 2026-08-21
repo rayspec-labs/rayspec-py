@@ -184,3 +184,34 @@ def test_a_configured_sink_observes_the_rest_of_a_paused_run(
     rest = events.read_text(encoding="utf-8").splitlines()[len(first) :]
     assert "run.resumed" in rest  # the resumed half of the run reaches the sink too
     assert "run.finished" in rest
+
+
+EXPLODING_SINK_MODULE = '''
+from rayspec.registry import SinkRegistration
+
+
+class Exploding:
+    """A factory that rejects its settings the way a third-party package would."""
+
+    def __init__(self, context):
+        raise ValueError("acme: settings.path is required")
+
+
+SINK = SinkRegistration("recorder", "Recording sink", Exploding)
+'''
+
+
+def test_a_factory_that_raises_is_a_usage_error_naming_the_extension(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """A packaging/configuration problem is exit 2, not the exit code of a failed run."""
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": EXPLODING_SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  sinks: [recorder]\n")
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 2, result.output
+    assert "sink 'recorder' failed to build" in result.output
+    assert "settings.path is required" in result.output

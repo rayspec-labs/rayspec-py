@@ -124,7 +124,8 @@ extensions:
 
 `settings` is the mapping the factory is handed as `context.settings` — the same idea as
 `providers.<id>` for a provider. An id that names nothing fails the run before it starts, with
-the usual did-you-mean.
+the usual did-you-mean; so does a factory that raises — validate your settings in `__init__` and
+the message you raise is what the user reads (`sink 'acme-log' failed to build: …`, exit 2).
 
 ## Adding a command
 
