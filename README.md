@@ -1,5 +1,10 @@
 # rayspec
 
+[![CI](https://github.com/rayspec-labs/rayspec-py/actions/workflows/ci.yml/badge.svg)](https://github.com/rayspec-labs/rayspec-py/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.11–3.14](https://img.shields.io/badge/python-3.11%E2%80%933.14-blue.svg)](pyproject.toml)
+[![Code of Conduct: Contributor Covenant 2.1](https://img.shields.io/badge/code%20of%20conduct-Contributor%20Covenant%202.1-blue.svg)](CODE_OF_CONDUCT.md)
+
 Declarative, YAML-defined workflows for coding agents — running on the
 [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/quickstart) and the
 [OpenAI Codex SDK](https://learn.chatgpt.com/docs/codex-sdk). A pure CLI: no server, no UI,
@@ -206,6 +211,18 @@ uv run python scripts/gen_skill.py                 # regenerate the skill's refe
 ```
 
 Python ≥ 3.11, anyio-only concurrency.
+
+## Contributing
+
+Bug reports, patches and questions are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the
+setup, the one-line quality gate, what a test is expected to look like, and the (deliberately high)
+bar for new schema fields. Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found something exploitable? Please do not open an issue — [SECURITY.md](SECURITY.md) has the
+private reporting channel, the 90-day disclosure window and the threat model, which is unusual
+enough to be worth reading first: executing what a workflow declares is the product, so a hostile
+workflow file is a hostile script, while a leaked `secret: true` input is a real vulnerability.
 
 ## License
 
