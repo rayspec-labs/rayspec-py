@@ -46,6 +46,7 @@ same table; `tests/docs` fails when this block is stale).
 | `effort_levels` | low, medium, high, xhigh, max | none, minimal, low, medium, high, xhigh, max, ultra | none, minimal, low, medium, high, xhigh, max | `effort:` values accepted |
 | `effort_aliases` | minimal→low | — | — | effort values rewritten with a warning |
 | `thinking` | ✔ | ✘ | ✔ | `thinking: true` / `false` on the agent |
+| `denial_reporting` | ✔ | ✘ | ✔ | the adapter reports the tool calls a turn was REFUSED, so `on_denial: fail` can grade them |
 | `mcp_servers` | ✔ | ✔ | ✔ | `mcp:` servers on the agent |
 | `env_injection` | ✔ | ✔ | ✔ | `env:` on prompt steps |
 | `images` | ✘ | ✘ | ✔ | image inputs (not used by any YAML field in v1) |
@@ -85,19 +86,25 @@ override `tools:` where the agent is used (`agent: {extends: triage, tools: {den
 
 ## Denied tool calls (`on_denial`)
 
-Both adapters can refuse a tool call the agent tried to make: Claude reports it in the result's
-`permission_denials`, Codex fails the turn with a `sandboxError`. Either way the agent could not
-do something it set out to do, and a run that only mentions that in a transcript nobody reads has
-failed silently.
-
-rayspec normalises both into one shape and keeps it:
+An agent that is refused a tool call did not do what it was asked, and a run that only mentions
+that in a transcript nobody reads has failed silently. rayspec records refusals on the step:
 
 * the step record gains `denials: [{tool, reason, call_id}]` (`run.json`, `rayspec show`);
 * a `warning` event names them — `2 tool call(s) denied: Bash, Write`;
 * templates can read them: `{{ steps.review.denials | length }}`, `{% if steps.review.denials %}`.
 
-Only *what* was refused is recorded — the tool's name, the provider's wording and the call id.
-The arguments are step content (a command line, a file body) and never enter a record.
+Only *what* was refused is recorded — the tool's name, the provider's wording (capped at a few
+hundred characters) and the call id. The arguments are step content (a command line, a file
+body) and never enter a record.
+
+**The two adapters do not report the same thing**, so the field is a declared capability
+(`denial_reporting`) and `rayspec validate` refuses an agent that asks for what its provider
+cannot do:
+
+| Adapter | What it reports | `on_denial: fail` |
+|---|---|---|
+| `claude` | `result.permission_denials`: every call the permission layer refused, on a turn that otherwise **succeeded** | supported — the successful turn becomes a failed step |
+| `codex` | a refused command is a `sandboxError` that **fails the turn**, so the step fails on its own; the denial is recorded next to the error so the record names what the sandbox blocked | **refused at validation** — there is nothing left for it to grade |
 
 ```yaml
 agents:
@@ -109,16 +116,19 @@ agents:
 
 | `on_denial` | Effect |
 |---|---|
-| `warn` (default) | the denials are recorded and warned about; the step's own status is whatever the turn produced |
-| `fail` | a turn that reports denials fails the step (`error.type: denied`, message naming the tools), even when the provider called the turn a success |
+| `warn` (default) | the denials are recorded and warned about; the step's own status is whatever the turn produced. Valid on every provider |
+| `fail` | a turn that reports denials fails the step (`error.type: denied`, message naming the tools), even when the provider called the turn a success. Needs `denial_reporting` |
 
-`fail` is what an unattended run wants: an agent that quietly did three quarters of the job
-because the sandbox blocked the rest is worse than one that stops. Retries apply as usual
-(`error.type: denied` is not transient, so the kind defaults do not retry it), and
-`allow_failure: true` still tolerates the step.
+`fail` is what an unattended run wants on Claude: an agent that quietly did three quarters of the
+job because the permission layer blocked the rest is worse than one that stops. Retries apply as
+usual (`error.type: denied` is not transient, so the kind defaults do not retry it), and
+`allow_failure: true` still tolerates the step. `on_denial` is deliberately **not** part of a
+step's fingerprint: it changes how rayspec grades a turn, not what the turn is, so flipping it
+does not re-run finished steps on a resume.
 
-A denial is not the same thing as a *failed* turn: with `on_denial: warn` a step whose agent was
-refused one tool call and finished anyway still succeeds, and its record says what it could not do.
+A denial is not the same thing as a *failed* turn: on Claude, with `on_denial: warn`, a step whose
+agent was refused one tool call and finished anyway still succeeds, and its record says what it
+could not do.
 
 ## Claude (`claude`)
 

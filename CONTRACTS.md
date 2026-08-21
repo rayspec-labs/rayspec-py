@@ -2204,7 +2204,7 @@ from rayspec.limits import (
     lockfile_path,        # (project_root) -> <root>/.rayspec/rayspec.lock  (not created)
     LockEntry,            # frozen: provider, model: str | None, effort: str | None; .to_data()
     Lockfile,             # frozen: version, workflows: {wf name: {agent key: LockEntry}}, path
-    LockDrift,            # frozen: agent, field ∈ workflow|agent|provider|model|effort,
+    LockDrift,            # frozen: agent, field ∈ workflow|agent|stale|provider|model|effort,
     #                       pinned, resolved; .message() -> one line naming all three
     LockfileError,        # RayspecError: the file exists but cannot be read as a lockfile
     lock_entries_for,     # (ResolvedWorkflow) -> {agent key: LockEntry} for the agents the
@@ -2218,16 +2218,20 @@ from rayspec.limits import (
     # -- local spend ledger ----------------------------------------------------------------
     ledger_path,          # (store_root) -> <store root>/limits/spend.json
     SpendState,           # frozen: day_usd, month_usd, consecutive_failures
-    SpendLedger,          # (path); .read(when=None), .commit(run_id, cost_usd, when=) -> SpendState,
-    #                       .record_outcome(failed=) -> int, .reset_failures()
+    SpendLedger,          # (path); .read(when=None), .commit(run_id, cost_usd, when=None)
+    #                       -> SpendState, .record_outcome(failed=) -> int, .reset_failures(),
+    #                       .take_warnings() -> [str]  (drained; e.g. an unreadable file replaced)
     # -- envelopes -------------------------------------------------------------------------
     BudgetEnvelope,       # frozen: per_run, per_day, per_month, max_consecutive_failures;
     #                       .active, .spends
-    RunEnvelope,          # (envelope, ledger, *, run_id, started_at, waived=False)
-    #                       .check(run_usd) -> reason | None, .commit_final(run_usd),
-    #                       .record_outcome(failed=), .waive(), .active, .waived
+    RunEnvelope,          # (envelope, ledger, *, run_id, waived=False)
+    #                       .check(run_usd) -> reason | None, .settle(run_usd) -> reason | None
+    #                       (final totals), .commit_final(run_usd), .record_outcome(failed=),
+    #                       .waive(close_breaker=False), .take_warnings(), .active, .waived,
+    #                       .pause_kind ∈ {ENVELOPE_PAUSE_REASON, FAILURE_PAUSE_REASON}
     envelope_reason, failure_breaker_reason,
-    ENVELOPE_PAUSE_REASON,  # "budget"   ENVELOPE_PAUSE_STEP  # "<run>"
+    ENVELOPE_PAUSE_REASON,  # "budget"   FAILURE_PAUSE_REASON  # "failures"
+    OPERATIONAL_PAUSE_REASONS,  # frozenset of the two   ENVELOPE_PAUSE_STEP  # "<run>"
     # -- host run slots --------------------------------------------------------------------
     slot_dir,             # (home, provider) -> <home>/limits/slots/<provider>/
     SlotHolder,           # frozen: provider, index, run_id, pid, started_at; .describe()
@@ -2237,12 +2241,14 @@ from rayspec.limits import (
     acquire_slots,        # ctx manager (home, providers, {provider: limit}, *, run_id, wait_s)
     SLOT_POLL_S, WAIT_FOREVER,  # 0.25 · "forever"
     # -- the policy this layer consumes ------------------------------------------------------
-    LimitsPolicy,         # frozen: budget: BudgetEnvelope, max_concurrent_runs: {id: int}; .active
+    LimitsPolicy,         # frozen: budget: BudgetEnvelope, max_concurrent_runs: {id: int},
+    #                       warnings: (str, ...) — ceilings that could not be read; .active
     limits_policy,        # (project_root, *, home, environ=None) -> LimitsPolicy
     limits_for,           # ({provider|"*": int}, providers) -> {provider: int}
     workflow_providers,   # (ResolvedWorkflow) -> [provider id] of its prompt steps
-    run_envelope,         # (LimitsPolicy, *, store_root, run_id, started_at) -> RunEnvelope | None
-    wait_seconds,         # ("30m" | "90" | "forever" | None) -> wait_s for RunSlot.acquire
+    run_envelope,         # (LimitsPolicy, *, store_root, run_id) -> RunEnvelope | None
+    wait_seconds,         # ("30m" | "90" | "forever" | "0" | None) -> wait_s | None; forever =
+    #                       math.inf, 0/None = do not wait, negative = ValueError
 )
 ```
 `limits` depends on `errors`, `schema`, `loader` and `store/file` (the `secure_mkdir` /
@@ -2255,14 +2261,28 @@ layer only CONSUMES it, through `limits.policy.limits_policy` →
 signature-incompatible ⇒ `LimitsPolicy()`, i.e. nothing is limited). The two keys read are
 `policy.budget: {per_run, per_day, per_month}` (+ `policy.max_consecutive_failures`, also
 accepted inside `budget:`) and `policy.max_concurrent_runs: {provider id: int}` (a bare int =
-every provider). Values that are not positive numbers are ignored, never fatal.
+every provider). **`0` is a real ceiling, not the absence of one**: `budget.per_day: 0` freezes
+spending (it trips before anything is spent), `max_consecutive_failures: 0` keeps the breaker
+open, `max_concurrent_runs: {claude: 0}` means claude may not run on this host (every
+`RunSlot.acquire` raises `SlotBusyError` at once, however long the caller offered to wait);
+`None`/absent is the only spelling for "no ceiling". Both coercions accept the same spellings
+(`20`, `20.0`, `"20"`; a count must be whole). A value that cannot be read is dropped AND named
+in `LimitsPolicy.warnings`, which the CLI prints before the run — never in silence.
 
 **Lockfile.** `rayspec lock [names...] [--check] [--root] [--json]` (`cli/commands/lock.py`,
 which also owns the shared `LockedOption` + `enforce_lockfile(ctx, resolved, *, locked,
-json_mode=False)` that `run`, `plan` and `validate` apply). Exit `0` written/in sync · `1`
-`--check` found drift · `2` usage. `--locked/--no-locked` defaults to `locked_default(os.environ)`
-(on under `CI`); a MISSING lockfile is refused under `--locked` too. `validate --locked` reports
-drift as an ERROR row (not a warning). The file is YAML, read with the loader's strict reader,
+project_root=None, json_mode=False)` that `run`, `plan`, `validate`, `resume`, `approve` and
+`reject` apply — the last three through `resume.guard_workflow_unchanged(ctx, record, *, force,
+locked=None)`, which passes `_runs_common.record_root(ctx, record)`). `project_root` is the root
+the workflow was LOADED from: with `--repo` that is the prepared checkout, never the caller's
+directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
+`--locked/--no-locked` defaults to `locked_default(os.environ)` (on under `CI`). An explicit
+`--locked` refuses a MISSING lockfile; the CI default does not — it enforces only a lockfile
+that exists, so setting `CI` cannot break a project that never opted in. `check_locked` also
+reports a pinned agent the workflow no longer has (`field="stale"`), so `lock --check` and
+`lock` never disagree. `write_lockfile` replaces the file whole (temp + `os.replace`).
+`validate --locked` reports drift as an ERROR row (not a warning). The file is YAML, read with
+the loader's strict reader,
 `{version, workflows: {name: {agents: {key: {provider, model, effort}}}}}`; a newer major
 version is refused rather than guessed at. An agent with no literal model id is recorded
 `model: null` and named on stdout — the provider's default cannot be pinned.
@@ -2270,24 +2290,48 @@ version is refused rather than guessed at. An agent with no literal model id is 
 **Envelopes pause, they do not fail.** `RunContext(envelope=…)` (from `Runner(envelope=…)`,
 built by the CLI). `RunContext.check_envelope()` is asked FIRST by `check_budget` (so it applies
 with or without workflow caps): it commits the run's total to the ledger, and on a ceiling sets
-`ctx.envelope_pause` AND `ctx.budget_exceeded` (the drain flag: nothing new starts, running
-steps finish — the scheduler is untouched) and emits one `warning`. `Runner._finalize` ranks
-`envelope_pause` ABOVE `budget_exceeded`: status `paused`, exit 3, `run.pause =
-PauseInfo(token="budget#<resume_count>", step=<last finished path> | "<run>",
-message=<reason>, reason="budget")` plus a `run.paused` event carrying `reason`. The final
-spend is committed and the consecutive-failure counter moved in `_finalize` (succeeded ⇒ reset,
-failed ⇒ +1; `paused` is not an outcome). A dry run never touches the ledger and takes no slot.
-Any resume entry clears a budget pause (`Runner._consume_envelope_decision`) and re-evaluates the
-ceiling; a recorded `pause.decision.approved` additionally WAIVES the ceilings for that run and
-closes the breaker (`rayspec approve <run>`), a rejecting decision changes nothing.
+`ctx.envelope_pause` (+ `ctx.envelope_pause_kind`) AND `ctx.budget_exceeded` (the drain flag:
+nothing new starts, running steps finish — the scheduler is untouched) and emits one `warning`.
+**A `join: always` step is exempt from the drain but not from the ceiling**: `executors/prompt`
+refuses to open a provider turn while `ctx.envelope_pause` is set and records the step
+`skipped`/`budget_exceeded`, so a cleanup shell step still runs and no further money is spent.
+`Runner._finalize` ranks `envelope_pause` ABOVE `budget_exceeded`: status `paused`, exit 3,
+`run.pause = PauseInfo(token="<kind>#<resume_count>", step=<last finished path> | "<run>",
+message=<reason>, reason=<kind>)` plus a `run.paused` event carrying `reason` — `budget` for a
+money ceiling, `failures` for the consecutive-failure breaker. **Every** `run.paused` carries
+`reason` (an `approve:` gate emits `"approval"`). The reason is re-phrased from the run's FINAL
+totals (`Runner._refresh_envelope_pause` → `RunEnvelope.settle`), so it names what was actually
+spent. The final spend is committed and the consecutive-failure counter moved in `_finalize`
+(succeeded ⇒ reset, failed ⇒ +1; `paused` is not an outcome); a ledger that cannot be written,
+or one that had to be replaced, is reported as a `warning` — never silently. A dry run never
+touches the ledger and takes no slot. Any resume entry clears an operational pause
+(`Runner._consume_envelope_decision`) and re-evaluates the ceiling; a recorded
+`pause.decision.approved` additionally WAIVES the ceilings for that run (`rayspec approve
+<run>`), and closes the failure breaker ONLY when the breaker is what paused it — approving a
+spend is not approving a failure streak. A rejecting decision changes nothing.
 `RunContext.last_finished_path` is the last record persisted BEFORE the envelope tripped (frozen
 afterwards, so the pause names the step that reached the ceiling, not the drain's last skip).
 
-**Run slots.** `rayspec run` holds one `flock` slot per provider its prompt steps resolve to,
-around `Runner.run_sync()`; `--wait-slot DURATION|forever` queues instead of failing (default:
-`SlotBusyError` → exit 2 naming the holders). Crash safety is the kernel's: the lock dies with
-the process, so a slot held by a killed run is immediately free; slot files are never unlinked
-and their JSON is descriptive only.
+**Run slots.** `rayspec run` — and `resume` / `approve` / `reject` through
+`_runs_common.resume_run(..., wait_slot=None)`, because they start the same agents — hold one
+`flock` slot per provider the prompt steps resolve to, around `Runner.run_sync()`;
+`--wait-slot DURATION|forever` queues instead of failing (default: `SlotBusyError` → exit 2
+naming the holders). Crash safety is the kernel's: the lock dies with the process, so a slot
+held by a killed run is immediately free; slot files are never unlinked and their JSON is
+descriptive only. `slot_dir` hashes a provider id that does not survive path-safe substitution,
+so two ids cannot silently share one pool.
+
+**Which pause is this?** `cli/commands/run.pause_actions(run_id, reason)` renders the console
+footer for a paused run and `rayspec show` uses the same helper: an `approve:` gate offers
+`approve`/`reject`/`resume`, an operational ceiling leads with `resume` (re-checks the ceiling)
+and describes `approve` as "run it anyway, waiving the ceiling" — `reject` is not offered,
+because rejecting a ceiling does nothing.
+
+**Spend ledger shape.** `<store root>/limits/spend.json`, replaced whole under an exclusive
+`flock` on `spend.json.lock` (a sibling file, because the document itself is replaced). A run
+commits its ABSOLUTE total; the DELTA between two commits is attributed to the day and month the
+commit is MADE in, so a run resumed tomorrow spends tomorrow's money. A per-run entry is kept
+`RETAIN_DAYS` after its LAST commit.
 
 Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, reason, call_id)`
 + `AgentResult.denials: tuple[Denial, ...] = ()`; `store/model.DenialInfo(tool, reason, call_id)`
@@ -2295,7 +2339,12 @@ Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, re
 `schema/agent.AgentDef.on_denial: DenialPolicy = "warn"` (`warn|fail`) + `ResolvedAgent.on_denial`.
 `providers/claude.denial_of(entry) -> Denial` maps `permission_denials`;
 `providers/codex.sandbox_denial(TurnError | None) -> Denial | None` maps a `sandboxError` turn
-onto the same shape (`tool="shell"`). The prompt executor stamps `record.denials`, warns
+onto the same shape (`tool="shell"`), and `codex.turn_denials(turn)` reads the TURN's own error
+only — never `state.last_error`, which collects retried errors too and would retro-fail a
+recovered step. Additive capability `ProviderCapabilities.denial_reporting: bool = False`
+(claude/stub: true, codex: false — a refused command fails a codex turn outright, so a completed
+turn never carries a denial): `validate_workflow` refuses an agent with `on_denial: fail` on a
+provider that lacks it (a warning under `on_unsupported: warn` / `--allow-unsupported`). The prompt executor stamps `record.denials`, warns
 `"N tool call(s) denied: Bash, Write"` (`executors.prompt.denial_warning`/`denied_tools`) and,
 with `on_denial: fail`, turns a SUCCEEDED turn that reports denials into a failed step
 (`ErrorInfo(type="denied")`, output kept). `templating.StepView.denials` (a list of plain dicts

@@ -111,7 +111,7 @@ Each line is `{"type", "run_id", "ts", "step_path", "data"}`:
 | `step.finished` | `status`, `duration_ms`, `usage`, `cost_usd`, `error`, `skip_reason`, `tolerated`; plus `reused: true` on a resume replay, `dry_run: true` for skipped shell/python, `cost_source` when not `none` |
 | `loop.iteration` | `n`, `max` |
 | `each.item` | `index`, `total` |
-| `run.paused` | `token`, `step`, `message` |
+| `run.paused` | `token`, `step`, `message`, `reason` (`approval` · `budget` · `failures`) |
 | `run.decision` | `approved`, `comment`, `by` (`--yes`, `dry-run`, `tty`, or the stored decision's author) |
 | `run.finished` | `status`, `reason`, `usage`, `cost_usd`, `outputs`; plus `cost_source` when not `none` |
 | `warning` | `message` |
@@ -410,20 +410,38 @@ max_consecutive_failures: 3
 - Spend is committed to `<store root>/limits/spend.json` as the run goes, under an exclusive
   `flock` that covers the whole read-modify-write — two runs finishing in the same instant both
   land. A run commits its *absolute* total, never a delta, so a resume can never double-count.
-- A run is accounted to the day and month it **began** in, so one run is never split across two
-  envelopes at midnight.
+- Each commit is accounted to the day and month it is **made** in: a run that crosses midnight,
+  or one resumed on Thursday, pays for what it spends then into that day. Otherwise every other
+  run started that day would get headroom nobody granted.
 - When a ceiling is reached the run drains exactly like a capped run does — nothing new starts,
   running steps finish — and then **pauses**: `run.json` gains
   `pause: {reason: "budget", step: "<where it stopped>", message: "spending envelope reached
-  (today $20.4 > policy budget.per_day $20.0)"}` and the process exits **3**.
+  (today $20.4 > policy budget.per_day $20.0)"}` and the process exits **3**. The message is
+  refreshed from the run's final totals, so it names what was actually spent.
+- A `join: always` step still **runs** while the run drains — that is what the join is for — but
+  it may not **spend**: once a ceiling is reached no further agent turn is opened, whichever
+  join a step declares. A cleanup shell step finishes; a cleanup prompt step is recorded
+  `skipped`. `defaults.budget_usd` is the author's own cap and their `join: always` steps are
+  exempt from it; `policy.budget` is the operator's cap *over* the author, and a ceiling a
+  workflow can opt out of in four characters of YAML is not a ceiling.
 - `max_consecutive_failures` is the same instrument counting failed runs instead of dollars. It
   is checked before the first step, so a workflow that has been failing all night stops calling
-  the provider. A successful run resets the counter.
+  the provider. A successful run resets the counter. Its pause carries
+  `pause.reason: "failures"` — a different control from `budget`, and a different decision.
 - **Continuing**: `rayspec resume <run>` re-evaluates the ceiling — raise it (or wait for the
   next day) and the run picks up where it stopped. `rayspec approve <run> "checked it"` says
-  "run it anyway": the ceilings stop stopping *this* run and the failure breaker is closed
-  again. `rayspec reject <run>` changes nothing, so the run pauses again on the same ceiling.
-- A `--dry-run` spends nothing and is never counted.
+  "run it anyway" and **waives** the control that stopped this run: approving a spend does not
+  clear the failure streak, and closing the breaker does not waive a spend. `rayspec reject
+  <run>` changes nothing, so the run pauses again on the same ceiling.
+- `resume`, `approve` and `reject` are subject to all of it, exactly like `run`: they start the
+  same agents, so they take the same host run slot and are measured against the same envelope.
+- A `--dry-run` spends nothing and is never counted. A `--stubs` run of a workflow whose agents
+  are `provider: stub` is a real run as far as the ledger is concerned: if you have configured
+  `pricing:` for the stub's model, that price is what gets committed. Leave the stub's models
+  out of `pricing:` if you would rather it counted as nothing.
+- The ledger is replaced whole on every write and never left half-written. If it is ever found
+  unreadable it is replaced with a fresh document — and that is reported as a `warning` event
+  and on the console, because an envelope that quietly went back to zero is worse than none.
 
 ### Host run slots
 
@@ -435,8 +453,9 @@ max_concurrent_runs:
 ```
 
 A scheduler that fires five workflows at 03:00 should not start five agents at 03:00.
-`rayspec run` takes one slot per provider the workflow's `prompt:` steps resolve to, and holds it
-for the run:
+`rayspec run` — and `rayspec resume` / `approve` / `reject`, which start the same agents — take
+one slot per provider the workflow's `prompt:` steps resolve to, and hold it for the run. A limit
+of `0` means that provider may not run on this host at all:
 
 ```console
 $ rayspec run review_pr
@@ -465,15 +484,21 @@ $ rayspec lock --check               # exit 1 on drift (a CI job)
 $ rayspec run review_pr --locked     # refuses to run a drifted workflow
 ```
 
-`--locked` is on by default under `CI` and names exactly what moved:
+`--locked` is on by default under `CI` (the environment variable; Jenkins and TeamCity do not set
+it, so spell the flag out there) and names exactly what moved:
 
 ```
 error: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
 ```
 
-`run`, `plan` and `validate` all take `--locked` / `--no-locked`; the details are in
-[cli.md](cli.md#rayspec-lock). Agents are keyed the way `run.json`'s `toolchain.models` keys them,
-so a stored run and the lockfile talk about the same agents.
+`run`, `plan`, `validate`, `resume`, `approve` and `reject` all take `--locked` / `--no-locked`;
+the details are in [cli.md](cli.md#rayspec-lock). The resume half matters: a poll-then-`approve`
+CI job is the commonest unattended shape there is, and the workflow-hash guard does not see a
+*tier* that was re-pointed in `config.yaml`. With `--repo`, the lockfile checked is the one in the
+checkout the workflow came from. The CI default only enforces a lockfile that exists — a project
+that never ran `rayspec lock` is not broken by setting a variable — while an explicit `--locked`
+refuses a missing one. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
+stored run and the lockfile talk about the same agents.
 
 ## Security notes
 
