@@ -353,7 +353,9 @@ and only you can pass it**. A case file's `exec_shell: true` is a declaration th
 real execution; without the flag the command refuses to run at all (exit 2, naming the case's
 `file:line`) rather than letting a checked-in data file widen what the command does. Note that
 `--exec-shell` takes no workdir lock, so do not run it beside a real `rayspec run` on the same
-checkout. `--junit FILE` writes a JUnit XML report (one `<testsuite>` per suite, the four-line
+checkout, and that a case is bound by the same [approval classes](runs-and-resume.md#approval-classes)
+a run is: a gate whose class may not be approved automatically pauses the case and fails it rather
+than running the step behind it. `--junit FILE` writes a JUnit XML report (one `<testsuite>` per suite, the four-line
 blocks as the `<failure>` text) — written whether cases pass, fail, or the suite could not start
 (a usage error becomes one erroring `<testcase>`), so a CI publish step always has a file.
 `--json` prints one object on stdout: `{passed, failed, duration_s, cases: [{suite, case, ok,
