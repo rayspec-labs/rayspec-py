@@ -113,3 +113,10 @@ steps:
     )
     joined = "\n".join(report.errors)
     assert "provider_options.codex.config.tools" in joined
+
+
+def test_a_policy_line_is_named_once_however_many_entries_it_holds(tree: Tree) -> None:
+    tree.policy("tools:\n  deny: [shell, web, edit]\n")
+    _, report = validated(tree, wf("allowed_tools: [Bash]\n"))
+    (message,) = report.errors
+    assert message.count(".rayspec/policy.yaml:2") == 1

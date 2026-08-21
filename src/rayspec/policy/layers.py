@@ -448,8 +448,12 @@ def load_policy(
 
 
 def sources_text(sources: Sequence[PolicySource] | Iterable[PolicySource]) -> str:
-    """``.rayspec/policy.yaml:3, ~/.rayspec/policy.yaml:2`` — the locations of a restriction."""
-    return ", ".join(source.location for source in sources)
+    """``.rayspec/policy.yaml:3, ~/.rayspec/policy.yaml:2`` — the locations of a restriction.
+
+    Repeats are dropped: several entries of one deny-list share a line, and a message that names
+    the same line three times reads as three problems.
+    """
+    return ", ".join(dict.fromkeys(source.location for source in sources))
 
 
 __all__ = [
