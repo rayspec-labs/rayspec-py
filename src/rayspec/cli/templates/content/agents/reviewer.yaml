@@ -1,0 +1,6 @@
+# A named agent: reference it as `agent: reviewer` from any workflow in this project.
+# Override per step with `agent: { extends: reviewer, model: large }`.
+provider: claude
+model: small                        # a tier (small|medium|large) → .rayspec/config.yaml tiers or the built-in defaults
+access: read-only                   # answers in text only; it cannot edit files or run commands
+instructions_file: prompts/reviewer.md   # relative to .rayspec/; appended to the provider's own system prompt

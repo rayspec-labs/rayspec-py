@@ -1,0 +1,9 @@
+# Read-only reviewer/planner for this repo.
+provider: claude
+model: medium
+effort: medium
+access: read-only
+instructions_file: prompts/reviewer.md
+thinking: true
+budget_usd: 3.0
+tools: { deny: [web] }

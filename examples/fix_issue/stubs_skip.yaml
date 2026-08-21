@@ -1,0 +1,3 @@
+# Triage says no: the `bail` step stops the run with status cancelled (exit 4).
+steps:
+  assess: { output: { verdict: skip, reason: "duplicate of #41" } }

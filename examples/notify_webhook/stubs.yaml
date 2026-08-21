@@ -1,0 +1,5 @@
+# Scripted answer for `rayspec run notify_webhook --dry-run --stubs stubs.yaml`.
+steps:
+  draft:
+    text: "rayspec 1.0 is out: declarative agent workflows on Claude and Codex, with resume."
+    usage: { input: 120, output: 24 }

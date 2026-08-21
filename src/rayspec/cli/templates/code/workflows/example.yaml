@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+# The example workflow that `rayspec init` created. Try it:
+#   rayspec validate
+#   rayspec plan example
+#   rayspec run example --dry-run --stubs .rayspec/stubs/example.yaml   # scripted agents, no login needed
+#   rayspec run example                                                  # a real run (logged-in `claude`)
+rayspec: 1
+name: example
+description: Review a file or directory with a read-only agent and shape a structured verdict.
+
+inputs:
+  target: { type: string, default: ".", description: "File or directory to review" }
+
+isolation: none                     # this workflow only reads; delete the line to get a git worktree per run
+
+steps:
+  - id: files                       # deterministic work belongs in shell/python steps
+    shell: git ls-files "{{ inputs.target }}" | head -n 50   # needs a git checkout (`rayspec init --kind content` otherwise)
+
+  - id: review                      # judgement belongs to an agent
+    needs: [files]
+    agent: reviewer                 # .rayspec/agents/reviewer.yaml
+    prompt_file: prompts/review.md  # relative to .rayspec/
+    output_schema:                  # the answer is validated JSON, usable as steps.review.output.<key>
+      type: object
+      properties:
+        verdict: { enum: [approve, request_changes] }
+        summary: { type: string }
+      required: [verdict, summary]
+
+outputs:
+  verdict: "{{ steps.review.output.verdict }}"
+  summary: "{{ steps.review.output.summary }}"

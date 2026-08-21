@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: fix_issue
+description: Fix a rayspec GitHub issue TDD-style in a worktree, loop until the gate is green, open a PR.
+
+inputs:
+  issue: { type: integer, required: true }
+  base: { type: string, default: main }
+
+defaults:
+  agent: implementer
+  timeout: 45m
+  max_parallel: 2
+
+agents:
+  triage:
+    provider: claude
+    model: small
+    access: read-only
+    instructions: You triage rayspec issues. Decide fast; reasons in one sentence.
+
+steps:
+  - id: fetch
+    shell: gh issue view "$RAYSPEC_INPUT_ISSUE" --json number,title,body,comments,labels
+
+  - id: assess
+    needs: [fetch]
+    agent: triage
+    prompt: |
+      {{ steps.fetch.output }}
+      Is this a real rayspec bug or a reasonable small enhancement that one PR can close?
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [fix, skip] }
+        reason: { type: string }
+        scope: { type: string, description: "module(s) most likely involved" }
+      required: [verdict, reason, scope]
+
+  - id: bail
+    needs: [assess]
+    when: steps.assess.output.verdict == 'skip'
+    stop: { status: cancelled, reason: "skipping #{{ inputs.issue }}: {{ steps.assess.output.reason }}" }
+
+  - id: build
+    needs: [assess]
+    when: steps.assess.output.verdict == 'fix'
+    loop:
+      max_iterations: 4
+      until: steps.gate.ok and (steps.review.output | has_signal('LGTM'))
+      steps:
+        - id: implement
+          session: implement
+          prompt: |
+            {% if iteration.first %}
+            Issue #{{ inputs.issue }} (likely scope: {{ steps.assess.output.scope }}):
+            {{ steps.fetch.output }}
+            Reproduce it with a failing test first, then fix it with the smallest change.
+            {% else %}
+            Iteration {{ iteration.n }}/{{ iteration.max }}. Gate exit {{ iteration.prev.gate.exit_code }}:
+            {{ iteration.prev.gate.output | default('') | truncate(6000, true) }}
+            Reviewer findings:
+            {{ iteration.prev.review.output }}
+            Fix everything above, keep the diff small, commit.
+            {% endif %}
+        - id: gate
+          needs: [implement]
+          shell: |
+            uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q
+          allow_failure: true
+          timeout: 25m
+        - id: review
+          needs: [gate]
+          agent: reviewer
+          prompt: |
+            Gate exit={{ steps.gate.exit_code }}, ok={{ steps.gate.ok }}.
+            Review `git diff {{ inputs.base }}...HEAD` for issue #{{ inputs.issue }}.
+            Reply with exactly LGTM on its own line when the gate is green and you have no
+            findings; otherwise list the findings.
+
+  - id: confirm
+    needs: [build]
+    approve: "Push branch {{ run.branch | default('HEAD', true) }} and open a PR for #{{ inputs.issue }}?"
+
+  - id: pr
+    needs: [confirm]
+    shell: |
+      git push -u origin HEAD
+      gh pr create --base "{{ inputs.base }}" --title "fix: #{{ inputs.issue }}" \
+        --body "Closes #{{ inputs.issue }}. Reviewer: {{ steps.build.output.review }}"
+
+outputs:
+  verdict: "{{ steps.assess.output.verdict }}"
+  iterations: "{{ steps.build.iterations }}"
+  pr_url: "{{ steps.pr.output }}"

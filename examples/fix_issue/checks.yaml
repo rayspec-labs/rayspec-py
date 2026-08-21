@@ -1,0 +1,33 @@
+checks:
+  - id: happy
+    workflow: fix_issue
+    inputs: { issue: 42 }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: fix, iterations: 2 }
+      steps:
+        bail: skipped
+        "build[1]/review": succeeded
+        "build[2]/review": succeeded
+        build: succeeded
+        confirm: succeeded
+        pr: succeeded
+  - id: skip
+    workflow: fix_issue
+    inputs: { issue: 7, mode: fast }
+    stubs: stubs_skip.yaml
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "duplicate of #41"
+      steps: { bail: succeeded, build: skipped }
+  - id: exhausted
+    workflow: fix_issue
+    inputs: { issue: 9 }
+    stubs: stubs_exhausted.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { build: failed, confirm: skipped }

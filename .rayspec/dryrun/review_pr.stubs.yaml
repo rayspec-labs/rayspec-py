@@ -1,0 +1,6 @@
+steps:
+  review:
+    output:
+      verdict: approve
+      summary: "Gate green, CONTRACTS untouched, tests cover the new behaviour."
+      findings: []

@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: hello_review
+description: Review a file or directory with a single prompt step — the smallest useful workflow.
+
+inputs:
+  target: { type: string, required: true, description: "File or directory to review" }
+  focus: { type: string, enum: [bugs, style, security], default: bugs }
+
+isolation: none                     # read-only review: run in place, no worktree needed
+
+agents:
+  reviewer:
+    provider: claude
+    model: small                    # a tier (small|medium|large) → config.tiers / built-in defaults
+    access: read-only
+    instructions: You are a terse, precise code reviewer. Never propose rewrites, only findings.
+
+steps:
+  - id: review
+    agent: reviewer
+    prompt: |
+      Review {{ inputs.target }} with a focus on {{ inputs.focus }}.
+      Read the code first. Reply with at most five bullet points, then one final line
+      `VERDICT: ok` or `VERDICT: needs-work`.
+
+outputs:
+  review: "{{ steps.review.output }}"
+  verdict: "{{ steps.review.output | regex_search('VERDICT: ([a-z-]+)', 1) | default('unknown') }}"

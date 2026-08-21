@@ -1,0 +1,7 @@
+# The credential lives here, as a *source* — never a value in the file.
+#   env:  read an environment variable      file: read a 0600-or-tighter file
+#   cmd:  take the stdout of a command (op read …, pass show …, security find-…)
+secrets:
+  GITHUB_TOKEN:
+    env: RAYSPEC_EXAMPLE_GITHUB_TOKEN
+    required: false        # absent ⇒ the tool reports authenticated: false and the agent is skipped

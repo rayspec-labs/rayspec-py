@@ -1,0 +1,24 @@
+checks:
+  - id: critical
+    workflow: triage_fanout
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { classified: 3, failed: 1, escalated: true }
+      steps:
+        "triage[1]/classify": failed
+        "triage[3]/classify": succeeded   # after one transient failure + retry
+        triage: succeeded
+        alert: succeeded
+        digest: succeeded
+        cleanup: succeeded
+  - id: quiet
+    workflow: triage_fanout
+    inputs: { issues: [7, 8] }
+    stubs: stubs_quiet.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { classified: 2, failed: 0, escalated: false }
+      steps: { alert: skipped, digest: succeeded, cleanup: succeeded }

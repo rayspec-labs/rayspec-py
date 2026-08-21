@@ -1,0 +1,2 @@
+steps:
+  fix: { text: "Fixed 3 ruff findings (unused imports); committed." }

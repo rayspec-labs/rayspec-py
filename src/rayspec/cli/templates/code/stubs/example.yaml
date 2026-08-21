@@ -1,0 +1,10 @@
+# Scripted agent answers for `rayspec run example --dry-run --stubs .rayspec/stubs/example.yaml`.
+# Keys under `steps:` are step paths (globs allowed, e.g. "build[*]/implement");
+# stub file format: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md#stub-stub
+defaults: { latency_ms: 0, usage: { input: 900, output: 120 } }
+steps:
+  review:
+    output: { verdict: approve, summary: "Small and readable; nothing blocks." }
+    events:
+      - { tool_call: { name: Read, call_id: c1, data: { file_path: README.md } } }
+      - { tool_result: { call_id: c1, text: "# my project" } }

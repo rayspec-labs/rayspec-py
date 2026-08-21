@@ -1,0 +1,17 @@
+checks:
+  - id: ok
+    workflow: hello_review
+    inputs: { target: src/, focus: style }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: ok }
+      steps: { review: succeeded }
+  - id: defaults
+    workflow: hello_review
+    inputs: { target: README.md }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: unknown }

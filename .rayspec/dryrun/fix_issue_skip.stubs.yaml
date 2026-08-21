@@ -1,0 +1,2 @@
+steps:
+  assess: { output: { verdict: skip, reason: "needs a design decision first", scope: "engine" } }

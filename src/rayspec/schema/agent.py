@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Agent definitions: the reusable unit that carries provider/model/access/tool knobs."""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
+
+from rayspec.schema.base import StrictModel
+from rayspec.schema.common import AccessLevelName, EffortName, InstructionsModeName, Name
+
+
+class ToolsSpec(StrictModel):
+    """Neutral allow/deny lists.
+
+    Entries are tool groups (``read edit shell web agent``), ``mcp:<server>[/<tool>]``, or a
+    provider-native name prefixed with the provider id (``claude:WebFetch``).
+    """
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+
+class McpServerDef(StrictModel):
+    """An MCP server an agent may use (mirrors ``providers.base.McpServerSpec``)."""
+
+    transport: Literal["stdio", "http", "sse"] = "stdio"
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "mcp server"
+
+    @model_validator(mode="after")
+    def _transport_fields(self) -> McpServerDef:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError("stdio MCP servers need 'command'")
+        if self.transport in {"http", "sse"} and not self.url:
+            raise ValueError(f"{self.transport} MCP servers need 'url'")
+        return self
+
+
+class AgentDef(StrictModel):
+    """A (possibly partial) agent definition. Unset fields are filled by merge/tier resolution."""
+
+    provider: str | None = None
+    model: str | None = None
+    effort: EffortName | None = None
+    access: AccessLevelName = "workspace-write"
+    instructions: str | None = None
+    instructions_file: str | None = None
+    instructions_mode: InstructionsModeName = "append"
+    max_turns: int | None = Field(default=None, ge=1)
+    budget_usd: float | None = Field(default=None, gt=0)
+    tools: ToolsSpec = Field(default_factory=ToolsSpec)
+    thinking: bool | None = None
+    mcp: dict[Name, McpServerDef] = Field(default_factory=dict)
+    provider_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "agent"
+
+    @model_validator(mode="after")
+    def _instructions_xor_file(self) -> AgentDef:
+        if self.instructions is not None and self.instructions_file is not None:
+            raise ValueError("set either 'instructions' or 'instructions_file', not both")
+        return self
+
+
+class AgentOverride(AgentDef):
+    """``agent: {extends: <name>, ...}`` — only explicitly set fields override the base agent."""
+
+    extends: str
+
+    @classmethod
+    def _what(cls) -> str:
+        return "agent override"
+
+
+def parse_agent_def(data: Any, *, source: str | None = None) -> AgentDef:
+    return AgentDef.parse(data, source=source)
+
+
+__all__ = ["AgentDef", "AgentOverride", "McpServerDef", "ToolsSpec", "parse_agent_def"]

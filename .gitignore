@@ -1,0 +1,21 @@
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.coverage
+coverage.xml
+htmlcov/
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+# rayspec local state never lives in the repo (runs are under ~/.rayspec), but guard anyway
+.rayspec/runs/
+.rayspec/.env
+.env

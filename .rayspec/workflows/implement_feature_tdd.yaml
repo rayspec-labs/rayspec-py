@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: implement_feature_tdd
+description: >
+  Implement a feature of rayspec strictly test-first: plan → (tests red → implement → gate green)
+  loop → independent review → human approval → PR.
+
+inputs:
+  spec: { type: string, required: true, description: "Path to the spec/plan file (relative to the repo)" }
+  branch_hint: { type: string, default: feature, description: "Short name used in commit messages" }
+  max_rounds: { type: integer, default: 4 }
+
+defaults:
+  agent: implementer
+  timeout: 60m
+
+steps:
+  - id: spec
+    shell: cat "$RAYSPEC_INPUT_SPEC"
+
+  - id: plan
+    needs: [spec]
+    agent: reviewer
+    prompt: |
+      Spec:
+      {{ steps.spec.output }}
+
+      Produce an implementation plan for rayspec: the tests to write first (file + behaviour),
+      the modules to touch, and any CONTRACTS.md surface that changes.
+    output_schema:
+      type: object
+      properties:
+        tests: { type: array, items: { type: string } }
+        modules: { type: array, items: { type: string } }
+        contract_changes: { type: array, items: { type: string } }
+      required: [tests, modules, contract_changes]
+
+  - id: tdd
+    needs: [plan]
+    loop:
+      max_iterations: 4
+      until: steps.gate.ok
+      on_exhausted: fail
+      steps:
+        - id: red
+          session: red
+          prompt: |
+            {% if iteration.first %}
+            Plan: {{ steps.plan.output }}
+            Write the failing tests first (only tests), run them, show they fail for the right reason,
+            commit "test({{ inputs.branch_hint }}): …".
+            {% else %}
+            Round {{ iteration.n }}: gate output from the previous round:
+            {{ iteration.prev.gate.output | default('') | truncate(6000, true) }}
+            Add or adjust tests for what is still missing, commit.
+            {% endif %}
+        - id: green
+          needs: [red]
+          session: green
+          prompt: |
+            Make the tests pass with the minimum implementation, then refactor. Respect CONTRACTS.md
+            (planned contract changes: {{ steps.plan.output.contract_changes }}). Commit
+            "feat({{ inputs.branch_hint }}): …".
+        - id: gate
+          needs: [green]
+          shell: |
+            uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q
+          allow_failure: true
+          timeout: 25m
+
+  - id: review
+    needs: [tdd]
+    agent: reviewer
+    prompt: |
+      Review `git diff origin/main...HEAD` against the spec:
+      {{ steps.spec.output | truncate(8000, true) }}
+      Gate is green after {{ steps.tdd.iterations }} round(s). List blocking findings or say LGTM.
+
+  - id: confirm
+    needs: [review]
+    approve: "Open a PR for '{{ inputs.branch_hint }}'? Reviewer said: {{ steps.review.output | truncate(300, true) }}"
+
+  - id: pr
+    needs: [confirm]
+    shell: |
+      git push -u origin HEAD
+      gh pr create --base main --title "feat: {{ inputs.branch_hint }}" --body "{{ steps.review.output }}"
+
+outputs:
+  rounds: "{{ steps.tdd.iterations }}"
+  review: "{{ steps.review.output }}"
+  pr_url: "{{ steps.pr.output }}"

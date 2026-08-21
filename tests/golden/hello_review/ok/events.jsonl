@@ -1,0 +1,29 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "hello_review"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "review", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:review:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:review:1", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "`target` ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "is ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "only ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "read, ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "never ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "validated ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "\u2014 ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "fine ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "for ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "a ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "review ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "tool.\n", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Consider ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "a ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "`--focus` ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "default ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "in ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "the ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "docs.\n", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "VERDICT: ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "ok\n", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- `target` is only read, never validated \u2014 fine for a review tool.\n- Consider a `--focus` default in the docs.\nVERDICT: ok\n", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "review", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"review": "- `target` is only read, never validated \u2014 fine for a review tool.\n- Consider a `--focus` default in the docs.\nVERDICT: ok\n", "verdict": "ok"}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

@@ -1,0 +1,14 @@
+# Four issues: one critical, one classifier outage (tolerated by on_failure: continue), one
+# transient rate limit that the step's `retry:` absorbs.
+defaults: { usage: { input: 400, output: 60 } }
+steps:
+  "triage[0]/classify": { output: { severity: high, area: parser } }
+  "triage[1]/classify":
+    fail: { kind: api, message: "simulated provider outage", transient: false }   # no `times` → every call
+  "triage[2]/classify": { output: { severity: critical, area: auth, duplicate_of: 99 } }
+  "triage[3]/classify":
+    fail: { kind: api, message: "429 rate limited", transient: true, times: 1 }  # first call only
+    output: { severity: low, area: docs }                                       # second call
+  "triage[*]/classify": { output: { severity: low, area: docs } }   # every other item
+  alert: { text: "Incident: #103 exposes an auth bypass; owner paged." }
+  digest: { text: "4 issues triaged, 1 critical (auth), 1 classifier error, rest low/high." }

@@ -1,0 +1,18 @@
+# A named agent: referenced as `agent: reviewer` from any workflow in this project.
+provider: claude
+model: medium                       # tier → sonnet (see config.yaml)
+effort: medium
+access: read-only                   # Read/Glob/Grep only — it cannot edit or run commands
+instructions_file: prompts/reviewer.md   # relative to .rayspec/
+instructions_mode: append           # append to Claude Code's own system prompt (default)
+thinking: true
+budget_usd: 1.50                    # hard stop per step
+tools:
+  allow: [read, mcp:github]         # neutral groups; mcp:<server> targets the server below
+  deny: [web]
+mcp:
+  github:
+    command: github-mcp-server      # https://github.com/github/github-mcp-server (needs a token in env)
+    args: [stdio]
+provider_options:                   # raw pass-through, replaces wholesale on override
+  claude: { setting_sources: [project] }

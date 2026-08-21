@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: unsupported_warn
+description: >
+  The same Codex agent as unsupported_demo, but `defaults.on_unsupported: warn` downgrades the
+  capability errors to warnings for this workflow only (equivalent to --allow-unsupported).
+
+defaults:
+  on_unsupported: warn              # error (default) | warn — the unsupported fields are ignored
+
+isolation: none
+
+agents:
+  fixer:
+    provider: codex
+    model: medium
+    access: workspace-write
+    max_turns: 40                   # warned, then ignored
+    tools: { deny: [edit, web] }    # `edit` warned and ignored; `web` still applies
+    instructions: Fix lint errors only; never touch behaviour.
+
+steps:
+  - id: lint
+    shell: ruff check . || true
+  - id: fix
+    needs: [lint]
+    agent: fixer
+    prompt: |
+      Lint output:
+      {{ steps.lint.output }}
+      Fix every finding and commit.
+
+outputs:
+  summary: "{{ steps.fix.output }}"

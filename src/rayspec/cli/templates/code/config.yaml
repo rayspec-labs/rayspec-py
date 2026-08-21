@@ -1,0 +1,24 @@
+# Project config for rayspec — merged over ~/.rayspec/config.yaml (the project wins per top-level key).
+# Runs, worktrees and logs live under $RAYSPEC_HOME (default ~/.rayspec); this repository stays clean.
+default_provider: claude            # the provider for agents that do not name one (claude | codex)
+
+# What `model: small|medium|large` means per provider (these are the built-in defaults):
+# tiers:
+#   claude: { small: haiku, medium: sonnet, large: opus }
+#   codex:
+#     small: { model: gpt-5.4, effort: low }
+#     medium: gpt-5.4
+#     large: { model: gpt-5.4, effort: high }
+
+# `model: "@name"` shortcuts that may also pin the provider and the effort:
+# aliases:
+#   "@deep": { provider: claude, model: opus, effort: high }
+
+# USD per 1M tokens, used when a provider reports no cost (shown as ~$0.12):
+# pricing:
+#   "gpt-5.4*": { input: 2.0, cached_input: 0.5, output: 8.0 }
+
+# Settings handed to each provider factory (see https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md):
+# providers:
+#   claude: { setting_sources: [project] }
+#   codex: { config: { model_reasoning_summary: concise } }

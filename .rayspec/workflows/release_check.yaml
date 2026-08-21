@@ -1,0 +1,106 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: release_check
+description: Pre-release gate for rayspec itself, run in place on the checkout you intend to tag.
+
+inputs:
+  tag: { type: string, required: true, description: "e.g. v0.2.0 (must match pyproject version)" }
+  push: { type: boolean, default: false }
+
+isolation: none
+defaults:
+  timeout: 30m
+
+agents:
+  notes_writer:
+    provider: codex                 # owner's choice for the 1.0.0 gate: frontier Codex model
+    model: gpt-5.6-sol
+    effort: xhigh
+    access: read-only               # no writes: the `history` step computes, the agent judges
+    instructions: |
+      You write the rayspec release notes; group by Added/Changed/Fixed; link PRs as #n.
+      You cannot run commands — the workflow hands you the commit log and merged PR titles, and
+      you may read files (CHANGELOG.md, README.md, docs/). Your answer is the JSON object; its
+      `notes` field must hold the complete release notes in Markdown, nothing else.
+
+steps:
+  - id: version
+    description: The tag must match the package version.
+    shell: |
+      # `rayspec version` prints "rayspec <version>"; compare the bare version to the tag.
+      v="$(uv run rayspec version | awk '{print $NF}' | tr -d '[:space:]')"
+      test "v${v#v}" = "$RAYSPEC_INPUT_TAG" || { echo "tag $RAYSPEC_INPUT_TAG != version $v" >&2; exit 1; }
+
+  - id: gate
+    shell: uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q -m "not live"
+    retry: { attempts: 2, delay: 10s, on_error: all }
+    timeout: 25m
+
+  - id: examples
+    shell: uv run python scripts/check_examples.py --matrix
+
+  - id: build
+    needs: [version, gate]
+    shell: uv build && ls dist/
+
+  - id: history
+    description: Material for the notes (code computes, the agent judges) — commits since the last tag and merged PR titles.
+    shell: |
+      if from="$(git describe --tags --abbrev=0 2>/dev/null)"; then
+        echo "## Commits since ${from}"
+        git log --oneline "${from}..HEAD" || true
+      else
+        # no tag yet: the whole history — ONE root (`| tail -1`), listed too (a range would skip it)
+        root="$(git rev-list --max-parents=0 HEAD | tail -1)"
+        echo "## Commits since the first commit ${root} (no tag yet)"
+        { git log --oneline "${root}..HEAD" && git log --oneline -1 "${root}"; } || true
+      fi
+      echo
+      echo "## Merged pull requests (newest first)"
+      # gh missing or not authenticated: say so instead of failing the gate.
+      gh pr list --state merged --limit 40 --json number,title \
+        --jq '.[] | "- #\(.number) \(.title)"' 2>/dev/null || echo "(gh unavailable — no PR list)"
+
+  - id: notes
+    needs: [gate, examples, build, history]
+    agent: notes_writer
+    prompt: |
+      Write the release notes for rayspec {{ inputs.tag }}.
+
+      Material prepared by the workflow (you cannot run commands; do not try):
+
+      {{ steps.history.output }}
+
+      Also read CHANGELOG.md in {{ run.workdir }} when it exists — its top section is the
+      maintainer's draft for this release — and README.md for the product's wording.
+
+      Return `title` (one line, starting with {{ inputs.tag }}) and `notes`: the COMPLETE release
+      notes in Markdown, grouped by Added / Changed / Fixed, PRs linked as #n. The `notes` field
+      must contain the release notes themselves — do not describe what you did or where the notes
+      are.
+    output_schema:
+      type: object
+      properties: { title: { type: string }, notes: { type: string } }
+      required: [title, notes]
+
+  - id: gate_human
+    needs: [notes]
+    approve: { message: "Tag {{ inputs.tag }}: {{ steps.notes.output.title }}?", on_reject: continue }
+
+  - id: tag
+    needs: [gate_human]
+    when: steps.gate_human.approved and inputs.push
+    shell: |
+      git tag -a "{{ inputs.tag }}" -m "{{ steps.notes.output.title }}"
+      git push origin "{{ inputs.tag }}"
+
+  - id: cleanup
+    needs: [build, tag]
+    join: always
+    always_run: true
+    shell: rm -rf dist/ build/
+
+outputs:
+  title: "{{ steps.notes.output.title }}"
+  notes: "{{ steps.notes.output.notes }}"
+  tagged: "{{ steps.tag.status == 'succeeded' }}"

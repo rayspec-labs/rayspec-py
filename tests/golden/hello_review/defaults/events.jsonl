@@ -1,0 +1,23 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "hello_review"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "review", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:review:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:review:1", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "[stub] ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Review ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "README.md ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "with ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "a ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "focus ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "on ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "bugs.\n", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Read ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "the ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "code ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "first. ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Reply ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "with ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "at ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "most ", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "f", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "[stub] Review README.md with a focus on bugs.\nRead the code first. Reply with at most f", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "review", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"review": "[stub] Review README.md with a focus on bugs.\nRead the code first. Reply with at most f", "verdict": "unknown"}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

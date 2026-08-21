@@ -1,0 +1,18 @@
+checks:
+  - id: without_webhook
+    workflow: notify_webhook
+    inputs: { message: "rayspec 1.0 is out" }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { sent: false }
+      steps: { draft: succeeded, notify: succeeded }
+  - id: with_webhook              # the secret is passed through --inputs-file; it is never persisted
+    workflow: notify_webhook
+    inputs: { message: "rayspec 1.0 is out", webhook_url: "https://hooks.example.invalid/T000/B000" }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      steps: { draft: succeeded, notify: succeeded }

@@ -1,0 +1,28 @@
+checks:
+  - id: dry
+    workflow: release_check
+    inputs: { tag: v0.4.0 }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { title: "v0.4.0 — worktrees by default", approved: true, published: false }
+      steps: { tests: succeeded, history: succeeded, gate: succeeded, publish: skipped, notify: skipped, cleanup: succeeded }
+  - id: push
+    workflow: release_check
+    inputs: { tag: v0.4.0, push: true, min_coverage: 90 }
+    stubs: stubs.yaml
+    env: { SLACK_WEBHOOK: null }    # `notify` is gated on `env.SLACK_WEBHOOK is defined` → unset it
+    expect:
+      status: succeeded
+      outputs: { published: true }
+      steps: { publish: succeeded, notify: skipped, cleanup: succeeded }
+  - id: push_notify
+    workflow: release_check
+    inputs: { tag: v0.4.0, push: true }
+    stubs: stubs.yaml
+    env: { SLACK_WEBHOOK: "https://hooks.example.invalid/T000/B000" }
+    expect:
+      status: succeeded
+      outputs: { published: true }
+      steps: { publish: succeeded, notify: succeeded, cleanup: succeeded }

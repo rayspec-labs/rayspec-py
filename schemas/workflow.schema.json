@@ -1,0 +1,1775 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json",
+  "title": "Workflow",
+  "description": "A rayspec workflow document (.rayspec/workflows/<name>.yaml).",
+  "$defs": {
+    "AgentDef": {
+      "additionalProperties": false,
+      "description": "A (possibly partial) agent definition. Unset fields are filled by merge/tier resolution.",
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
+        "access": {
+          "default": "workspace-write",
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "full"
+          ],
+          "title": "Access",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "instructions_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions File"
+        },
+        "instructions_mode": {
+          "default": "append",
+          "enum": [
+            "append",
+            "replace"
+          ],
+          "title": "Instructions Mode",
+          "type": "string"
+        },
+        "max_turns": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Turns"
+        },
+        "budget_usd": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget Usd"
+        },
+        "tools": {
+          "$ref": "#/$defs/ToolsSpec"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
+        },
+        "mcp": {
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServerDef"
+          },
+          "title": "Mcp",
+          "type": "object"
+        },
+        "provider_options": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Provider Options",
+          "type": "object"
+        }
+      },
+      "title": "AgentDef",
+      "type": "object"
+    },
+    "AgentOverride": {
+      "additionalProperties": false,
+      "description": "``agent: {extends: <name>, ...}`` — only explicitly set fields override the base agent.",
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
+        "access": {
+          "default": "workspace-write",
+          "enum": [
+            "read-only",
+            "workspace-write",
+            "full"
+          ],
+          "title": "Access",
+          "type": "string"
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions"
+        },
+        "instructions_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Instructions File"
+        },
+        "instructions_mode": {
+          "default": "append",
+          "enum": [
+            "append",
+            "replace"
+          ],
+          "title": "Instructions Mode",
+          "type": "string"
+        },
+        "max_turns": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Turns"
+        },
+        "budget_usd": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget Usd"
+        },
+        "tools": {
+          "$ref": "#/$defs/ToolsSpec"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
+        },
+        "mcp": {
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServerDef"
+          },
+          "title": "Mcp",
+          "type": "object"
+        },
+        "provider_options": {
+          "additionalProperties": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Provider Options",
+          "type": "object"
+        },
+        "extends": {
+          "title": "Extends",
+          "type": "string"
+        }
+      },
+      "required": [
+        "extends"
+      ],
+      "title": "AgentOverride",
+      "type": "object"
+    },
+    "ApproveSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "on_reject": {
+          "default": "cancel",
+          "enum": [
+            "cancel",
+            "continue",
+            "fail"
+          ],
+          "title": "On Reject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "ApproveSpec",
+      "type": "object"
+    },
+    "ApproveStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "approve": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "Shorthand for {message: <text>}."
+            },
+            {
+              "$ref": "#/$defs/ApproveSpec"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "approve"
+      ],
+      "title": "ApproveStep",
+      "type": "object"
+    },
+    "Defaults": {
+      "additionalProperties": false,
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "max_parallel": {
+          "default": 4,
+          "minimum": 1,
+          "title": "Max Parallel",
+          "type": "integer"
+        },
+        "on_unsupported": {
+          "default": "error",
+          "enum": [
+            "error",
+            "warn"
+          ],
+          "title": "On Unsupported",
+          "type": "string"
+        },
+        "on_step_failure": {
+          "default": "drain",
+          "enum": [
+            "drain",
+            "fail_fast",
+            "continue"
+          ],
+          "title": "On Step Failure",
+          "type": "string"
+        },
+        "budget_usd": {
+          "default": null,
+          "title": "Budget Usd",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\$?\\s*\\d+(?:\\.\\d+)?\\s*(?:[Uu][Ss][Dd])?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A USD amount (1.5) or a string ('$1.50', '12 USD')."
+        },
+        "max_tokens": {
+          "default": null,
+          "title": "Max Tokens",
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\d+(?:_\\d+)*(?:\\.\\d+)?\\s*[kKmM]?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A token count (500000) or a string ('500k', '1.5M')."
+        }
+      },
+      "title": "Defaults",
+      "type": "object"
+    },
+    "EachStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "each": {
+          "title": "Each",
+          "type": "string"
+        },
+        "as": {
+          "default": "item",
+          "title": "As",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PromptStep"
+              },
+              {
+                "$ref": "#/$defs/ShellStep"
+              },
+              {
+                "$ref": "#/$defs/PythonStep"
+              },
+              {
+                "$ref": "#/$defs/LoopStep"
+              },
+              {
+                "$ref": "#/$defs/EachStep"
+              },
+              {
+                "$ref": "#/$defs/ApproveStep"
+              },
+              {
+                "$ref": "#/$defs/IncludeStep"
+              },
+              {
+                "$ref": "#/$defs/StopStep"
+              }
+            ]
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "max_parallel": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Parallel"
+        },
+        "on_failure": {
+          "default": "fail",
+          "enum": [
+            "fail",
+            "continue"
+          ],
+          "title": "On Failure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "each",
+        "steps"
+      ],
+      "title": "EachStep",
+      "type": "object"
+    },
+    "IncludeStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "include": {
+          "title": "Include",
+          "type": "string"
+        },
+        "with": {
+          "additionalProperties": true,
+          "title": "With",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "include"
+      ],
+      "title": "IncludeStep",
+      "type": "object"
+    },
+    "InputSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "default": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "array",
+            "object"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "default": {
+          "default": null,
+          "title": "Default"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "enum": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enum"
+        },
+        "items": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Items"
+        },
+        "properties": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Properties"
+        },
+        "secret": {
+          "default": false,
+          "title": "Secret",
+          "type": "boolean"
+        }
+      },
+      "title": "InputSpec",
+      "type": "object"
+    },
+    "LoopSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "steps": {
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/PromptStep"
+              },
+              {
+                "$ref": "#/$defs/ShellStep"
+              },
+              {
+                "$ref": "#/$defs/PythonStep"
+              },
+              {
+                "$ref": "#/$defs/LoopStep"
+              },
+              {
+                "$ref": "#/$defs/EachStep"
+              },
+              {
+                "$ref": "#/$defs/ApproveStep"
+              },
+              {
+                "$ref": "#/$defs/IncludeStep"
+              },
+              {
+                "$ref": "#/$defs/StopStep"
+              }
+            ]
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "max_iterations": {
+          "minimum": 1,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Until"
+        },
+        "on_exhausted": {
+          "default": "fail",
+          "enum": [
+            "fail",
+            "continue"
+          ],
+          "title": "On Exhausted",
+          "type": "string"
+        }
+      },
+      "required": [
+        "steps",
+        "max_iterations"
+      ],
+      "title": "LoopSpec",
+      "type": "object"
+    },
+    "LoopStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "loop": {
+          "$ref": "#/$defs/LoopSpec"
+        }
+      },
+      "required": [
+        "id",
+        "loop"
+      ],
+      "title": "LoopStep",
+      "type": "object"
+    },
+    "McpServerDef": {
+      "additionalProperties": false,
+      "description": "An MCP server an agent may use (mirrors ``providers.base.McpServerSpec``).",
+      "properties": {
+        "transport": {
+          "default": "stdio",
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        }
+      },
+      "title": "McpServerDef",
+      "type": "object"
+    },
+    "PromptStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "title": "Env",
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Environment variables; numbers and booleans are coerced to text."
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema"
+        },
+        "prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt"
+        },
+        "prompt_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt File"
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "$ref": "#/$defs/AgentOverride"
+                },
+                {
+                  "$ref": "#/$defs/AgentDef"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "PromptStep",
+      "type": "object"
+    },
+    "PythonStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "title": "Env",
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Environment variables; numbers and booleans are coerced to text."
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema"
+        },
+        "python": {
+          "title": "Python",
+          "type": "string"
+        },
+        "deps": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Deps",
+          "type": "array"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        }
+      },
+      "required": [
+        "id",
+        "python"
+      ],
+      "title": "PythonStep",
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "additionalProperties": false,
+      "description": "``attempts`` is the TOTAL number of attempts (1 = no retry). ``delay`` doubles each retry.",
+      "properties": {
+        "attempts": {
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "delay": {
+          "default": 3.0,
+          "title": "Delay",
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "on_error": {
+          "default": "transient",
+          "enum": [
+            "transient",
+            "all"
+          ],
+          "title": "On Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempts"
+      ],
+      "title": "RetryPolicy",
+      "type": "object"
+    },
+    "ShellStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "env": {
+          "title": "Env",
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "description": "Environment variables; numbers and booleans are coerced to text."
+        },
+        "output_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Schema"
+        },
+        "shell": {
+          "title": "Shell",
+          "type": "string"
+        },
+        "interpreter": {
+          "default": "bash",
+          "enum": [
+            "bash",
+            "sh"
+          ],
+          "title": "Interpreter",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        }
+      },
+      "required": [
+        "id",
+        "shell"
+      ],
+      "title": "ShellStep",
+      "type": "object"
+    },
+    "StopSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "cancelled",
+          "enum": [
+            "succeeded",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "title": "StopSpec",
+      "type": "object"
+    },
+    "StopStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Needs",
+          "type": "array"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "When"
+        },
+        "join": {
+          "default": "all",
+          "enum": [
+            "all",
+            "any",
+            "always"
+          ],
+          "title": "Join",
+          "type": "string"
+        },
+        "timeout": {
+          "default": null,
+          "title": "Timeout",
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^(?=.*\\d)\\s*(?:\\d+(?:\\.\\d+)?h)?\\s*(?:\\d+(?:\\.\\d+)?m(?!s))?\\s*(?:\\d+(?:\\.\\d+)?s)?\\s*(?:\\d+ms)?\\s*$"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Seconds (90) or a duration string ('90s', '1h30m')."
+        },
+        "always_run": {
+          "default": false,
+          "title": "Always Run",
+          "type": "boolean"
+        },
+        "allow_failure": {
+          "default": false,
+          "title": "Allow Failure",
+          "type": "boolean"
+        },
+        "stop": {
+          "$ref": "#/$defs/StopSpec"
+        }
+      },
+      "required": [
+        "id",
+        "stop"
+      ],
+      "title": "StopStep",
+      "type": "object"
+    },
+    "ToolsSpec": {
+      "additionalProperties": false,
+      "description": "Neutral allow/deny lists.\n\nEntries are tool groups (``read edit shell web agent``), ``mcp:<server>[/<tool>]``, or a\nprovider-native name prefixed with the provider id (``claude:WebFetch``).",
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allow",
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Deny",
+          "type": "array"
+        }
+      },
+      "title": "ToolsSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "rayspec": {
+      "description": "Schema version — must be 1.",
+      "title": "Rayspec",
+      "const": 1
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "inputs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/InputSpec"
+      },
+      "title": "Inputs",
+      "type": "object"
+    },
+    "defaults": {
+      "$ref": "#/$defs/Defaults"
+    },
+    "isolation": {
+      "default": "worktree",
+      "enum": [
+        "worktree",
+        "none"
+      ],
+      "title": "Isolation",
+      "type": "string"
+    },
+    "agents": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AgentDef"
+      },
+      "title": "Agents",
+      "type": "object"
+    },
+    "steps": {
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/PromptStep"
+          },
+          {
+            "$ref": "#/$defs/ShellStep"
+          },
+          {
+            "$ref": "#/$defs/PythonStep"
+          },
+          {
+            "$ref": "#/$defs/LoopStep"
+          },
+          {
+            "$ref": "#/$defs/EachStep"
+          },
+          {
+            "$ref": "#/$defs/ApproveStep"
+          },
+          {
+            "$ref": "#/$defs/IncludeStep"
+          },
+          {
+            "$ref": "#/$defs/StopStep"
+          }
+        ]
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "outputs": {
+      "additionalProperties": true,
+      "title": "Outputs",
+      "type": "object"
+    }
+  },
+  "required": [
+    "rayspec",
+    "name",
+    "steps"
+  ],
+  "type": "object"
+}

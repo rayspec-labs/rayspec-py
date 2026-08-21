@@ -1,0 +1,20 @@
+# Project config (merged over ~/.rayspec/config.yaml; project wins per top-level key).
+default_provider: claude
+
+tiers:                              # what `model: small|medium|large` means per provider
+  claude: { small: haiku, medium: sonnet, large: opus }
+  codex:
+    small: { model: gpt-5.4, effort: low }
+    medium: gpt-5.4
+    large: { model: gpt-5.4, effort: high }
+
+aliases:                            # `model: "@name"` — may also pin provider + effort
+  "@fast": { provider: codex, model: gpt-5.4, effort: low }
+  "@deep": { provider: claude, model: opus, effort: high }
+
+pricing:                            # USD per 1M tokens; used when the provider reports no cost (~$)
+  "gpt-5.4*": { input: 2.0, cached_input: 0.5, output: 8.0 }
+
+providers:                          # settings handed to each provider factory
+  claude: { setting_sources: [project] }
+  codex: { config: { model_reasoning_summary: concise } }

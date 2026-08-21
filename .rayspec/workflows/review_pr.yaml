@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: review_pr
+description: Review a rayspec pull request (gate + contracts + reviewer agent) and optionally comment.
+
+inputs:
+  pr: { type: integer, required: true, description: "Pull request number" }
+  post: { type: boolean, default: false, description: "Post the review as a PR comment" }
+
+isolation: worktree                 # review in a fresh worktree; the checkout stays untouched
+defaults:
+  timeout: 30m
+
+steps:
+  - id: checkout
+    shell: gh pr checkout "$RAYSPEC_INPUT_PR"
+
+  - id: gate
+    needs: [checkout]
+    shell: |
+      uv sync --all-groups
+      uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q -m "not live"
+    allow_failure: true             # a red gate is a finding, not a reason to stop the review
+    timeout: 25m
+
+  - id: contracts
+    needs: [checkout]
+    description: Which frozen contract files does this PR touch?
+    shell: |
+      git fetch -q origin main
+      git diff --name-only origin/main...HEAD -- CONTRACTS.md src/rayspec/schema \
+        src/rayspec/providers/base.py src/rayspec/engine/paths.py src/rayspec/store/model.py \
+        src/rayspec/store/base.py src/rayspec/events/model.py src/rayspec/events/base.py
+
+  - id: review
+    needs: [gate, contracts]
+    agent: reviewer
+    prompt: |
+      Review PR #{{ inputs.pr }} (`gh pr view {{ inputs.pr }}`, `git diff origin/main...HEAD`).
+
+      Quality gate (exit {{ steps.gate.exit_code }}, ok={{ steps.gate.ok }}) — tail:
+      {{ steps.gate.output | truncate(4000, true) }}
+
+      Frozen contract files touched:
+      {{ steps.contracts.output or '(none)' }}
+
+      Verdict rules: request_changes when the gate is red, a frozen module changed without a
+      CONTRACTS.md update, or behaviour lacks tests.
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, request_changes] }
+        summary: { type: string }
+        findings: { type: array, items: { type: string } }
+      required: [verdict, summary, findings]
+
+  - id: comment
+    needs: [review]
+    when: inputs.post
+    shell: |
+      gh pr comment "$RAYSPEC_INPUT_PR" --body "{{ steps.review.output.summary }}"
+
+outputs:
+  verdict: "{{ steps.review.output.verdict }}"
+  summary: "{{ steps.review.output.summary }}"
+  findings: "{{ steps.review.output.findings }}"
+  gate_ok: "{{ steps.gate.ok }}"

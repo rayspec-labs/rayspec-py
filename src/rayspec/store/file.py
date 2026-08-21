@@ -1,0 +1,668 @@
+# SPDX-License-Identifier: Apache-2.0
+"""File-based :class:`~rayspec.store.base.RunStore` — the checkpoint on disk.
+
+Module boundary: this is the only place that knows the on-disk layout of a run. The engine
+persists through the protocol (``create``/``save``/``write_output``/``append_event``/
+``append_stream``); the CLI reads through ``load``/``list_runs``/``read_*``. Event sinks never
+touch these files.
+
+Layout::
+
+    <root>/runs/<run-id>/
+        run.json                      RunRecord.model_dump_json() — atomically replaced
+        events.jsonl                  lifecycle RunEvents (one JSON object per line)
+        steps/<step-path>/            StepPath.fs_path(); nested like ``build[2]/implement``
+            output.txt | output.json  the step output (write-ahead: written before run.json)
+            prompt.txt                prompt steps: the rendered prompt handed to the provider
+            stream.jsonl              per-step StreamRecords (agent deltas, tool calls, stdout…)
+            stdout.log / stderr.log   written directly by the executors
+        artifacts/                    user artifacts
+        tmp/                          scratch for executors (spill files etc.)
+
+Durability rules: ``save`` writes ``run.json.<pid>.<n>.tmp``, fsyncs, then ``os.replace``s it
+(a crash leaves the previous ``run.json`` intact); outputs are written the same way
+(``output.<kind>.<pid>.<n>.tmp`` → fsync → replace) before the record that references them is
+saved, so a failed rewrite never destroys a previous output; JSONL appends write one whole line
+per call and flush (not fsync) — readers tolerate a torn trailing line after a crash.
+
+Permissions: the store holds inputs, transcripts and outputs, so every directory it
+creates (``$RAYSPEC_HOME`` and ``projects/<slug>/`` included when they do not exist yet,
+``runs/<id>/``, ``steps/<path>/``) is ``0700`` and every file it writes is ``0600``,
+independent of the process umask (:func:`secure_mkdir` / :func:`open_private`). Pre-existing
+directories are never re-chmodded. The other writers under ``$RAYSPEC_HOME`` that run before or
+beside the store — the workdir lock (``projects/<slug>/locks/*.lock``, usually the first writer
+on a run), the step ``context.json`` and the executor ``stdout.log``/``stderr.log`` — use the
+same two helpers; ``worktrees/`` (git checkouts, registry) is the remaining umask-mode writer.
+
+Redaction: the store carries a :class:`~rayspec.redact.Redactor` (``NULL_REDACTOR`` by
+default; the CLI installs the real one once the run's secrets are resolved) and applies it to
+**every** byte it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl``.
+Records and events are redacted as serialised JSON text, which is why the redactor also knows
+each value's JSON-escaped form. Streamed text is redacted through a
+:class:`~rayspec.redact.StreamRedactor` per ``(run, step, kind, attempt)`` so a secret split
+across two deltas is still caught; only a tail that could still grow into a secret is held back,
+and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
+``run.finished``/``run.paused`` (:meth:`FileRunStore.flush_streams` is the explicit form). What
+``stream.jsonl`` reassembles to is therefore exactly what the step produced — redaction moves
+chunk boundaries, it never drops text. That is the whole point of routing new writes through the
+store: a writer that opens a file under the run dir directly is not covered.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import logging
+import os
+import re
+import shutil
+import threading
+from collections.abc import Callable, Collection, Iterable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO, TypeVar, cast
+
+from pydantic import ValidationError
+
+from rayspec.engine.paths import StepPath
+from rayspec.errors import RayspecError
+from rayspec.events.model import EventType, RunEvent, StreamRecord
+from rayspec.redact import NULL_REDACTOR, Redactor, StreamRedactor
+from rayspec.store.model import RunRecord, StepRecord
+
+_log = logging.getLogger(__name__)
+T = TypeVar("T")
+
+#: Modes of everything the store creates (independent of the umask).
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+#: ``os.open`` flags that are not available on every platform (``0`` when missing).
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_CHUNK_CHARS = 1 << 20  # characters per write while streaming large outputs
+_OUTPUT_FILES = {"text": "output.txt", "json": "output.json"}
+
+RUN_JSON = "run.json"
+#: The rendered prompt of a ``prompt:`` step (``steps/<path>/prompt.txt``).
+PROMPT_TXT = "prompt.txt"
+EVENTS_JSONL = "events.jsonl"
+STREAM_JSONL = "stream.jsonl"
+_RUN_SUBDIRS = ("steps", "artifacts", "tmp")
+
+
+class StoreError(RayspecError):
+    """Base class for run-store errors (unknown/ambiguous run ids, duplicate runs)."""
+
+
+class UnknownRunIdError(StoreError):
+    """No run matches the given id or prefix."""
+
+
+class AmbiguousRunIdError(StoreError):
+    """A run-id prefix matches more than one run; ``candidates`` lists them (newest first)."""
+
+    def __init__(self, prefix: str, candidates: list[str]):
+        self.prefix = prefix
+        self.candidates = candidates
+        shown = ", ".join(candidates[:5]) + (" …" if len(candidates) > 5 else "")
+        super().__init__(
+            f"run id prefix {prefix!r} is ambiguous: {shown}",
+            hint="use a longer prefix or the full run id",
+        )
+
+
+class RunExistsError(StoreError):
+    """``create`` was called for a run id that already has a directory."""
+
+
+class CorruptRunError(StoreError):
+    """``run.json`` exists but is not a valid :class:`RunRecord` (bad JSON/shape/bytes)."""
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenOutput:
+    """Result of :meth:`FileRunStore.write_output_with_sha`.
+
+    ``output_ref`` is run-dir relative (the value stored in ``StepRecord.output_ref``);
+    ``sha256``/``size`` describe the bytes actually on disk (JSON outputs are hashed in their
+    pretty-printed form).
+    """
+
+    output_ref: str
+    path: Path
+    kind: str
+    sha256: str
+    size: int
+
+
+class FileRunStore:
+    """Run store rooted at ``root`` (typically ``~/.rayspec/projects/<slug>``).
+
+    Thread-safe for a single process: ``save`` is serialised by one lock (single writer), JSONL
+    appends by another, so it is safe to call the sync methods from worker threads
+    (``anyio.to_thread.run_sync``) or from several anyio tasks. The append lock is process-wide
+    (all runs, all steps) and every append re-opens the file: trivially correct and cheap at v1
+    volumes (a few deltas per second); per-path handles/locks are a later optimisation.
+    """
+
+    def __init__(self, root: Path, *, redactor: Redactor = NULL_REDACTOR):
+        self.root = Path(root)
+        self.runs_root = self.root / "runs"
+        self._save_lock = threading.Lock()
+        self._append_lock = threading.Lock()
+        self._tmp_counter = itertools.count()
+        #: applied to every byte this store writes. The store is built before the run's
+        #: secrets are known, so the CLI assigns the real redactor to this attribute at run
+        #: start; ``NULL_REDACTOR`` (the default) is a no-op the writers skip entirely.
+        self.redactor: Redactor = redactor
+        self._stream_redactors: dict[tuple[str, str, str, int], StreamRedactor] = {}
+
+    # -- paths --------------------------------------------------------------------------------
+
+    def run_dir(self, run_id: str) -> Path:
+        """Directory of a run (not created). Raises ``ValueError`` for unsafe ids."""
+        return self.runs_root / _check_run_id(run_id)
+
+    def step_dir(self, run_id: str, step_path: str) -> Path:
+        """``steps/<path>`` for a run, created (with parents, ``0700``) on first use.
+
+        Raises ``ValueError`` for an invalid or empty step path (the root path is never a step).
+        """
+        path = self._step_dir_path(run_id, step_path)
+        secure_mkdir(path)
+        return path
+
+    def _step_dir_path(self, run_id: str, step_path: str) -> Path:
+        parsed = StepPath.parse(step_path)
+        if parsed.is_root:
+            raise ValueError("step path must not be empty")
+        return self.run_dir(run_id) / "steps" / parsed.fs_path()
+
+    def exists(self, run_id: str) -> bool:
+        """True if the run has a ``run.json``."""
+        return (self.run_dir(run_id) / RUN_JSON).is_file()
+
+    # -- run.json -----------------------------------------------------------------------------
+
+    def create(self, run: RunRecord) -> None:
+        """Create the run directory skeleton and write the first ``run.json``."""
+        run_dir = self.run_dir(run.run_id)
+        if run_dir.exists():
+            raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}")
+        self.save(run)
+
+    def save(self, run: RunRecord) -> None:
+        """Atomically persist the whole record: tmp file + fsync + ``os.replace``.
+
+        The run directory skeleton (``steps/``, ``artifacts/``, ``tmp/``) is ensured as well, so
+        a run saved without :meth:`create` is still a complete run dir.
+        """
+        run_dir = self.run_dir(run.run_id)
+        _ensure_skeleton(run_dir)
+        payload = self.redactor.redact(run.model_dump_json(indent=2) + "\n")
+        with self._save_lock:
+            tmp = run_dir / f"{RUN_JSON}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
+            try:
+                with open_private(tmp, "w") as fh:
+                    fh.write(payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, run_dir / RUN_JSON)
+            except BaseException:
+                _unlink_quietly(tmp)
+                raise
+            _fsync_dir(run_dir)
+
+    def load(self, run_id: str) -> RunRecord:
+        """Load ``run.json``; unknown keys are ignored (forward compatible).
+
+        Raises :class:`UnknownRunIdError` if there is no ``run.json`` and
+        :class:`CorruptRunError` if it cannot be parsed into a :class:`RunRecord`.
+        """
+        path = self.run_dir(run_id) / RUN_JSON
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise UnknownRunIdError(f"unknown run {run_id!r}") from None
+        except UnicodeDecodeError as exc:
+            raise CorruptRunError(f"run.json of {run_id!r} at {path} is not UTF-8: {exc}") from exc
+        try:
+            return RunRecord.model_validate_json(text)
+        except ValidationError as exc:
+            raise CorruptRunError(
+                f"run.json of {run_id!r} at {path} is not a valid RunRecord: {exc}"
+            ) from exc
+
+    # -- listing / resolution -----------------------------------------------------------------
+
+    def list_run_ids(self) -> list[str]:
+        """Run ids that have a ``run.json``, newest first (ids are time-sortable)."""
+        if not self.runs_root.is_dir():
+            return []
+        ids = [
+            entry.name
+            for entry in os.scandir(self.runs_root)
+            if entry.is_dir() and _RUN_ID_RE.match(entry.name) and self.exists(entry.name)
+        ]
+        return sorted(ids, reverse=True)
+
+    def list_runs(self, *, limit: int | None = None) -> list[RunRecord]:
+        """Load runs newest first; unreadable ``run.json`` files are skipped with a warning."""
+        runs: list[RunRecord] = []
+        for run_id in self.list_run_ids():
+            if limit is not None and len(runs) >= limit:
+                break
+            try:
+                runs.append(self.load(run_id))
+            except Exception as exc:  # listing must survive one bad file
+                _log.warning("skipping unreadable run %s: %s", run_id, exc)
+        return runs
+
+    def resolve_run_id(self, prefix: str) -> str:
+        """Resolve a full id or unique prefix to a run id (exact match always wins)."""
+        ids = self.list_run_ids()
+        if prefix and prefix in ids:
+            return prefix
+        candidates = [rid for rid in ids if rid.startswith(prefix)] if prefix else []
+        if not candidates:
+            raise UnknownRunIdError(
+                f"no run matches {prefix!r}", hint="run `rayspec runs` to list known runs"
+            )
+        if len(candidates) > 1:
+            raise AmbiguousRunIdError(prefix, candidates)
+        return candidates[0]
+
+    def delete_run(self, run_id: str) -> None:
+        """Remove a run directory (outputs, logs, artifacts included)."""
+        run_dir = self.run_dir(run_id)
+        if not run_dir.exists():
+            raise UnknownRunIdError(f"unknown run {run_id!r}")
+        shutil.rmtree(run_dir)
+
+    # -- outputs ------------------------------------------------------------------------------
+
+    def write_output(self, run_id: str, step_path: str, content: str, *, kind: str) -> str:
+        """Write ``steps/<path>/output.txt|json`` (fsync) and return its run-dir-relative ref."""
+        return self.write_output_with_sha(run_id, step_path, content, kind=kind).output_ref
+
+    def write_output_with_sha(
+        self, run_id: str, step_path: str, content: str, *, kind: str
+    ) -> WrittenOutput:
+        """Like :meth:`write_output` but also reports sha256/size of the written bytes.
+
+        ``kind`` is ``"text"`` (written verbatim, streamed in chunks) or ``"json"`` (``content``
+        must be a strict JSON document — ``NaN``/``Infinity`` are rejected; it is re-serialised
+        pretty-printed with a trailing newline). A stale output file of the other kind is removed.
+        The file is written as ``output.<kind>.<pid>.<n>.tmp`` + fsync + ``os.replace``: a failed
+        rewrite leaves the previous output intact.
+
+        Redaction happens before hashing, so the sha is the file's — and for ``json`` it
+        happens on the PARSED value, not on the serialised text: a secret that is a bare JSON
+        token (a number, ``true``, ``null``) would otherwise turn a valid document into an
+        invalid one. The marker replaces the value as a *string*, and the document stays
+        well-formed.
+        """
+        try:
+            filename = _OUTPUT_FILES[kind]
+        except KeyError:
+            raise ValueError(f"unknown output kind {kind!r}; expected 'text' or 'json'") from None
+        if kind == "json":
+            try:
+                parsed = json.loads(content, parse_constant=_reject_json_constant)
+                parsed = self.redactor.redact_obj(parsed)  # the value, not the text
+                content = json.dumps(parsed, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+            except ValueError as exc:  # JSONDecodeError is a ValueError too
+                raise ValueError(f"output of step {step_path!r} is not valid JSON: {exc}") from exc
+        else:
+            content = self.redactor.redact(content)
+        step_dir = self.step_dir(run_id, step_path)
+        for other_kind, other_name in _OUTPUT_FILES.items():
+            if other_kind != kind:
+                _unlink_quietly(step_dir / other_name)
+        path = step_dir / filename
+        tmp = step_dir / f"{filename}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
+        sha, size = _write_text_durably(path, tmp, _chunks(content))
+        rel = path.relative_to(self.run_dir(run_id)).as_posix()
+        return WrittenOutput(output_ref=rel, path=path, kind=kind, sha256=sha, size=size)
+
+    def write_prompt(self, run_id: str, step_path: str, text: str) -> str:
+        """Write ``steps/<path>/prompt.txt`` (fsync) and return its run-dir-relative ref.
+
+        Additive sibling of :meth:`write_output` for the *input* side of a ``prompt:`` step: the
+        fully rendered prompt the provider was handed, written **before** the call, so
+        ``rayspec explain --full`` can show the exact bytes even when the attempt never produced
+        an output. Same durability and permissions as an output (``prompt.txt.<pid>.<n>.tmp`` +
+        fsync + ``os.replace``, ``0600`` through :func:`open_private`); a later attempt of the
+        same step overwrites it. Read it back with :meth:`read_output` (the ref is a plain
+        run-dir-relative path).
+        """
+        step_dir = self.step_dir(run_id, step_path)
+        path = step_dir / PROMPT_TXT
+        tmp = step_dir / f"{PROMPT_TXT}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
+        _write_text_durably(path, tmp, _chunks(text))
+        return path.relative_to(self.run_dir(run_id)).as_posix()
+
+    def read_output(self, run_id: str, output_ref: str) -> str:
+        """Read an output by its run-dir-relative ref (``FileNotFoundError`` if missing).
+
+        ``ValueError`` if the ref is absolute, contains ``..`` or resolves (through symlinks)
+        outside the run directory.
+        """
+        return self._resolve_ref(run_id, output_ref).read_text(encoding="utf-8")
+
+    def record_step(
+        self,
+        run: RunRecord,
+        record: StepRecord,
+        output: str | None = None,
+        *,
+        kind: str = "text",
+    ) -> WrittenOutput | None:
+        """Write-ahead helper: output file → record → ``run.json``, in that order.
+
+        When ``output`` is given it is written first and ``record.output_ref``/``output_kind``/
+        ``output_sha256`` are filled in; then ``record`` is stored under ``run.steps[record.path]``
+        and the run is saved. Returns the written output description (or ``None``).
+
+        Both writes go through the redactor — the output file directly, the record as
+        part of ``run.json`` — and the step's held-back stream tail is flushed first, so a
+        finished step's ``stream.jsonl`` is complete before ``run.json`` points at it. (The
+        engine persists steps through :meth:`save`; the flush that covers it is the one
+        :meth:`append_event` does on ``step.finished``.)
+        """
+        self.flush_streams(run.run_id, record.path)  # no held-back delta may be lost
+        written: WrittenOutput | None = None
+        if output is not None:
+            written = self.write_output_with_sha(run.run_id, record.path, output, kind=kind)
+            record.output_ref = written.output_ref
+            record.output_kind = written.kind
+            record.output_sha256 = written.sha256
+        run.steps[record.path] = record
+        self.save(run)
+        return written
+
+    # -- events / streams ---------------------------------------------------------------------
+
+    def append_event(self, run_id: str, event: RunEvent) -> None:
+        """Append one lifecycle event to ``events.jsonl`` (one line, flushed, redacted).
+
+        ``step.finished``/``run.finished`` are also what END a stream, so this is where the
+        boundary buffer of :meth:`append_stream` is flushed: the engine emits both for
+        every step and every run — including a failed, cancelled or paused one — so no held-back
+        tail can be lost, and nothing outside the store has to remember the rule.
+        """
+        if self._stream_redactors:
+            if event.type is EventType.STEP_FINISHED and event.step_path:
+                self.flush_streams(run_id, event.step_path)
+            elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
+                self.flush_streams(run_id)
+        self._append_line(
+            self.run_dir(run_id) / EVENTS_JSONL, self.redactor.redact(event.to_json())
+        )
+
+    def append_stream(self, run_id: str, step_path: str, record: StreamRecord) -> None:
+        """Append one stream record to ``steps/<path>/stream.jsonl`` (one line, flushed).
+
+        With a redactor installed the record's ``text`` goes through a
+        :class:`~rayspec.redact.StreamRedactor` for its ``(run, step, kind, attempt)`` so a
+        secret split across two deltas is caught; the rest of the line is redacted as JSON text.
+        Only a tail that could still grow into a secret is held back, and it is written by
+        :meth:`flush_streams` — which :meth:`append_event` calls on ``step.finished`` and
+        ``run.finished``/``run.paused``, so a finished stream is always complete on disk.
+        """
+        if self.redactor:
+            record = self._redact_stream(run_id, step_path, record)
+        self._append_line(
+            self.step_dir(run_id, step_path) / STREAM_JSONL, self.redactor.redact(record.to_json())
+        )
+
+    def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
+        """Write the text a :meth:`append_stream` boundary buffer is still holding back.
+
+        ``step_path`` limits the flush to one step (what :meth:`record_step` does); without it
+        every buffered stream of the run is flushed. A no-op without a redactor.
+        """
+        for key in [k for k in self._stream_redactors if k[0] == run_id]:
+            if step_path is not None and key[1] != step_path:
+                continue
+            stream = self._stream_redactors.pop(key)
+            tail = stream.flush()
+            if tail:
+                record = StreamRecord(kind=key[2], attempt=key[3], text=tail)
+                self._append_line(
+                    self.step_dir(run_id, key[1]) / STREAM_JSONL,
+                    self.redactor.redact(record.to_json()),
+                )
+
+    def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
+        """``record`` with its ``text`` passed through the step's boundary-safe buffer."""
+        if not record.text:
+            return record
+        key = (run_id, step_path, record.kind, record.attempt)
+        stream = self._stream_redactors.get(key)
+        if stream is None:
+            stream = self._stream_redactors[key] = StreamRedactor(self.redactor)
+        return record.model_copy(update={"text": stream.feed(record.text)})
+
+    def read_events(self, run_id: str) -> Iterator[RunEvent]:
+        """Iterate ``events.jsonl`` (empty if absent).
+
+        A torn trailing line (crash/SIGINT mid-write) ends the iteration with a warning; an
+        unparseable line in the middle is skipped with a warning.
+        """
+        yield from _iter_records(self.run_dir(run_id) / EVENTS_JSONL, RunEvent.from_json)
+
+    def read_stream(
+        self, run_id: str, step_path: str, *, kinds: Collection[str] | None = None
+    ) -> Iterator[StreamRecord]:
+        """Iterate ``steps/<path>/stream.jsonl`` (empty if absent); torn lines as in read_events.
+
+        ``kinds`` restricts the result to records of those kinds and makes
+        the scan cheap: a line is parsed only when it contains one of the kind names as a JSON
+        string (``"warning"``), so ``rayspec show`` finds the warnings of a multi-MB transcript
+        without validating every delta.
+        """
+        path = self._step_dir_path(run_id, step_path) / STREAM_JSONL
+        if kinds is None:
+            yield from _iter_records(path, StreamRecord.from_json)
+            return
+        wanted = frozenset(kinds)
+        needles = [f'"{kind}"' for kind in wanted]
+        for record in _iter_records(
+            path, StreamRecord.from_json, prefilter=lambda line: any(n in line for n in needles)
+        ):
+            if record.kind in wanted:
+                yield record
+
+    # -- internals ----------------------------------------------------------------------------
+
+    def _append_line(self, path: Path, line: str) -> None:
+        secure_mkdir(path.parent)
+        with self._append_lock, open_private(path, "a") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+
+    def _resolve_ref(self, run_id: str, output_ref: str) -> Path:
+        run_dir = self.run_dir(run_id)
+        rel = Path(output_ref)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ValueError(f"output_ref must be run-dir relative: {output_ref!r}")
+        path = run_dir / rel
+        if not path.resolve(strict=False).is_relative_to(run_dir.resolve(strict=False)):
+            raise ValueError(f"output_ref {output_ref!r} escapes the run directory")
+        return path
+
+
+def _check_run_id(run_id: str) -> str:
+    if not _RUN_ID_RE.match(run_id):  # the regex also excludes "." and ".."
+        raise ValueError(f"invalid run id {run_id!r}")
+    return run_id
+
+
+def _chunks(text: str) -> Iterator[str]:
+    for start in range(0, len(text), _CHUNK_CHARS):
+        yield text[start : start + _CHUNK_CHARS]
+
+
+def _reject_json_constant(name: str) -> None:
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def _ensure_skeleton(run_dir: Path) -> None:
+    for sub in _RUN_SUBDIRS:
+        secure_mkdir(run_dir / sub)
+
+
+def secure_mkdir(path: Path) -> None:
+    """``mkdir -p`` with mode ``0700`` for every directory that does not exist yet.
+
+    Directories that already exist — a user's ``~/.rayspec`` created by hand, ``projects/`` from
+    an older version — are left exactly as they are; only the ones created by this call are
+    chmodded (``mkdir(mode=)`` alone is subject to the umask).
+    """
+    path = Path(path)
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=PRIVATE_DIR_MODE)
+        except FileExistsError:
+            continue  # created concurrently (another run of the same project)
+        try:
+            os.chmod(directory, PRIVATE_DIR_MODE)
+        except OSError as exc:  # pragma: no cover - e.g. a filesystem without modes
+            _log.debug("could not chmod %s: %s", directory, exc)
+
+
+def open_private(
+    path: Path, mode: str = "w", *, encoding: str = "utf-8", newline: str | None = None
+) -> TextIO:
+    """``open(path, mode)`` that creates the file ``0600`` (``w``/``a``/``x`` modes, text).
+
+    The mode is applied at creation through ``os.open`` (umask can only remove bits from
+    ``0600``), so a new file is never readable by others even for an instant; an existing file
+    keeps its mode. A symlink at ``path`` is refused (``O_NOFOLLOW``, raises ``OSError``) so a
+    planted link cannot redirect the write, and the descriptor is close-on-exec.
+    """
+    if mode not in {"w", "a", "x"}:
+        raise ValueError(f"open_private supports 'w', 'a' or 'x', not {mode!r}")
+    flags = os.O_WRONLY | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC
+    if mode == "w":
+        flags |= os.O_TRUNC
+    elif mode == "a":
+        flags |= os.O_APPEND
+    else:
+        flags |= os.O_EXCL
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        return cast(TextIO, os.fdopen(fd, mode, encoding=encoding, newline=newline))
+    except BaseException:  # pragma: no cover - fdopen failing is exotic
+        os.close(fd)
+        raise
+
+
+def _write_text_durably(path: Path, tmp: Path, chunks: Iterable[str]) -> tuple[str, int]:
+    """Stream ``chunks`` (utf-8) to ``tmp``, fsync, ``os.replace`` onto ``path``.
+
+    Returns ``(sha256, size_bytes)`` of the written bytes. On any failure ``tmp`` is removed and
+    ``path`` (the previous output, if any) is left untouched.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with open_private(tmp, "w", newline="") as fh:
+            for chunk in chunks:
+                data = chunk.encode("utf-8")
+                digest.update(data)
+                size += len(data)
+                fh.write(chunk)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        _unlink_quietly(tmp)
+        raise
+    _fsync_dir(path.parent)
+    return digest.hexdigest(), size
+
+
+def _iter_lines(path: Path) -> Iterator[tuple[str, bool]]:
+    """Yield ``(line, terminated)`` for non-empty lines; ``terminated`` is False for a torn tail."""
+    if not path.is_file():
+        return
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            terminated = raw.endswith("\n")
+            line = raw.rstrip("\n")
+            if line:
+                yield line, terminated
+
+
+def _iter_records(
+    path: Path, parse: Callable[[str], T], *, prefilter: Callable[[str], bool] | None = None
+) -> Iterator[T]:
+    """Parse JSONL records; a torn trailing line stops iteration, a bad middle line is skipped.
+
+    ``prefilter`` (a cheap substring test) skips lines without parsing them — a torn or
+    unreadable line that fails the filter is skipped silently like any other filtered line.
+    """
+    for line, terminated in _iter_lines(path):
+        if prefilter is not None and not prefilter(line):
+            continue
+        try:
+            yield parse(line)
+        except (ValidationError, ValueError) as exc:
+            if not terminated:
+                _log.warning("%s: ignoring torn trailing line (%s)", path, exc)
+                return
+            _log.warning("%s: skipping unreadable line (%s)", path, exc)
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:  # pragma: no cover - best effort
+        _log.debug("could not remove %s: %s", path, exc)
+
+
+def _fsync_dir(path: Path) -> None:
+    """Best-effort directory fsync so the rename itself is durable (POSIX only)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:  # pragma: no cover - e.g. Windows
+        return
+    try:
+        os.fsync(fd)
+    except OSError:  # pragma: no cover
+        pass
+    finally:
+        os.close(fd)
+
+
+__all__ = [
+    "EVENTS_JSONL",
+    "PRIVATE_DIR_MODE",
+    "PRIVATE_FILE_MODE",
+    "PROMPT_TXT",
+    "RUN_JSON",
+    "STREAM_JSONL",
+    "AmbiguousRunIdError",
+    "CorruptRunError",
+    "FileRunStore",
+    "RunExistsError",
+    "StoreError",
+    "UnknownRunIdError",
+    "WrittenOutput",
+    "open_private",
+    "secure_mkdir",
+]

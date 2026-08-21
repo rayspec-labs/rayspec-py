@@ -1,0 +1,9 @@
+steps:
+  plan:
+    output:
+      tests: ["tests/engine/test_feature.py::test_happy_path"]
+      modules: ["src/rayspec/engine/runner.py"]
+      contract_changes: []
+  "tdd[*]/red": { text: "Wrote 3 failing tests; committed test(demo)." }
+  "tdd[*]/green": { text: "Implemented; all green; committed feat(demo)." }
+  review: { text: "LGTM" }

@@ -1,0 +1,2 @@
+steps:
+  notes: { output: { title: "v0.1.0 — first cut", notes: "### Added\n- everything" } }

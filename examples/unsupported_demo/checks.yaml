@@ -1,0 +1,19 @@
+checks:
+  - id: refused
+    workflow: unsupported_demo
+    validate: error                 # `rayspec validate` exits 2 and `run --dry-run` refuses too
+  - id: allowed
+    workflow: unsupported_demo
+    allow_unsupported: true         # --allow-unsupported turns the two errors into warnings
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { summary: "Fixed 3 ruff findings (unused imports); committed." }
+  - id: warn_in_workflow
+    workflow: unsupported_warn      # defaults.on_unsupported: warn → validate ok, no flag needed
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { summary: "Fixed 3 ruff findings (unused imports); committed." }

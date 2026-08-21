@@ -1,0 +1,8 @@
+# The same role on Codex (swap with `agent: codex_implementer` or `defaults.agent`).
+provider: codex
+model: large                        # gpt-5.4 @ effort high (built-in tier)
+access: workspace-write
+instructions_file: prompts/implementer.md
+tools: { deny: [web] }
+provider_options:
+  codex: { config: { sandbox_workspace_write: { network_access: true } } }   # uv needs the index

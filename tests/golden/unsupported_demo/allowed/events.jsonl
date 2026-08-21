@@ -1,0 +1,15 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "unsupported_demo"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "lint", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "lint", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "fix", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:fix:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:fix:1", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Fixed ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "3 ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "ruff ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "findings ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "(unused ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "imports); ", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "committed.", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "Fixed 3 ruff findings (unused imports); committed.", "ts": "<ts>"}, "step_path": "fix", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "fix", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"summary": "Fixed 3 ruff findings (unused imports); committed."}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

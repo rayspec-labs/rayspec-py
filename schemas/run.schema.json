@@ -1,0 +1,811 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/run.schema.json",
+  "title": "RunRecord",
+  "description": "One rayspec run record (<run dir>/run.json).",
+  "$defs": {
+    "Decision": {
+      "properties": {
+        "approved": {
+          "title": "Approved",
+          "type": "boolean"
+        },
+        "comment": {
+          "default": "",
+          "title": "Comment",
+          "type": "string"
+        },
+        "by": {
+          "default": "cli",
+          "title": "By",
+          "type": "string"
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approved"
+      ],
+      "title": "Decision",
+      "type": "object"
+    },
+    "EachInfo": {
+      "properties": {
+        "total": {
+          "default": 0,
+          "title": "Total",
+          "type": "integer"
+        },
+        "succeeded": {
+          "default": 0,
+          "title": "Succeeded",
+          "type": "integer"
+        },
+        "failed": {
+          "default": 0,
+          "title": "Failed",
+          "type": "integer"
+        }
+      },
+      "title": "EachInfo",
+      "type": "object"
+    },
+    "ErrorInfo": {
+      "properties": {
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "transient": {
+          "default": false,
+          "title": "Transient",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "title": "ErrorInfo",
+      "type": "object"
+    },
+    "LoopInfo": {
+      "properties": {
+        "iterations": {
+          "default": 0,
+          "title": "Iterations",
+          "type": "integer"
+        },
+        "converged": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Converged"
+        }
+      },
+      "title": "LoopInfo",
+      "type": "object"
+    },
+    "PauseInfo": {
+      "properties": {
+        "token": {
+          "title": "Token",
+          "type": "string"
+        },
+        "step": {
+          "title": "Step",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Decision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "token",
+        "step",
+        "message"
+      ],
+      "title": "PauseInfo",
+      "type": "object"
+    },
+    "RunStatus": {
+      "enum": [
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "paused",
+        "interrupted"
+      ],
+      "title": "RunStatus",
+      "type": "string"
+    },
+    "SessionRef": {
+      "properties": {
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "id"
+      ],
+      "title": "SessionRef",
+      "type": "object"
+    },
+    "StepRecord": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StepStatus",
+          "default": "pending"
+        },
+        "attempts": {
+          "default": 0,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "ok": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ok"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "approved": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Approved"
+        },
+        "output_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Ref"
+        },
+        "output_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Kind"
+        },
+        "output_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Sha256"
+        },
+        "prompt_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Ref"
+        },
+        "session_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "cost_source": {
+          "default": "none",
+          "title": "Cost Source",
+          "type": "string"
+        },
+        "usage_unknown": {
+          "default": false,
+          "title": "Usage Unknown",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "skip_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skip Reason"
+        },
+        "tolerated": {
+          "default": false,
+          "title": "Tolerated",
+          "type": "boolean"
+        },
+        "iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration"
+        },
+        "item_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Index"
+        },
+        "item_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Sha256"
+        },
+        "loop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "each": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EachInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fingerprint"
+        }
+      },
+      "required": [
+        "path",
+        "id",
+        "kind"
+      ],
+      "title": "StepRecord",
+      "type": "object"
+    },
+    "StepStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "skipped",
+        "interrupted",
+        "paused",
+        "rejected"
+      ],
+      "title": "StepStatus",
+      "type": "string"
+    },
+    "Usage": {
+      "description": "Token usage. ``input`` includes cached/cache-write tokens; ``output`` includes reasoning.",
+      "properties": {
+        "input": {
+          "default": 0,
+          "title": "Input",
+          "type": "integer"
+        },
+        "cached_input": {
+          "default": 0,
+          "title": "Cached Input",
+          "type": "integer"
+        },
+        "cache_write": {
+          "default": 0,
+          "title": "Cache Write",
+          "type": "integer"
+        },
+        "output": {
+          "default": 0,
+          "title": "Output",
+          "type": "integer"
+        },
+        "reasoning": {
+          "default": 0,
+          "title": "Reasoning",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    },
+    "WorkspaceInfo": {
+      "properties": {
+        "isolation": {
+          "default": "none",
+          "title": "Isolation",
+          "type": "string"
+        },
+        "workdir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workdir"
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Branch"
+        },
+        "base_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Branch"
+        },
+        "base_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Sha"
+        },
+        "head_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Head Sha"
+        }
+      },
+      "title": "WorkspaceInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema": {
+      "default": 1,
+      "title": "Schema",
+      "type": "integer"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "workflow_name": {
+      "title": "Workflow Name",
+      "type": "string"
+    },
+    "workflow_path": {
+      "title": "Workflow Path",
+      "type": "string"
+    },
+    "workflow_hash": {
+      "title": "Workflow Hash",
+      "type": "string"
+    },
+    "project_slug": {
+      "title": "Project Slug",
+      "type": "string"
+    },
+    "project_root": {
+      "title": "Project Root",
+      "type": "string"
+    },
+    "inputs": {
+      "additionalProperties": true,
+      "title": "Inputs",
+      "type": "object"
+    },
+    "status": {
+      "$ref": "#/$defs/RunStatus",
+      "default": "running"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ended At"
+    },
+    "resume_count": {
+      "default": 0,
+      "title": "Resume Count",
+      "type": "integer"
+    },
+    "pid": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pid"
+    },
+    "host": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Host"
+    },
+    "pid_started_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pid Started At"
+    },
+    "dry_run": {
+      "default": false,
+      "title": "Dry Run",
+      "type": "boolean"
+    },
+    "workspace": {
+      "$ref": "#/$defs/WorkspaceInfo"
+    },
+    "pause": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PauseInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "outputs": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outputs"
+    },
+    "steps": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StepRecord"
+      },
+      "title": "Steps",
+      "type": "object"
+    },
+    "cost_source": {
+      "default": "none",
+      "title": "Cost Source",
+      "type": "string"
+    },
+    "stubs_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stubs Path"
+    },
+    "secret_inputs": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Secret Inputs",
+      "type": "array"
+    },
+    "toolchain": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Toolchain"
+    }
+  },
+  "required": [
+    "run_id",
+    "workflow_name",
+    "workflow_path",
+    "workflow_hash",
+    "project_slug",
+    "project_root"
+  ],
+  "type": "object"
+}

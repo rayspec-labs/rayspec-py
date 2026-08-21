@@ -1,0 +1,61 @@
+# Dry-run checks for the repo's own (dogfood) workflows — run by scripts/check_examples.py and
+# tests/examples. Stub scripts live next to this file.
+checks:
+  - id: review_pr
+    workflow: review_pr
+    inputs: { pr: 1, post: true }
+    stubs: review_pr.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: approve }
+      steps: { gate: succeeded, review: succeeded, comment: succeeded }
+  - id: fix_issue
+    workflow: fix_issue
+    inputs: { issue: 1 }
+    stubs: fix_issue.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: fix, iterations: 2 }
+      steps: { bail: skipped, build: succeeded, pr: succeeded }
+  - id: fix_issue_skip
+    workflow: fix_issue
+    inputs: { issue: 2 }
+    stubs: fix_issue_skip.stubs.yaml
+    expect: { status: cancelled, exit_code: 4, steps: { build: skipped } }
+  - id: implement_feature_tdd
+    workflow: implement_feature_tdd
+    inputs: { spec: docs/constitution.md, branch_hint: demo }
+    stubs: implement_feature_tdd.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { rounds: 1 }
+      steps: { "tdd[1]/gate": succeeded, review: succeeded, pr: succeeded }
+  - id: docs_sync_drift
+    workflow: docs_sync
+    stubs: docs_sync.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { in_sync: false }
+      steps: { done: skipped, update: succeeded, links: succeeded, pr: succeeded }
+  - id: docs_sync_clean
+    workflow: docs_sync
+    inputs: { since: HEAD~1 }
+    stubs: docs_sync_clean.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      reason_contains: in sync
+      steps: { done: succeeded, update: skipped }
+  - id: release_check
+    workflow: release_check
+    inputs: { tag: v0.1.0 }
+    stubs: release_check.stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { tagged: false }
+      steps: { history: succeeded, notes: succeeded, gate_human: succeeded, tag: skipped, cleanup: succeeded }

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: unsupported_demo
+description: >
+  Deliberately asks a Codex agent for things only Claude governs (max_turns, a per-group tool
+  deny) so you can see the capability error — and how to downgrade it.
+
+# unsupported_warn.yaml is the same workflow with `defaults: {on_unsupported: warn}` — the
+# mismatch becomes a warning for that workflow only (same effect as --allow-unsupported).
+
+isolation: none
+
+agents:
+  fixer:
+    provider: codex
+    model: medium
+    access: workspace-write
+    max_turns: 40                   # capability max_turns=False on Codex → unsupported
+    tools: { deny: [edit, web] }    # Codex only governs the `web` group → `edit` is unsupported
+    instructions: Fix lint errors only; never touch behaviour.
+
+steps:
+  - id: lint
+    shell: ruff check . || true
+  - id: fix
+    needs: [lint]
+    agent: fixer
+    prompt: |
+      Lint output:
+      {{ steps.lint.output }}
+      Fix every finding and commit.
+
+outputs:
+  summary: "{{ steps.fix.output }}"

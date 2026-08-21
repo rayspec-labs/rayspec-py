@@ -1,0 +1,10 @@
+# Writes code in this repo (used by fix_issue, implement_feature_tdd, docs_sync).
+provider: claude
+model: large
+effort: high
+access: full                        # uv writes ~/.cache/uv and .venv outside the worktree cwd
+instructions_file: prompts/implementer.md
+max_turns: 120
+budget_usd: 8.0
+thinking: true
+tools: { deny: [web] }

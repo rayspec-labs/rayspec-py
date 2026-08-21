@@ -1,0 +1,27 @@
+{
+  "cost_source": "none",
+  "cost_usd": null,
+  "exit_code": 0,
+  "outputs": {
+    "notes": "### Added\n- everything",
+    "tagged": false,
+    "title": "v0.1.0 \u2014 first cut"
+  },
+  "pause": null,
+  "reason": null,
+  "run_dir": "<run-dir>",
+  "run_id": "<run-id>",
+  "status": "succeeded",
+  "usage": {
+    "cache_write": 0,
+    "cached_input": 0,
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+  },
+  "workspace": {
+    "branch": "<branch>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}

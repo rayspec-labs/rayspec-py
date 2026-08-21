@@ -1,0 +1,4 @@
+steps:
+  assess: { output: { verdict: fix, reason: "clear repro", scope: "loader" } }
+  "build[*]/implement": { text: "Added tests/loader/test_issue_1.py (red), fixed loader; committed." }
+  "build[*]/review": { sequence: ["- The new test does not assert the error hint.", "LGTM"] }

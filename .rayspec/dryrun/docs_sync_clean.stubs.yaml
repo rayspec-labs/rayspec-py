@@ -1,0 +1,2 @@
+steps:
+  drift: { output: { in_sync: true, drift: [] } }

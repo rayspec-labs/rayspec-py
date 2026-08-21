@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+# The example workflow that `rayspec init --kind content` created. Try it:
+#   rayspec validate
+#   rayspec plan example
+#   rayspec run example --dry-run --stubs .rayspec/stubs/example.yaml   # scripted agents, no login needed
+#   rayspec run example -i topic="onboarding new teammates"             # a real run (logged-in `claude`)
+rayspec: 1
+name: example
+description: Draft a short piece on a topic, let an editor judge it, and keep both.
+
+inputs:
+  topic: { type: string, default: "why small pull requests are easier to review" }
+  audience: { type: string, enum: [engineers, managers, everyone], default: engineers }
+
+isolation: none                     # a content project is not a checkout: always run in place, no worktree
+
+agents:
+  writer:                           # an inline agent (the editor lives in .rayspec/agents/reviewer.yaml)
+    provider: claude
+    model: medium
+    access: read-only               # answers in text only; it never touches files or runs commands
+    instructions: You write clear, concrete prose. No filler, no headings unless asked for.
+
+steps:
+  - id: draft
+    agent: writer
+    prompt_file: prompts/draft.md   # relative to .rayspec/
+
+  - id: review
+    needs: [draft]
+    agent: reviewer                 # .rayspec/agents/reviewer.yaml
+    prompt: |
+      Review this draft written for {{ inputs.audience }}:
+
+      {{ steps.draft.output }}
+
+      Decide `approve` or `revise` and say why in one paragraph.
+    output_schema:                  # the verdict is validated JSON, usable as steps.review.output.<key>
+      type: object
+      properties:
+        verdict: { enum: [approve, revise] }
+        notes: { type: string }
+      required: [verdict, notes]
+
+outputs:
+  draft: "{{ steps.draft.output }}"
+  verdict: "{{ steps.review.output.verdict }}"
+  notes: "{{ steps.review.output.notes }}"

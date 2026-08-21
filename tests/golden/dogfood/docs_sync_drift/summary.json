@@ -1,0 +1,29 @@
+{
+  "cost_source": "none",
+  "cost_usd": null,
+  "exit_code": 0,
+  "outputs": {
+    "drift": [
+      "CONTRACTS.md: `rayspec run` flag list lacks --stubs-init",
+      "docs/cli.md: exit code 3 undocumented"
+    ],
+    "in_sync": false
+  },
+  "pause": null,
+  "reason": null,
+  "run_dir": "<run-dir>",
+  "run_id": "<run-id>",
+  "status": "succeeded",
+  "usage": {
+    "cache_write": 0,
+    "cached_input": 0,
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+  },
+  "workspace": {
+    "branch": "<branch>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}

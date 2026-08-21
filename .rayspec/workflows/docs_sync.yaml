@@ -1,0 +1,69 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: docs_sync
+description: Detect docs that drifted from the code since a ref, fix them in a worktree, open a PR.
+
+inputs:
+  since: { type: string, default: origin/main, description: "Compare the docs against this ref" }
+  docs: { type: array, items: { type: string }, default: [README.md, CONTRACTS.md, docs, examples] }
+
+defaults:
+  timeout: 30m
+
+steps:
+  - id: changed
+    shell: git diff --name-only "$RAYSPEC_INPUT_SINCE"...HEAD -- src/ | head -n 200
+
+  - id: drift
+    needs: [changed]
+    agent: reviewer
+    prompt: |
+      Code changed since {{ inputs.since }}:
+      {{ steps.changed.output or '(no code changes)' }}
+
+      Check {{ inputs.docs | join(', ') }} for statements the change made wrong or incomplete
+      (CLI flags, schema fields, capability tables, file layouts). Report drift only, no style.
+    output_schema:
+      type: object
+      properties:
+        in_sync: { type: boolean }
+        drift: { type: array, items: { type: string } }
+      required: [in_sync, drift]
+
+  - id: done
+    needs: [drift]
+    when: steps.drift.output.in_sync
+    stop: { status: succeeded, reason: "docs are in sync with the code" }
+
+  - id: update
+    needs: [drift]
+    when: not steps.drift.output.in_sync
+    agent: implementer
+    prompt: |
+      Fix this documentation drift (docs only, no code):
+      {% for item in steps.drift.output.drift %}- {{ item }}
+      {% endfor %}
+      Keep the hand-wrapped markdown style; commit "docs: sync with code".
+
+  - id: links
+    needs: [update]
+    cwd: docs                       # relative to the run's workdir
+    shell: |
+      # every relative markdown link target in docs/*.md must exist
+      { grep -oh '](\.\{0,2\}[^)#:]*)' *.md || true; } | sed 's/^](//; s/)$//' | sort -u | while read -r target; do
+        [ -e "$target" ] || { echo "broken link: $target"; exit 1; }
+      done
+
+  - id: confirm
+    needs: [links]
+    approve: "Open a docs PR ({{ steps.drift.output.drift | length }} fixes)?"
+
+  - id: pr
+    needs: [confirm]
+    shell: |
+      git push -u origin HEAD
+      gh pr create --base main --title "docs: sync with code" --body "{{ steps.drift.output.drift | join('\n- ') }}"
+
+outputs:
+  in_sync: "{{ steps.drift.output.in_sync }}"
+  drift: "{{ steps.drift.output.drift }}"

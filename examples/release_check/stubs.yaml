@@ -1,0 +1,5 @@
+steps:
+  notes:
+    output:
+      title: "v0.4.0 — worktrees by default"
+      notes: "### Added\n- `rayspec worktrees clean`\n### Fixed\n- resume after Ctrl-C"

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/events.schema.json",
+  "title": "RunEvent",
+  "description": "One line of a rayspec run's event log (<run dir>/events.jsonl).",
+  "$defs": {
+    "EventType": {
+      "enum": [
+        "run.started",
+        "run.resumed",
+        "run.paused",
+        "run.decision",
+        "run.finished",
+        "step.started",
+        "step.retry",
+        "step.finished",
+        "loop.iteration",
+        "each.item",
+        "workspace.created",
+        "warning"
+      ],
+      "title": "EventType",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "type": {
+      "$ref": "#/$defs/EventType"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "step_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Step Path"
+    },
+    "data": {
+      "additionalProperties": true,
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "run_id"
+  ],
+  "type": "object"
+}

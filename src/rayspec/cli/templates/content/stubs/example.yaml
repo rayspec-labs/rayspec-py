@@ -1,0 +1,13 @@
+# Scripted agent answers for `rayspec run example --dry-run --stubs .rayspec/stubs/example.yaml`.
+# Keys under `steps:` are step paths (globs allowed);
+# stub file format: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md#stub-stub
+defaults: { latency_ms: 0, usage: { input: 600, output: 200 } }
+steps:
+  draft:
+    text: |
+      Small pull requests are easier to review because a reader can hold the whole change in
+      their head. A 40-line fix with one test gets a real review in minutes; a 900-line branch
+      gets a skim and a shrug. Split work by behaviour, not by file, and open the first piece
+      before the second exists.
+  review:
+    output: { verdict: approve, notes: "Clear point, concrete example, actionable close." }

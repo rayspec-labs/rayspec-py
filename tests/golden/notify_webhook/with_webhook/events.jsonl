@@ -1,0 +1,21 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "notify_webhook"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "draft", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:draft:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:draft:1", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "rayspec ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "1.0 ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "is ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "out: ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "declarative ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "agent ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "workflows ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "on ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Claude ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "and ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Codex, ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "with ", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "resume.", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "rayspec 1.0 is out: declarative agent workflows on Claude and Codex, with resume.", "ts": "<ts>"}, "step_path": "draft", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "draft", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "notify", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "notify", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"announcement": "rayspec 1.0 is out: declarative agent workflows on Claude and Codex, with resume.", "sent": false}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

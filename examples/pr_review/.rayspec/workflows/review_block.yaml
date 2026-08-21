@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: review_block
+description: >
+  Reusable review block: lint → two independent reviews (Claude + Codex, in parallel) → a judge
+  that merges them into a structured verdict. Include it with `include: review_block`.
+
+inputs:
+  target: { type: string, required: true, description: "Path to review (file or directory)" }
+  depth: { type: string, enum: [quick, deep], default: quick }
+
+isolation: none
+
+steps:
+  - id: lint
+    shell: ruff check "{{ inputs.target }}" --output-format concise || true
+    timeout: 5m
+
+  - id: claude_review
+    needs: [lint]
+    agent: reviewer                 # .rayspec/agents/reviewer.yaml
+    prompt_file: prompts/review_prompt.md
+
+  - id: codex_review
+    needs: [lint]
+    agent: codex_reviewer           # .rayspec/agents/codex_reviewer.yaml
+    prompt: |
+      Review {{ inputs.target }} ({{ inputs.depth }} pass). Lint said:
+      {{ steps.lint.output }}
+      Reply with JSON only: {"findings": ["..."], "score": 1-5}
+      (no output_schema here: OpenAI strict mode rejects minimum/maximum, so we parse the text
+      with `| fromjson` downstream).
+
+  - id: judge
+    needs: [claude_review, codex_review]
+    agent: { extends: reviewer, model: "@deep", budget_usd: 3.0 }   # override a named agent
+    prompt: |
+      Two independent reviews of {{ inputs.target }}.
+
+      Claude:
+      {{ steps.claude_review.output }}
+
+      Codex (score {{ (steps.codex_review.output | fromjson).score }}):
+      {% for f in (steps.codex_review.output | fromjson).findings %}- {{ f }}
+      {% endfor %}
+
+      Merge them into one verdict. Drop duplicates, keep the concrete ones.
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, request_changes] }
+        findings: { type: array, items: { type: string } }
+      required: [verdict, findings]
+
+outputs:                            # what the including workflow sees as steps.<include>.output
+  verdict: "{{ steps.judge.output.verdict }}"
+  findings: "{{ steps.judge.output.findings }}"
+  lint: "{{ steps.lint.output }}"

@@ -1,0 +1,6 @@
+steps:
+  drift:
+    output:
+      in_sync: false
+      drift: ["CONTRACTS.md: `rayspec run` flag list lacks --stubs-init", "docs/cli.md: exit code 3 undocumented"]
+  update: { text: "Updated CONTRACTS.md and docs/cli.md; committed docs: sync with code." }

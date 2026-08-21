@@ -1,0 +1,4 @@
+# Nothing critical: `alert` is skipped (when_false) and `digest` still runs thanks to join: any.
+match:
+  - { prompt_regex: "Classify it", output: { severity: low, area: docs } }
+  - { prompt_regex: "digest", text: "All quiet: 2 low-severity docs issues." }

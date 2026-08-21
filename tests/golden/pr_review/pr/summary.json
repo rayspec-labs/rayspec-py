@@ -1,0 +1,30 @@
+{
+  "cost_source": "partial",
+  "cost_usd": 0.00432,
+  "exit_code": 0,
+  "outputs": {
+    "commented": true,
+    "findings": [
+      "parse() swallows ValueError (src/app.py:12)",
+      "missing empty-path test"
+    ],
+    "verdict": "request_changes"
+  },
+  "pause": null,
+  "reason": null,
+  "run_dir": "<run-dir>",
+  "run_id": "<run-id>",
+  "status": "succeeded",
+  "usage": {
+    "cache_write": 0,
+    "cached_input": 0,
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+  },
+  "workspace": {
+    "branch": "<branch>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}

@@ -1,0 +1,790 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Shared run state handed to the scheduler and the executors.
+
+Module boundary: the glue between the core modules (store, events, templating, providers
+registry) and the engine proper. It owns
+
+* :class:`RunOptions` — the run-level switches (dry run, ``--yes``, fail-fast, force …);
+* :class:`ExecScope` — one sibling list's execution scope: record-path prefix (indexed, e.g.
+  ``build[2]``), definition-path prefix (un-indexed, what the loader uses), the templating
+  :class:`~rayspec.templating.Scope`, the inputs visible here and the composite metadata
+  (iteration / item index + sha) stamped onto records;
+* :class:`StepOutcome` — a step's record plus its in-memory output and any control signal;
+* :class:`RunContext` — store + sinks + templating + providers + runtime + the resume cache,
+  with the write-ahead ``persist`` (output file → record → run.json) and the event helpers.
+  The fsync-backed store calls (``save``, ``write_output*``) run in a worker thread
+  (``anyio.to_thread``) under one ``anyio.Lock`` so they never stall the event loop yet stay
+  ordered; JSONL appends (events, streams) only flush and stay inline.
+
+Nothing here schedules or executes steps.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import json
+import logging
+import os
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import anyio
+from anyio import to_thread
+
+from rayspec.engine.approval import ApprovalPrompt
+from rayspec.engine.errors import RunControl, RunPaused, RunStopped
+from rayspec.engine.paths import StepPath
+from rayspec.engine.runtime import Runtime
+from rayspec.events.base import EventSink
+from rayspec.events.model import EventType, RunEvent, StreamRecord
+from rayspec.loader import ResolvedWorkflow
+from rayspec.providers.base import Provider, Usage
+from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
+from rayspec.store.base import RunStore
+from rayspec.store.model import ErrorInfo, RunRecord, StepRecord
+from rayspec.templating import (
+    Scope,
+    StepView,
+    TemplateEngine,
+    build_context,
+    stringify_scalar,
+    stringify_text,
+)
+
+log = logging.getLogger("rayspec.engine")
+
+#: Step kinds whose records may be replayed on resume (composites replay their bodies instead).
+REUSABLE_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python", "approve"})
+LEAF_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python"})
+#: ``skip_reason`` of steps that were not started because the run-level cap tripped.
+BUDGET_SKIP_REASON = "budget_exceeded"
+
+
+def budget_reason(
+    usage: Any, cost_usd: float | None, cost_source: str, defaults: Defaults
+) -> str | None:
+    """``budget exceeded (cost ~$0.40 > budget_usd $0.30, tokens 12,000 > max_tokens 10,000)``
+    when a run-level cap of ``defaults`` is exceeded by the totals, else ``None``.
+
+    Cost is the provider-reported figure or the pricing-table estimate (``~$``); a run without any
+    known cost cannot trip ``budget_usd`` (tokens are always known).
+    """
+    parts: list[str] = []
+    cap_cost = defaults.budget_usd
+    if cap_cost is not None and cost_usd is not None and cost_usd > cap_cost:
+        approx = {"table": "~", "partial": "≥"}.get(cost_source, "")
+        parts.append(f"cost {approx}${cost_usd:.3f} > budget_usd ${cap_cost:.3f}")
+    cap_tokens = defaults.max_tokens
+    total = int(getattr(usage, "total", 0) or 0)
+    if cap_tokens is not None and total > cap_tokens:
+        parts.append(f"tokens {total:,} > max_tokens {cap_tokens:,}")
+    if not parts:
+        return None
+    return f"budget exceeded ({', '.join(parts)})"
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def cost_source_of(records: Iterable[StepRecord]) -> str:
+    """Run-level cost source over ``records`` (pinned seam):
+
+    * ``none`` — no record has a cost at all (a stub/dry run shows tokens only);
+    * ``partial`` — at least one record has tokens but no cost (an unpriced provider without a
+      pricing-table entry): the summed cost is a lower bound (``≥$``);
+    * ``table`` — at least one cost is a pricing-table estimate and none is unknown (``~$``);
+    * ``provider`` — every record with tokens reported a provider cost (``$``).
+
+    Records without tokens and without cost (shell/python, skipped steps) do not count.
+    """
+    sources: set[str] = set()
+    unknown = False
+    for rec in records:
+        if rec.cost_usd is not None:
+            sources.add(rec.cost_source if rec.cost_source != "none" else "provider")
+        elif rec.usage.total:
+            unknown = True
+    if not sources:
+        return "none"
+    if unknown:
+        return "partial"
+    if "table" in sources:
+        return "table"
+    return "provider"
+
+
+def totals_of(records: Iterable[StepRecord]) -> tuple[Usage, float | None, str]:
+    """``(usage, cost_usd, cost_source)`` summed over ``records`` (see :func:`cost_source_of`);
+    ``cost_usd`` is the sum of the known costs (``None`` when no record has one)."""
+    records = list(records)
+    usage = Usage()
+    costs: list[float] = []
+    for rec in records:
+        usage = usage + rec.usage
+        if rec.cost_usd is not None:
+            costs.append(rec.cost_usd)
+    return usage, (sum(costs) if costs else None), cost_source_of(records)
+
+
+@dataclass(slots=True)
+class RunOptions:
+    """Run-level switches (from the CLI flags)."""
+
+    dry_run: bool = False
+    exec_shell: bool = False
+    yes: bool = False
+    interactive: bool = True
+    fail_fast: bool = False
+    force: bool = False
+    resume: bool = False
+    stub_script: Any = None  # StubScript | Mapping | None (dry run / --stubs)
+    provider_settings: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: absolute path of the ``--stubs`` file: recorded in ``run.json`` at launch, and on a
+    #: resume replaces the recorded one when given (``None`` keeps the record's value)
+    stubs_path: str | None = None
+    #: additive: ``config.secrets`` resolved once at run start, ``NAME`` → value. Handed
+    #: ONLY to ``shell:``/``python:`` steps as environment variables (see
+    #: ``engine.executors._process.process_env``); never persisted, never templated, never in a
+    #: fingerprint. Empty for every run without a ``secrets:`` block.
+    config_secrets: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class StepOutcome:
+    """A step's record plus the in-memory output value the templates see.
+
+    ``control`` carries a :class:`RunStopped`/:class:`RunPaused` that the scheduler must bubble
+    after the record has been persisted; ``reused`` marks a resume replay.
+    """
+
+    record: StepRecord
+    output: Any = None
+    output_kind: str | None = None  # "text" | "json" | None
+    stderr: str | None = None
+    items: list[dict[str, Any]] | None = None
+    control: RunControl | None = None
+    reused: bool = False
+    event_data: dict[str, Any] = field(default_factory=dict)
+
+
+class ExecScope:
+    """Execution scope of one sibling list (root, loop iteration, each item, include body)."""
+
+    def __init__(
+        self,
+        *,
+        prefix: StepPath,
+        def_prefix: str,
+        tscope: Scope,
+        views: dict[str, StepView],
+        inputs: Mapping[str, Any],
+        defaults: Defaults,
+        iteration: int | None = None,
+        item_index: int | None = None,
+        item_sha256: str | None = None,
+        parent: ExecScope | None = None,
+    ) -> None:
+        self.prefix = prefix
+        self.def_prefix = def_prefix
+        self.tscope = tscope
+        self.views = views
+        self.inputs = inputs
+        self.defaults = defaults
+        self.iteration = iteration
+        self.item_index = item_index
+        self.item_sha256 = item_sha256
+        self.parent = parent
+        #: why running steps were cancelled (set by the scheduler before cancelling a graph)
+        self.cancel_reason: str | None = None
+
+    # -- paths ----------------------------------------------------------------------------
+
+    def record_path(self, step_id: str) -> StepPath:
+        """Indexed record path of a step of this graph (``build[2]/implement``)."""
+        return self.prefix.child(step_id)
+
+    def def_path(self, step_id: str) -> str:
+        """Un-indexed definition path used by the loader (``build/implement``)."""
+        return f"{self.def_prefix}{step_id}"
+
+    def child(
+        self,
+        *,
+        prefix: StepPath,
+        def_prefix: str,
+        variables: Mapping[str, Any] | None = None,
+        inputs: Mapping[str, Any] | None = None,
+        defaults: Defaults | None = None,
+        iteration: int | None = None,
+        item_index: int | None = None,
+        item_sha256: str | None = None,
+        lexical_root: bool = False,
+    ) -> ExecScope:
+        """A nested scope (loop iteration / each item / include body).
+
+        ``lexical_root`` starts a fresh templating scope chain (include bodies must not see
+        the including workflow's steps or variables).
+        """
+        views: dict[str, StepView] = {}
+        tscope = (
+            Scope(None, views, variables) if lexical_root else self.tscope.child(views, variables)
+        )
+        return ExecScope(
+            prefix=prefix,
+            def_prefix=def_prefix,
+            tscope=tscope,
+            views=views,
+            inputs=self.inputs if inputs is None else inputs,
+            defaults=self.defaults if defaults is None else defaults,
+            iteration=self.iteration if iteration is None else iteration,
+            item_index=self.item_index if item_index is None else item_index,
+            item_sha256=self.item_sha256 if item_sha256 is None else item_sha256,
+            parent=self,
+        )
+
+
+ExecutorFn = Callable[[StepModel, ExecScope, "RunContext", StepRecord, int], Awaitable[StepOutcome]]
+
+
+class ProviderPool:
+    """Per-run provider instances: created via the registry (or injected), opened once, closed
+    together at the end of the run. In dry-run mode every provider id maps to the stub."""
+
+    def __init__(self, ctx: RunContext, overrides: Mapping[str, Provider] | None = None) -> None:
+        self.ctx = ctx
+        self._instances: dict[str, Provider] = dict(overrides or {})
+        self._opened: set[str] = set()
+        self._lock = anyio.Lock()
+
+    def key_for(self, provider_id: str) -> str:
+        return (
+            "stub"
+            if self.ctx.options.dry_run and provider_id not in self._instances
+            else provider_id
+        )
+
+    async def get(self, provider_id: str) -> Provider:
+        """The (opened) provider instance for ``provider_id``."""
+        key = self.key_for(provider_id)
+        async with self._lock:
+            provider = self._instances.get(key)
+            if provider is None:
+                provider = self._create(key)
+                self._instances[key] = provider
+            if key not in self._opened:
+                await provider.open(
+                    run_id=self.ctx.run.run_id,
+                    workdir=str(self.ctx.workdir),
+                    env=self.ctx.env,
+                    max_parallel=self.ctx.runtime.max_parallel,
+                )
+                self._opened.add(key)
+            return provider
+
+    async def peek(self, provider_id: str) -> Provider:
+        """The provider instance for ``provider_id`` WITHOUT opening it.
+
+        ``open()`` acquires per-run resources — for the real providers a CLI subprocess and a
+        worker pool — so read-only callers that only need provider metadata (the toolchain
+        probe) must not go through :meth:`get`. The instance is created and cached exactly as
+        :meth:`get` would create it, so a later :meth:`get` reuses it and still opens it once.
+        """
+        key = self.key_for(provider_id)
+        async with self._lock:
+            provider = self._instances.get(key)
+            if provider is None:
+                provider = self._create(key)
+                self._instances[key] = provider
+            return provider
+
+    def _create(self, key: str) -> Provider:
+        from rayspec.providers.registry import create_provider
+
+        settings: dict[str, Any] = dict(self.ctx.options.provider_settings.get(key, {}))
+        if key == "stub" and self.ctx.options.stub_script is not None:
+            settings["script"] = self.ctx.options.stub_script
+        return create_provider(key, settings)
+
+    async def aclose(self) -> None:
+        """Close every opened provider (errors are swallowed: the run is over)."""
+        for key in list(self._opened):
+            provider = self._instances.get(key)
+            if provider is None:
+                continue
+            with contextlib.suppress(Exception), anyio.CancelScope(shield=True):
+                await provider.aclose()  # best effort: the run is over
+        self._opened.clear()
+
+
+class RunContext:
+    """Everything a step needs at run time (see the module docstring)."""
+
+    def __init__(
+        self,
+        *,
+        resolved: ResolvedWorkflow,
+        run: RunRecord,
+        store: RunStore,
+        sinks: EventSink,
+        engine: TemplateEngine,
+        runtime: Runtime,
+        options: RunOptions,
+        workdir: Path,
+        project: Mapping[str, Any],
+        env: Mapping[str, str] | None = None,
+        approval_prompt: ApprovalPrompt | None = None,
+        providers: Mapping[str, Provider] | None = None,
+        cache: Mapping[str, StepRecord] | None = None,
+        hash_mismatch: bool = False,
+        secret_inputs: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.resolved = resolved
+        self.run = run
+        self.store = store
+        self.sinks = sinks
+        self.engine = engine
+        self.runtime = runtime
+        self.options = options
+        self.workdir = Path(workdir)
+        self.project: dict[str, Any] = dict(project)
+        self.env: dict[str, str] = dict(os.environ if env is None else env)
+        self.approval_prompt = approval_prompt
+        self.providers = ProviderPool(self, providers)
+        self.cache: dict[str, StepRecord] = dict(cache or {})
+        self.hash_mismatch = hash_mismatch
+        #: the real values of the ``secret: true`` inputs — kept out of every template
+        #: context, record and event; only :meth:`secret_env` / :meth:`secret_context` hand them
+        #: to shell/python steps (``RAYSPEC_INPUT_<NAME>`` and the step's own ``env:`` mapping)
+        self.secret_inputs: dict[str, Any] = dict(secret_inputs or {})
+        #: set once a sink raised; later events go to the store only (see :meth:`emit`)
+        self.sinks_broken = False
+        self.sinks_error: BaseException | None = None
+        self.lock = anyio.Lock()
+        self.reused_paths: list[str] = []
+        #: set when an approval gate recorded a pause (the runner maps it to exit 3)
+        self.paused: RunPaused | None = None
+        #: set when a ``stop:`` step (or rejected gate) ended the run
+        self.stopped: RunStopped | None = None
+        self.executors: dict[str, ExecutorFn] = {}
+        #: optional pricing table (config) used when a provider reports no USD cost
+        self.price_table: Any = None
+        #: set (to the reason) once the run-level cap tripped: no new step starts
+        self.budget_exceeded: str | None = None
+        #: record paths finished (or replayed) in THIS run — what the caps are measured over;
+        #: stale cache records of a resumed run do not count until they are replayed/re-run
+        self.accounted_paths: set[str] = set()
+        self._run_dir: Path | None = None
+
+    # -- paths ----------------------------------------------------------------------------
+
+    @property
+    def run_dir(self) -> Path:
+        if self._run_dir is None:
+            self._run_dir = Path(self.store.run_dir(self.run.run_id))
+        return self._run_dir
+
+    @property
+    def tmp_dir(self) -> Path:
+        path = self.run_dir / "tmp"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def step_dir(self, path: StepPath | str) -> Path:
+        return Path(self.store.step_dir(self.run.run_id, str(path)))
+
+    # -- templating -----------------------------------------------------------------------
+
+    def run_vars(self) -> dict[str, Any]:
+        """The ``run.*`` context root."""
+        ws = self.run.workspace
+        return {
+            "id": self.run.run_id,
+            "workflow": self.run.workflow_name,
+            "workdir": str(self.workdir),
+            "artifacts_dir": str(self.run_dir / "artifacts"),
+            "state_dir": str(self.run_dir),
+            "branch": ws.branch,
+            "base_branch": ws.base_branch,
+            "started_at": self.run.started_at.isoformat() if self.run.started_at else None,
+        }
+
+    def template_context(self, scope: ExecScope) -> dict[str, Any]:
+        """The mapping handed to ``TemplateEngine.render_*`` / ``eval_*`` for ``scope``."""
+        return build_context(
+            scope.tscope,
+            inputs=scope.inputs,
+            run=self.run_vars(),
+            project=self.project,
+            env=self.env,
+        )
+
+    def secret_context(self, scope: ExecScope) -> dict[str, Any]:
+        """:meth:`template_context` with the real secret values in place of the ``<secret>``
+        placeholders — ONLY for rendering a shell/python step's ``env:`` mapping.
+
+        Secrets belong to the root workflow: the substitution happens in the root scope only (an
+        include body's ``inputs`` are its own ``with:`` bindings and cannot hold a secret —
+        such a body still receives every secret through :meth:`secret_env`). The placeholder
+        string is reserved: a root input recorded as ``"<secret>"`` is, by construction, a secret.
+        """
+        inputs = dict(scope.inputs)
+        if scope.parent is None:
+            inputs.update(self._exported_secrets())
+        return build_context(
+            scope.tscope,
+            inputs=inputs,
+            run=self.run_vars(),
+            project=self.project,
+            env=self.env,
+        )
+
+    def secret_env(self, scope: ExecScope) -> dict[str, str]:
+        """``RAYSPEC_INPUT_<NAME>`` → real value for every secret input the run was given (the
+        process environment of shell/python steps, include bodies included; never persisted).
+
+        Which secrets exist is decided against the run's root inputs (``run.inputs``, redacted
+        to ``<secret>``), not against ``scope`` — an include body's scope holds its own inputs,
+        so the export is the same in every scope.
+        """
+        from rayspec.loader.inputs import env_var_name
+
+        del scope  # every scope of the run sees the same secrets
+        return {
+            env_var_name(name): stringify_scalar(value)
+            for name, value in self._exported_secrets().items()
+        }
+
+    def _exported_secrets(self) -> dict[str, Any]:
+        """Name → real value for every secret recorded as ``<secret>`` in the run's root inputs
+        and supplied to this process (given at launch, or re-supplied on resume)."""
+        from rayspec.loader.inputs import SECRET_PLACEHOLDER
+
+        return {
+            name: value
+            for name, value in self.secret_inputs.items()
+            if self.run.inputs.get(name) == SECRET_PLACEHOLDER
+        }
+
+    def render_env(self, env: Mapping[str, Any], tctx: Mapping[str, Any]) -> dict[str, str]:
+        """Deep-render ``env:`` values and str-coerce them (``None`` is an error)."""
+        out: dict[str, str] = {}
+        for key, raw in env.items():
+            value = self.engine.render_value(raw, tctx)
+            out[str(key)] = stringify_text(value)
+        return out
+
+    def timeout_for(self, step: StepModel, scope: ExecScope) -> float | None:
+        """Per-attempt timeout: the step's own, else the scope's ``defaults.timeout``."""
+        if step.timeout is not None:
+            return float(step.timeout)
+        if scope.defaults.timeout:
+            return float(scope.defaults.timeout)
+        return None
+
+    # -- records / persistence ------------------------------------------------------------
+
+    def new_record(self, step: StepModel, scope: ExecScope) -> StepRecord:
+        """A fresh ``running`` record for ``step`` in ``scope``.
+
+        On resume the previous record's ``attempts`` continue and its ``usage`` / ``cost_usd`` /
+        ``cost_source`` / ``usage_unknown`` carry over: usage and cost are summed over
+        every attempt of a step, whichever run made them — an interrupted attempt's tokens stay
+        in the totals after the resume.
+        """
+        path = scope.record_path(step.id)
+        prev = self.cache.get(str(path))
+        return StepRecord(
+            path=str(path),
+            id=step.id,
+            kind=type(step).kind,
+            status=StepStatus.RUNNING,
+            attempts=prev.attempts if prev else 0,
+            started_at=utcnow(),
+            iteration=scope.iteration,
+            item_index=scope.item_index,
+            item_sha256=scope.item_sha256,
+            usage=prev.usage if prev else Usage(),
+            cost_usd=prev.cost_usd if prev else None,
+            cost_source=prev.cost_source if prev and prev.cost_usd is not None else "none",
+            usage_unknown=prev.usage_unknown if prev else False,
+        )
+
+    async def save_record(self, record: StepRecord) -> None:
+        """Store a (non-final) record and save ``run.json``."""
+        async with self.lock:
+            self.run.steps[record.path] = record
+            await to_thread.run_sync(self.store.save, self.run)
+
+    async def persist(self, outcome: StepOutcome) -> None:
+        """Write-ahead: output file (when there is an output) → record → ``run.json``."""
+        record = outcome.record
+        async with self.lock:
+            if outcome.output is not None and not outcome.reused:
+                kind = outcome.output_kind or (
+                    "text" if isinstance(outcome.output, str) else "json"
+                )
+                content = (
+                    outcome.output
+                    if kind == "text" and isinstance(outcome.output, str)
+                    else json.dumps(outcome.output, ensure_ascii=False, indent=2) + "\n"
+                )
+                await to_thread.run_sync(self._write_output, record, content, kind)
+                outcome.output_kind = kind
+            self.run.steps[record.path] = record
+            await to_thread.run_sync(self.store.save, self.run)
+
+    def _write_output(self, record: StepRecord, content: str, kind: str) -> None:
+        """Write the output file (fsync) and stamp ``output_ref/kind/sha256`` on the record."""
+        written: Any = getattr(self.store, "write_output_with_sha", None)
+        if callable(written):
+            info: Any = written(self.run.run_id, record.path, content, kind=kind)
+            record.output_ref = info.output_ref
+            record.output_kind = info.kind
+            record.output_sha256 = info.sha256
+        else:
+            record.output_ref = self.store.write_output(
+                self.run.run_id, record.path, content, kind=kind
+            )
+            record.output_kind = kind
+            record.output_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    async def save_run(self) -> None:
+        """Save ``run.json`` (worker thread, under the persistence lock)."""
+        async with self.lock:
+            await to_thread.run_sync(self.store.save, self.run)
+
+    def save_run_sync(self) -> None:
+        """Synchronous flush (used by the second-SIGINT hard-exit path)."""
+        self.store.save(self.run)
+
+    # -- events ---------------------------------------------------------------------------
+
+    async def emit(
+        self, type_: EventType, *, step_path: str | None = None, **data: Any
+    ) -> RunEvent:
+        """Append a lifecycle event to the store and fan it out to the sinks."""
+        event = RunEvent(type=type_, run_id=self.run.run_id, step_path=step_path, data=data)
+        self.store.append_event(self.run.run_id, event)
+        if not self.sinks_broken:
+            try:
+                await self.sinks.emit(event)
+            except (Exception, SystemExit) as exc:  # observers never fail a run
+                self._drop_sinks(exc)
+        return event
+
+    async def emit_stream(self, step_path: str, record: StreamRecord) -> None:
+        """Append a stream record (``steps/<path>/stream.jsonl``) and notify the sinks."""
+        self.store.append_stream(self.run.run_id, step_path, record)
+        if not self.sinks_broken:
+            try:
+                await self.sinks.emit_stream(step_path, record)
+            except (Exception, SystemExit) as exc:  # observers never fail a run
+                self._drop_sinks(exc)
+
+    def _drop_sinks(self, exc: BaseException) -> None:
+        """A sink raised (typically ``BrokenPipeError`` / Rich's ``SystemExit`` when stdout was
+        closed by ``| head``): stop observing, keep running — the store still has everything."""
+        self.sinks_broken = True
+        self.sinks_error = exc
+        log.warning(
+            "event sink failed (%s: %s); console output stops, the run continues",
+            type(exc).__name__,
+            exc,
+        )
+
+    async def warn(self, message: str, *, step_path: str | None = None) -> None:
+        await self.emit(EventType.WARNING, step_path=step_path, message=message)
+
+    # -- drain policy ---------------------------------------------------------------------
+
+    @property
+    def keep_going(self) -> bool:
+        """Whether a failed step leaves independent branches running.
+
+        ``defaults.on_step_failure: continue``.
+
+        Only relaxes draining caused by a *failure*: a pause or a stop still halts new work, and
+        the failed step's own dependents still skip with ``upstream_failed`` — ``continue`` is not
+        ``allow_failure``. ``--fail-fast`` beats it, because the flag may only ever tighten.
+        """
+        if self.options.fail_fast:
+            return False
+        return self.resolved.workflow.defaults.on_step_failure == "continue"
+
+    @property
+    def fail_fast(self) -> bool:
+        """Whether a failed step cancels running siblings instead of draining them.
+
+        ``--fail-fast`` (``RunOptions.fail_fast``) OR the root workflow's
+        ``defaults.on_step_failure: fail_fast``. The CLI flag can only *enable* fail-fast: it
+        never downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
+        behaviour. The scheduler reads this, never ``options.fail_fast``.
+        """
+        if self.options.fail_fast:
+            return True
+        return self.resolved.workflow.defaults.on_step_failure == "fail_fast"
+
+    # -- run-level circuit breaker --------------------------------------------------------
+
+    @property
+    def caps_set(self) -> bool:
+        """Whether the root workflow sets ``defaults.budget_usd`` or ``defaults.max_tokens``."""
+        defaults = self.resolved.workflow.defaults
+        return defaults.budget_usd is not None or defaults.max_tokens is not None
+
+    def budget_totals(self, pending: StepRecord | None = None) -> tuple[Usage, float | None, str]:
+        """``(usage, cost_usd, cost_source)`` over the records accounted in this run (finished or
+        replayed) plus ``pending`` (an in-flight leaf between attempts); ``cost_source`` per
+        :func:`cost_source_of`."""
+        records = [r for p, r in self.run.steps.items() if p in self.accounted_paths]
+        if pending is not None and pending.path not in self.accounted_paths:
+            records.append(pending)
+        return totals_of(records)
+
+    def run_totals(self) -> tuple[Usage, float | None, str]:
+        """``(usage, cost_usd, cost_source)`` over EVERY record of the run (what ``run.json``,
+        the ``run.finished`` event and the approval panel report)."""
+        return totals_of(self.run.steps.values())
+
+    async def check_budget(self, *, pending: StepRecord | None = None) -> str | None:
+        """Compare the run totals (:meth:`budget_totals`) with the root ``defaults`` caps; the
+        first time they are exceeded, remember the reason, emit a ``warning`` and return it.
+        Later calls just return the remembered reason."""
+        if self.budget_exceeded is not None:
+            return self.budget_exceeded
+        if not self.caps_set:
+            return None
+        usage, cost, source = self.budget_totals(pending)
+        reason = budget_reason(usage, cost, source, self.resolved.workflow.defaults)
+        if reason is None:
+            return None
+        self.budget_exceeded = reason
+        await self.warn(
+            f"{reason}: no new steps start, running steps finish; the run ends failed — "
+            "raise defaults.budget_usd / defaults.max_tokens and resume (--force: the workflow "
+            "hash changes)"
+        )
+        return reason
+
+    # -- resume cache ---------------------------------------------------------------------
+
+    def read_output_value(self, record: StepRecord) -> Any:
+        """Load a stored output (text or parsed JSON); raises ``FileNotFoundError``."""
+        if record.output_ref is None:
+            raise FileNotFoundError(record.path)
+        text = self.store.read_output(self.run.run_id, record.output_ref)
+        if record.output_kind == "json":
+            return json.loads(text)
+        return text
+
+
+# --------------------------------------------------------------------------------------------------
+# helpers shared by scheduler/executors
+# --------------------------------------------------------------------------------------------------
+
+
+def error_info(
+    exc: BaseException, *, transient: bool = False, type_: str | None = None
+) -> ErrorInfo:
+    """An :class:`ErrorInfo` from an exception (``hint`` appended when present)."""
+    message = str(exc) or type(exc).__name__
+    hint = getattr(exc, "hint", None)
+    if hint and hint not in message:
+        message = f"{message} (fix: {hint})"
+    return ErrorInfo(type=type_ or type(exc).__name__, message=message, transient=transient)
+
+
+def body_ids(step: StepModel) -> frozenset[str]:
+    if isinstance(step, LoopStep):
+        return frozenset(s.id for s in step.loop.steps)
+    if isinstance(step, EachStep):
+        return frozenset(s.id for s in step.steps)
+    return frozenset()
+
+
+def view_of(outcome: StepOutcome, step: StepModel | None = None) -> StepView:
+    """The :class:`StepView` templates see for a finished (or replayed) step."""
+    rec = outcome.record
+    return StepView(
+        id=rec.id,
+        kind=rec.kind,
+        status=rec.status,
+        output=outcome.output,
+        ok=rec.ok,
+        exit_code=rec.exit_code,
+        stderr=outcome.stderr,
+        duration_s=(rec.duration_ms / 1000.0) if rec.duration_ms is not None else None,
+        cost_usd=rec.cost_usd,
+        usage=rec.usage if (rec.usage.total or rec.kind == "prompt") else None,
+        session=rec.session_ref.id if rec.session_ref is not None else None,
+        model=rec.model,
+        approved=rec.approved,
+        iterations=rec.loop.iterations if rec.loop is not None else None,
+        converged=rec.loop.converged if rec.loop is not None else None,
+        items=outcome.items,
+        skip_reason=rec.skip_reason,
+        error=rec.error.message if rec.error is not None else None,
+        tolerated=rec.tolerated,
+        body_ids=body_ids(step) if step is not None else frozenset(),
+    )
+
+
+def usage_from_mapping(raw: Mapping[str, Any]) -> Usage:
+    """:class:`Usage` from a ``{input, cached_input, cache_write, output, reasoning}`` mapping
+    (missing / non-numeric counters read as 0)."""
+
+    def num(key: str) -> int:
+        value = raw.get(key)
+        return int(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0
+
+    return Usage(
+        input=num("input"),
+        cached_input=num("cached_input"),
+        cache_write=num("cache_write"),
+        output=num("output"),
+        reasoning=num("reasoning"),
+    )
+
+
+def merge_cost_source(previous: str, new: str) -> str:
+    """Cost source of a sum: ``table`` once any addend is an estimate, ``provider`` when every
+    addend is provider-reported, the other one when one side is ``none``."""
+    if previous == "none":
+        return new
+    if new == "none":
+        return previous
+    return "table" if "table" in (previous, new) else "provider"
+
+
+def sha256_json(value: Any) -> str:
+    """Stable sha256 of a JSON-able value (``item_sha256``, fingerprints)."""
+    data = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+__all__ = [
+    "BUDGET_SKIP_REASON",
+    "LEAF_KINDS",
+    "REUSABLE_KINDS",
+    "ExecScope",
+    "ExecutorFn",
+    "ProviderPool",
+    "RunContext",
+    "RunOptions",
+    "StepOutcome",
+    "body_ids",
+    "budget_reason",
+    "cost_source_of",
+    "error_info",
+    "merge_cost_source",
+    "sha256_json",
+    "totals_of",
+    "usage_from_mapping",
+    "utcnow",
+    "view_of",
+]

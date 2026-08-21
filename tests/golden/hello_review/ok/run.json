@@ -1,0 +1,98 @@
+{
+  "cost_source": "none",
+  "created_at": "<ts>",
+  "dry_run": true,
+  "ended_at": "<ts>",
+  "host": "<host>",
+  "inputs": {
+    "focus": "style",
+    "target": "src/"
+  },
+  "outputs": {
+    "review": "- `target` is only read, never validated \u2014 fine for a review tool.\n- Consider a `--focus` default in the docs.\nVERDICT: ok\n",
+    "verdict": "ok"
+  },
+  "pause": null,
+  "pid": null,
+  "pid_started_at": "<ts>",
+  "project_root": "<root>",
+  "project_slug": "<slug>",
+  "reason": null,
+  "resume_count": 0,
+  "run_id": "<run-id>",
+  "schema": 1,
+  "secret_inputs": [],
+  "started_at": "<ts>",
+  "status": "succeeded",
+  "steps": {
+    "review": {
+      "approved": null,
+      "attempts": 1,
+      "cost_source": "none",
+      "cost_usd": null,
+      "duration_ms": 0,
+      "each": null,
+      "ended_at": "<ts>",
+      "error": null,
+      "exit_code": null,
+      "fingerprint": "<sha>",
+      "id": "review",
+      "item_index": null,
+      "item_sha256": "<sha>",
+      "iteration": null,
+      "kind": "prompt",
+      "loop": null,
+      "model": "haiku",
+      "ok": true,
+      "output_kind": "text",
+      "output_ref": "steps/review/output.txt",
+      "output_sha256": "<sha>",
+      "path": "review",
+      "prompt_ref": "steps/review/prompt.txt",
+      "provider": "stub",
+      "session_ref": {
+        "id": "stub:review:1",
+        "provider": "stub"
+      },
+      "skip_reason": null,
+      "started_at": "<ts>",
+      "status": "succeeded",
+      "tolerated": false,
+      "usage": {
+        "cache_write": 0,
+        "cached_input": 0,
+        "input": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "usage_unknown": false
+    }
+  },
+  "stubs_path": "<root>/stubs.yaml",
+  "toolchain": {
+    "models": {
+      "agents.reviewer": "haiku"
+    },
+    "platform": "<platform>",
+    "providers": {
+      "stub": {
+        "cli_path": "<path>",
+        "cli_version": "<version>",
+        "sdk_version": "<version>"
+      }
+    },
+    "python": "<python>",
+    "rayspec": "<version>"
+  },
+  "workflow_hash": "<hash>",
+  "workflow_name": "hello_review",
+  "workflow_path": ".rayspec/workflows/hello_review.yaml",
+  "workspace": {
+    "base_branch": "<branch>",
+    "base_sha": "<sha>",
+    "branch": "<branch>",
+    "head_sha": "<sha>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}

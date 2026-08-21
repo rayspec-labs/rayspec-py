@@ -1,0 +1,48 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "docs_sync"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "changed", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "changed", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "drift", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:drift:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:drift:1", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "{\n  ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "\"in_sync\": ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "false,\n  ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "\"drift\": ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "[\n    ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "\"CONTRACTS.md: ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "`rayspec ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "run` ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "flag ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "list ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "lacks ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "--stubs-init\",\n    ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "\"docs/cli.md: ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "exit ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "code ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "3 ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "undocumented\"\n  ", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "]\n", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "}", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "{\n  \"in_sync\": false,\n  \"drift\": [\n    \"CONTRACTS.md: `rayspec run` flag list lacks --stubs-init\",\n    \"docs/cli.md: exit code 3 undocumented\"\n  ]\n}", "ts": "<ts>"}, "step_path": "drift", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "drift", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": "when_false", "status": "skipped", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "done", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "update", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:update:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:update:1", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Updated ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "CONTRACTS.md ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "and ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "docs/cli.md; ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "committed ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "docs: ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "sync ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "with ", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "code.", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "Updated CONTRACTS.md and docs/cli.md; committed docs: sync with code.", "ts": "<ts>"}, "step_path": "update", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "update", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "links", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "links", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "approve"}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "step.started"}
+{"data": {"approved": true, "by": "dry-run", "comment": ""}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "run.decision"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "pr", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "pr", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"drift": ["CONTRACTS.md: `rayspec run` flag list lacks --stubs-init", "docs/cli.md: exit code 3 undocumented"], "in_sync": false}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

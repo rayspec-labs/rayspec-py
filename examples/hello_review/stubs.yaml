@@ -1,0 +1,9 @@
+# Scripted answers for `rayspec run hello_review --dry-run --stubs stubs.yaml`.
+# Keys are step paths (or globs); see examples/README.md for the full stub file shape.
+steps:
+  review:
+    text: |
+      - `target` is only read, never validated — fine for a review tool.
+      - Consider a `--focus` default in the docs.
+      VERDICT: ok
+    usage: { input: 850, output: 60 }

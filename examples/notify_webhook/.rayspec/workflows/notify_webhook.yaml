@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: notify_webhook
+description: >
+  Draft a one-line announcement with an agent and POST it to a webhook whose URL is a
+  `secret: true` input — delivered to the shell step as $RAYSPEC_INPUT_WEBHOOK_URL only, never
+  written to run.json, context.json, events, prompts or outputs.
+
+inputs:
+  message: { type: string, required: true, description: "What to announce" }
+  # secret: true — the value reaches shell/python steps ONLY through the environment
+  # (RAYSPEC_INPUT_WEBHOOK_URL or this step's env: mapping); naming it in a prompt, when:,
+  # outputs: … is a load-time error; plan/show print "<secret>"; resume asks for it again.
+  webhook_url: { type: string, secret: true, description: "Incoming-webhook URL (optional)" }
+
+isolation: none                     # nothing is written to the checkout
+
+agents:
+  writer:
+    provider: claude
+    model: small
+    access: read-only
+    instructions: You write one-line release announcements. No preamble, no emoji.
+
+steps:
+  - id: draft
+    agent: writer
+    prompt: "Write a one-line announcement for: {{ inputs.message }}"
+
+  - id: notify
+    needs: [draft]
+    shell: |
+      # The secret arrives as an environment variable; an unset optional secret is simply absent.
+      if [ -z "${RAYSPEC_INPUT_WEBHOOK_URL:-}" ]; then echo "no webhook_url — skipped"; exit 0; fi
+      curl -fsS -X POST -H 'Content-Type: application/json' \
+        -d "$(printf '{"text": %s}' "$(printf '%s' "$TEXT" | jq -Rs .)")" "$RAYSPEC_INPUT_WEBHOOK_URL" >/dev/null
+      echo "sent"
+    env: { TEXT: "{{ steps.draft.output }}" }   # a shell env: mapping may also carry the secret
+    timeout: 30s
+
+outputs:
+  announcement: "{{ steps.draft.output }}"
+  sent: "{{ steps.notify.output == 'sent' }}"

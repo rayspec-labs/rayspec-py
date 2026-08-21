@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: pr_review
+description: Review a pull request with the reusable review_block and post the verdict.
+
+inputs:
+  pr: { type: integer, required: true, description: "Pull request number" }
+  depth: { type: string, enum: [quick, deep], default: quick }
+  post: { type: boolean, default: false, description: "Post the verdict as a PR comment" }
+
+isolation: none
+
+steps:
+  - id: checkout
+    shell: gh pr checkout "$RAYSPEC_INPUT_PR"
+
+  - id: changed
+    needs: [checkout]
+    shell: gh pr diff "$RAYSPEC_INPUT_PR" --name-only | head -n 1 | xargs -r dirname
+    description: The first changed directory is the review target (keep it simple).
+
+  - id: review
+    needs: [changed]
+    include: review_block           # discovered by name (.rayspec/workflows/review_block.yaml)
+    with:                           # validated against review_block's inputs
+      target: "{{ steps.changed.output or '.' }}"
+      depth: "{{ inputs.depth }}"
+
+  - id: comment
+    needs: [review]
+    when: inputs.post and steps.review.output.verdict == 'request_changes'
+    shell: |
+      gh pr comment "$RAYSPEC_INPUT_PR" --body "{{ steps.review.output.findings | join('\n- ') }}"
+
+outputs:
+  verdict: "{{ steps.review.output.verdict }}"
+  findings: "{{ steps.review.output.findings }}"
+  commented: "{{ steps.comment.status == 'succeeded' }}"

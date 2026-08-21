@@ -1,0 +1,13 @@
+# Happy path: fix → two loop iterations (first review rejects) → approve (auto in dry run) → PR.
+defaults: { latency_ms: 0, usage: { input: 1200, output: 300 } }
+steps:
+  assess: { output: { verdict: fix, reason: "Repro steps present, affects every user." } }
+  "build[*]/implement":
+    text: "Patched the parser, added test_parse_empty; committed as 'fix: #42'."
+    events:
+      - { tool_call: { name: Bash, call_id: c1, data: { command: "pytest -q" } } }
+      - { tool_result: { call_id: c1, text: "12 passed" } }
+  "build[*]/review":
+    sequence:
+      - "- The regression test does not cover the empty-input case."
+      - BUILD-CLEAN

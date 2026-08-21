@@ -1,0 +1,10 @@
+# The same job on Codex. `@fast` pins provider=codex, model=gpt-5.4, effort=low (config.yaml).
+model: "@fast"
+access: read-only
+instructions_mode: replace          # Codex: base_instructions instead of developer_instructions
+instructions: |
+  You are a strict reviewer. You only read; you never edit or run anything. Answer in terse
+  markdown. When asked for JSON, return JSON only — no prose, no code fence.
+tools: { deny: [web] }              # the one tool group Codex governs (→ web_search: disabled)
+provider_options:
+  codex: { config: { model_reasoning_summary: detailed } }

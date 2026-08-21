@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: triage_fanout
+description: >
+  Classify a batch of GitHub issues in parallel (each: fan-out), tolerate per-item failures,
+  summarise with a python step, and only escalate when something is critical.
+
+inputs:
+  issues:
+    type: array
+    items: { type: integer }
+    default: [101, 102, 103, 104]
+    description: "Issue numbers to triage (repeat --input issues=N or pass a JSON array)"
+  severity_by_label:
+    type: object
+    default: { security: critical, bug: high, docs: low }
+    description: "Hints the classifier should respect"
+  table_format: { type: string, enum: [github, simple, plain], default: github }
+
+isolation: none                     # nothing is written to the repo
+
+defaults:
+  max_parallel: 4                   # run-wide cap on concurrently running leaf steps
+  timeout: 10m
+
+steps:
+  - id: triage
+    each: inputs.issues             # expression → list; one body run per item
+    as: issue                       # default would be `item`
+    max_parallel: 3                 # this fan-out's own cap (≤ defaults.max_parallel); a governance
+                                    # field, not templatable — `{{ inputs.x }}` is not allowed here
+    on_failure: continue            # a failed item leaves a `none` slot instead of failing the step
+    steps:
+      - id: view
+        shell: |
+          # Scratch copy per item under the workdir; `cleanup` removes the directory at the end.
+          mkdir -p "$RAYSPEC_WORKDIR/.triage-$RAYSPEC_RUN_ID"
+          gh issue view "{{ issue }}" --json number,title,body,labels \
+            | tee "$RAYSPEC_WORKDIR/.triage-$RAYSPEC_RUN_ID/{{ issue }}.json"
+      - id: classify
+        needs: [view]
+        agent: { provider: claude, model: small, access: read-only }   # inline agent
+        retry: { attempts: 2, delay: 1s }   # one quick retry on transient errors (default: 3 × 3s)
+        prompt: |
+          Issue #{{ issue }} ({{ each.index + 1 }} of {{ each.total }}):
+          {{ steps.view.output }}
+
+          Label hints: {{ inputs.severity_by_label }}
+          Classify it.
+        output_schema:
+          type: object
+          properties:
+            severity: { type: string, enum: [critical, high, medium, low] }
+            area: { type: string }
+            duplicate_of: { type: integer }
+          required: [severity, area]
+
+  - id: summarize
+    needs: [triage]
+    env: { TABLE_FORMAT: "{{ inputs.table_format }}" }   # python steps take `env:` too
+    python: |
+      import json, os
+      from tabulate import tabulate            # installed on the fly via `deps`
+      results = {{ steps.triage.output }}      # list aligned with the items; None = failed item
+      issues = {{ inputs.issues }}
+      rows = [
+          (n, (r or {}).get("classify", {}).get("severity", "error"), (r or {}).get("classify", {}).get("area", "-"))
+          for n, r in zip(issues, results)
+      ]
+      print(tabulate(rows, headers=["issue", "severity", "area"], tablefmt=os.environ["TABLE_FORMAT"]))
+    deps: [tabulate]
+
+  - id: alert
+    needs: [summarize]
+    when: (steps.triage.output | select | map(attribute='classify.severity') | select('equalto', 'critical') | list | length) > 0
+    agent: { provider: claude, model: small, access: read-only }
+    prompt: |
+      These issues are critical. Draft a one-paragraph incident note for the team channel:
+      {{ steps.triage.output | select | selectattr('classify.severity', 'equalto', 'critical') | list }}
+
+  - id: digest
+    needs: [alert, summarize]
+    join: any                       # run when at least one dependency succeeded (alert may be skipped)
+    agent: { provider: claude, model: small, access: read-only }
+    prompt: |
+      Write a three-line digest of this triage table:
+      {{ steps.summarize.output }}
+      {% if steps.alert.status == 'succeeded' %}Incident note: {{ steps.alert.output }}{% endif %}
+
+  - id: cleanup
+    needs: [digest]
+    join: always                    # finally-semantics: runs even if digest failed or the run drains
+    shell: rm -rf "$RAYSPEC_WORKDIR/.triage-$RAYSPEC_RUN_ID"   # the scratch dir triage[*]/view wrote
+
+outputs:
+  table: "{{ steps.summarize.output }}"
+  digest: "{{ steps.digest.output }}"
+  classified: "{{ steps.triage.items | selectattr('status', 'equalto', 'succeeded') | list | length }}"
+  failed: "{{ steps.triage.items | rejectattr('status', 'equalto', 'succeeded') | list | length }}"
+  escalated: "{{ steps.alert.status == 'succeeded' }}"

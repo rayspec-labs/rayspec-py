@@ -1,0 +1,27 @@
+checks:
+  - id: block
+    workflow: review_block
+    inputs: { target: src/, depth: deep }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes }
+      steps: { claude_review: succeeded, codex_review: succeeded, judge: succeeded }
+  - id: pr
+    workflow: pr_review
+    inputs: { pr: 17, post: true }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes, commented: true }
+      steps: { "review/judge": succeeded, review: succeeded, comment: succeeded }
+  - id: pr_no_post
+    workflow: pr_review
+    inputs: { pr: 17 }
+    stubs: stubs.yaml
+    expect:
+      status: succeeded
+      outputs: { commented: false }
+      steps: { comment: skipped }

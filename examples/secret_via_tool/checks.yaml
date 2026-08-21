@@ -1,0 +1,19 @@
+checks:
+  - id: unauthenticated                 # no source value ⇒ the agent step is skipped
+    workflow: secret_via_tool
+    inputs: { repo: rayspec-labs/rayspec-py }
+    stubs: stubs.yaml
+    env: { RAYSPEC_EXAMPLE_GITHUB_TOKEN: null }
+    expect:
+      status: succeeded
+      exit_code: 0
+      steps: { open_issues: succeeded }
+  - id: authenticated                   # the source resolves ⇒ the tool gets the credential
+    workflow: secret_via_tool
+    inputs: { repo: rayspec-labs/rayspec-py }
+    stubs: stubs.yaml
+    env: { RAYSPEC_EXAMPLE_GITHUB_TOKEN: ghp_EXAMPLESTUBTOKEN0123456789 }
+    expect:
+      status: succeeded
+      exit_code: 0
+      steps: { open_issues: succeeded }

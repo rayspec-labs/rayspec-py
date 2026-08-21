@@ -1,0 +1,45 @@
+rayspec
+Copyright 2026 rayspec-labs
+
+This product includes software developed at rayspec-labs.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+
+Attribution
+
+rayspec's workflow-language constitution (docs/constitution.md) is adapted from
+the workflow-language constitution of Archon (https://github.com/coleam00/archon,
+MIT licensed), and Archon's worktree-isolation default informed rayspec's own.
+No Archon source code is included in this project; the influence is on design
+and documentation only.
+
+--------------------------------------------------------------------------------
+
+Third-party dependencies
+
+rayspec depends on, but does not redistribute, the following packages. Each is
+distributed under its own license by its own authors:
+
+    claude-agent-sdk    MIT
+    openai-codex        Apache-2.0
+    pydantic            MIT
+    typer               MIT
+    rich                MIT
+    jinja2              BSD-3-Clause
+    pyyaml              MIT
+    anyio               MIT
+    jsonschema          MIT
+
+The Claude Code and Codex command-line binaries that the respective SDKs invoke
+are covered by their vendors' own terms, not by this License.

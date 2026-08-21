@@ -1,0 +1,23 @@
+{
+  "cost_source": "none",
+  "cost_usd": null,
+  "exit_code": 4,
+  "outputs": null,
+  "pause": null,
+  "reason": "Not worth fixing \u2014 duplicate of #41",
+  "run_dir": "<run-dir>",
+  "run_id": "<run-id>",
+  "status": "cancelled",
+  "usage": {
+    "cache_write": 0,
+    "cached_input": 0,
+    "input": 0,
+    "output": 0,
+    "reasoning": 0
+  },
+  "workspace": {
+    "branch": "<branch>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}

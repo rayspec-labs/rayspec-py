@@ -1,0 +1,139 @@
+{
+  "cost_source": "none",
+  "created_at": "<ts>",
+  "dry_run": true,
+  "ended_at": "<ts>",
+  "host": "<host>",
+  "inputs": {
+    "message": "rayspec 1.0 is out",
+    "webhook_url": "<secret>"
+  },
+  "outputs": {
+    "announcement": "rayspec 1.0 is out: declarative agent workflows on Claude and Codex, with resume.",
+    "sent": false
+  },
+  "pause": null,
+  "pid": null,
+  "pid_started_at": "<ts>",
+  "project_root": "<root>",
+  "project_slug": "<slug>",
+  "reason": null,
+  "resume_count": 0,
+  "run_id": "<run-id>",
+  "schema": 1,
+  "secret_inputs": [
+    "webhook_url"
+  ],
+  "started_at": "<ts>",
+  "status": "succeeded",
+  "steps": {
+    "draft": {
+      "approved": null,
+      "attempts": 1,
+      "cost_source": "none",
+      "cost_usd": null,
+      "duration_ms": 0,
+      "each": null,
+      "ended_at": "<ts>",
+      "error": null,
+      "exit_code": null,
+      "fingerprint": "<sha>",
+      "id": "draft",
+      "item_index": null,
+      "item_sha256": "<sha>",
+      "iteration": null,
+      "kind": "prompt",
+      "loop": null,
+      "model": "haiku",
+      "ok": true,
+      "output_kind": "text",
+      "output_ref": "steps/draft/output.txt",
+      "output_sha256": "<sha>",
+      "path": "draft",
+      "prompt_ref": "steps/draft/prompt.txt",
+      "provider": "stub",
+      "session_ref": {
+        "id": "stub:draft:1",
+        "provider": "stub"
+      },
+      "skip_reason": null,
+      "started_at": "<ts>",
+      "status": "succeeded",
+      "tolerated": false,
+      "usage": {
+        "cache_write": 0,
+        "cached_input": 0,
+        "input": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "usage_unknown": false
+    },
+    "notify": {
+      "approved": null,
+      "attempts": 1,
+      "cost_source": "none",
+      "cost_usd": null,
+      "duration_ms": 0,
+      "each": null,
+      "ended_at": "<ts>",
+      "error": null,
+      "exit_code": 0,
+      "fingerprint": "<sha>",
+      "id": "notify",
+      "item_index": null,
+      "item_sha256": "<sha>",
+      "iteration": null,
+      "kind": "shell",
+      "loop": null,
+      "model": null,
+      "ok": true,
+      "output_kind": "text",
+      "output_ref": "steps/notify/output.txt",
+      "output_sha256": "<sha>",
+      "path": "notify",
+      "prompt_ref": null,
+      "provider": null,
+      "session_ref": null,
+      "skip_reason": null,
+      "started_at": "<ts>",
+      "status": "succeeded",
+      "tolerated": false,
+      "usage": {
+        "cache_write": 0,
+        "cached_input": 0,
+        "input": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "usage_unknown": false
+    }
+  },
+  "stubs_path": "<root>/stubs.yaml",
+  "toolchain": {
+    "models": {
+      "agents.writer": "haiku"
+    },
+    "platform": "<platform>",
+    "providers": {
+      "stub": {
+        "cli_path": "<path>",
+        "cli_version": "<version>",
+        "sdk_version": "<version>"
+      }
+    },
+    "python": "<python>",
+    "rayspec": "<version>"
+  },
+  "workflow_hash": "<hash>",
+  "workflow_name": "notify_webhook",
+  "workflow_path": ".rayspec/workflows/notify_webhook.yaml",
+  "workspace": {
+    "base_branch": "<branch>",
+    "base_sha": "<sha>",
+    "branch": "<branch>",
+    "head_sha": "<sha>",
+    "isolation": "none",
+    "workdir": "<workdir>"
+  }
+}
