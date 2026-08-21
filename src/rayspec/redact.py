@@ -193,11 +193,14 @@ class Redactor:
 
     @property
     def hold(self) -> int:
-        """UPPER BOUND on what a :class:`StreamRedactor` may hold back.
+        """UPPER BOUND on what a :class:`StreamRedactor` may hold back for a PARTIAL match.
 
         Not what it *does* hold back: :meth:`StreamRedactor.feed` holds back only the tail that
         could still grow into a match (usually nothing), so a stream that carries no secret is
-        never delayed. This bound is what the documentation quotes as the worst case.
+        never delayed. This bound is what the documentation quotes as the worst case. It does
+        not cover the one case where more is held: a complete match the boundary would
+        otherwise cut in half is kept whole, and a run of complete matches that overlap each
+        other is held until the run ends.
         """
         if not self:
             return 0
@@ -399,11 +402,11 @@ class StreamRedactor:
     A secret split across two ``text_delta`` chunks (``ghp_SEC`` + ``RET…``) matches neither
     chunk on its own, so :meth:`feed` holds back the tail that could still *grow* into a match —
     the longest suffix that is a proper prefix of a known value, or that a detector's shape is
-    still in the middle of. Complete values are replaced before that tail is measured, so a
-    value that overlaps itself cannot look like one still being written. Text that cannot be
-    part of any secret is returned immediately, so a live log or console tree never lags behind
-    a long-running step. The concatenation of everything ``feed``/``flush`` return equals the
-    redaction of the concatenation of everything fed in; only the chunk *boundaries* move.
+    still in the middle of — and then moves that boundary further back rather than cutting a
+    COMPLETE match in half. Text that cannot be part of any secret is returned immediately, so
+    a live log or console tree never lags behind a long-running step. The concatenation of
+    everything ``feed``/``flush`` return equals the redaction of the concatenation of everything
+    fed in; only the chunk *boundaries* move.
 
     A caller MUST :meth:`flush` at the end of the stream (the store does it when the step
     finishes), otherwise a pending partial value is dropped.
@@ -423,26 +426,47 @@ class StreamRedactor:
     def feed(self, text: str) -> str:
         """The safe prefix of everything fed so far that has not been returned yet.
 
-        Known values are replaced BEFORE the boundary is measured. Measuring first is what a
-        self-overlapping value defeats: ``4242424242`` ends with its own eight-character
-        prefix, so the buffer looked like a value still being written, the boundary was drawn
-        two characters in — and those two characters were released raw while the rest waited
-        for a continuation that never came. Replacing complete matches first leaves the
-        boundary to do the only job it can do, which is to wait for a value that really is
-        still incomplete.
+        Both rules are measured on the RAW buffer, and both only ever move the boundary
+        *earlier*: the tail that could still grow into a match is held back, and then the
+        boundary is pulled back past any complete match it would otherwise cut in half. The
+        second rule is what a self-overlapping value needs: ``4242424242`` ends with its own
+        eight-character prefix, so the first rule draws the line two characters in — and those
+        two characters would go out raw while the rest waits for a continuation that never
+        comes. Substituting complete matches before measuring is NOT an alternative: when one
+        known value is a prefix of another (``dbuser`` and ``dbuser:pw@host``) it replaces the
+        short one and destroys the very prefix the boundary needed in order to wait for the
+        long one.
         """
         if not self._redactor:
             return text
         if not text:
             return ""
-        buffered = self._redactor.redact_values(self._pending + text)
-        hold = self._hold(buffered)
-        if hold >= len(buffered):
-            self._pending = buffered
+        raw = self._pending + text
+        cut = self._keep_matches_whole(raw, len(raw) - self._hold(raw))
+        if cut <= 0:
+            self._pending = raw
             return ""
-        cut = len(buffered) - hold
-        self._pending = buffered[cut:]
-        return self._redactor.redact_shapes(buffered[:cut])
+        self._pending = raw[cut:]
+        return self._redactor.redact(raw[:cut])
+
+    def _keep_matches_whole(self, raw: str, cut: int) -> int:
+        """``cut`` moved back until no COMPLETE match of a known value straddles it.
+
+        A match that starts before the cut and ends after it would have its head released as
+        raw text (the replacement only ever sees ``raw[:cut]``) and its tail replaced later, so
+        the whole match is held instead. Matches that overlap each other chain the boundary
+        further back, at worst to the start of the buffer — the safe answer.
+        """
+        while cut > 0:
+            earliest = cut
+            for needle, _ in self._redactor.literals:
+                index = raw.find(needle, max(0, cut - len(needle) + 1))
+                if 0 <= index < cut:  # the search start guarantees it ends after the cut
+                    earliest = min(earliest, index)
+            if earliest == cut:
+                return cut
+            cut = earliest
+        return cut
 
     def _hold(self, text: str) -> int:
         """How many trailing characters of ``text`` could still become part of a match."""

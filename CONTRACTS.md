@@ -1844,13 +1844,16 @@ Two new packages and one new loader module; nothing else moved.
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
   is nothing to add) are how a later caller ADDS a value without discarding one already
   installed. `REDACTION = "[REDACTED:{name}]"`, `NULL_REDACTOR` (the shared no-op).
-  `StreamRedactor.feed(text)` replaces complete values FIRST and measures the boundary on what
-  is left — a value that ends with its own prefix (`4242424242`) otherwise looks like one still
-  being written and has its head released raw — then holds back only the tail that could still
-  GROW into a match (the longest suffix that is a proper prefix of a known value, or a detector
-  shape in progress) and applies the detector shapes to what it releases, so ordinary text is
-  emitted immediately and a live log never lags; `redactor.hold` is the documented upper bound,
-  not what is held. `flush()` returns the tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
+  `StreamRedactor.feed(text)` holds back only the tail that could still GROW into a match (the
+  longest suffix that is a proper prefix of a known value, or a detector shape in progress) and
+  then moves that boundary further back rather than cutting a COMPLETE match in half — a value
+  that ends with its own prefix (`4242424242`) otherwise looks like one still being written and
+  has its head released raw. Both rules are measured on the RAW buffer: substituting complete
+  values before measuring would replace a known value that is a PREFIX of another known value
+  (`dbuser` inside `dbuser:pw@host`) and destroy the prefix the boundary needs. Ordinary text is
+  emitted immediately and a live log never lags; `redactor.hold` is the documented upper bound
+  for a partial match, not what is held, and a run of complete matches that overlap each other
+  is held whole. `flush()` returns the tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
   8192`, 4 KiB tokens) precisely so a shape split across two chunks is still caught. The
   concatenation of `feed`/`flush` equals the redaction of the concatenated input — only the
   chunk boundaries move. `RedactingSink(inner, redactor)` wraps any `EventSink` (event `data`,

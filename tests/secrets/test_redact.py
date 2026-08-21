@@ -102,14 +102,48 @@ def test_stream_redactor_splits_at_every_offset() -> None:
 def test_a_self_overlapping_secret_is_never_cut_in_half(secret: str) -> None:
     """A value whose own prefix is also its suffix (a repeating token, a numeric PIN) used to
     fool the boundary buffer: the hold was measured against the longest *partial* prefix, so a
-    COMPLETE match that started before the cut had its head emitted raw."""
+    COMPLETE match that started before the cut had its head emitted raw. The buffer now waits
+    for the value it may still be in the middle of, so the marker arrives on the flush."""
     red = _r(tok=secret)
-    assert red.stream().feed(secret) + red.stream().flush() == "[REDACTED:tok]"
+    stream = red.stream()
+    assert stream.feed(secret) + stream.flush() == "[REDACTED:tok]"
     text = f"[{secret}]"
     for cut in range(len(text) + 1):
         stream = red.stream()
         out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
         assert out == "[[REDACTED:tok]]", (secret, cut)
+
+
+def _assert_split_invariant(red: Redactor, text: str) -> None:
+    """The documented invariant: chunking may move boundaries, never change the result."""
+    whole = red.redact(text)
+    for cut in range(len(text) + 1):
+        stream = red.stream()
+        out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
+        assert out == whole, (cut, out)
+    stream = red.stream()
+    assert "".join(stream.feed(char) for char in text) + stream.flush() == whole
+
+
+def test_a_secret_that_is_a_prefix_of_another_is_never_half_released() -> None:
+    """Two secrets where one starts with the other — a database user and the DSN that embeds
+    it — are ordinary configuration. Replacing the short one as soon as it is whole destroys
+    the prefix the boundary needs in order to wait for the long one, and the long value's tail
+    then goes out raw."""
+    red = Redactor.build({"user": "dbuser", "dsn": "dbuser:pw@host"})
+    stream = red.stream()
+    assert stream.feed("dbuser") + stream.feed(":pw@host") + stream.flush() == "[REDACTED:dsn]"
+    _assert_split_invariant(red, "connecting as dbuser:pw@host now")
+
+
+def test_a_secret_ending_in_a_backslash_is_its_own_prefix_pair() -> None:
+    """One secret is enough to hit the same case: a value ending in a backslash registers the
+    raw and the JSON-escaped form, and the raw one is a proper PREFIX of the escaped one. A
+    writer of raw text that serialises the value (a step that prints a JSON document) writes
+    the escaped form, so the boundary has to wait for the second backslash."""
+    red = Redactor.build({"tok": "s3cret-value\\"})
+    _assert_split_invariant(red, "path=s3cret-value\\ done")
+    _assert_split_invariant(red, json.dumps({"path": "s3cret-value\\"}))
 
 
 def test_a_self_overlapping_secret_fed_one_character_at_a_time(secret: str = "4242424242") -> None:
