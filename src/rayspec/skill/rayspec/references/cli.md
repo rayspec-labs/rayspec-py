@@ -10,16 +10,16 @@ directory containing `.rayspec/`; default: walk up from the cwd to the first `.r
 `.git`, else the cwd; a `--root` that is not a directory is a usage error). `RAYSPEC_HOME`
 (default `~/.rayspec`) holds user-level workflows/agents, `config.yaml`, `.env` and every
 project's runs and worktrees. The commands that read a project (`run`, `validate`, `plan`,
-`workflows`, `agents`, `doctor`) and the run-management commands (`runs`, `show`, `logs`,
+`workflows`, `agents`, `doctor`) and the run-management commands (`runs`, `costs`, `show`, `logs`,
 `resume`, `approve`, `reject`, `cancel`) first load `~/.rayspec/.env` into the environment
 (existing variables are never overridden) and merge `~/.rayspec/config.yaml` +
 `.rayspec/config.yaml`. The **project** `.rayspec/.env` is a credential surface controlled by
 whoever pushed the checkout (`ANTHROPIC_BASE_URL`, `GIT_CONFIG_*`, …), so only the commands that
 execute steps apply it — `run`, `resume`, `approve`, `reject` — and they print one dim
 `env: loaded N variables from .rayspec/.env (project)` line on stderr when they do (project wins
-over the home file there too); the inspection commands (`doctor`, `validate`, `plan`,
-`workflows`, `agents`, `providers`, `runs`, `show`, `logs`, `worktrees`, `projects`) never load
-it (`rayspec doctor` lists the file in a `project .env` row instead). `providers`, `projects *`,
+over the home file there too); the inspection commands (`doctor`, `validate`, `plan`, `workflows`,
+`agents`, `providers`, `runs`, `costs`, `show`, `logs`, `worktrees`, `projects`) never load it
+(`rayspec doctor` lists the file in a `project .env` row instead). `providers`, `projects *`,
 `worktrees *` and `version` do **not** load any `.env` (`worktrees` reads `config.yaml` only to
 resolve `--repo`), so variables they need — e.g. `RAYSPEC_HOME` or git credentials — must come
 from the shell. A malformed `config.yaml` or `.env` (either layer: YAML syntax, an unsafe tag, a
@@ -520,34 +520,50 @@ lists without `--all`.
 
 ```console
 $ rayspec costs --since 30d
-project local/rayspec-py · since 2026-07-22 09:00:00 UTC
-workflow           runs     tokens    cost  cost source
-review_pr            12   1.4M tok  ~$4.12  9 table · 3 unknown
-implement_feature     4  820.0k tok  $2.30  4 provider
+project local/rayspec-py-69756f71 · since 2026-07-22 14:52:40 UTC
+workflow           runs      tokens    cost  cost source
+review_pr            12    1.3M tok  ≥$4.12  9 table · 3 unknown
+implement_feature     4  820.0k tok   $2.30  4 provider
 docs_sync             2   40.0k tok       -  2 unknown
-total                18   2.3M tok  ≥$6.42  4 provider · 9 table · 5 unknown
-5 of 18 runs have no recorded cost (dry runs, an unpriced provider, no pricing entry) — totals marked ≥ are a lower bound
+total                18    2.2M tok  ≥$6.42  4 provider · 9 table · 5 unknown
+5 of 18 runs have no recorded cost (dry runs, an unpriced provider, no pricing entry)
+totals marked ≥ are a lower bound
 ```
 
 The **cost** column carries the same markers as everywhere else in the CLI — `$0.12`
 provider-reported, `~$0.12` estimated from the [pricing table](providers.md#pricing), `≥$0.12` a
 lower bound, `-` nothing known — folded from the runs in the group the way a run folds its steps:
 any estimate in the mix makes the group an estimate, and anything missing makes it a lower bound.
+The **tokens** column carries `≥` too, because a step that was interrupted before the provider
+reported any usage leaves the run's token count a lower bound (`usage_unknown`, the same figure
+`rayspec run` prints as `tokens: ≥N`; see
+[runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#failures-retries-and-timeouts)). When nothing at all was
+reported the cell reads `unknown` rather than `-`, which would claim the run used no tokens.
+
 The **cost source** column is the breakdown that keeps the marker honest: one count per run,
 `provider`/`table`/`partial` for the runs whose cost is known and **`unknown`** for the runs that
 carry no cost at all (a `--dry-run`, a provider without cost reporting and no pricing entry, a run
-that never reached a priced step).
+that never reached a priced step). A fifth bucket, **`none`**, only shows up for a legacy record:
+a `run.json` written before the cost source was recorded carries a cost without saying where it
+came from, and it is reported as it was stored rather than guessed at.
 
 A run whose cost is unknown is **counted and shown as unknown — never dropped, never counted as
 zero**. That is the one property this command is built around: the run counts of the groups always
 add up to the `total` row, a group in which nothing is priced prints its run count next to an empty
-cost, and a total that is missing anything is marked `≥` and explained in the line below the table.
-A total that quietly omits runs would be worse than no total at all.
+cost, and a total that is missing anything is marked `≥` and explained in the lines below the
+table. A total that quietly omits runs would be worse than no total at all — which is why a run
+record the store cannot parse (a truncated or hand-edited `run.json`) is not simply skipped: it is
+counted, the total is marked `≥`, and a line says how many records could not be read.
+
+Runs that are still `running` or `paused` are summed like any other — their cost so far is real
+money — but a line below the table says how many, because those figures are not final: an approval
+gate can sit for days, and two invocations while a run is in flight will not agree.
 
 Groups are ordered most expensive first, then by name (an unpriced group sorts last — its cost is
-unknown, not zero). Tokens are summed independently of cost, so a group with no price still shows
-what it consumed. Everything that comes out of `run.json` (workflow names, the project slug) is
-rendered as plain text, never as Rich markup.
+unknown, not zero, so it sorts after a group that really did cost `$0.00`). Tokens are summed
+independently of cost, so a group with no price still shows what it consumed. Everything that comes
+out of `run.json` (workflow names, the project slug) is rendered as plain text, never as Rich
+markup.
 
 `--since` takes what a person types: a window back from now — `45s`, `90m`, `24h`, `7d`, `2w`
 (decimals like `1.5h` work) — or an absolute ISO-8601 date/timestamp — `2026-08-01`,
@@ -561,14 +577,14 @@ With no runs in scope the command prints one line (`no runs for project <slug> �
 and exits 0 — an unknown `--workflow` name is a filter that matched nothing, not an error, because
 a workflow may have been renamed since the runs it produced. `--json` always prints the full object,
 with `runs: 0` and `cost_usd: null`. Outside a rayspec project (no `.rayspec/` and no git repository
-at or above the cwd / `--root`) nothing is summed and no project slug directory is created: a
-stderr notice points at `--root`, exit 0.
+at or above the cwd / `--root`) nothing is summed and no project slug is claimed — neither on disk
+nor in the output, where `project` is `null`: a stderr notice points at `--root`, exit 0.
 
 Options:
 
 - `--since` `<when>` — Only runs created at or after this point: a window (`7d`, `24h`, `90m`) or a date (`2026-08-01`). Inclusive at the cutoff.
 - `--workflow` `<name>` — Only runs of this workflow (exact recorded name).
-- `--json` — Machine-readable output: one object `{project, since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds.
+- `--json` — Machine-readable output: one object `{project (the slug, or null outside a project), since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds. The four `runs_*` counters are why a figure may be a lower bound: runs with no cost at all, priced runs holding a step with tokens but no price, runs whose usage was cut off, and runs still running or paused. `runs_unreadable` (top level only — an unreadable record cannot be attributed to a workflow) counts `run.json` files the store could not parse; anything above zero means the totals are missing runs.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 This command is per-project and per-user by design. Roll-ups across projects, teams, repositories

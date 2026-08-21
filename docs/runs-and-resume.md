@@ -337,7 +337,7 @@ and `outputs` are in clear text. So:
 - **Project `.rayspec/.env` trust.** A checkout's `.rayspec/.env` is controlled by whoever pushed
   the repository and can redirect credentials (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `*_PROXY`)
   or reconfigure git (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`). Inspection commands (`doctor`,
-  `validate`, `plan`, `workflows`, `agents`, `runs`, `show`, `logs`, …) never load it; only
+  `validate`, `plan`, `workflows`, `agents`, `runs`, `costs`, `show`, `logs`, …) never load it; only
   `run`, `resume`, `approve` and `reject` apply it — into the process environment that reaches
   step, provider and git subprocesses — and they say so on stderr (`env: loaded N variables from
   .rayspec/.env (project)`). `rayspec doctor` lists the file (`project .env` row) so you can read

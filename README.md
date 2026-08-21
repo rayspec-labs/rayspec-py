@@ -191,10 +191,11 @@ loop/each/include, approval, resume, dry run, the per-workdir path lock), the fi
 isolation and `--repo`, the Rich live console (`rayspec run` on a TTY; one line per step otherwise),
 `secret: true` inputs, the packaged Claude Code skill, the `examples/` gallery, and the commands
 `init`, `doctor`, `run`, `validate`, `plan`, `workflows`, `agents`, `providers`, `projects`,
-`worktrees`, `runs`, `show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `skill`, `version`.
+`worktrees`, `runs`, `costs`, `show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `skill`,
+`version`.
 
 Not in this build: a PyPI release, and a handful of roadmap items — for example run-level
-`timeout_total`, `rayspec costs` and step-level `artifacts:`.
+`timeout_total` and step-level `artifacts:`.
 
 ## Development
 
