@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -72,8 +72,6 @@ class _State:
     """What the last :func:`register_cli_plugins` call found (for ``rayspec plugins``)."""
 
     loaded: tuple[LoadedCliPlugin, ...] = ()
-    scanned: bool = False
-    problems: list[str] = field(default_factory=list)
 
 
 _state = _State()
@@ -82,8 +80,6 @@ _state = _State()
 def reset_cli_plugins() -> None:
     """Forget the recorded discovery result. Intended for tests."""
     _state.loaded = ()
-    _state.scanned = False
-    _state.problems.clear()
 
 
 def loaded_cli_plugins() -> tuple[LoadedCliPlugin, ...]:
@@ -152,7 +148,6 @@ def register_cli_plugins(app: typer.Typer) -> tuple[LoadedCliPlugin, ...]:
     prints. Never raises: every failure is a :class:`RuntimeWarning` and a skipped plugin.
     """
     eps = _entry_points(CLI_ENTRY_POINT_GROUP)
-    _state.scanned = True
     if not eps:
         _state.loaded = ()
         return ()
@@ -208,8 +203,9 @@ def _register_one(app: typer.Typer, ep: EntryPoint, taken: set[str]) -> LoadedCl
     )
     if refused:
         listed = ", ".join(repr(name) for name in refused)
+        noun = "command" if len(refused) == 1 else "commands"
         _warn(
-            f"{where} tried to register the command {listed}, which rayspec already provides; "
+            f"{where} tried to register the {noun} {listed}, which rayspec already provides; "
             "a plugin can not shadow an existing command, so it was dropped"
         )
     error = "every command it registers is already taken" if refused and not kept else None
@@ -278,8 +274,8 @@ def installed_plugins() -> list[InstalledPlugin]:
                 plugin = cli_by_name.get(ep.name)
                 if plugin is None:
                     status, detail = "not scanned", ""
-                elif plugin.error:
-                    status, detail = "skipped", plugin.error
+                elif not plugin.ok:
+                    status, detail = "skipped", plugin.error or ""
                 else:
                     status, detail = "ok", "adds " + ", ".join(plugin.commands)
             elif group in registry.GROUP_KINDS:

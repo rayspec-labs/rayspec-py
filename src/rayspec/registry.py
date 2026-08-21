@@ -368,8 +368,10 @@ def discovery_problems() -> tuple[DiscoveryProblem, ...]:
 
 def is_registered(kind: str, extension_id: str) -> bool:
     """True when ``extension_id`` resolves for ``kind`` (``store``/``sink``/``approval``)."""
-    registry = getattr(_state, kind, None)
-    return bool(registry) and extension_id in registry.load()
+    if kind not in KIND_GROUPS:
+        return False
+    registry: _Registry[Any] = getattr(_state, kind)
+    return extension_id in registry.load()
 
 
 # ------------------------------------------------------------------------------------------
