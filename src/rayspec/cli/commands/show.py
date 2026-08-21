@@ -29,7 +29,13 @@ from rich.table import Table
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    resolve_output,
+)
 from rayspec.loader.inputs import SECRET_PLACEHOLDER, env_var_name
 from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord
@@ -404,9 +410,11 @@ def register(app: typer.Typer) -> None:
     def show(
         run: Annotated[str, typer.Argument(help="Run id or unique prefix.")],
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Show one run: header, workspace, steps, outputs and pause state."""
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         out = console()

@@ -610,7 +610,7 @@ seam for anything of that shape.
 ### `rayspec show`
 
 ```
-rayspec show [OPTIONS] {run}
+rayspec show [OPTIONS] {run}    # --output table|json (--json is the older spelling)
 ```
 
 Show one run: header (status — with a `dry run` marker for `--dry-run` records —, workflow, inputs (a `secret: true` input shows `"<secret>"` — the value is not in `run.json`), timing, `steps: done/total done (n ok · m skipped)` — see the `runs` column above —, tokens, cost with the run-level marker and, for a partial cost, a dim `(n steps unpriced)` note, `pid … (alive)` for a live run / `(exited)` for a paused one), workspace (isolation, workdir, branch, base/head sha), the step tree (nested paths like `build[2]/review`) with status, attempts, duration, tokens, cost and an output preview, an `artifacts:` table (step, file, size, sha256, stored ref) listing the files the steps promised and delivered — omitted when there are none —, a `warnings:` block (provider warnings streamed by the steps — e.g. a Claude rate-limit notice — and engine `warning` events, each as `<step>: <message>`; omitted when there are none), the rendered outputs, and the pause state (gate, token, decision) when the run is paused. Everything that comes out of `run.json`, an output file or a stream (inputs, outputs, previews, errors, reasons, messages) is untrusted text: it is printed as plain text with control characters and terminal escape sequences (colours, title changes, screen clears, hyperlinks) removed, and never parsed as Rich markup.
