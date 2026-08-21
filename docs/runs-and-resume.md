@@ -28,6 +28,7 @@ unique prefix.
 runs/<run-id>/
   run.json                      RunRecord — rewritten atomically after every step
   events.jsonl                  lifecycle events, one JSON object per line
+  audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1 (see below)
   steps/<path>/                 one directory per executed step (build[2]/implement → steps/build[2]/implement/)
     output.txt | output.json    the step's output (written BEFORE the record that points at it)
     prompt.txt                  prompt steps: the rendered prompt: body, written BEFORE the provider call (StepRecord.prompt_ref; `rayspec explain --full`; a write that fails is a warning, never a failed step)
@@ -53,11 +54,14 @@ runs/<run-id>/
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
+  "actor": {"id": "me@example.com", "source": "git", "ci": null,   // who launched the run: RAYSPEC_ACTOR,
+             "provider_accounts": {}},                            // else git user.email, else the OS user
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
                 "branch": "rayspec/review-ikd7", "base_branch": "main", "base_sha": "…", "head_sha": "…"},   // last record write (pause/end/resume)
-  "pause": null,                          // {token, step, message, requested_at, decision{approved, comment, by, decided_at}}
+  "pause": null,                          // {token, step, message, requested_at,
+                                          //  decision{approved, comment, by, decided_at, actor}}
   "outputs": {"verdict": "approve", "summary": "…"},
   "cost_source": "none",                  // run level: provider | table | partial | none (see "Failures, retries and timeouts")
   "toolchain": {"rayspec": "1.0.0", "python": "3.12.8", "platform": "macOS-15.5-arm64",   // what was in effect at
@@ -121,6 +125,70 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 `rayspec run --json` prints both streams interleaved on stdout (stream records wrapped as
 `{"type": "stream", "step_path", "record"}`); the final summary object is the last stdout line
 (see [cli.md](cli.md#rayspec-run)).
+
+### Who ran it
+
+`run.json` carries an `actor`: **who** set the run going. It is resolved once, at the run's first
+start, and never rewritten — a resume by somebody else leaves it naming whoever launched it.
+
+| field | what it is |
+|---|---|
+| `id` | the identity itself |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `git` (the workdir's `git config user.email`), `os` (the operating-system user), `unknown` |
+| `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
+| `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
+
+Resolution order is `RAYSPEC_ACTOR` > `git config user.email` in the run's workdir > the OS user;
+set `RAYSPEC_ACTOR` in a scheduler or a CI job so an unattended run is not attributed to whatever
+service account happens to own the process.
+
+It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
+password to build it — a provider *account* comes only from a variable that names one, never from
+the one that carries the secret — and nothing in rayspec grants an authorisation because of it.
+
+Every decision carries its own actor too, next to `by`:
+
+- `by` says which door the decision came through: `cli` (`rayspec approve`/`reject`), `tty` (the
+  terminal prompt of the run itself), `--yes`, `dry-run`;
+- `actor` says whose hand it was. For a decision recorded by `rayspec approve`/`reject` it is
+  whoever ran that command — often not the person who launched the run. For a gate answered in the
+  run's own terminal it is the run's actor.
+
+`pause.decision` holds it while the run is paused, and the `run.decision` event in `events.jsonl`
+keeps it afterwards (the pause slot is cleared the moment the gate consumes the decision, the event
+log is not).
+
+### The local audit log
+
+`RAYSPEC_AUDIT_LOG=1` adds `audit.jsonl` to the run directory: one line per fact, in the order the
+store learned it.
+
+```json
+{"ts": "2026-08-21T09:14:02+00:00", "kind": "command", "step": "build[1]/implement",
+ "detail": "pytest -q", "data": {"attempt": 1}}
+```
+
+| `kind` | one row per |
+|---|---|
+| `run` | the run being created (with the actor), started/resumed, its workspace, a pause, the final status |
+| `step` | a step starting, retrying, finishing |
+| `command` | a command an agent started |
+| `tool` | a tool an agent called (arguments in `data.input`, capped) |
+| `file` | a file an agent reported changing |
+| `warning` | a warning or error, from the engine or from an agent |
+| `approval` | a decision — `data` carries `approved`, `comment`, `by` and `actor` |
+
+`detail` is the one-line summary and is capped; `data` carries the structured extras. Progress
+events (loop iterations, `each` items) are deliberately absent: they say how far a run got, not what
+it did. The file is written **through the run store**, so the redactor covers it like everything
+else under the run directory — over the row's values rather than its serialised text, so a numeric
+secret becomes the marker instead of corrupting the JSON.
+
+Two honest limits. The ledger is **append-only in behaviour, not tamper-evident**: rows are only
+ever appended, and nothing about the file proves it was not edited afterwards — anybody who can read
+a run directory can also write to it. And it is **local**: one file per run, on one machine, for one
+user. `rayspec audit <run>` renders the same rows straight from `events.jsonl` and the step streams,
+so you get the ledger whether or not the file was enabled.
 
 ### Declared artifacts
 
