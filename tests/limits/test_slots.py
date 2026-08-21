@@ -20,7 +20,14 @@ from rayspec.limits.slots import read_holder, slot_path
 
 def test_slot_files_live_under_the_home(tmp_path: Path) -> None:
     assert slot_dir(tmp_path, "claude") == tmp_path / "limits" / "slots" / "claude"
-    assert slot_dir(tmp_path, "we/ird") == tmp_path / "limits" / "slots" / "we_ird"
+
+
+def test_two_odd_provider_ids_do_not_share_one_slot_pool(tmp_path: Path) -> None:
+    """Sanitising the id into a directory name must not merge two providers' budgets."""
+    first = slot_dir(tmp_path, "we/ird")
+    second = slot_dir(tmp_path, "we:ird")
+    assert first != second
+    assert first.name.startswith("we_ird") and second.name.startswith("we_ird")
 
 
 def test_a_limit_of_two_admits_two_and_refuses_the_third(tmp_path: Path) -> None:

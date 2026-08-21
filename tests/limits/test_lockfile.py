@@ -10,6 +10,7 @@ from rayspec.errors import RayspecError
 from rayspec.limits import (
     LOCKFILE_NAME,
     LockDrift,
+    LockEntry,
     Lockfile,
     LockfileError,
     check_locked,
@@ -142,3 +143,32 @@ def test_locked_default_follows_ci() -> None:
 def test_lock_drift_is_hashable_data() -> None:
     drift = LockDrift(agent="a", field="model", pinned="x", resolved="y")
     assert drift == LockDrift(agent="a", field="model", pinned="x", resolved="y")
+
+
+def test_an_agent_the_workflow_no_longer_has_is_drift(project: Project) -> None:
+    """`lock --check` and `lock` must not disagree: what one rewrites, the other reports."""
+    project.workflow("t", WORKFLOW)
+    entries = dict(lock_entries_for(project.load("t")))
+    entries["agents.ghost"] = LockEntry(provider="claude", model="gone-9")
+    write_lockfile(project.root, {"t": entries})
+    drifts = check_locked(project.load("t"), load_lockfile(project.root))
+    assert [d.field for d in drifts] == ["stale"]
+    assert "agents.ghost" in drifts[0].message()
+
+
+def test_the_lockfile_is_replaced_whole(project: Project, monkeypatch: pytest.MonkeyPatch) -> None:
+    project.workflow("t", WORKFLOW)
+    write_lockfile(project.root, {"t": lock_entries_for(project.load("t"))})
+    before = lockfile_path(project.root).read_text(encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("rayspec.limits.lockfile.os.replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        write_lockfile(
+            project.root, {"t": {"agents.reviewer": LockEntry(provider="claude", model="x")}}
+        )
+    monkeypatch.undo()
+    assert lockfile_path(project.root).read_text(encoding="utf-8") == before
+    assert not list(lockfile_path(project.root).parent.glob("*.tmp"))

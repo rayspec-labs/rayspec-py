@@ -18,6 +18,7 @@ registry, no server and no cross-host coordination here.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -73,8 +74,17 @@ class SlotHolder:
 
 
 def slot_dir(home: Path, provider: str) -> Path:
-    """``<home>/limits/slots/<provider>/`` (not created)."""
-    return Path(home) / "limits" / "slots" / _UNSAFE.sub("_", provider or "unknown")
+    """``<home>/limits/slots/<provider>/`` (not created).
+
+    A provider id that does not survive the path-safe substitution keeps a suffix of its hash,
+    so two ids that differ only in unsafe characters cannot silently share one slot pool (and
+    therefore one concurrency budget).
+    """
+    name = provider or "unknown"
+    safe = _UNSAFE.sub("_", name)
+    if safe != name:
+        safe = f"{safe}-{hashlib.sha256(name.encode('utf-8')).hexdigest()[:8]}"
+    return Path(home) / "limits" / "slots" / safe
 
 
 def slot_path(home: Path, provider: str, index: int) -> Path:

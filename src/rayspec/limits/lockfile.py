@@ -18,6 +18,8 @@ environment variable.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,7 +75,8 @@ class LockDrift:
     """One difference between the lockfile and what the workflow resolves to now.
 
     ``field`` is ``workflow`` (the workflow has no lockfile entry at all), ``agent`` (the agent
-    is not pinned) or the name of the field that differs (``provider``/``model``/``effort``).
+    is not pinned), ``stale`` (the lockfile pins an agent the workflow no longer has) or the
+    name of the field that differs (``provider``/``model``/``effort``).
     """
 
     agent: str
@@ -91,6 +94,11 @@ class LockDrift:
         if self.field == "agent":
             return (
                 f"agent {self.agent!r} is not pinned in the lockfile "
+                f"(.rayspec/{LOCKFILE_NAME}) — run `rayspec lock`"
+            )
+        if self.field == "stale":
+            return (
+                f"the lockfile pins agent {self.agent!r}, which this workflow no longer has "
                 f"(.rayspec/{LOCKFILE_NAME}) — run `rayspec lock`"
             )
         return (
@@ -144,7 +152,9 @@ def check_locked(resolved: ResolvedWorkflow, lockfile: Lockfile | None) -> list[
 
     ``lockfile=None`` (no file) is never drift: the lockfile is opt-in, and ``--locked`` reports
     the missing file itself. A workflow the file does not mention is one ``workflow`` drift; an
-    agent it does not mention is one ``agent`` drift; anything else is one drift per field.
+    agent it does not mention is one ``agent`` drift; an agent it pins that the workflow no
+    longer has is one ``stale`` drift (otherwise ``lock --check`` would call a file up to date
+    that ``lock`` then rewrites); anything else is one drift per field.
     """
     if lockfile is None:
         return []
@@ -165,6 +175,11 @@ def check_locked(resolved: ResolvedWorkflow, lockfile: Lockfile | None) -> list[
                 drifts.append(
                     LockDrift(agent=key, field=field_name, pinned=expected, resolved=have)
                 )
+    resolved_keys = set(lock_entries_for(resolved))
+    drifts += [
+        LockDrift(agent=key, field="stale", pinned=pinned[key].model, resolved=None)
+        for key in sorted(set(pinned) - resolved_keys)
+    ]
     return drifts
 
 
@@ -250,7 +265,9 @@ def write_lockfile(project_root: Path, workflows: Mapping[str, Mapping[str, Lock
     """Write ``.rayspec/rayspec.lock`` for ``workflows`` and return its path.
 
     Deterministic: workflow names and agent keys are sorted, so re-running ``rayspec lock``
-    without a change produces byte-identical output and a clean diff.
+    without a change produces byte-identical output and a clean diff. The file is replaced
+    whole (temp file + ``os.replace``), so a crash or a full disk mid-write cannot leave a
+    truncated lockfile that the next ``--locked`` run refuses to read.
     """
     path = lockfile_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -264,7 +281,14 @@ def write_lockfile(project_root: Path, workflows: Mapping[str, Mapping[str, Lock
         },
     }
     text = _HEADER + yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
-    path.write_text(text, encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
     return path
 
 
@@ -285,7 +309,11 @@ def locked_default(environ: Mapping[str, str]) -> bool:
     """Whether ``--locked`` is on when neither ``--locked`` nor ``--no-locked`` was given.
 
     On under ``CI`` — the whole point of the lockfile is that an unattended run does not quietly
-    use a different model than the one a human reviewed.
+    use a different model than the one a human reviewed. ``CI`` is what GitHub Actions, GitLab,
+    Buildkite and CircleCI export; a runner that does not (Jenkins, TeamCity) needs ``--locked``
+    spelled out. The default only enforces a lockfile that EXISTS — a project that never ran
+    ``rayspec lock`` is not broken by setting a variable — while ``--locked`` refuses a missing
+    one, because that is what asking for it means.
     """
     return environ.get("CI", "").strip().lower() not in _FALSEY
 
