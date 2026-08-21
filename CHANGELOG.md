@@ -127,6 +127,18 @@ All notable changes to rayspec are documented here. The format follows
   `on_step_failure` as the working field it now is.
 
 ### Fixed
+- Unresolved merge-conflict markers were committed in the CLI reference and copied by the skill
+  generator into both packaged copies, so the wheel shipped them. A guard now scans every tracked
+  text file.
+- `rayspec doctor` printed a `cmd:` secret source verbatim, so a credential passed on the command
+  line (`curl -H "Authorization: Bearer …"`) appeared in output the bug-report template asks people
+  to paste publicly. Only the program is named now; the arguments are counted.
+- `rayspec show` accepts `--output` like every other command that has `--json`.
+- `SECURITY.md` described a fallback reporting route that no issue form made possible; there is now
+  a contact-only form, and a test keeps the page and the form in agreement.
+- The README described `timeout_total` and `artifacts:` as roadmap while both ship, and omitted
+  seven commands; the list is now checked against the CLI. `docs/schema.md` dated the redactor to a
+  version that does not exist.
 - **`defaults.on_step_failure` now works.** The field has been in the schema since 1.0.0 but the
   engine only ever read the `--fail-fast` CLI flag, so the YAML value was silently ignored. The
   scheduler now reads `RunContext.fail_fast` = the flag **or** `defaults.on_step_failure:
