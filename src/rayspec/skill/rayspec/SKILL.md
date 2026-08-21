@@ -52,7 +52,8 @@ description: Author, validate, dry-run and run rayspec agent workflows (a YAML D
    `--yes` only if the human said gates may auto-approve, `--json` for machine-readable output).
 7. Inspect: `rayspec runs`, `rayspec show <run>`, `rayspec logs <run>` (events),
    `rayspec logs <run> --step <path>` (one step's transcript / stdout / stderr; the failure hint
-   prints the path). Paused (exit 3): `rayspec approve <run> [comment]` / `reject <run> [reason]`
+   prints the path), `rayspec audit <run>` (what it actually did: commands, tools, files,
+   approvals and who ran it). Paused (exit 3): `rayspec approve <run> [comment]` / `reject <run> [reason]`
    / `resume <run>`. Failed/interrupted: fix, then `rayspec resume <run>` replays succeeded steps
    (`--force` when you edited the workflow — its hash changed). Run ids accept a unique prefix.
 
@@ -308,6 +309,7 @@ provider's `medium` tier. `access: read-only` cannot `allow` `edit`/`shell`.
 | `rayspec costs` | sum a project's runs by workflow (tokens, cost, cost-source breakdown) | `--since 7d`, `--workflow NAME`, `--json` | 0 / 2 |
 | `rayspec show <run>` | header, workspace, step table, warnings, outputs, pause state | `--json` | 0 / 2 |
 | `rayspec logs <run>` | lifecycle events; `--step <path>` = that step's transcript | `--step`, `--stream`, `--follow`, `--verbose`, `--json` | 0 / 2 |
+| `rayspec audit <run>` | read-only ledger: commands, tools, files, warnings, approvals + who ran it | `--commands`, `--json` | 0 / 2 |
 | `rayspec resume <run>` | re-run from the top with the reuse cache | `--force`, `--yes`, `--no-interactive`, `--json` | run's code / 2 |
 | `rayspec approve <run> [comment]` · `reject <run> [reason]` | decide a paused gate and resume | `--force`, `--json` | run's code / 2 |
 | `rayspec cancel <run>` | SIGINT a live run / mark a dead one cancelled | `--yes`, `--mark`, `--force`, `--json` | 0 / 1 / 2 |

@@ -11,6 +11,7 @@ Layout::
     <root>/runs/<run-id>/
         run.json                      RunRecord.model_dump_json() — atomically replaced
         events.jsonl                  lifecycle RunEvents (one JSON object per line)
+        audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1
         steps/<step-path>/            StepPath.fs_path(); nested like ``build[2]/implement``
             output.txt | output.json  the step output (write-ahead: written before run.json)
             prompt.txt                prompt steps: the rendered prompt handed to the provider
@@ -46,6 +47,14 @@ and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
 ``stream.jsonl`` reassembles to is therefore exactly what the step produced — redaction moves
 chunk boundaries, it never drops text. That is the whole point of routing new writes through the
 store: a writer that opens a file under the run dir directly is not covered.
+
+The optional ``audit.jsonl`` (:func:`audit_log_enabled`) is one row per governance-relevant
+fact — the run and who started it, its steps, the commands and tools its agents used, the files
+they changed, the approvals and who made them. It is derived from what already flows through
+:meth:`FileRunStore.create`, :meth:`~FileRunStore.append_event` and
+:meth:`~FileRunStore.append_stream`, and redacted over its VALUES rather than its serialised
+text. It is a **log**: append-only in behaviour, with nothing about the file proving it was not
+edited afterwards, and strictly local to one run.
 """
 
 from __future__ import annotations
@@ -640,17 +649,17 @@ class FileRunStore:
         """Iterate the rows of ``audit.jsonl`` (empty when the ledger was never enabled).
 
         A torn trailing line ends the iteration and an unreadable middle line is skipped, both
-        with a warning — the same tolerance the other JSONL readers have.
+        with a warning — the same tolerance :meth:`read_events` and :meth:`read_stream` have.
         """
         path = self.run_dir(run_id) / AUDIT_JSONL
-        for line, torn in _iter_lines(path):
-            if torn:
-                _log.warning("torn trailing line in %s (crash during write?)", path)
-                return
+        for line, terminated in _iter_lines(path):
             try:
                 row = json.loads(line)
-            except ValueError:
-                _log.warning("skipping unreadable line in %s", path)
+            except ValueError as exc:
+                if not terminated:
+                    _log.warning("%s: ignoring torn trailing line (%s)", path, exc)
+                    return
+                _log.warning("%s: skipping unreadable line (%s)", path, exc)
                 continue
             if isinstance(row, dict):
                 yield row

@@ -2190,6 +2190,90 @@ CLI (all read-only: no provider is created, no step runs, nothing under the run 
   is printed as a `rich.text.Text` through `safe_text`, or — when a markup string is
   unavoidable (`plan --render`) — through `safe_markup`.
 
+### actor identity + `audit` + the push hook
+
+```python
+from rayspec.actor import (  # leaf module: identity resolution, no network, never raises
+    resolve_actor,  # (*, workdir: Path | None = None, env: Mapping | None = None) -> ActorInfo
+    #   RAYSPEC_ACTOR > `git config user.email` in workdir > the OS user > "unknown";
+    #   fills ActorInfo.ci (detect_ci) and .provider_accounts (provider_accounts)
+    clean_identity,  # (str | None) -> str | None   safe_text, whitespace-collapsed, capped
+    detect_ci,       # (env=None) -> "github-actions" | … | "ci" | None  (CI_ENV_MARKERS, in order)
+    git_email,       # (workdir=None) -> str | None  (GitError/OSError/timeout -> None)
+    os_user,         # (env=None) -> str | None      (getpass.getuser, then USER/LOGNAME/USERNAME)
+    provider_accounts,  # (env=None) -> {provider id: account}  (PROVIDER_ACCOUNT_ENV only)
+    ACTOR_ENV, MAX_ACTOR_LEN, GIT_TIMEOUT_S, CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV,
+)
+```
+`ActorInfo` (additive, `store/model.py`): `id`, `source` (`env`|`git`|`os`|`unknown`), `ci: str |
+None`, `provider_accounts: dict[str, str]`. It is an **identity, never a credential**:
+`PROVIDER_ACCOUNT_ENV` names only variables that carry an *account* (`ANTHROPIC_ACCOUNT`,
+`OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) — an API-key variable is never read, and its presence is
+never recorded. Nothing in rayspec grants an authorisation because of an actor.
+
+Additive record fields (`store/model.py`, frozen → additive only):
+- `RunRecord.actor: ActorInfo | None = None` — who launched the run. Stamped by the runner on a
+  FRESH record only (`Runner._prepare_record(pid_started_at, actor)`, resolved off the event loop
+  like `pid_started_at`), so a resume never rewrites it. `None` in older records.
+- `Decision.actor: ActorInfo | None = None` — who decided. `rayspec approve|reject`
+  (`cli/commands/approve.py:record_decision`) stamps it; `by` still says which door the decision
+  came through (`cli`/`tty`/`--yes`/`dry-run`). The `run.decision` event gains an optional `actor`
+  key (the stored decision's actor, else `run.actor`) — `run.pause` is cleared the moment a gate
+  consumes a decision, so the event log is the durable record of who approved.
+
+```python
+from rayspec.store.file import (
+    AUDIT_JSONL,      # "audit.jsonl" — the optional local ledger in the run dir
+    AUDIT_ENV,        # "RAYSPEC_AUDIT_LOG" — 1/true/yes/on turns it on (off by default)
+    AUDIT_DETAIL_CAP, # 1000 characters of a row's ``detail``
+    audit_log_enabled,      # (env=None) -> bool
+    audit_entry_for_event,  # (RunEvent) -> {ts, kind, step, detail, data} | None
+    audit_entry_for_stream, # (step_path, StreamRecord) -> row | None
+)
+# FileRunStore(root, *, redactor=NULL_REDACTOR, audit: bool | None = None)
+#   audit: True/False pin the ledger on/off; None (default) asks AUDIT_ENV at write time
+#   .read_audit(run_id) -> Iterator[dict]  torn trailing line ends it, bad middle line skipped
+# Rows are appended by create() (kind "run", detail "created", data.actor), append_event()
+#   and append_stream(); row kinds: run | step | command | tool | file | warning | approval.
+#   Progress events (loop.iteration, each.item) produce no row. A stream row is derived from the
+#   ORIGINAL record, before the boundary buffer, and the row is redacted with
+#   Redactor.redact_obj (VALUES, not serialised text).
+```
+The ledger is a **log**: append-only in behaviour, no chain, no digest, nothing about the file
+proves it was not edited. It is local to one run of one user on one machine. There is no export
+format, no continuous export and no aggregation across runs, projects or people — deliberately.
+
+```python
+from rayspec.workspace.git import (
+    PushOutcome,   # frozen: branch, remote, pushed: bool, reason: str | None
+    push_branch,   # (workdir, branch, *, remote="origin", timeout=PUSH_TIMEOUT_S) -> PushOutcome
+    #   `git push --set-upstream <remote> refs/heads/<b>:refs/heads/<b>`; NEVER forces; never
+    #   raises — no branch / no remote / rejected / timeout / no git all come back as a reason
+    push_remote,   # (env=None) -> str | None   RAYSPEC_PUSH_BRANCH: 1|true|yes|on -> "origin",
+    #   any other non-empty value names the remote, unset/0/false/no/off -> None
+    PUSH_ENV, DEFAULT_REMOTE, PUSH_TIMEOUT_S,  # "RAYSPEC_PUSH_BRANCH", "origin", 60.0
+)
+```
+`Runner._publish_branch(ctx)` runs in `_finalize`, after `workspace.info()` and before
+`run.finished` — so it fires on a pause and on every final status. It imports
+`rayspec.workspace.git` through `import_optional` (like the workdir lock and `_refresh_head_sha`),
+skips dry runs and `isolation == "none"`, and turns a failed push into `ctx.warn` only: the run's
+status and exit code are unaffected. A successful push is silent.
+
+```python
+from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [--json] [--root]`
+    collect_rows,    # (store, run) -> rows from events.jsonl + every recorded step's stream.jsonl,
+    #                  through the store's own row derivation, sorted by ts (ties keep read order)
+    audit_payload,   # (store, run, *, commands) -> {run_id, workflow, status, actor, workdir,
+    #                  branch, rows}
+    is_command_row,  # a "command" row, or a step row whose data.kind is shell/python
+    print_audit, rows_table, actor_line, ROW_STYLES, COMMAND_STEP_KINDS,
+)
+```
+`rayspec audit` is **read-only**: it opens `run.json`, `events.jsonl` and the step streams through
+the store and prints them. It never writes, never re-runs anything and never opens a socket. Every
+cell goes through `rayspec.textsafe.safe_text`.
+
 ## Pinned semantics (settled early — do not re-litigate)
 
 - **Identifiers**: step ids, `as:`, `session:` targets use `Identifier` (snake_case, not a reserved

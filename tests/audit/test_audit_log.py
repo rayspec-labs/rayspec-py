@@ -168,3 +168,39 @@ def test_a_long_detail_is_capped(home: Path, tmp_path: Path) -> None:
     entry = audit_entry_for_stream("a", StreamRecord(kind="command_start", text="x" * 5000))
     assert entry is not None
     assert len(entry["detail"]) <= AUDIT_DETAIL_CAP
+
+
+def test_read_audit_round_trips_and_tolerates_a_torn_line(
+    cli: CliRunner, secret_project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(AUDIT_ENV, "1")
+    _run_sec(cli, secret_project)
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    rows = list(store.read_audit(run_id))
+    assert rows == _entries(store, run_id)
+    path = store.run_dir(run_id) / AUDIT_JSONL
+    with path.open("a") as fh:  # a crash mid-write leaves half a line behind
+        fh.write('{"ts": "2026-01-01T00:00:00+00:00", "kind": "run"')
+    assert list(store.read_audit(run_id)) == rows
+
+
+def test_the_ledger_is_off_for_an_explicitly_disabled_store(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rayspec.schema import RunStatus
+    from rayspec.store.model import RunRecord
+
+    monkeypatch.setenv(AUDIT_ENV, "1")
+    store = FileRunStore(home / "explicit", audit=False)
+    run = RunRecord(
+        run_id="20260821-000000-aaaa",
+        workflow_name="w",
+        workflow_path="w.yaml",
+        workflow_hash="a" * 64,
+        project_slug="local/x",
+        project_root=str(home),
+        status=RunStatus.RUNNING,
+    )
+    store.create(run)
+    assert not (store.run_dir(run.run_id) / AUDIT_JSONL).exists()
