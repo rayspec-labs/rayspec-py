@@ -44,9 +44,17 @@ from rayspec.limits.lockfile import (
     parse_lockfile,
     write_lockfile,
 )
-from rayspec.limits.policy import LimitsPolicy, limits_for, limits_policy
+from rayspec.limits.policy import (
+    LimitsPolicy,
+    limits_for,
+    limits_policy,
+    run_envelope,
+    wait_seconds,
+    workflow_providers,
+)
 from rayspec.limits.slots import (
     SLOT_POLL_S,
+    WAIT_FOREVER,
     RunSlot,
     SlotBusyError,
     SlotHolder,
@@ -60,6 +68,7 @@ __all__ = [
     "LOCKFILE_NAME",
     "LOCKFILE_VERSION",
     "SLOT_POLL_S",
+    "WAIT_FOREVER",
     "BudgetEnvelope",
     "LimitsPolicy",
     "LockDrift",
@@ -85,6 +94,9 @@ __all__ = [
     "lockfile_path",
     "merged_workflows",
     "parse_lockfile",
+    "run_envelope",
     "slot_dir",
+    "wait_seconds",
+    "workflow_providers",
     "write_lockfile",
 ]

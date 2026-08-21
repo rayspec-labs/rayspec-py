@@ -21,10 +21,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from rayspec.limits.envelope import BudgetEnvelope
+from rayspec.limits.envelope import BudgetEnvelope, RunEnvelope
+from rayspec.limits.ledger import SpendLedger, ledger_path
+from rayspec.limits.slots import WAIT_FOREVER
 from rayspec.loader.loader import import_optional
 
 #: Where the policy layer is expected to live and what is called on it.
@@ -115,6 +118,58 @@ def limits_for(limits: Mapping[str, int], providers: Any) -> dict[str, int]:
     return out
 
 
+def workflow_providers(resolved: Any) -> list[str]:
+    """The provider ids the ``prompt:`` steps of a workflow resolve to, sorted and de-duplicated.
+
+    A workflow without prompt steps needs no provider and therefore no run slot.
+    """
+    agents = getattr(resolved, "agents", {})
+    keys = getattr(resolved, "step_agents", {}).values()
+    return sorted({agents[key].provider for key in keys if key in agents})
+
+
+def run_envelope(
+    policy: LimitsPolicy,
+    *,
+    store_root: Path,
+    run_id: str,
+    started_at: datetime,
+) -> RunEnvelope | None:
+    """The live envelope for one run, or ``None`` when nothing is capped.
+
+    The ledger lives beside the project's runs (``<store root>/limits/spend.json``): per user,
+    per machine, per project — the same scope the run store itself has.
+    """
+    if not policy.budget.active:
+        return None
+    return RunEnvelope(
+        policy.budget,
+        SpendLedger(ledger_path(store_root)),
+        run_id=run_id,
+        started_at=started_at,
+    )
+
+
+def wait_seconds(value: str | None) -> float | None:
+    """``--wait-slot`` as :meth:`RunSlot.acquire`'s ``wait_s`` (``None`` = do not wait).
+
+    :data:`~rayspec.limits.slots.WAIT_FOREVER` (``forever``) waits indefinitely (``0``);
+    anything else is a duration in the workflow vocabulary (``30m``, ``90``, ``1h30m``).
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if text.lower() in (WAIT_FOREVER, "0"):
+        return 0.0
+    from rayspec.schema import parse_duration
+
+    try:
+        seconds = float(text)  # a bare number of seconds ("90"), which parse_duration rejects
+    except ValueError:
+        seconds = parse_duration(text)
+    return float(seconds) if seconds > 0 else 0.0
+
+
 def _get(obj: Any, name: str) -> Any:
     if obj is None:
         return None
@@ -152,4 +207,7 @@ __all__ = [
     "limits_for",
     "limits_policy",
     "policy_view",
+    "run_envelope",
+    "wait_seconds",
+    "workflow_providers",
 ]

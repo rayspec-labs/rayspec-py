@@ -26,14 +26,16 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
     workflow_label,
 )
+from rayspec.cli.commands.lock import LockedOption, locked_enabled
 from rayspec.cli.commands.workflows import EMPTY_PROJECT_HINT
 from rayspec.errors import RayspecError
+from rayspec.limits import LockfileError, check_locked, load_lockfile
 from rayspec.loader import discover_workflows, load_workflow, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 
 
 def _validate_one(
-    target: str, ctx: Context, *, allow_unsupported: bool, printer
+    target: str, ctx: Context, *, allow_unsupported: bool, printer, lockfile: Any = None
 ) -> tuple[int, int, dict[str, Any]]:
     """Validate one workflow; returns ``(errors, warnings, json row)``."""
     caps = common.capability_source()
@@ -66,7 +68,10 @@ def _validate_one(
     warnings = [*rw.warnings, *report.warnings]
     if caps.warning:
         warnings.append(caps.warning)
-    status = "[green]OK[/green]" if report.ok else "[red]FAILED[/red]"
+    # --locked: an agent that resolves differently than the lockfile pins it is an ERROR here,
+    # not a warning — the point of the flag is that the run does not happen
+    errors = [*report.errors, *(d.message() for d in check_locked(rw, lockfile))]
+    status = "[green]OK[/green]" if not errors else "[red]FAILED[/red]"
     printer(f"[bold]{escape(rw.workflow.name)}[/bold] ({escape(rw.label)}): {status}")
     secrets = list(secret_input_names(rw.workflow))
     if secrets:
@@ -76,18 +81,18 @@ def _validate_one(
             f"  [dim]secret inputs: {escape(', '.join(secrets))} (secret; env-only, "
             "never persisted)[/dim]"
         )
-    report_lines("errors:", report.errors, style="red", printer=printer)
+    report_lines("errors:", errors, style="red", printer=printer)
     report_lines("warnings:", warnings, style="yellow", printer=printer)
     row = {
         "name": rw.workflow.name,
         "path": rw.label,
-        "ok": report.ok,
-        "errors": list(report.errors),
+        "ok": not errors,
+        "errors": errors,
         "warnings": list(warnings),
         "secret_inputs": secrets,
-        "problems": message_problems(list(report.errors), path=rw.label),
+        "problems": message_problems(errors, path=rw.label),
     }
-    return len(report.errors), len(warnings), row
+    return len(errors), len(warnings), row
 
 
 def _unknown_names(names: list[str], ctx: Context) -> list[str]:
@@ -98,13 +103,14 @@ def _unknown_names(names: list[str], ctx: Context) -> list[str]:
 
 def register(app: typer.Typer) -> None:
     @app.command()
-    def validate(
+    def validate(  # noqa: PLR0917 - Typer options are positional by construction
         names: Annotated[
             list[str] | None,
             typer.Argument(help="Workflow names or paths (default: every discovered workflow)."),
         ] = None,
         root: RootOption = None,
         allow_unsupported: AllowUnsupportedOption = False,
+        locked: LockedOption = None,
         json_: JsonOption = False,
         output: OutputOption = None,
     ) -> None:
@@ -129,6 +135,19 @@ def register(app: typer.Typer) -> None:
                 hint="run `rayspec workflows` to list the discovered workflows",
             )
             return
+        lockfile = None
+        if locked_enabled(locked):
+            try:
+                lockfile = load_lockfile(ctx.project_root)
+            except LockfileError as exc:
+                fail(str(exc), hint=exc.hint)
+                return
+            if lockfile is None:
+                fail(
+                    "--locked: no lockfile at .rayspec/rayspec.lock",
+                    hint="run `rayspec lock` and commit the file",
+                )
+                return
         out = console()
         printer = (lambda *_: None) if json_ else out.print
         total_errors = 0
@@ -136,7 +155,11 @@ def register(app: typer.Typer) -> None:
         rows: list[dict[str, Any]] = []
         for target in targets:
             errors, _, row = _validate_one(
-                target, ctx, allow_unsupported=allow_unsupported, printer=printer
+                target,
+                ctx,
+                allow_unsupported=allow_unsupported,
+                printer=printer,
+                lockfile=lockfile,
             )
             rows.append(row)
             total_errors += errors

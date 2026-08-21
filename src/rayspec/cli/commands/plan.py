@@ -36,6 +36,7 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
 )
 from rayspec.cli.commands.eval import echo_block
+from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.config import Config
 from rayspec.engine import context_rebuild
 from rayspec.errors import InputError, RayspecError
@@ -431,6 +432,7 @@ def register(app: typer.Typer) -> None:
         ] = None,
         root: RootOption = None,
         allow_unsupported: AllowUnsupportedOption = False,
+        locked: LockedOption = None,
         json_: JsonOption = False,
         output: OutputOption = None,
     ) -> None:
@@ -450,6 +452,7 @@ def register(app: typer.Typer) -> None:
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return
+        enforce_lockfile(ctx, rw, locked=locked, json_mode=json_)
         caps = common.capability_source()
         report = validate_workflow(
             rw,

@@ -35,6 +35,7 @@ from rayspec.cli.commands._loader_common import (
     report_lines,
     resolve_output,
 )
+from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.config import ExtensionsSpec
 from rayspec.engine.approval import (
     ApprovalAnswer,
@@ -47,6 +48,15 @@ from rayspec.engine.errors import EngineError
 from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project_slug
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
+from rayspec.limits import (
+    SlotBusyError,
+    acquire_slots,
+    limits_for,
+    limits_policy,
+    run_envelope,
+    wait_seconds,
+    workflow_providers,
+)
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 from rayspec.providers.pricing import PriceTable, cost_marker
@@ -60,7 +70,7 @@ from rayspec.secrets import (
     used_config_secrets,
 )
 from rayspec.store.file import FileRunStore, StoreError
-from rayspec.store.model import new_run_id
+from rayspec.store.model import new_run_id, utcnow
 from rayspec.textsafe import safe_text
 
 if TYPE_CHECKING:
@@ -531,6 +541,17 @@ def register(app: typer.Typer) -> None:
         base: Annotated[
             str | None, typer.Option("--base", help="Base branch for the worktree.")
         ] = None,
+        locked: LockedOption = None,
+        wait_slot: Annotated[
+            str | None,
+            typer.Option(
+                "--wait-slot",
+                metavar="DURATION",
+                help="Queue for a free host run slot instead of failing: a duration "
+                "(--wait-slot 30m) or `forever`. Default: do not wait.",
+                show_default=False,
+            ),
+        ] = None,
         repo: Annotated[
             str | None, typer.Option("--repo", help="Registered project / path / url.")
         ] = None,
@@ -595,6 +616,7 @@ def register(app: typer.Typer) -> None:
         if report.errors:
             error_lines(report.errors, json_mode=json_, kind="validation errors")
             raise typer.Exit(code=EXIT_USAGE)
+        enforce_lockfile(ctx, rw, locked=locked, json_mode=json_)
         if stubs_init is not None:
             if stubs_init.exists() and not force:
                 fail(
@@ -672,6 +694,8 @@ def register(app: typer.Typer) -> None:
         slug = (prepared[1] if prepared is not None else None) or project_slug_for(project_root)
         store = FileRunStore(ctx.home / "projects" / slug)
         resume_id: str | None = None
+        #: an envelope measures the day/month a run BEGAN in, so a resume keeps the original
+        run_started_at = utcnow()
         if resume:
             try:
                 resume_id = store.resolve_run_id(resume)
@@ -696,6 +720,7 @@ def register(app: typer.Typer) -> None:
                 stub_script, _kept = resume_stub_script(record, rw, stubs=None, dry_run=dry_run)
             workspace = workspace_from_record(record, project_root)
             run_id = resume_id
+            run_started_at = record.started_at or record.created_at
         elif prepared is not None:
             workspace, _slug, _root = prepared
         else:
@@ -765,6 +790,26 @@ def register(app: typer.Typer) -> None:
             price_table = PriceTable.from_config(ctx.config.pricing)
         except RayspecError:
             price_table = None
+        # the operator's ceilings for this machine (empty when no policy file applies). A dry
+        # run spends nothing and takes no host slot, so neither applies to it.
+        policy = limits_policy(project_root, home=ctx.home)
+        providers_used = workflow_providers(rw)
+        envelope = (
+            None
+            if pure_dry_run
+            else run_envelope(
+                policy,
+                store_root=ctx.home / "projects" / slug,
+                run_id=run_id,
+                started_at=run_started_at,
+            )
+        )
+        try:
+            slot_wait = wait_seconds(wait_slot)
+        except (RayspecError, ValueError) as exc:
+            fail(f"--wait-slot: {exc}", hint="pass a duration such as --wait-slot=30m")
+            return
+        slot_limits = {} if pure_dry_run else limits_for(policy.max_concurrent_runs, providers_used)
         runner = Runner(
             rw,
             inputs=values,
@@ -779,9 +824,16 @@ def register(app: typer.Typer) -> None:
             resume_run_id=resume_id,
             price_table=price_table,
             home=ctx.home,
+            envelope=envelope,
         )
         try:
-            result = runner.run_sync()
+            with acquire_slots(
+                ctx.home, providers_used, slot_limits, run_id=run_id, wait_s=slot_wait
+            ):
+                result = runner.run_sync()
+        except SlotBusyError as exc:
+            fail(str(exc), hint=exc.hint)
+            return
         except EngineError as exc:
             fail(str(exc), hint=exc.hint)
             return

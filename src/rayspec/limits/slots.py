@@ -40,6 +40,9 @@ except ImportError:  # Windows
 #: How often a waiting run re-tries the slot files.
 SLOT_POLL_S = 0.25
 
+#: ``--wait-slot`` given as a bare flag: wait for as long as it takes.
+WAIT_FOREVER = "forever"
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -268,6 +271,7 @@ def acquire_slots(
 
 __all__ = [
     "SLOT_POLL_S",
+    "WAIT_FOREVER",
     "RunSlot",
     "SlotBusyError",
     "SlotHolder",
