@@ -190,17 +190,22 @@ Module boundaries are documented in `CONTRACTS.md`.
 ## Status
 
 **Released** — `rayspec version` prints the build you run, and [`CHANGELOG.md`](CHANGELOG.md) has
-the history. Shipped: the
-schema, loader and validator, templating, the Claude and Codex adapters, the engine (DAG,
-loop/each/include, approval, resume, dry run, the per-workdir path lock), the file store, worktree
-isolation and `--repo`, the Rich live console (`rayspec run` on a TTY; one line per step otherwise),
-`secret: true` inputs, the packaged Claude Code skill, the `examples/` gallery, and the commands
-`init`, `doctor`, `run`, `validate`, `plan`, `workflows`, `agents`, `providers`, `projects`,
-`worktrees`, `runs`, `costs`, `show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `skill`,
-`version`.
+the history.
 
-Not in this build: a PyPI release, and a handful of roadmap items — for example run-level
-`timeout_total` and step-level `artifacts:`.
+Shipped: the schema, loader and validator, templating, the Claude and Codex adapters, the engine
+(DAG, loop/each/include, approval, resume, dry run, the per-workdir path lock), run-level caps
+(`budget_usd`, `max_tokens`, `timeout_total`), step-level `artifacts:`, the file store, worktree
+isolation and `--repo`, the Rich live console (`rayspec run` on a TTY; one line per step
+otherwise), `secret: true` inputs, extension entry points for commands, stores, sinks and approval
+prompts, the packaged Claude Code skill, and the `examples/` gallery.
+
+Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
+`plan`, `test`, `explain`, `eval`, `show`, `logs`, `runs`, `costs`, `workflows`, `agents`,
+`providers`, `plugins`, `projects`, `worktrees`, `schema`, `skill`, `completion`, `version`.
+
+Not in this build: a PyPI release — the `rayspec` name on PyPI currently holds a placeholder, so
+`pip install rayspec` does not yet get you this. Install from git (above) until the real release
+lands.
 
 ## Development
 

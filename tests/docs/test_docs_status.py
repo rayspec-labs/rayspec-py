@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from typer.main import get_command
+
 from .conftest import DOCS_DIR, README, REPO_ROOT
 
 EXAMPLES_README = REPO_ROOT / "examples" / "README.md"
@@ -65,6 +67,29 @@ def test_providers_and_examples_readme_do_not_list_doctor_as_roadmap() -> None:
     assert "still prints the quiet" not in examples
     extending = _text(DOCS_DIR / "extending.md")
     assert "wiring the tree is on the README" not in extending
+
+
+def test_readme_status_lists_exactly_the_commands_that_exist() -> None:
+    """The Status section's command list must match `rayspec --help`, both ways.
+
+    It drifted once: seven shipped commands were missing and two shipped features were still
+    described as roadmap, on the page a stranger reads first. Nothing caught it, because every
+    other guard here checks for known-stale *phrases* rather than comparing against the CLI.
+    """
+    from rayspec.cli.app import app
+
+    status = _text(README).split("## Status", 1)[1].split("\n## ", 1)[0]
+    listed = set(re.findall(r"`([a-z][a-z-]*)`", status.split("Commands:", 1)[1]))
+    listed.discard("rayspec")
+    real = {
+        command.name
+        for command in get_command(app).commands.values()  # type: ignore[attr-defined]
+        if command.name and not command.hidden
+    }
+    assert listed == real, (
+        f"README Status command list is out of date — "
+        f"missing: {sorted(real - listed)}, not real commands: {sorted(listed - real)}"
+    )
 
 
 def test_readme_install_spells_out_both_git_forms() -> None:

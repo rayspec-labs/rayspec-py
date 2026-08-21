@@ -133,7 +133,7 @@ An input declared `secret: true` is different:
   [runs-and-resume.md § Resume](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#resume).
 
 > **Limits.** A secret reaches a step's *environment*; whatever the step then **prints** is its
-> output. Since 1.1 every value rayspec knows is passed through a **redactor** on its way to
+> output. Every value rayspec knows is passed through a **redactor** on its way to
 > every writer, so `echo "$RAYSPEC_INPUT_TOKEN"` now lands in `steps/<path>/output.txt`,
 > `stdout.log`, `stream.jsonl` and the console as `[REDACTED:token]` — see
 > [*Redaction*](#redaction-exact-match-best-effort) for what that does and does not buy you.
