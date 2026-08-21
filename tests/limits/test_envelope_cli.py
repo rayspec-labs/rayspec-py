@@ -161,3 +161,60 @@ def test_the_failure_breaker_stops_the_next_run(
     blocked = runner.invoke(app, ["run", "f", "--root", str(root)])
     assert blocked.exit_code == 3
     assert "circuit breaker open" in blocked.output
+
+
+def test_a_ceiling_pause_leads_with_resume_not_approve(
+    root: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`approve` on a ceiling pause WAIVES the operator's ceiling — it does not answer a gate,
+    so the console must not offer it first."""
+    with_budget(monkeypatch, per_day=0.001)
+    result = runner.invoke(
+        app,
+        ["run", "t", "--stubs", str(root / "stubs.yaml"), "--no-interactive", "--root", str(root)],
+    )
+    assert result.exit_code == 3, result.output
+    footer = next(
+        line
+        for line in result.output.splitlines()
+        if "rayspec resume" in line and "warning" not in line
+    )
+    assert footer.index("rayspec resume") < footer.index("rayspec approve")
+    assert "waiv" in footer
+    assert "rayspec reject" not in footer  # rejecting a ceiling does nothing at all
+
+    store = store_of(root, home)
+    (run_id,) = store.list_run_ids()
+    shown = runner.invoke(app, ["show", run_id, "--root", str(root)])
+    assert shown.exit_code == 0, shown.output
+    shown_footer = next(
+        line
+        for line in shown.output.splitlines()
+        if "rayspec resume" in line and "warning" not in line
+    )
+    assert shown_footer.index("rayspec resume") < shown_footer.index("rayspec approve")
+
+
+def test_a_dry_run_with_exec_shell_spends_nothing(
+    root: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same rule for the envelope as for the slot: `--exec-shell` runs shell steps for real,
+    but every prompt step is the stub, so there is no money to account."""
+    with_budget(monkeypatch, per_day=0.000001)
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "t",
+            "--dry-run",
+            "--exec-shell",
+            "--stubs",
+            str(root / "stubs.yaml"),
+            "--no-interactive",
+            "--root",
+            str(root),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    ledger = SpendLedger(ledger_path(home / "projects" / project_slug_for(root)))
+    assert ledger.read().day_usd == 0.0

@@ -44,12 +44,40 @@ def test_commit_is_idempotent_per_run(tmp_path: Path) -> None:
     assert ledger.read(when=WHEN).day_usd == pytest.approx(0.40)
 
 
-def test_a_run_stays_in_the_bucket_of_its_first_commit(tmp_path: Path) -> None:
+def test_spend_lands_in_the_day_it_is_actually_committed(tmp_path: Path) -> None:
+    """A run resumed tomorrow spends tomorrow's money — otherwise every other run started
+    tomorrow gets headroom the operator never granted."""
     ledger = SpendLedger(ledger_path(tmp_path))
     ledger.commit("run-a", 0.10, when=WHEN)
     ledger.commit("run-a", 0.30, when=WHEN + timedelta(days=1))
-    assert ledger.read(when=WHEN).day_usd == pytest.approx(0.30)
-    assert ledger.read(when=WHEN + timedelta(days=1)).day_usd == 0.0
+    assert ledger.read(when=WHEN).day_usd == pytest.approx(0.10)
+    assert ledger.read(when=WHEN + timedelta(days=1)).day_usd == pytest.approx(0.20)
+    assert ledger.read(when=WHEN).month_usd == pytest.approx(0.30)
+
+
+def test_a_run_resumed_next_month_pays_into_next_month(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    ledger.commit("run-a", 1.0, when=WHEN)
+    september = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+    ledger.commit("run-a", 4.0, when=september)
+    assert ledger.read(when=WHEN).month_usd == pytest.approx(1.0)
+    assert ledger.read(when=september).month_usd == pytest.approx(3.0)
+
+
+def test_a_run_entry_survives_while_it_is_still_being_committed(tmp_path: Path) -> None:
+    """Pruning is measured from the LAST commit, so a long-running run is never re-baselined."""
+    ledger = SpendLedger(ledger_path(tmp_path))
+    ledger.commit("long", 1.0, when=WHEN - timedelta(days=100))
+    ledger.commit("long", 2.0, when=WHEN)
+    data = json.loads(ledger_path(tmp_path).read_text(encoding="utf-8"))
+    assert "long" in data["runs"]
+    assert ledger.read(when=WHEN).day_usd == pytest.approx(1.0)
+
+
+def test_read_and_commit_default_to_now(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    ledger.commit("run-a", 2.0)
+    assert ledger.read().day_usd == pytest.approx(2.0)
 
 
 def test_other_days_and_months_do_not_count(tmp_path: Path) -> None:
@@ -82,13 +110,38 @@ def test_old_entries_are_pruned_so_the_file_stays_bounded(tmp_path: Path) -> Non
     assert "recent" in data["runs"]
 
 
-def test_a_corrupt_ledger_is_replaced_rather_than_failing_a_run(tmp_path: Path) -> None:
+def test_a_corrupt_ledger_is_replaced_but_never_in_silence(tmp_path: Path) -> None:
+    """Resetting the operator's accrued total may be the least bad answer — it must be loud."""
     path = ledger_path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text("{not json", encoding="utf-8")
     ledger = SpendLedger(path)
     ledger.commit("run-a", 1.0, when=WHEN)
+    warnings = ledger.take_warnings()
+    assert warnings and "spend.json" in warnings[0]
+    assert ledger.take_warnings() == []  # drained
     assert ledger.read(when=WHEN).day_usd == pytest.approx(1.0)
+
+
+def test_a_failed_write_leaves_the_previous_ledger_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file is replaced whole: a crash mid-write cannot reset the day, month and streak."""
+    path = ledger_path(tmp_path)
+    ledger = SpendLedger(path)
+    ledger.commit("run-a", 7.0, when=WHEN)
+    before = path.read_text(encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("rayspec.limits.ledger.os.replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        ledger.commit("run-b", 3.0, when=WHEN)
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == before
+    assert SpendLedger(path).read(when=WHEN).day_usd == pytest.approx(7.0)
+    assert not list(path.parent.glob("*.tmp"))
 
 
 def test_the_ledger_file_is_private(tmp_path: Path) -> None:

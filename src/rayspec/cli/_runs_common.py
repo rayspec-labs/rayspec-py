@@ -672,14 +672,22 @@ def replay_script(ref: str, *, root: Path | None) -> StubScript:
 # --------------------------------------------------------------------------------------------------
 
 
+def record_root(ctx: RunsContext, run: RunRecord) -> Path:
+    """The project a stored run belongs to — its recorded root, else the command's own.
+
+    Everything that reads a per-project file for a resumed run (the workflow, the lockfile, the
+    policy) must agree on which project that is, or one command consults two projects.
+    """
+    project_root = Path(run.project_root) if run.project_root else ctx.project_root
+    return project_root if project_root.is_dir() else ctx.project_root
+
+
 def load_resolved_for(ctx: RunsContext, run: RunRecord) -> ResolvedWorkflow:
     """Re-load the run's workflow: by its recorded path (relative to the project root or the home),
     then by name. Raises :class:`RayspecError` when neither resolves."""
     from rayspec.loader import load_workflow
 
-    project_root = Path(run.project_root) if run.project_root else ctx.project_root
-    if not project_root.is_dir():
-        project_root = ctx.project_root
+    project_root = record_root(ctx, run)
     candidates: list[str | Path] = []
     label = run.workflow_path
     if label:
@@ -738,6 +746,7 @@ def resume_run(
     stub_script: StubScript | None = None,
     stubs_path: str | None = None,
     secret_provider: SecretProvider | None = None,
+    wait_slot: str | None = None,
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
 
@@ -753,6 +762,9 @@ def resume_run(
     same instance :func:`~rayspec.cli.commands.resume.resume_secret_inputs` already used, so a
     ``cmd:`` helper runs at most once per command; one is built here only when the caller has
     none.
+
+    ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
+    does, because it starts the same agents.
     """
     import anyio
 
@@ -767,7 +779,15 @@ def resume_run(
     from rayspec.engine.context import RunOptions
     from rayspec.engine.errors import EngineError
     from rayspec.engine.runner import Runner
-    from rayspec.limits import limits_policy, run_envelope
+    from rayspec.limits import (
+        SlotBusyError,
+        acquire_slots,
+        limits_for,
+        limits_policy,
+        run_envelope,
+        wait_seconds,
+        workflow_providers,
+    )
     from rayspec.providers.pricing import PriceTable
     from rayspec.secrets import SecretError, build_redactor, provider_for, used_config_secrets
 
@@ -778,7 +798,7 @@ def resume_run(
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return EXIT_USAGE
-    project_root = Path(run.project_root) if Path(run.project_root).is_dir() else ctx.project_root
+    project_root = record_root(ctx, run)
     workspace = workspace_from_record(run, project_root)
     # the run's secret sources — they feed the shell/python step env and, together with
     # the re-supplied secret inputs, the one redactor every writer goes through. Only the
@@ -835,17 +855,29 @@ def resume_run(
         price_table = None
     # the operator's ceilings apply to the second half of a run exactly as to the first: a
     # resume that would blow through the daily envelope pauses again rather than slipping past
-    # it. A dry run spends nothing and is never accounted.
+    # it, and it queues for a host run slot because it starts the same agents. A scheduler that
+    # polls paused runs and approves them is the commonest unattended shape there is, and it
+    # must not be the one that bypasses the caps. A dry run spends nothing and takes no slot.
+    policy = limits_policy(project_root, home=ctx.home)
+    loader_common.report_lines(
+        "policy warnings:", list(policy.warnings), style="yellow", printer=out.print
+    )
     envelope = (
         None
         if run.dry_run
         else run_envelope(
-            limits_policy(project_root, home=ctx.home),
+            policy,
             store_root=ctx.home / "projects" / (run.project_slug or ctx.slug),
             run_id=run.run_id,
-            started_at=run.started_at or run.created_at,
         )
     )
+    providers_used = workflow_providers(resolved)
+    try:
+        slot_wait = wait_seconds(wait_slot)
+    except (RayspecError, ValueError) as exc:
+        fail(f"--wait-slot: {exc}", hint="pass a duration (--wait-slot 30m) or `forever`")
+        return EXIT_USAGE
+    slot_limits = {} if run.dry_run else limits_for(policy.max_concurrent_runs, providers_used)
     runner = Runner(
         resolved,
         inputs=dict(inputs or {}),
@@ -863,7 +895,13 @@ def resume_run(
         envelope=envelope,
     )
     try:
-        result = runner.run_sync()
+        with acquire_slots(
+            ctx.home, providers_used, slot_limits, run_id=run.run_id, wait_s=slot_wait
+        ):
+            result = runner.run_sync()
+    except SlotBusyError as exc:
+        fail(str(exc), hint=exc.hint)
+        return EXIT_USAGE
     except EngineError as exc:
         fail(str(exc), hint=exc.hint)
         return EXIT_USAGE

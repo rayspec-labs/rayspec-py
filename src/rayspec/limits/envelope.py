@@ -16,12 +16,20 @@ worktree, and continues where it left off once a person has decided.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 from rayspec.limits.ledger import SpendLedger, SpendState
 
-#: ``PauseInfo.reason`` of a run the envelope stopped (an ``approve:`` gate reads ``approval``).
+#: ``PauseInfo.reason`` of a run a MONEY ceiling stopped (an ``approve:`` gate reads ``approval``).
 ENVELOPE_PAUSE_REASON = "budget"
+
+#: ``PauseInfo.reason`` of a run the consecutive-failure breaker stopped. A separate reason from
+#: :data:`ENVELOPE_PAUSE_REASON` on purpose: nothing about that run concerned money, and an
+#: operator triaging it must be pointed at the control that actually fired.
+FAILURE_PAUSE_REASON = "failures"
+
+#: Every pause an operational ceiling can produce — as opposed to an ``approve:`` gate, which
+#: needs a person. These are continued by resuming the run; the ceiling is re-evaluated.
+OPERATIONAL_PAUSE_REASONS = frozenset({ENVELOPE_PAUSE_REASON, FAILURE_PAUSE_REASON})
 
 #: ``PauseInfo.step`` when the envelope stopped a run before any step finished. Not a step id
 #: (no identifier may contain ``<``), so it can never be mistaken for one.
@@ -115,20 +123,25 @@ class RunEnvelope:
         ledger: SpendLedger,
         *,
         run_id: str,
-        started_at: datetime,
         waived: bool = False,
     ) -> None:
         self.envelope = envelope
         self.ledger = ledger
         self.run_id = run_id
-        self.started_at = started_at
         #: set when an operator approved a paused run: the ceilings no longer stop THIS run
         self.waived = waived
+        #: which control produced the last reason — :data:`ENVELOPE_PAUSE_REASON` (money) or
+        #: :data:`FAILURE_PAUSE_REASON` (the breaker). They are separate decisions.
+        self.pause_kind = ENVELOPE_PAUSE_REASON
 
     @property
     def active(self) -> bool:
         """Whether this run is subject to any ceiling at all."""
         return self.envelope.active and not self.waived
+
+    def take_warnings(self) -> list[str]:
+        """Anything the ledger had to paper over since the last call (see the ledger)."""
+        return self.ledger.take_warnings()
 
     def check(self, run_usd: float | None) -> str | None:
         """Commit ``run_usd`` as this run's total so far and return the ceiling it reached.
@@ -138,20 +151,22 @@ class RunEnvelope:
         """
         if not self.active:
             return None
-        if self.envelope.spends:
-            state = self.ledger.commit(self.run_id, run_usd, when=self.started_at)
-        else:
-            state = self.ledger.read(when=self.started_at)
-        reason = failure_breaker_reason(self.envelope, state)
-        if reason is not None:
-            return reason
-        return envelope_reason(self.envelope, state, run_usd)
+        return self._evaluate(run_usd)
+
+    def settle(self, run_usd: float | None) -> str | None:
+        """Commit the run's FINAL total and re-phrase the ceiling it reached, if any.
+
+        The reason a paused run carries must name what the run actually spent, not what it had
+        spent at the moment the ceiling first tripped — that number is the operator's only
+        record of how far over the line the run went, and it is the number they decide on.
+        """
+        return self._evaluate(run_usd)
 
     def commit_final(self, run_usd: float | None) -> None:
         """Record the run's final total (called once the run has a final status)."""
         if not self.envelope.spends:
             return
-        self.ledger.commit(self.run_id, run_usd, when=self.started_at)
+        self.ledger.commit(self.run_id, run_usd)
 
     def record_outcome(self, *, failed: bool) -> None:
         """Advance or reset the consecutive-failure counter."""
@@ -159,16 +174,39 @@ class RunEnvelope:
             return
         self.ledger.record_outcome(failed=failed)
 
-    def waive(self) -> None:
-        """An operator approved the paused run: stop stopping it, and close the breaker."""
+    def waive(self, *, close_breaker: bool = False) -> None:
+        """An operator approved the paused run: stop stopping it.
+
+        ``close_breaker`` only when the pause was the BREAKER's own. Approving a run that
+        stopped on a money ceiling says "this one run may cost more"; it does not say "and
+        forget that the last three runs failed" — coupling the two would let the weaker
+        decision reset the stronger control.
+        """
         self.waived = True
-        if self.envelope.max_consecutive_failures is not None:
+        if close_breaker and self.envelope.max_consecutive_failures is not None:
             self.ledger.reset_failures()
+
+    def _evaluate(self, run_usd: float | None) -> str | None:
+        """Commit and ask both controls; records which one fired in :attr:`pause_kind`."""
+        if self.envelope.spends:
+            state = self.ledger.commit(self.run_id, run_usd)
+        else:
+            state = self.ledger.read()
+        reason = failure_breaker_reason(self.envelope, state)
+        if reason is not None:
+            self.pause_kind = FAILURE_PAUSE_REASON
+            return reason
+        reason = envelope_reason(self.envelope, state, run_usd)
+        if reason is not None:
+            self.pause_kind = ENVELOPE_PAUSE_REASON
+        return reason
 
 
 __all__ = [
     "ENVELOPE_PAUSE_REASON",
     "ENVELOPE_PAUSE_STEP",
+    "FAILURE_PAUSE_REASON",
+    "OPERATIONAL_PAUSE_REASONS",
     "BudgetEnvelope",
     "RunEnvelope",
     "envelope_reason",

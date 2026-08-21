@@ -29,10 +29,15 @@ from rayspec.cli.commands._loader_common import (
     fail,
     resolve_output,
 )
-from rayspec.cli.commands.run import load_stub_script, refuse_stubs_for_real_agents
+from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
+from rayspec.cli.commands.run import (
+    WaitSlotOption,
+    load_stub_script,
+    refuse_stubs_for_real_agents,
+)
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
-from rayspec.limits import ENVELOPE_PAUSE_REASON
+from rayspec.limits import OPERATIONAL_PAUSE_REASONS
 from rayspec.loader import ResolvedWorkflow
 from rayspec.loader.inputs import resolve_resume_secrets, secret_input_names
 from rayspec.schema import RunStatus
@@ -149,13 +154,17 @@ def refuse_changed_workflow(record: RunRecord, resolved: ResolvedWorkflow, *, fo
 
 
 def guard_workflow_unchanged(
-    ctx: common.RunsContext, record: RunRecord, *, force: bool
+    ctx: common.RunsContext, record: RunRecord, *, force: bool, locked: bool | None = None
 ) -> ResolvedWorkflow:
-    """Re-load ``record``'s workflow and apply :func:`refuse_changed_workflow`.
+    """Re-load ``record``'s workflow, apply :func:`refuse_changed_workflow` and the lock gate.
 
     The shared first step of ``resume`` / ``approve`` / ``reject``: a CI job polling a paused
     run learns that the workflow drifted (exit 2) instead of "still paused" (exit 3). A workflow
     that cannot be loaded at all is also exit 2.
+
+    The lockfile is checked here too. The workflow hash only covers the workflow's own files, so
+    a model that moved because a *tier* was re-pointed leaves it untouched — and a poll-then-
+    approve CI job is precisely the unattended run the lockfile exists to protect.
     """
     try:
         resolved = common.load_resolved_for(ctx, record)
@@ -163,6 +172,12 @@ def guard_workflow_unchanged(
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
     refuse_changed_workflow(record, resolved, force=force)
+    enforce_lockfile(
+        ctx.loader_context,
+        resolved,
+        locked=locked,
+        project_root=common.record_root(ctx, record),
+    )
     return resolved
 
 
@@ -185,6 +200,8 @@ def register(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", help="Also show step starts.")] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        locked: LockedOption = None,
+        wait_slot: WaitSlotOption = None,
         root: RootOption = None,
     ) -> None:
         """Resume a paused/failed/interrupted run (steps that succeeded are reused).
@@ -210,7 +227,7 @@ def register(app: typer.Typer) -> None:
             )
             return
         # a changed workflow is refused before the paused/non-TTY short-circuit below
-        resolved = guard_workflow_unchanged(ctx, record, force=force)
+        resolved = guard_workflow_unchanged(ctx, record, force=force, locked=locked)
         interactive = common.stdin_is_tty() and not no_interactive and not yes
         # only an APPROVAL gate needs a person before the run may go on. A run the spending
         # envelope paused (``pause.reason == "budget"``) is continued by resuming it — the
@@ -219,7 +236,7 @@ def register(app: typer.Typer) -> None:
         pending = (
             record.pause is not None
             and record.pause.decision is None
-            and record.pause.reason != ENVELOPE_PAUSE_REASON
+            and record.pause.reason not in OPERATIONAL_PAUSE_REASONS
         )
         if record.status is RunStatus.PAUSED and pending and not interactive and not yes:
             assert record.pause is not None
@@ -260,6 +277,7 @@ def register(app: typer.Typer) -> None:
             inputs=secrets,
             stub_script=stub_script,
             stubs_path=stubs_path,
+            wait_slot=wait_slot,
         )
         raise typer.Exit(code=code)
 
@@ -267,6 +285,7 @@ def register(app: typer.Typer) -> None:
 __all__ = [
     "SecretInputsOption",
     "StubsOption",
+    "WaitSlotOption",
     "guard_workflow_unchanged",
     "refuse_changed_workflow",
     "register",

@@ -49,6 +49,7 @@ from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
 from rayspec.limits import (
+    OPERATIONAL_PAUSE_REASONS,
     SlotBusyError,
     acquire_slots,
     limits_for,
@@ -70,8 +71,40 @@ from rayspec.secrets import (
     used_config_secrets,
 )
 from rayspec.store.file import FileRunStore, StoreError
-from rayspec.store.model import new_run_id, utcnow
+from rayspec.store.model import new_run_id
 from rayspec.textsafe import safe_text
+
+WaitSlotOption = Annotated[
+    str | None,
+    typer.Option(
+        "--wait-slot",
+        metavar="DURATION",
+        help="Queue for a free host run slot instead of failing: a duration "
+        "(--wait-slot 30m, --wait-slot 90) or `forever`. `0` and the default do not wait.",
+        show_default=False,
+    ),
+]
+
+
+def pause_actions(run_id: str, reason: str) -> str:
+    """What to type next for a paused run — which is not the same thing for the two kinds.
+
+    An ``approve:`` gate is a question, and ``approve`` / ``reject`` answer it. An operational
+    ceiling is not a question: ``resume`` re-evaluates it (raise the ceiling, or wait for the
+    next day) and ``approve`` WAIVES it for this run. ``reject`` changes nothing at all, so it
+    is not offered. Leading with ``approve`` there would recommend that every CI script written
+    against "paused ⇒ approve" quietly waive the ceiling an operator had just installed.
+    """
+    if reason in OPERATIONAL_PAUSE_REASONS:
+        return (
+            f"continue with: rayspec resume {run_id} (re-checks the ceiling) · "
+            f"rayspec approve {run_id} [comment] (run it anyway, waiving the ceiling)"
+        )
+    return (
+        f"decide with: rayspec approve {run_id} [comment] · "
+        f"rayspec reject {run_id} [reason] · rayspec resume {run_id}"
+    )
+
 
 if TYPE_CHECKING:
     from rayspec.providers.stub import StubScript
@@ -436,10 +469,7 @@ def print_summary(out: Console, result: RunResult, *, json_mode: bool) -> None:
             out.print(line, markup=False, highlight=False, soft_wrap=True)
     if result.status is RunStatus.PAUSED and result.pause is not None:
         out.print(
-            f"  decide with: rayspec approve {result.run_id} [comment] · "
-            f"rayspec reject {result.run_id} [reason] · rayspec resume {result.run_id}",
-            markup=False,
-            highlight=False,
+            "  " + pause_actions(result.run_id, result.pause.reason), markup=False, highlight=False
         )
     footer: list[str] = []
     unknown = sum(1 for rec in result.steps.values() if rec.usage_unknown)
@@ -542,16 +572,7 @@ def register(app: typer.Typer) -> None:
             str | None, typer.Option("--base", help="Base branch for the worktree.")
         ] = None,
         locked: LockedOption = None,
-        wait_slot: Annotated[
-            str | None,
-            typer.Option(
-                "--wait-slot",
-                metavar="DURATION",
-                help="Queue for a free host run slot instead of failing: a duration "
-                "(--wait-slot 30m) or `forever`. Default: do not wait.",
-                show_default=False,
-            ),
-        ] = None,
+        wait_slot: WaitSlotOption = None,
         repo: Annotated[
             str | None, typer.Option("--repo", help="Registered project / path / url.")
         ] = None,
@@ -695,8 +716,6 @@ def register(app: typer.Typer) -> None:
         slug = (prepared[1] if prepared is not None else None) or project_slug_for(project_root)
         store = FileRunStore(ctx.home / "projects" / slug)
         resume_id: str | None = None
-        # an envelope measures the day/month a run BEGAN in, so a resume keeps the original
-        run_started_at = utcnow()
         if resume:
             try:
                 resume_id = store.resolve_run_id(resume)
@@ -721,7 +740,6 @@ def register(app: typer.Typer) -> None:
                 stub_script, _kept = resume_stub_script(record, rw, stubs=None, dry_run=dry_run)
             workspace = workspace_from_record(record, project_root)
             run_id = resume_id
-            run_started_at = record.started_at or record.created_at
         elif prepared is not None:
             workspace, _slug, _root = prepared
         else:
@@ -807,12 +825,7 @@ def register(app: typer.Typer) -> None:
         envelope = (
             None
             if dry_run
-            else run_envelope(
-                policy,
-                store_root=ctx.home / "projects" / slug,
-                run_id=run_id,
-                started_at=run_started_at,
-            )
+            else run_envelope(policy, store_root=ctx.home / "projects" / slug, run_id=run_id)
         )
         try:
             slot_wait = wait_seconds(wait_slot)
@@ -1077,6 +1090,7 @@ def _problems_only_sink(out: Console) -> Any:
 __all__ = [
     "SUMMARY_KEYS",
     "SuspendingApprovalPrompt",
+    "WaitSlotOption",
     "approval_prompt_for",
     "configured_approval",
     "configured_sinks",
@@ -1084,6 +1098,7 @@ __all__ = [
     "failed_leaf_paths",
     "load_stub_script",
     "non_stub_agents",
+    "pause_actions",
     "prepare_workspace",
     "print_summary",
     "project_slug_for",

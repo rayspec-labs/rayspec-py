@@ -16,6 +16,7 @@ from typing import Any
 from anyio import to_thread
 
 from rayspec.engine.context import (
+    BUDGET_SKIP_REASON,
     ExecScope,
     RunContext,
     StepOutcome,
@@ -217,6 +218,17 @@ async def run_prompt(
 ) -> StepOutcome:
     """One attempt of a ``prompt:`` step."""
     assert isinstance(step, PromptStep)
+    if ctx.envelope_pause is not None and not ctx.options.dry_run:
+        # The operator's ceiling has been reached. A `join: always` step is exempt from the
+        # drain gate — a cleanup step must still run when a run is stopping — but "run the
+        # cleanup" is not "spend more money": no further provider turn is opened, whatever the
+        # step's join policy is. A ceiling a workflow can opt out of with four characters of
+        # YAML is not a ceiling.
+        await ctx.warn(f"{ctx.envelope_pause}: no further agent turn", step_path=record.path)
+        record.status = StepStatus.SKIPPED
+        record.skip_reason = BUDGET_SKIP_REASON
+        record.ok = None
+        return StepOutcome(record=record)
     def_path = scope.def_path(step.id)
     try:
         agent = ctx.resolved.agent_for(def_path)

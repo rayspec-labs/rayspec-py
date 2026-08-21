@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -16,8 +15,6 @@ from rayspec.limits import (
     failure_breaker_reason,
     ledger_path,
 )
-
-WHEN = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
 
 def test_an_empty_envelope_is_inactive() -> None:
@@ -56,38 +53,66 @@ def test_the_failure_breaker_opens_at_the_cap() -> None:
 
 def test_run_envelope_commits_before_it_reads(tmp_path: Path) -> None:
     ledger = SpendLedger(ledger_path(tmp_path))
-    ledger.commit("earlier", 0.9, when=WHEN)
-    env = RunEnvelope(BudgetEnvelope(per_day=1.0), ledger, run_id="mine", started_at=WHEN)
+    ledger.commit("earlier", 0.9)
+    env = RunEnvelope(BudgetEnvelope(per_day=1.0), ledger, run_id="mine")
     assert env.check(0.05) is None
     reason = env.check(0.2)  # 0.9 + 0.2 = 1.1 > 1.0
     assert reason is not None and "today" in reason
-    assert ledger.read(when=WHEN).day_usd == pytest.approx(1.1)
+    assert ledger.read().day_usd == pytest.approx(1.1)
 
 
-def test_a_waived_envelope_stops_stopping_the_run_and_closes_the_breaker(tmp_path: Path) -> None:
+def test_the_pause_kind_names_the_control_that_fired(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    money = RunEnvelope(BudgetEnvelope(per_day=0.01), ledger, run_id="m")
+    assert money.check(5.0) is not None and money.pause_kind == "budget"
+
+    ledger.record_outcome(failed=True)
+    breaker = RunEnvelope(BudgetEnvelope(max_consecutive_failures=1), ledger, run_id="b")
+    assert breaker.check(0.0) is not None and breaker.pause_kind == "failures"
+
+
+def test_waiving_a_money_pause_leaves_the_failure_breaker_alone(tmp_path: Path) -> None:
+    """Two independent guardrails: saying yes to one dollar figure is not saying yes to the
+    other control."""
     ledger = SpendLedger(ledger_path(tmp_path))
     ledger.record_outcome(failed=True)
     ledger.record_outcome(failed=True)
     env = RunEnvelope(
-        BudgetEnvelope(per_day=0.01, max_consecutive_failures=2),
-        ledger,
-        run_id="mine",
-        started_at=WHEN,
+        BudgetEnvelope(per_day=0.01, max_consecutive_failures=5), ledger, run_id="mine"
     )
     assert env.check(5.0) is not None
     env.waive()
     assert env.active is False
     assert env.check(5.0) is None
-    assert ledger.read(when=WHEN).consecutive_failures == 0
+    assert ledger.read().consecutive_failures == 2  # untouched
+
+    env.waive(close_breaker=True)  # the breaker's OWN pause was approved
+    assert ledger.read().consecutive_failures == 0
+
+
+def test_settle_rephrases_the_ceiling_from_the_final_total(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    env = RunEnvelope(BudgetEnvelope(per_day=0.01), ledger, run_id="mine")
+    first = env.check(0.02)
+    final = env.settle(0.10)
+    assert first is not None and final is not None
+    assert "$0.020" in first and "$0.100" in final
 
 
 def test_outcomes_only_touch_the_counter_when_it_is_configured(tmp_path: Path) -> None:
     ledger = SpendLedger(ledger_path(tmp_path))
-    RunEnvelope(BudgetEnvelope(per_day=1.0), ledger, run_id="m", started_at=WHEN).record_outcome(
+    RunEnvelope(BudgetEnvelope(per_day=1.0), ledger, run_id="m").record_outcome(failed=True)
+    assert ledger.read().consecutive_failures == 0
+    RunEnvelope(BudgetEnvelope(max_consecutive_failures=1), ledger, run_id="m").record_outcome(
         failed=True
     )
-    assert ledger.read(when=WHEN).consecutive_failures == 0
-    RunEnvelope(
-        BudgetEnvelope(max_consecutive_failures=1), ledger, run_id="m", started_at=WHEN
-    ).record_outcome(failed=True)
-    assert ledger.read(when=WHEN).consecutive_failures == 1
+    assert ledger.read().consecutive_failures == 1
+
+
+def test_the_ledgers_own_warnings_reach_the_caller(tmp_path: Path) -> None:
+    path = ledger_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("nonsense", encoding="utf-8")
+    env = RunEnvelope(BudgetEnvelope(per_day=1.0), SpendLedger(path), run_id="m")
+    env.check(0.5)
+    assert any("spend.json" in w for w in env.take_warnings())

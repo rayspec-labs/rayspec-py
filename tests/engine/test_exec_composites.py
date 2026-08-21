@@ -107,6 +107,7 @@ async def test_approve_non_interactive_pauses_with_token(harness: Harness) -> No
         "token": "gate#1",
         "step": "gate",
         "message": "Ship built?",
+        "reason": "approval",
     }
     assert g.ctx.paused is info.value
 

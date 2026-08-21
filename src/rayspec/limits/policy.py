@@ -22,7 +22,6 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +153,6 @@ def run_envelope(
     *,
     store_root: Path,
     run_id: str,
-    started_at: datetime,
 ) -> RunEnvelope | None:
     """The live envelope for one run, or ``None`` when nothing is capped.
 
@@ -167,7 +165,6 @@ def run_envelope(
         policy.budget,
         SpendLedger(ledger_path(store_root)),
         run_id=run_id,
-        started_at=started_at,
     )
 
 

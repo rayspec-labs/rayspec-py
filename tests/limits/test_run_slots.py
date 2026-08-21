@@ -100,6 +100,20 @@ def test_a_dry_run_takes_no_slot(root: Path, home: Path, monkeypatch) -> None:
         held.release()
 
 
+def test_a_dry_run_with_exec_shell_still_takes_no_slot(
+    root: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--exec-shell` runs the SHELL steps for real; every prompt step is still the stub, so no
+    agent is occupied and no slot is needed."""
+    with_policy(monkeypatch, claude=1)
+    held = RunSlot(home, "claude", 1, run_id="other").acquire()
+    try:
+        result = runner.invoke(app, ["run", "t", "--dry-run", "--exec-shell", "--root", str(root)])
+        assert result.exit_code == 0, result.output
+    finally:
+        held.release()
+
+
 def test_the_slot_is_given_back_when_the_run_ends(root: Path, home: Path, monkeypatch) -> None:
     with_policy(monkeypatch, claude=1)
     stubs = root / "stubs.yaml"

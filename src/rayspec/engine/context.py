@@ -403,6 +403,9 @@ class RunContext:
         self.envelope: Any = envelope
         #: set (to the reason) once the envelope stopped the run — the final status is ``paused``
         self.envelope_pause: str | None = None
+        #: which operational control stopped it: ``budget`` (money) or ``failures`` (the
+        #: consecutive-failure breaker). They are separate controls and separate decisions.
+        self.envelope_pause_kind: str = "budget"
         #: the record path of the last step that reached a final outcome (what a pause names)
         self.last_finished_path: str | None = None
         #: record paths finished (or replayed) in THIS run — what the caps are measured over;
@@ -776,9 +779,12 @@ class RunContext:
             return None
         _usage, cost, _source = self.run_totals()
         reason = await to_thread.run_sync(envelope.check, cost)
+        for problem in envelope.take_warnings():
+            await self.warn(problem)
         if reason is None:
             return None
         self.envelope_pause = reason
+        self.envelope_pause_kind = envelope.pause_kind
         self.budget_exceeded = reason  # drain: no new step starts, running ones finish
         await self.warn(
             f"{reason}: the run pauses — resume it with `rayspec resume {self.run.run_id}` "

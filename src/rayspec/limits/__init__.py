@@ -22,6 +22,8 @@ from __future__ import annotations
 from rayspec.limits.envelope import (
     ENVELOPE_PAUSE_REASON,
     ENVELOPE_PAUSE_STEP,
+    FAILURE_PAUSE_REASON,
+    OPERATIONAL_PAUSE_REASONS,
     BudgetEnvelope,
     RunEnvelope,
     envelope_reason,
@@ -65,8 +67,10 @@ from rayspec.limits.slots import (
 __all__ = [
     "ENVELOPE_PAUSE_REASON",
     "ENVELOPE_PAUSE_STEP",
+    "FAILURE_PAUSE_REASON",
     "LOCKFILE_NAME",
     "LOCKFILE_VERSION",
+    "OPERATIONAL_PAUSE_REASONS",
     "SLOT_POLL_S",
     "WAIT_FOREVER",
     "BudgetEnvelope",
