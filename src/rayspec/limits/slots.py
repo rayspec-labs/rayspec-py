@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import time
@@ -103,13 +104,17 @@ class RunSlot:
     """One of ``limit`` run slots for a provider; a context manager, like ``PathLock``.
 
     ``acquire()`` walks the slot files in order and takes the first free one. ``wait_s=None``
-    does not wait at all (raise :class:`SlotBusyError`), ``0`` waits indefinitely, anything else
-    is a deadline in seconds.
+    does not wait at all (raise :class:`SlotBusyError`), ``math.inf`` waits indefinitely,
+    anything else is a deadline in seconds.
+
+    A ``limit`` of ``0`` is a real limit — this provider may not run on this host — and every
+    ``acquire()`` raises :class:`SlotBusyError` immediately, however long the caller offered to
+    wait. Waiting for a slot that cannot exist is never the answer.
     """
 
     def __init__(self, home: Path, provider: str, limit: int, *, run_id: str) -> None:
-        if limit < 1:
-            raise ValueError("a run-slot limit must be at least 1")
+        if limit < 0:
+            raise ValueError("a run-slot limit must not be negative")
         self.home = Path(home)
         self.provider = provider
         self.limit = limit
@@ -131,10 +136,13 @@ class RunSlot:
         """Take a free slot, waiting per ``wait_s``; raise :class:`SlotBusyError` otherwise."""
         if self._fd is not None:
             return self
+        if self.limit == 0:
+            raise self._disabled_error()
         if fcntl is None:  # pragma: no cover - Windows only
             self.index = 0  # no flock: the limit cannot be enforced, and must not block a run
             return self
-        deadline = None if wait_s in (None, 0) else time.monotonic() + float(wait_s)
+        forever = wait_s is not None and math.isinf(wait_s)
+        deadline = None if wait_s is None or forever else time.monotonic() + float(wait_s)
         while True:
             if self._try_all():
                 return self
@@ -189,6 +197,16 @@ class RunSlot:
         self._fd = fd
         self.index = index
         return True
+
+    def _disabled_error(self) -> SlotBusyError:
+        """``limit == 0``: the operator switched this provider off on this host."""
+        return SlotBusyError(
+            f"{self.provider} runs are switched off on this host "
+            f"(policy max_concurrent_runs {self.provider} is 0)",
+            provider=self.provider,
+            limit=0,
+            hint="raise policy max_concurrent_runs to allow a run",
+        )
 
     def _busy_error(self, *, waited: bool, wait_s: float | None = None) -> SlotBusyError:
         who = "; ".join(h.describe() for h in self.holders() if h.run_id) or "other runs"
@@ -254,12 +272,13 @@ def acquire_slots(
     """Hold one slot per capped provider for the duration of the block.
 
     Providers are taken in sorted order so two runs asking for the same pair never deadlock, and
-    a provider without a limit is skipped entirely. Everything acquired is released on the way
-    out, including when acquiring a later slot fails.
+    a provider without a limit is skipped entirely (a limit of ``0`` is not "no limit": it
+    refuses the run). Everything acquired is released on the way out, including when acquiring a
+    later slot fails.
     """
     held: list[RunSlot] = []
     try:
-        for provider in sorted({p for p in providers if limits.get(p)}):
+        for provider in sorted({p for p in providers if limits.get(p) is not None}):
             slot = RunSlot(home, provider, int(limits[provider]), run_id=run_id)
             slot.acquire(wait_s=wait_s)
             held.append(slot)

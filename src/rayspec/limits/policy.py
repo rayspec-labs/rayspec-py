@@ -19,6 +19,7 @@ Local only: nothing here fetches a policy from a server, and there is no organis
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,10 +38,16 @@ POLICY_LOADER = "load_policy"
 
 @dataclass(frozen=True, slots=True)
 class LimitsPolicy:
-    """The narrow view of the policy this layer acts on."""
+    """The narrow view of the policy this layer acts on.
+
+    ``warnings`` names every ceiling that was written but could not be read. A ceiling nobody
+    can parse must be visible: dropping one silently is how an operator ends up believing a
+    control is in force when it is not. The CLI prints them before the run starts.
+    """
 
     budget: BudgetEnvelope = field(default_factory=BudgetEnvelope)
     max_concurrent_runs: Mapping[str, int] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
 
     @property
     def active(self) -> bool:
@@ -67,53 +74,67 @@ def policy_view(policy: Any) -> LimitsPolicy:
     """Narrow a loaded policy object (or plain mapping) to :class:`LimitsPolicy`."""
     if policy is None:
         return LimitsPolicy()
+    problems: list[str] = []
     return LimitsPolicy(
-        budget=budget_envelope(_get(policy, "budget"), _get(policy, "max_consecutive_failures")),
-        max_concurrent_runs=concurrency_limits(_get(policy, "max_concurrent_runs")),
+        budget=budget_envelope(
+            _get(policy, "budget"), _get(policy, "max_consecutive_failures"), problems=problems
+        ),
+        max_concurrent_runs=concurrency_limits(
+            _get(policy, "max_concurrent_runs"), problems=problems
+        ),
+        warnings=tuple(problems),
     )
 
 
-def budget_envelope(budget: Any, max_consecutive_failures: Any = None) -> BudgetEnvelope:
+def budget_envelope(
+    budget: Any, max_consecutive_failures: Any = None, *, problems: list[str] | None = None
+) -> BudgetEnvelope:
     """``policy.budget`` (+ the top-level failure cap) as a :class:`BudgetEnvelope`.
 
     ``max_consecutive_failures`` is also accepted inside ``budget:`` — the top-level spelling
-    wins when both are present.
+    wins when both are present. Unreadable values are dropped and named in ``problems``.
     """
-    failures = _positive_int(max_consecutive_failures)
+    failures = _count(max_consecutive_failures, "max_consecutive_failures", problems)
     if failures is None:
-        failures = _positive_int(_get(budget, "max_consecutive_failures"))
+        failures = _count(
+            _get(budget, "max_consecutive_failures"), "budget.max_consecutive_failures", problems
+        )
     return BudgetEnvelope(
-        per_run=_positive_float(_get(budget, "per_run")),
-        per_day=_positive_float(_get(budget, "per_day")),
-        per_month=_positive_float(_get(budget, "per_month")),
+        per_run=_amount(_get(budget, "per_run"), "budget.per_run", problems),
+        per_day=_amount(_get(budget, "per_day"), "budget.per_day", problems),
+        per_month=_amount(_get(budget, "per_month"), "budget.per_month", problems),
         max_consecutive_failures=failures,
     )
 
 
-def concurrency_limits(value: Any) -> dict[str, int]:
-    """``{provider: limit}`` from a mapping, or ``{"*": n}`` from a bare integer."""
+def concurrency_limits(value: Any, *, problems: list[str] | None = None) -> dict[str, int]:
+    """``{provider: limit}`` from a mapping, or ``{"*": n}`` from a bare integer.
+
+    ``0`` is a real limit (this provider may not run), not the absence of one.
+    """
     if value is None:
         return {}
-    limit = _positive_int(value)
-    if limit is not None:
-        return {"*": limit}
     if not isinstance(value, Mapping):
-        return {}
+        limit = _count(value, "max_concurrent_runs", problems)
+        return {} if limit is None else {"*": limit}
     out: dict[str, int] = {}
     for key, raw in value.items():
-        parsed = _positive_int(raw)
+        parsed = _count(raw, f"max_concurrent_runs.{key}", problems)
         if parsed is not None:
             out[str(key)] = parsed
     return out
 
 
 def limits_for(limits: Mapping[str, int], providers: Any) -> dict[str, int]:
-    """The per-provider limits that apply to ``providers`` (``"*"`` covers every one of them)."""
+    """The per-provider limits that apply to ``providers`` (``"*"`` covers every one of them).
+
+    A limit of ``0`` is kept: it means the provider may not run on this host at all.
+    """
     default = limits.get("*")
     out: dict[str, int] = {}
     for provider in providers:
         limit = limits.get(provider, default)
-        if limit:
+        if limit is not None:
             out[provider] = int(limit)
     return out
 
@@ -153,21 +174,25 @@ def run_envelope(
 def wait_seconds(value: str | None) -> float | None:
     """``--wait-slot`` as :meth:`RunSlot.acquire`'s ``wait_s`` (``None`` = do not wait).
 
-    :data:`~rayspec.limits.slots.WAIT_FOREVER` (``forever``) waits indefinitely (``0``);
-    anything else is a duration in the workflow vocabulary (``30m``, ``90``, ``1h30m``).
+    :data:`~rayspec.limits.slots.WAIT_FOREVER` (``forever``) is the ONLY indefinite spelling
+    (``math.inf``); anything else is a duration in the workflow vocabulary (``30m``, ``90``,
+    ``1h30m``). ``0`` means "do not wait", the way it reads everywhere else — never "wait for
+    ever" — and a negative duration is a usage error (:class:`ValueError`).
     """
     if value is None:
         return None
     text = value.strip()
-    if text.lower() in (WAIT_FOREVER, "0"):
-        return 0.0
+    if text.lower() == WAIT_FOREVER:
+        return math.inf
     from rayspec.schema import parse_duration
 
     try:
         seconds = float(text)  # a bare number of seconds ("90"), which parse_duration rejects
     except ValueError:
         seconds = parse_duration(text)
-    return float(seconds) if seconds > 0 else 0.0
+    if seconds < 0:
+        raise ValueError(f"{text!r} is negative — pass a duration, `0` or `forever`")
+    return float(seconds) or None
 
 
 def _get(obj: Any, name: str) -> Any:
@@ -178,24 +203,48 @@ def _get(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
-def _positive_float(value: Any) -> float | None:
-    if value is None or isinstance(value, bool):
+def _note(problems: list[str] | None, key: str, value: Any, why: str) -> None:
+    if problems is not None:
+        problems.append(f"policy {key}: {value!r} {why} — the ceiling is not applied")
+
+
+def _number(value: Any, key: str, problems: list[str] | None) -> float | None:
+    """A ceiling as a number: ``None``/absent means no ceiling, ``0`` means zero.
+
+    Accepts what YAML and a JSON round-trip produce for the same idea — ``20``, ``20.0``,
+    ``"20"`` — so two spellings of one number never behave oppositely. A boolean is not a
+    number, and a negative ceiling is meaningless.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        _note(problems, key, value, "is not a number")
         return None
     try:
         number = float(value)
     except (TypeError, ValueError):
+        _note(problems, key, value, "is not a number")
         return None
-    return number if number > 0 else None
+    if math.isnan(number) or number < 0:
+        _note(problems, key, value, "must not be negative")
+        return None
+    return number
 
 
-def _positive_int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool | float | str):
+def _amount(value: Any, key: str, problems: list[str] | None = None) -> float | None:
+    """A money ceiling in USD (``0`` = spend nothing)."""
+    return _number(value, key, problems)
+
+
+def _count(value: Any, key: str, problems: list[str] | None = None) -> int | None:
+    """A whole-number ceiling (``0`` = none at all)."""
+    number = _number(value, key, problems)
+    if number is None:
         return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
+    if number != int(number):
+        _note(problems, key, value, "must be a whole number")
         return None
-    return number if number > 0 else None
+    return int(number)
 
 
 __all__ = [

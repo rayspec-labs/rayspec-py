@@ -64,9 +64,11 @@ def envelope_reason(
 ) -> str | None:
     """The first money ceiling ``state``/``run_usd`` exceed, phrased for a human, else ``None``.
 
-    Strictly greater trips, the same rule the in-workflow circuit breaker uses. A run whose cost
-    is unknown (no provider figure and no pricing table) cannot trip a money ceiling — there is
-    nothing to compare.
+    Strictly greater trips, the same rule the in-workflow circuit breaker uses — with one
+    exception: a ceiling of ``0`` is "spend nothing", so it trips before anything is spent
+    rather than after the first cent. ``0`` is the strictest value an operator can write and it
+    must not be the one value that lets a run through. A run whose cost is unknown (no provider
+    figure and no pricing table) cannot trip a money ceiling — there is nothing to compare.
     """
     checks = (
         ("per_run", run_usd, envelope.per_run, "this run"),
@@ -74,7 +76,11 @@ def envelope_reason(
         ("per_month", state.month_usd, envelope.per_month, "this month"),
     )
     for knob, amount, cap, label in checks:
-        if cap is None or amount is None or amount <= cap:
+        if cap is None or amount is None:
+            continue
+        if cap == 0:
+            return f"spending is frozen (policy budget.{knob} is $0.000)"
+        if amount <= cap:
             continue
         return (
             f"spending envelope reached ({label} ${amount:.3f} > policy budget.{knob} ${cap:.3f})"

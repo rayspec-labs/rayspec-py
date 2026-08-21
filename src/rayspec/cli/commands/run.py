@@ -616,7 +616,8 @@ def register(app: typer.Typer) -> None:
         if report.errors:
             error_lines(report.errors, json_mode=json_, kind="validation errors")
             raise typer.Exit(code=EXIT_USAGE)
-        enforce_lockfile(ctx, rw, locked=locked, json_mode=json_)
+        # the lockfile of the project the workflow came from (with --repo: the checkout)
+        enforce_lockfile(ctx, rw, locked=locked, project_root=project_root, json_mode=json_)
         if stubs_init is not None:
             if stubs_init.exists() and not force:
                 fail(
@@ -794,6 +795,14 @@ def register(app: typer.Typer) -> None:
         # run maps every provider to the stub: it spends nothing and occupies no real agent, so
         # neither the envelope nor a host slot applies to it.
         policy = limits_policy(project_root, home=ctx.home)
+        # a ceiling that cannot be read must be visible, not invisible: an operator who wrote
+        # one and never sees it applied would otherwise believe the machine is capped
+        report_lines(
+            "policy warnings:",
+            list(policy.warnings),
+            style="yellow",
+            printer=common.err_console().print,
+        )
         providers_used = workflow_providers(rw)
         envelope = (
             None

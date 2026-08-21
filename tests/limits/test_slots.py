@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import subprocess
@@ -143,6 +144,29 @@ def test_limits_for_applies_a_wildcard_to_every_provider() -> None:
     assert limits_for({}, ["claude"]) == {}
 
 
-def test_a_limit_below_one_is_a_programming_error(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="at least 1"):
-        RunSlot(tmp_path, "claude", 0, run_id="r1")
+def test_a_limit_of_zero_means_this_provider_may_not_run(tmp_path: Path) -> None:
+    """``max_concurrent_runs: {claude: 0}`` is the strictest value, not the absence of one."""
+    with pytest.raises(SlotBusyError) as exc:
+        RunSlot(tmp_path, "claude", 0, run_id="r1").acquire()
+    assert "claude" in str(exc.value) and "0" in str(exc.value)
+    with pytest.raises(SlotBusyError):
+        RunSlot(tmp_path, "claude", 0, run_id="r1").acquire(wait_s=math.inf)
+    with pytest.raises(ValueError):
+        RunSlot(tmp_path, "claude", -1, run_id="r1")
+    with (
+        pytest.raises(SlotBusyError),
+        acquire_slots(tmp_path, ["claude"], {"claude": 0}, run_id="r1"),
+    ):
+        pass  # pragma: no cover - the acquire raises
+
+
+def test_forever_is_the_only_indefinite_wait(tmp_path: Path) -> None:
+    """``wait_s=0`` is a deadline of zero seconds, not "wait for ever"."""
+    held = RunSlot(tmp_path, "claude", 1, run_id="r1").acquire()
+    try:
+        started = time.monotonic()
+        with pytest.raises(SlotBusyError):
+            RunSlot(tmp_path, "claude", 1, run_id="r2").acquire(wait_s=0, poll_s=0.02)
+        assert time.monotonic() - started < 1.0
+    finally:
+        held.release()

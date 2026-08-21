@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import textwrap
 from pathlib import Path
 
@@ -40,12 +41,19 @@ def with_policy(monkeypatch: pytest.MonkeyPatch, **limits: int) -> None:
     )
 
 
-def test_wait_seconds_reads_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wait_seconds_reads_the_flag() -> None:
     assert wait_seconds(None) is None
-    assert wait_seconds("forever") == 0.0
-    assert wait_seconds("0") == 0.0
+    assert wait_seconds("forever") == math.inf
     assert wait_seconds("30m") == 1800.0
     assert wait_seconds("90") == 90.0
+
+
+def test_a_zero_wait_does_not_wait() -> None:
+    """``--wait-slot 0`` reads as "do not wait" everywhere else; it must not hang here."""
+    assert wait_seconds("0") is None
+    assert wait_seconds("0s") is None
+    with pytest.raises(ValueError):
+        wait_seconds("-5")
 
 
 def test_a_taken_slot_stops_a_second_run(root: Path, home: Path, monkeypatch) -> None:
