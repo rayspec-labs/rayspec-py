@@ -999,15 +999,22 @@ from rayspec.engine.runner import (
 from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
-    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived properties:
-    #     RunContext.fail_fast  = options.fail_fast OR defaults.on_step_failure == "fail_fast"
-    #     RunContext.keep_going = defaults.on_step_failure == "continue" AND NOT options.fail_fast
+    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
+    #   per graph, for the scope it is running:
+    #     RunContext.fail_fast_for(scope)  = options.fail_fast OR scope.on_step_failure == "fail_fast"
+    #     RunContext.keep_going_for(scope) = scope.on_step_failure == "continue" AND NOT options.fail_fast
+    #   (RunContext.fail_fast / .keep_going are the same two for the ROOT workflow's own steps.)
     #   The flag may only ever TIGHTEN: it enables fail-fast and beats "continue", and never
     #   downgrades a workflow that asked for fail_fast. "drain" = 1.0.0 behaviour.
     #   keep_going relaxes draining caused by a FAILURE only — a pause/stop still halts new work,
     #   the failed step's dependents still skip (upstream_failed is decided before draining in
-    #   join_decision), and the run still ends FAILED. It is GLOBAL: run_graph runs every sibling
-    #   list, so the policy also applies inside each:/loop:/include: bodies (tested).
+    #   join_decision), and the run still ends FAILED.
+    #   ExecScope.on_step_failure is the policy in force for ONE sibling list
+    #   (context.effective_on_step_failure(defaults, parent), additive): the scope's own
+    #   defaults.on_step_failure when that workflow STATED one (pydantic model_fields_set), else
+    #   the parent scope's. So each:/loop: bodies always inherit (they share their parent's
+    #   Defaults) and an include:d workflow that writes the key governs its own body — lexical,
+    #   like defaults.timeout, unlike the run-wide defaults.max_parallel.
     #   NOT the same knob as each.on_failure: continue, which is per-ITEM (does a failed item
     #   fail the each step?) — see docs/schema.md under `each:`.
     #   DESIGN RULE (deliberate, not inherited from v1.0.0): the --fail-fast

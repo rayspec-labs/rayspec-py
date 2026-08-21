@@ -210,7 +210,8 @@ flag may only ever *tighten*: it overrides `drain` and `continue`, never the rev
 **`continue`** — independent branches keep being scheduled; only the failed step's downstream
 cone skips. All three still end the run `failed` (exit 1) — `continue` is not `allow_failure`,
 and it is a different knob from `each.on_failure: continue`, which is per *item*. The policy is
-run-level and global, so it also applies inside `each:`/`loop:`/`include:` bodies.
+lexically scoped: it applies inside `each:`/`loop:`/`include:` bodies too, except that an
+`include:`d workflow which states its own `on_step_failure` governs its own body.
 
 **Inputs**: types `string` (default) `integer` `number` `boolean` `array` `object`; `required`
 (cannot have a `default`), `default`, `enum`, `items`, `properties`, `description`. Supplied by

@@ -193,6 +193,21 @@ class StepOutcome:
     event_data: dict[str, Any] = field(default_factory=dict)
 
 
+def effective_on_step_failure(defaults: Defaults, parent: ExecScope | None) -> str:
+    """The failure policy in force for a scope whose defaults are ``defaults``.
+
+    ``defaults.on_step_failure`` is lexically scoped, like ``defaults.timeout`` and unlike the
+    run-wide ``defaults.max_parallel``: an ``include:``d workflow that *states* a policy governs
+    its own body, and one that says nothing inherits the including run's. ``loop:``/``each:``
+    bodies share their parent's defaults, so they always inherit. The ``--fail-fast`` flag is not
+    part of this — it is an operator override that tightens every scope
+    (:meth:`RunContext.fail_fast_for`).
+    """
+    if parent is None or "on_step_failure" in defaults.model_fields_set:
+        return defaults.on_step_failure
+    return parent.on_step_failure
+
+
 class ExecScope:
     """Execution scope of one sibling list (root, loop iteration, each item, include body)."""
 
@@ -222,6 +237,9 @@ class ExecScope:
         self.parent = parent
         #: why running steps were cancelled (set by the scheduler before cancelling a graph)
         self.cancel_reason: str | None = None
+        #: ``drain`` | ``fail_fast`` | ``continue`` for THIS sibling list — see
+        #: :func:`effective_on_step_failure`
+        self.on_step_failure: str = effective_on_step_failure(defaults, parent)
 
     # -- paths ----------------------------------------------------------------------------
 
@@ -668,11 +686,11 @@ class RunContext:
 
     # -- drain policy ---------------------------------------------------------------------
 
-    @property
-    def keep_going(self) -> bool:
-        """Whether a failed step leaves independent branches running.
+    def keep_going_for(self, scope: ExecScope) -> bool:
+        """Whether a failed step leaves independent branches of ``scope`` running.
 
-        ``defaults.on_step_failure: continue``.
+        ``defaults.on_step_failure: continue`` of the workflow that owns this sibling list (see
+        :func:`effective_on_step_failure`).
 
         Only relaxes draining caused by a *failure*: a pause or a stop still halts new work, and
         the failed step's own dependents still skip with ``upstream_failed`` — ``continue`` is not
@@ -680,17 +698,30 @@ class RunContext:
         """
         if self.options.fail_fast:
             return False
+        return scope.on_step_failure == "continue"
+
+    def fail_fast_for(self, scope: ExecScope) -> bool:
+        """Whether a failed step cancels the running siblings of ``scope``.
+
+        ``--fail-fast`` (``RunOptions.fail_fast``) OR the ``defaults.on_step_failure: fail_fast``
+        in force for this sibling list. The CLI flag can only *enable* fail-fast: it never
+        downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
+        behaviour. The scheduler reads this, never ``options.fail_fast``.
+        """
+        if self.options.fail_fast:
+            return True
+        return scope.on_step_failure == "fail_fast"
+
+    @property
+    def keep_going(self) -> bool:
+        """:meth:`keep_going_for` for the ROOT workflow's own steps."""
+        if self.options.fail_fast:
+            return False
         return self.resolved.workflow.defaults.on_step_failure == "continue"
 
     @property
     def fail_fast(self) -> bool:
-        """Whether a failed step cancels running siblings instead of draining them.
-
-        ``--fail-fast`` (``RunOptions.fail_fast``) OR the root workflow's
-        ``defaults.on_step_failure: fail_fast``. The CLI flag can only *enable* fail-fast: it
-        never downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
-        behaviour. The scheduler reads this, never ``options.fail_fast``.
-        """
+        """:meth:`fail_fast_for` for the ROOT workflow's own steps."""
         if self.options.fail_fast:
             return True
         return self.resolved.workflow.defaults.on_step_failure == "fail_fast"
@@ -903,6 +934,7 @@ __all__ = [
     "body_ids",
     "budget_reason",
     "cost_source_of",
+    "effective_on_step_failure",
     "error_info",
     "merge_cost_source",
     "sha256_json",

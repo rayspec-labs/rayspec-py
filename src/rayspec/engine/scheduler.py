@@ -83,8 +83,10 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     running: set[str] = set()
     state: dict[str, Any] = {"draining": False, "control": None}
     send, recv = anyio.create_memory_object_stream[StepOutcome](math.inf)
-    keep_going = ctx.keep_going
-    fail_fast = ctx.fail_fast
+    # The failure policy of THIS sibling list: an ``include:``d workflow that states its own
+    # ``defaults.on_step_failure`` governs its body, one that says nothing inherits the run's.
+    keep_going = ctx.keep_going_for(scope)
+    fail_fast = ctx.fail_fast_for(scope)
 
     def settle(outcome: StepOutcome) -> None:
         sid = outcome.record.id

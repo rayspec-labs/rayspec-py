@@ -37,7 +37,7 @@ outputs: {}               # name → template (deep-rendered when the run succee
 | `timeout` | `null` | Per-attempt timeout applied to every step that sets none (a [duration](#durations)). |
 | `max_parallel` | `4` | Leaf steps (prompt/shell/python) running at once, run-wide. |
 | `on_unsupported` | `error` | `error` or `warn`: what a provider-capability mismatch is at validation time (`--allow-unsupported` also downgrades). |
-| `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **including inside `each:`/`loop:`/`include:` bodies** — the policy is run-level and global. **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
+| `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **inside `each:`/`loop:`/`include:` bodies too** — the policy is lexically scoped, and an `include:`d workflow that states its own value governs its body (see the note under [`each:`](#each)). **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
 | `budget_usd` | `null` | Run-level **cost cap** (circuit breaker): a positive USD amount (`1.5`, `"1.50"`, `"$1.50"`). Measured over the whole run from per-step cost — provider-reported, or estimated from the pricing table (`~$`); steps without any known cost cannot trip it. See [runs-and-resume.md](runs-and-resume.md#run-level-budget-circuit-breaker). |
 | `max_tokens` | `null` | Run-level **token cap**: a positive integer or `"500k"` / `"1.5M"` (input + output tokens of every step, always known). Same breaker semantics as `budget_usd`. Shown by `rayspec plan`. |
 | `timeout_total` | `null` | Run-level **wall-clock cap**: a [duration](#durations) > 0 (`30m`, `2h`). Measured from the run's *original* start, so a resume keeps counting — `2h` is two hours of run, not two hours per attempt. Same breaker semantics as `budget_usd`; not to be confused with `timeout` above, which is per attempt of one step. |
@@ -411,20 +411,23 @@ empty list succeeds with `[]`. Inside the body: `<as>` (the item), `each.index` 
 failed items under `continue`. Attribute `items`: `[{index, item, status, output, error}]`. With
 `on_failure: fail` the step fails after every item finished.
 
-> **Scoping caveat.** `defaults.on_step_failure` is resolved from the **root** workflow only. An
-> `include:`d workflow that declares its own value is ignored in both directions — unlike
-> `defaults.timeout`, which *is* lexically scoped to the body. Set the policy on the root
-> workflow.
+> **Scoping.** `defaults.on_step_failure` is lexically scoped, like `defaults.timeout` and unlike
+> the run-wide `defaults.max_parallel`: an `include:`d workflow that *states* a policy governs its
+> own body, and one that says nothing inherits the including run's. `each:`/`loop:` bodies share
+> their parent's defaults, so they always inherit. Writing `on_step_failure: drain` in an included
+> workflow is therefore a statement, not a default — it tightens a run that asked for `continue`.
+> `--fail-fast` on the command line is not part of this scoping: it is an operator override that
+> tightens every scope at once.
 
 > **Two different `continue`s — they do not mean the same thing.** `each.on_failure: continue`
 > (here) is about **items**: a failed item does not fail the `each` step. `defaults.on_step_failure:
 > continue` (run level) is about **steps**: a failed step does not stop its independent siblings
-> from being scheduled — including inside an `each`/`loop`/`include` body, since the run-level
-> policy is global. They are independent and compose:
+> from being scheduled — inside an `each`/`loop`/`include` body too, unless the included workflow
+> states a policy of its own. They are independent and compose:
 >
 > | | `each.on_failure` | `defaults.on_step_failure` |
 > |---|---|---|
-> | scope | one `each:` step | the whole run, bodies included |
+> | scope | one `each:` step | every sibling list the policy is in force for |
 > | governs | does a failed **item** fail the `each` step? | does a failed **step** stop its independent siblings? |
 > | `continue` means | tolerate the item, `null` in the output slot | keep scheduling; the run **still fails** |
 >
