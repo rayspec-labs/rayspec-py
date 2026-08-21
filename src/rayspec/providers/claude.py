@@ -1122,6 +1122,12 @@ def denial_of(denial: Any) -> Denial:
 
 
 def _denial_event(denial: Any) -> AgentEvent:
+    """The live ``warning`` event for one denial.
+
+    It carries the tool INPUT, which :func:`denial_of` deliberately drops: an event is a live
+    view of what the agent is doing and the console shows it as it happens, while a record is
+    kept and read back later. What is streamed and what is persisted are not the same promise.
+    """
     if isinstance(denial, Mapping):
         name = denial.get("tool_name")
         return AgentEvent(

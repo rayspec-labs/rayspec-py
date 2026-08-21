@@ -45,6 +45,13 @@ from rayspec.templating import TemplateRenderError
 
 
 def agent_fingerprint_data(agent: ResolvedAgent) -> dict[str, Any]:
+    """The agent fields a step's fingerprint hashes: everything that changes what the provider
+    is ASKED.
+
+    ``on_denial`` is deliberately absent. It changes how rayspec *grades* a turn, not what the
+    turn is, and including it would make flipping ``warn`` → ``fail`` re-run every finished
+    prompt step of a resumed run to re-grade a record that already carries its ``denials``.
+    """
     return {
         "provider": agent.provider,
         "model": agent.model,

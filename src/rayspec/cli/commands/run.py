@@ -694,7 +694,7 @@ def register(app: typer.Typer) -> None:
         slug = (prepared[1] if prepared is not None else None) or project_slug_for(project_root)
         store = FileRunStore(ctx.home / "projects" / slug)
         resume_id: str | None = None
-        #: an envelope measures the day/month a run BEGAN in, so a resume keeps the original
+        # an envelope measures the day/month a run BEGAN in, so a resume keeps the original
         run_started_at = utcnow()
         if resume:
             try:
@@ -790,13 +790,14 @@ def register(app: typer.Typer) -> None:
             price_table = PriceTable.from_config(ctx.config.pricing)
         except RayspecError:
             price_table = None
-        # the operator's ceilings for this machine (empty when no policy file applies). A dry
-        # run spends nothing and takes no host slot, so neither applies to it.
+        # The operator's ceilings for this machine (empty when no policy file applies). A dry
+        # run maps every provider to the stub: it spends nothing and occupies no real agent, so
+        # neither the envelope nor a host slot applies to it.
         policy = limits_policy(project_root, home=ctx.home)
         providers_used = workflow_providers(rw)
         envelope = (
             None
-            if pure_dry_run
+            if dry_run
             else run_envelope(
                 policy,
                 store_root=ctx.home / "projects" / slug,
@@ -807,9 +808,12 @@ def register(app: typer.Typer) -> None:
         try:
             slot_wait = wait_seconds(wait_slot)
         except (RayspecError, ValueError) as exc:
-            fail(f"--wait-slot: {exc}", hint="pass a duration such as --wait-slot=30m")
+            fail(
+                f"--wait-slot: {exc}",
+                hint="pass a duration (--wait-slot 30m) or `forever`",
+            )
             return
-        slot_limits = {} if pure_dry_run else limits_for(policy.max_concurrent_runs, providers_used)
+        slot_limits = {} if dry_run else limits_for(policy.max_concurrent_runs, providers_used)
         runner = Runner(
             rw,
             inputs=values,

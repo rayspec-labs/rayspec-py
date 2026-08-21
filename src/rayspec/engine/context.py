@@ -544,15 +544,20 @@ class RunContext:
             usage_unknown=prev.usage_unknown if prev else False,
         )
 
+    def _note_progress(self, record: StepRecord) -> None:
+        """Remember where the run got to — what an envelope pause names as its location.
+
+        Frozen once the envelope tripped, so the pause names the step that reached the ceiling
+        and not the last step the drain skipped afterwards.
+        """
+        if self.envelope_pause is None:
+            self.last_finished_path = record.path
+
     async def save_record(self, record: StepRecord) -> None:
         """Store a (non-final) record and save ``run.json``."""
         async with self.lock:
             self.run.steps[record.path] = record
-            if self.envelope_pause is None:
-                # where the run got to — what an envelope pause names as its location. Frozen
-                # once the envelope tripped, so the pause names the step that reached the
-                # ceiling and not the last step the drain skipped afterwards.
-                self.last_finished_path = record.path
+            self._note_progress(record)
             await to_thread.run_sync(self.store.save, self.run)
 
     async def persist(self, outcome: StepOutcome) -> None:
@@ -571,11 +576,7 @@ class RunContext:
                 await to_thread.run_sync(self._write_output, record, content, kind)
                 outcome.output_kind = kind
             self.run.steps[record.path] = record
-            if self.envelope_pause is None:
-                # where the run got to — what an envelope pause names as its location. Frozen
-                # once the envelope tripped, so the pause names the step that reached the
-                # ceiling and not the last step the drain skipped afterwards.
-                self.last_finished_path = record.path
+            self._note_progress(record)
             await to_thread.run_sync(self.store.save, self.run)
 
     def _write_output(self, record: StepRecord, content: str, kind: str) -> None:

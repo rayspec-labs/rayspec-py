@@ -1078,6 +1078,7 @@ class CodexProvider:
             error = AgentError(
                 kind="unknown", message="codex turn ended without turn/completed", transient=True
             )
+        denial = sandbox_denial(_turn_error(turn, state))
         cost = self.pricing.cost_usd(req.model, state.usage)
         total = self._last_totals.get(state.thread_id) if state.thread_id else None
         raw: dict[str, Any] = {
@@ -1104,7 +1105,7 @@ class CodexProvider:
             num_turns=1,
             model=req.model,  # as requested: the SDK handle does not expose the effective model
             error=error,
-            denials=tuple(d for d in (sandbox_denial(_turn_error(turn, state)),) if d is not None),
+            denials=(denial,) if denial is not None else (),
             raw=raw,
         )
 
