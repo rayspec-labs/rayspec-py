@@ -252,3 +252,79 @@ def test_a_tool_that_runs_nothing_is_not_a_command(
     run_id, _store = finished
     rows = _commands(cli, run_id, work_project)
     assert all(r["detail"] != "Edit" for r in rows)  # an edit is not something that was executed
+
+
+def test_the_rendered_ledger_matches_the_stored_one(
+    cli: CliRunner, work_project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rayspec.cli.commands.audit import collect_rows
+    from rayspec.store.file import AUDIT_ENV
+
+    monkeypatch.setenv(AUDIT_ENV, "1")
+    monkeypatch.setenv("RAYSPEC_ACTOR", "launcher@example.invalid")
+    result = cli.invoke(
+        app,
+        [
+            "run",
+            "work",
+            "--root",
+            str(work_project),
+            "--yes",
+            "--stubs",
+            str(work_project / "stubs.yaml"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    stored = sorted(
+        json.dumps(row, sort_keys=True, default=str) for row in store.read_audit(run_id)
+    )
+    rendered = sorted(
+        json.dumps(row, sort_keys=True, default=str)
+        for row in collect_rows(store, store.load(run_id))
+    )
+    assert rendered == stored
+
+
+def test_an_unreadable_step_stream_is_reported(
+    cli: CliRunner, work_project: Path, finished: tuple[str, FileRunStore]
+) -> None:
+    run_id, store = finished
+    stream = store.step_dir(run_id, "ask") / "stream.jsonl"
+    stream.chmod(0o000)
+    try:
+        result = cli.invoke(app, ["audit", run_id, "--root", str(work_project)])
+        assert result.exit_code == 0, result.output
+        assert "could not read" in result.output
+        assert "ask" in result.output
+    finally:
+        stream.chmod(0o600)
+
+
+def test_only_the_ledger_kinds_are_parsed(
+    cli: CliRunner,
+    work_project: Path,
+    finished: tuple[str, FileRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections.abc import Collection, Iterator
+
+    from rayspec.events.model import StreamRecord
+    from rayspec.store.file import AUDIT_STREAM_KINDS
+
+    run_id, _store = finished
+    seen: list[Collection[str] | None] = []
+    original = FileRunStore.read_stream
+
+    def spy(
+        self: FileRunStore, run_id: str, step_path: str, *, kinds: Collection[str] | None = None
+    ) -> Iterator[StreamRecord]:
+        seen.append(kinds)
+        return original(self, run_id, step_path, kinds=kinds)
+
+    monkeypatch.setattr(FileRunStore, "read_stream", spy)
+    result = cli.invoke(app, ["audit", run_id, "--root", str(work_project)])
+    assert result.exit_code == 0, result.output
+    # a multi-MB transcript must not be validated record by record just to be thrown away
+    assert seen and all(kinds is not None and set(kinds) <= AUDIT_STREAM_KINDS for kinds in seen)

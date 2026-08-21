@@ -147,6 +147,12 @@ _AUDIT_STREAM_KINDS: dict[str, str] = {
 }
 
 
+#: The stream record kinds the ledger keeps — the prefilter ``rayspec audit`` hands to
+#: :meth:`FileRunStore.read_stream` so a multi-megabyte transcript is never parsed record by
+#: record only to be thrown away.
+AUDIT_STREAM_KINDS: frozenset[str] = frozenset(_AUDIT_STREAM_KINDS)
+
+
 def audit_log_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Whether :data:`AUDIT_ENV` asks for a local ``audit.jsonl`` next to the run.
 
@@ -215,6 +221,26 @@ def _decision_detail(data: Mapping[str, Any]) -> str:
     if by:
         detail += f" ({by})"
     return detail
+
+
+def audit_entry_for_create(run: RunRecord) -> dict[str, Any]:
+    """The ledger's first row: the run being created — and the one fact no event carries, WHO.
+
+    Shared by the store (which appends it) and ``rayspec audit`` (which re-derives it), so the
+    stored ledger and the rendered one hold the same rows.
+    """
+    return {
+        "ts": run.created_at.isoformat(),
+        "kind": "run",
+        "step": None,
+        "detail": "created",
+        "data": {
+            "workflow": run.workflow_name,
+            "project_slug": run.project_slug,
+            "dry_run": run.dry_run,
+            "actor": None if run.actor is None else run.actor.model_dump(mode="json"),
+        },
+    }
 
 
 def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
@@ -463,21 +489,7 @@ class FileRunStore:
         if run_dir.exists():
             raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}")
         self.save(run)
-        self._append_audit(
-            run.run_id,
-            {
-                "ts": run.created_at.isoformat(),
-                "kind": "run",
-                "step": None,
-                "detail": "created",
-                "data": {
-                    "workflow": run.workflow_name,
-                    "project_slug": run.project_slug,
-                    "dry_run": run.dry_run,
-                    "actor": None if run.actor is None else run.actor.model_dump(mode="json"),
-                },
-            },
-        )
+        self._append_audit(run.run_id, audit_entry_for_create(run))
 
     def save(self, run: RunRecord) -> None:
         """Atomically persist the whole record: tmp file + fsync + ``os.replace``.
@@ -1091,6 +1103,7 @@ __all__ = [
     "AUDIT_DETAIL_CAP",
     "AUDIT_ENV",
     "AUDIT_JSONL",
+    "AUDIT_STREAM_KINDS",
     "EVENTS_JSONL",
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
@@ -1104,6 +1117,7 @@ __all__ = [
     "StoreError",
     "UnknownRunIdError",
     "WrittenOutput",
+    "audit_entry_for_create",
     "audit_entry_for_event",
     "audit_entry_for_stream",
     "audit_log_enabled",

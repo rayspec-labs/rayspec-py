@@ -9,8 +9,9 @@ question ``logs --stream`` answers only if you read the whole transcript with a 
 Module boundary: **read-only**. This command opens ``run.json``, ``events.jsonl`` and the step
 ``stream.jsonl`` files through the store and prints them; it never writes, never re-runs
 anything and never contacts anything. The row shape is the store's
-(:func:`rayspec.store.file.audit_entry_for_event` / ``audit_entry_for_stream``), which is also
-what an enabled ``audit.jsonl`` holds — so a rendered ledger and a stored one always agree.
+(:func:`rayspec.store.file.audit_entry_for_create` / ``audit_entry_for_event`` /
+``audit_entry_for_stream``), which is also what an enabled ``audit.jsonl`` holds — so a
+rendered ledger and a stored one always agree.
 
 Honest limits: this is a report over the files of ONE run on THIS machine. It proves nothing
 about them — anybody who can read the run directory can also edit it — and it has no notion of
@@ -37,7 +38,9 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
 )
 from rayspec.store.file import (
+    AUDIT_STREAM_KINDS,
     FileRunStore,
+    audit_entry_for_create,
     audit_entry_for_event,
     audit_entry_for_stream,
     finish_audit_row,
@@ -78,27 +81,49 @@ def is_command_row(row: dict[str, Any]) -> bool:
 def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
     """Every ledger row of one run, oldest first.
 
-    Lifecycle events come from ``events.jsonl`` and the per-step records from each recorded
-    step's ``stream.jsonl``; both are mapped through the store's own row derivation, so this
-    renders exactly what an enabled ``audit.jsonl`` would have stored. Rows are sorted by
-    timestamp, ties keeping the order they were read in (events before streams).
+    The first row is the run being created (``run.json`` is the only source for it: no event
+    carries the actor). Lifecycle events then come from ``events.jsonl`` and the per-step
+    records from each recorded step's ``stream.jsonl``; all three are mapped through the
+    store's own row derivation, so this renders exactly what an enabled ``audit.jsonl`` would
+    have stored. Rows are sorted by timestamp, ties keeping the order they were read in.
+
+    Only the record kinds the ledger keeps are parsed (``AUDIT_STREAM_KINDS``): a transcript is
+    megabytes of deltas and this command must not be more expensive than reading it. A step
+    whose stream cannot be read becomes a visible ``warning`` row — in a report about what a
+    run did, a source that could not be read must never look like a step that did nothing.
     """
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = [finish_audit_row(audit_entry_for_create(run))]
     for event in store.read_events(run.run_id):
         entry = audit_entry_for_event(event)
         if entry is not None:
             rows.append(finish_audit_row(entry))
     for path in run.steps:
         try:
-            records = list(store.read_stream(run.run_id, path))
-        except (OSError, ValueError):
-            continue
-        for record in records:
-            entry = audit_entry_for_stream(path, record)
-            if entry is not None:
-                rows.append(finish_audit_row(entry))
+            for record in store.read_stream(run.run_id, path, kinds=AUDIT_STREAM_KINDS):
+                entry = audit_entry_for_stream(path, record)
+                if entry is not None:
+                    rows.append(finish_audit_row(entry))
+        except (OSError, ValueError) as exc:
+            rows.append(unreadable_row(run, path, exc))
     rows.sort(key=_row_time)
     return rows
+
+
+def unreadable_row(run: RunRecord, step_path: str, exc: Exception) -> dict[str, Any]:
+    """A ``warning`` row saying a step's records could not be read, and why.
+
+    It is stamped with the run's creation time so it sorts to the top of the ledger: the reader
+    has to know that what follows is incomplete before reading it.
+    """
+    return finish_audit_row(
+        {
+            "ts": run.created_at.isoformat(),
+            "kind": "warning",
+            "step": step_path,
+            "detail": f"could not read this step's records: {exc}",
+            "data": {"unreadable": True},
+        }
+    )
 
 
 def _row_time(row: dict[str, Any]) -> datetime:
@@ -235,4 +260,5 @@ __all__ = [
     "print_audit",
     "register",
     "rows_table",
+    "unreadable_row",
 ]

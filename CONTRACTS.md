@@ -2230,6 +2230,8 @@ from rayspec.store.file import (
     AUDIT_ENV,        # "RAYSPEC_AUDIT_LOG" — 1/true/yes/on turns it on (off by default)
     AUDIT_DETAIL_CAP, # 1000 characters of a row's ``detail``
     audit_log_enabled,      # (env=None) -> bool
+    AUDIT_STREAM_KINDS,     # the stream kinds the ledger keeps — read_stream's prefilter
+    audit_entry_for_create, # (RunRecord) -> the ledger's first row (creation + actor)
     audit_entry_for_event,  # (RunEvent) -> {ts, kind, step, detail, data} | None  RAW
     audit_entry_for_stream, # (step_path, StreamRecord) -> row | None                RAW
     finish_audit_row,       # (row, redactor=NULL_REDACTOR) -> row  redact FIRST, shape SECOND
@@ -2275,12 +2277,15 @@ status and exit code are unaffected. A successful push is silent.
 
 ```python
 from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [--json] [--root]`
-    collect_rows,    # (store, run) -> rows from events.jsonl + every recorded step's stream.jsonl,
-    #                  through the store's own row derivation, sorted by ts (ties keep read order)
-    audit_payload,   # (store, run, *, commands) -> {run_id, workflow, status, actor, workdir,
-    #                  branch, rows}
+    collect_rows,    # (store, run) -> the created row (from run.json) + events.jsonl + every
+    #                  recorded step's stream.jsonl, through the store's own row derivation,
+    #                  sorted by ts (ties keep read order). Streams are read with
+    #                  kinds=AUDIT_STREAM_KINDS and lazily; a step whose stream cannot be read
+    #                  becomes an `unreadable_row` warning, never a silently empty step.
+    audit_payload,   # (store, run, *, commands) -> {run_id, workflow, status, dry_run, actor,
+    #                  workdir, branch, rows}   (dry_run is also marked in the printed header)
     is_command_row,  # a "command" row, or a step row whose data.kind is shell/python
-    print_audit, rows_table, actor_line, ROW_STYLES, COMMAND_STEP_KINDS,
+    print_audit, rows_table, actor_line, unreadable_row, ROW_STYLES, COMMAND_STEP_KINDS,
 )
 ```
 `rayspec audit` is **read-only**: it opens `run.json`, `events.jsonl` and the step streams through
