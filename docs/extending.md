@@ -391,8 +391,14 @@ The run installs the **redaction boundary** itself: before it writes a byte it m
 one. A redactor you assigned to `store.redactor` yourself is *extended*, never replaced — that is
 how the CLI adds `config.secrets` values and the opt-in detectors on top. A store whose
 `redactor` attribute cannot be assigned makes a workflow with secret inputs refuse to start
-rather than write anything. Event sinks are a separate surface: they print rather than persist,
-and a sink of your own is yours to wrap (`rayspec.redact.RedactingSink`) if it writes anywhere.
+rather than write anything. A value too short to redact (under four characters, which would
+match everywhere) is named in a `warning` event right after `run.started`, so an embedded run
+hears about it too. Event sinks are a separate surface: they print rather than persist, and a
+sink of your own is yours to wrap (`rayspec.redact.RedactingSink`) if it writes anywhere.
+
+The redactor is installed on the store object, so a store you reuse across several runs keeps
+every run's values: later runs redact earlier runs' secrets out of their text as well. That
+errs in the safe direction, but if you do not want it, build a store per run.
 
 `Runner` also accepts injected `providers={"claude": StubProvider(...)}`, `sinks`, an
 `approval_prompt` (`async (ApprovalRequest) -> ApprovalAnswer | None`, `None` = pause),
