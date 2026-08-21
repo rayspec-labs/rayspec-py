@@ -11,6 +11,11 @@ Everything here is local by construction: policy is read from files on this mach
 no key that fetches it from elsewhere.
 """
 
+from rayspec.policy.apply import (
+    apply_policy,
+    policy_root,
+    problem_line,
+)
 from rayspec.policy.enforce import (
     COMMAND_POLICY_CAPABILITY,
     PolicyProblem,
@@ -77,10 +82,13 @@ __all__ = [
     "TrustStore",
     "WorkspacePolicy",
     "access_rank",
+    "apply_policy",
     "check_agent_controls",
     "check_policy",
     "load_policy",
     "policy_paths",
+    "policy_root",
+    "problem_line",
     "sources_text",
     "trusted_path",
 ]

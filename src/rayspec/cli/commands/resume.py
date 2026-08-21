@@ -24,6 +24,7 @@ from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
     RootOption,
+    capability_source,
     err_console,
     error_lines,
     fail,
@@ -147,20 +148,42 @@ def refuse_changed_workflow(record: RunRecord, resolved: ResolvedWorkflow, *, fo
         fail(str(exc), hint=exc.hint)
 
 
+def refuse_policy_violations(resolved: ResolvedWorkflow) -> None:
+    """Put a re-loaded workflow through the policy pass, exactly as ``rayspec run`` does.
+
+    The second half of a run is subject to the ``policy.yaml`` that is in force *now*: a workflow
+    the policy refuses does not become runnable by having paused first. The same call folds the
+    policy's tool denials into the agents, so the steps after a gate reach their provider with
+    the restrictions the steps before it had.
+    """
+    from rayspec.policy import apply_policy, problem_line
+
+    caps = capability_source()
+    try:
+        report = apply_policy(resolved, capabilities_for=caps.capabilities_for)
+    except RayspecError as exc:  # an unreadable or invalid policy file
+        fail(str(exc), hint=exc.hint)
+        return
+    if report.errors:
+        error_lines([problem_line(p) for p in report.errors], kind="policy errors")
+        raise typer.Exit(code=EXIT_USAGE)
+
+
 def guard_workflow_unchanged(
     ctx: common.RunsContext, record: RunRecord, *, force: bool
 ) -> ResolvedWorkflow:
-    """Re-load ``record``'s workflow and apply :func:`refuse_changed_workflow`.
+    """Re-load ``record``'s workflow, apply the policy and apply :func:`refuse_changed_workflow`.
 
     The shared first step of ``resume`` / ``approve`` / ``reject``: a CI job polling a paused
     run learns that the workflow drifted (exit 2) instead of "still paused" (exit 3). A workflow
-    that cannot be loaded at all is also exit 2.
+    that cannot be loaded at all is also exit 2, and so is one the policy in force forbids.
     """
     try:
         resolved = common.load_resolved_for(ctx, record)
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
+    refuse_policy_violations(resolved)
     refuse_changed_workflow(record, resolved, force=force)
     return resolved
 
@@ -260,6 +283,7 @@ __all__ = [
     "StubsOption",
     "guard_workflow_unchanged",
     "refuse_changed_workflow",
+    "refuse_policy_violations",
     "register",
     "resume_secret_inputs",
     "resume_stub_script",

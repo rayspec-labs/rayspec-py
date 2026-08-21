@@ -14,7 +14,6 @@ import json
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Protocol
 
 from rayspec.errors import RayspecError, UnsupportedFeatureError
@@ -28,10 +27,7 @@ from rayspec.loader.secrets import (
 from rayspec.policy import (
     EffectivePolicy,
     PolicyReport,
-    TrustStore,
-    check_agent_controls,
-    check_policy,
-    load_policy,
+    apply_policy,
 )
 from rayspec.providers.base import TOOL_GROUPS, ProviderCapabilities
 from rayspec.schema import (
@@ -46,7 +42,6 @@ from rayspec.schema import (
     ShellStep,
     StepModel,
     StopStep,
-    ToolsSpec,
 )
 from rayspec.schema.base import suggest
 from rayspec.schema.common import OnUnsupported
@@ -308,43 +303,24 @@ class _Validator:
     def _check_policy(self) -> None:
         """Apply the ``policy.yaml`` layers (see :mod:`rayspec.policy` and ``docs/policy.md``).
 
-        This is the only place the loader consults policy. A violation is reported here, at load
-        time, with the workflow's own ``file:line`` *and* the policy layer that imposed the
-        restriction — so a run the policy forbids never starts and never spends money finding
-        out. Discovery is local: ``$RAYSPEC_POLICY``, the project file, the user file, nothing
-        else. Denials the policy imposes on an agent's tools are folded into that agent's
-        ``tools.deny`` here, which is what turns the policy from a check into enforcement.
+        This is the only place the *loader* consults policy, and it reports rather than decides:
+        the work — discovering the layers, checking them and folding the denials into the agents
+        — is :func:`rayspec.policy.apply_policy`, which anything about to run a resolved workflow
+        calls whether or not it validates first. A violation is reported here, at load time, with
+        the workflow's own ``file:line`` *and* the policy layer that imposed the restriction, so
+        a run the policy forbids never starts and never spends money finding out. Discovery is
+        local: ``$RAYSPEC_POLICY``, the project file, the user file, nothing else.
         """
-        self._apply_policy(check_agent_controls(self.rw, capabilities_for=self.caps_for))
-        effective = self.policy
-        if effective is None:
-            effective = load_policy(self._policy_root(), home=self.rw.home)
-        if effective.is_empty:
-            return
-        root = self._policy_root()
-        trusted = TrustStore.load(root) if effective.trust_required() else None
-        self._apply_policy(
-            check_policy(self.rw, effective, capabilities_for=self.caps_for, trusted=trusted)
+        self._report_policy(
+            apply_policy(self.rw, capabilities_for=self.caps_for, policy=self.policy)
         )
 
-    def _apply_policy(self, outcome: PolicyReport) -> None:
-        """Report one policy outcome and fold its tool denials into the resolved agents."""
+    def _report_policy(self, outcome: PolicyReport) -> None:
+        """Turn one policy outcome into validation errors and warnings."""
         for problem in outcome.errors:
             self.report.error(problem.where, problem.message, location=problem.location)
         for problem in outcome.warnings:
             self.report.warn(problem.where, problem.message, location=problem.location)
-        for key, entries in sorted(outcome.tool_denials.items()):
-            agent = self.rw.agents[key]
-            deny = [*agent.tools.deny, *(e for e in entries if e not in agent.tools.deny)]
-            tools = ToolsSpec(allow=list(agent.tools.allow), deny=deny)
-            self.rw.agents[key] = dataclasses.replace(agent, tools=tools)
-
-    def _policy_root(self) -> Path:
-        """The project root the policy layers are discovered against."""
-        if self.rw.project_root is not None:
-            return self.rw.project_root
-        base = self.rw.base_dir
-        return base.parent if base.name == ".rayspec" else base
 
     # -- graphs -------------------------------------------------------------------------------
 
