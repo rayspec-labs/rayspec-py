@@ -276,6 +276,11 @@ remaining events and the final `run.finished` to the same sinks `rayspec run` di
 `Runner(sinks=MultiSink([...]))` takes whatever you built yourself. Persistence is not a sink:
 the store owns `events.jsonl` / `stream.jsonl`.
 
+`context.stream` is the text stream a stdout-shaped sink may write to, and it is `None` whenever
+the CLI owns stdout itself (`rayspec run --json` puts the JSONL event stream there). A sink that
+was handed no stream must not write to stdout: use `context.console` (stderr), a file, or a
+process. `context.settings` is where its path belongs.
+
 **Redaction is not your problem.** Every sink of a run — builtin or plugin — is wrapped in
 `rayspec.redact.RedactingSink` where the CLI assembles them, so a declared secret is already
 replaced by `[REDACTED:<name>]` in the events and stream records your sink sees. Do not try to

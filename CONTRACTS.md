@@ -1774,6 +1774,7 @@ from rayspec.registry import (
     KIND_GROUPS, GROUP_KINDS,          # kind ("store"|"sink"|"approval") <-> entry-point group
     StoreContext,                      # (root, home, project_slug="", settings={})
     SinkContext,                       # (console=None, stream=None, verbose=False, quiet=False, settings={})
+    #   stream = the stdout a stdout-shaped sink may write to; None under --json (the CLI owns it)
     ApprovalContext,                   # (console=None, interactive=True, settings={})
     StoreRegistration, SinkRegistration, ApprovalRegistration,   # (id, display_name, factory)
     BUILTIN_STORES,                    # file

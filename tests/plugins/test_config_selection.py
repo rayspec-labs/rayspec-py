@@ -215,3 +215,53 @@ def test_a_factory_that_raises_is_a_usage_error_naming_the_extension(
     assert result.exit_code == 2, result.output
     assert "sink 'recorder' failed to build" in result.output
     assert "settings.path is required" in result.output
+
+
+STREAM_SINK_MODULE = '''
+from pathlib import Path
+
+from rayspec.registry import SinkRegistration
+
+
+class StreamReporter:
+    """Writes down what it was handed as `context.stream` and nothing else."""
+
+    def __init__(self, context):
+        Path(context.settings["path"]).write_text(
+            f"stream: {type(context.stream).__name__}\\n", encoding="utf-8"
+        )
+
+    async def emit(self, event):
+        pass
+
+    async def emit_stream(self, step_path, record):
+        pass
+
+    async def aclose(self):
+        pass
+
+
+SINK = SinkRegistration("reporter", "Stream reporter", StreamReporter)
+'''
+
+
+def test_a_sink_is_not_handed_stdout_when_the_cli_owns_it(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """Under --json the JSONL stream is the contract: a plugin must not be invited into it."""
+    seen = tmp_path / "seen.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_stream": STREAM_SINK_MODULE},
+        entry_points={"rayspec.sinks": {"reporter": "acme_stream:SINK"}},
+    )
+    project = _project(
+        tmp_path,
+        WORKFLOW,
+        f"extensions:\n  sinks: [reporter]\n  settings:\n    reporter: {{path: {seen}}}\n",
+    )
+    assert _run(["run", "demo", "--root", str(project), "--json"]).exit_code == 0
+    assert seen.read_text(encoding="utf-8") == "stream: NoneType\n"
+
+    assert _run(["run", "demo", "--root", str(project)]).exit_code == 0
+    assert seen.read_text(encoding="utf-8") != "stream: NoneType\n"

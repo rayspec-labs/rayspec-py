@@ -14,7 +14,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, TextIO, TypeVar
 
 import anyio
 import typer
@@ -846,19 +846,35 @@ def _sinks(
         primary = ConsoleSink(out, verbose=verbose, summary=False)
     sinks = [wrap(primary)]
     sinks += [
-        wrap(sink) for sink in configured_sinks(extensions, out, verbose=verbose, quiet=quiet)
+        wrap(sink)
+        for sink in configured_sinks(
+            extensions,
+            out,
+            verbose=verbose,
+            quiet=quiet,
+            # under --json stdout carries the JSONL event stream and belongs to the CLI: a
+            # plugin writing to the stream it was handed would corrupt the machine-readable
+            # contract, so it is handed none
+            stream=None if json_mode else sys.stdout,
+        )
     ]
     return MultiSink(sinks)
 
 
 def configured_sinks(
-    extensions: ExtensionsSpec | None, out: Console, *, verbose: bool, quiet: bool
+    extensions: ExtensionsSpec | None,
+    out: Console,
+    *,
+    verbose: bool,
+    quiet: bool,
+    stream: TextIO | None = None,
 ) -> list[Any]:
     """The sinks ``config.extensions.sinks`` names, built through :mod:`rayspec.registry`.
 
     They are ADDITIONAL observers next to the CLI's own sink, in the order they are configured;
     an id that names nothing raises :class:`~rayspec.registry.UnknownExtensionError` (with
-    did-you-mean) before the run starts.
+    did-you-mean) before the run starts. ``stream`` is what a stdout-shaped sink may write to —
+    ``None`` whenever the CLI owns stdout itself.
     """
     if extensions is None or not extensions.sinks:
         return []
@@ -868,7 +884,7 @@ def configured_sinks(
     for sink_id in extensions.sinks:
         context = SinkContext(
             console=out,
-            stream=sys.stdout,
+            stream=stream,
             verbose=verbose,
             quiet=quiet,
             settings=extensions.settings_for(sink_id),

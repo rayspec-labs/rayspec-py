@@ -101,6 +101,10 @@ class SinkContext:
     ``console`` is a ``rich.console.Console`` (stderr) when one exists and ``stream`` the text
     stream a stdout-shaped sink should write to; both may be ``None`` when the caller has
     neither, and a factory that needs one is free to build its own.
+
+    ``stream`` is ``None`` in particular whenever the CLI owns stdout itself — ``rayspec run
+    --json`` puts the JSONL event stream there — and a sink handed no stream must not write to
+    stdout anyway: it would interleave with the machine-readable output.
     """
 
     console: Any | None = None
