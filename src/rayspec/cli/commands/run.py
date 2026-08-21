@@ -733,7 +733,9 @@ def register(app: typer.Typer) -> None:
             prompt = approval_prompt_for(
                 sinks,
                 interactive=interactive,
-                prompt=configured_approval(ctx.config.extensions, interactive=interactive),
+                prompt=configured_approval(
+                    ctx.config.extensions, interactive=interactive, console=out
+                ),
             )
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
@@ -874,7 +876,7 @@ def configured_sinks(
 
 
 def configured_approval(
-    extensions: ExtensionsSpec | None, *, interactive: bool
+    extensions: ExtensionsSpec | None, *, interactive: bool, console: Console | None = None
 ) -> ApprovalPrompt | None:
     """The approval prompt ``config.extensions.approval`` names, built through the registry.
 
@@ -883,14 +885,24 @@ def configured_approval(
     run cannot ask anyway. The builtin prompt is registered under the id ``console`` and can be
     named explicitly; it is not resolved through the registry by default so that the default
     path stays exactly what it was.
+
+    A configured id is RESOLVED even when the run can never ask: a typo in ``config.yaml`` is a
+    usage error on a machine without a TTY exactly as it is on one — which is where a policy or
+    queue prompt is installed in the first place. Only the prompt's construction is skipped, so
+    a factory never runs (and never opens anything) for a run that will not use it.
     """
     approval_id = extensions.approval if extensions else None
-    if not interactive or not approval_id:
+    if not approval_id:
         return None
-    from rayspec.registry import ApprovalContext, create_approval
+    from rayspec.registry import ApprovalContext, create_approval, get_approval
 
+    get_approval(approval_id)  # unknown id: exit 2 with did-you-mean, TTY or not
+    if not interactive:
+        return None
     settings = extensions.settings_for(approval_id) if extensions else {}
-    return create_approval(approval_id, ApprovalContext(interactive=True, settings=settings))
+    return create_approval(
+        approval_id, ApprovalContext(console=console, interactive=True, settings=settings)
+    )
 
 
 class SuspendingApprovalPrompt:

@@ -1772,7 +1772,7 @@ from rayspec.registry import (
     KIND_GROUPS, GROUP_KINDS,          # kind ("store"|"sink"|"approval") <-> entry-point group
     StoreContext,                      # (root, home, project_slug="", settings={})
     SinkContext,                       # (console=None, stream=None, verbose=False, quiet=False, settings={})
-    ApprovalContext,                   # (interactive=True, settings={})
+    ApprovalContext,                   # (console=None, interactive=True, settings={})
     StoreRegistration, SinkRegistration, ApprovalRegistration,   # (id, display_name, factory)
     BUILTIN_STORES,                    # file
     BUILTIN_SINKS,                     # console, json, quiet, null
@@ -1823,8 +1823,10 @@ Additive in `config`: `Config.extensions: ExtensionsSpec` (`sinks: list[str] = [
 ADDITIONAL observers built next to the CLI's own sink (`cli/commands/run.py: configured_sinks`),
 in configuration order; `extensions.approval` replaces the interactive prompt
 (`configured_approval` — `None`, i.e. the builtin `ConsoleApprovalPrompt`, when unset, so the
-default path is byte-identical to before); an unknown id is a usage error (exit 2) with
-did-you-mean before the run starts. There is deliberately no `store:` key: the run-management
+default path is byte-identical to before; the factory is handed the CLI's stderr `Console` as
+`ApprovalContext.console`); an unknown id is a usage error (exit 2) with did-you-mean before the
+run starts, for both keys and whether or not the run is interactive — a non-interactive run
+resolves the approval id it will not use, so a typo fails on a machine without a TTY too. There is deliberately no `store:` key: the run-management
 commands read `$RAYSPEC_HOME/projects/<slug>/runs/` directly, so a non-file store is an
 embedding seam (`Runner(store=create_store(...))`) until they go through the registry too.
 

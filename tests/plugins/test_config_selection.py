@@ -7,6 +7,7 @@ without knowing anything about plugins.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -69,10 +70,12 @@ class PolicyApproval:
 
     def __init__(self, context):
         self.path = Path(context.settings["path"])
+        self.console = context.console
 
     async def __call__(self, request):
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(f"{request.step_path}: {request.message}\\n")
+            fh.write(f"console: {type(self.console).__name__}\\n")
         return ApprovalAnswer(approved=True, comment="policy says yes")
 
 
@@ -132,7 +135,9 @@ def test_a_configured_approval_prompt_answers_the_gate(
     monkeypatch.setattr("rayspec.cli._runs_common.stdin_is_tty", lambda: True)
     result = _run(["run", "demo", "--root", str(project)])
     assert result.exit_code == 0, result.output
-    assert asked.read_text(encoding="utf-8").startswith("gate: ship it?")
+    written = asked.read_text(encoding="utf-8")
+    assert written.startswith("gate: ship it?")
+    assert "console: Console" in written  # the CLI's console, not one the plugin has to build
 
 
 def test_an_unknown_id_fails_with_did_you_mean(tmp_path: Path, home: Path) -> None:
@@ -141,3 +146,12 @@ def test_an_unknown_id_fails_with_did_you_mean(tmp_path: Path, home: Path) -> No
     assert result.exit_code == 2
     assert "unknown sink 'consle'" in result.output
     assert "did you mean 'console'?" in result.output
+
+
+def test_an_unknown_approval_id_fails_even_without_a_tty(tmp_path: Path, home: Path) -> None:
+    """A non-interactive run never asks — but a misspelled id is still a usage error."""
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  approval: nope\n")
+    result = _run(["run", "demo", "--root", str(project), "--no-interactive"])
+    assert result.exit_code == 2, result.output
+    assert "unknown approval 'nope'" in result.output
+    assert "available approvals: console" in result.output

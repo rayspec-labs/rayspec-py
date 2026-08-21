@@ -307,8 +307,12 @@ APPROVAL = ApprovalRegistration(id="policy", display_name="Policy", factory=Poli
 ```
 
 A prompt is only ever asked when the run is interactive (a TTY, no `--yes`/`--no-interactive`);
-otherwise the gate pauses without asking anyone. Keep it fast and cancellable: it runs inside the
-run's task group.
+otherwise the gate pauses without asking anyone — but the id is resolved either way, so a typo in
+`config.yaml` fails the run with did-you-mean on a machine without a TTY as well. `context.console`
+is the CLI's `rich` console (stderr) when there is one, so a prompt can render a panel without
+building its own.
+
+Keep it fast and cancellable: it runs inside the run's task group.
 
 ## Run stores
 
