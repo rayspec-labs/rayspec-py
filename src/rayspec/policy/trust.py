@@ -39,6 +39,13 @@ TRUSTED_FILENAME = "trusted.yaml"
 #: Prefix of a recorded digest — the algorithm is written down so it can change one day.
 HASH_PREFIX = "sha256:"
 
+#: Mode the trust list is written with. ``tempfile.mkstemp`` creates 0600 and this deliberately
+#: widens it: the file is committed to the repository and read by whoever runs rayspec in the
+#: checkout, so a build agent or a second user on the machine has to be able to read it, and it
+#: carries a path and a digest — nothing secret. The process umask is not consulted, because
+#: reading it means setting it, and a global mutation in a library is worse than a fixed mode.
+FILE_MODE = 0o644
+
 
 def trusted_path(project_root: Path) -> Path:
     """``<project_root>/.rayspec/trusted.yaml``."""
@@ -156,19 +163,12 @@ class TrustStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
-            os.chmod(tmp, 0o644 & ~_umask())
+            os.chmod(tmp, FILE_MODE)
             os.replace(tmp, self.path)
         except BaseException:
             with contextlib.suppress(OSError):
                 tmp.unlink()
             raise
-
-
-def _umask() -> int:
-    """The process umask (read by setting and restoring it — there is no getter)."""
-    current = os.umask(0o022)
-    os.umask(current)
-    return current
 
 
 def _parse(data: Any, path: Path) -> tuple[TrustEntry, ...]:
@@ -204,6 +204,7 @@ def _parse(data: Any, path: Path) -> tuple[TrustEntry, ...]:
 
 
 __all__ = [
+    "FILE_MODE",
     "HASH_PREFIX",
     "TRUSTED_FILENAME",
     "TrustEntry",

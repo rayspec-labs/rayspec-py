@@ -10,6 +10,7 @@ workflow stops the schedule instead of running unreviewed.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Any
 
 import typer
@@ -48,15 +49,20 @@ def _resolve(target: str, ctx: Context) -> ResolvedWorkflow:
         raise AssertionError("unreachable") from None  # pragma: no cover
 
 
-def _status(entry: TrustEntry, ctx: Context) -> str:
-    """Whether the workflow behind ``entry`` still hashes to the digest that was trusted."""
+def _status(entry: TrustEntry, ctx: Context, store: TrustStore) -> str:
+    """Whether the workflow behind ``entry`` still hashes to the digest that was trusted.
+
+    The comparison is the store's, not a second one written here: this listing is what a person
+    reads to predict whether ``rayspec run`` will pass, so it must answer the question the gate
+    answers, digest algorithm and all.
+    """
     try:
         resolved = load_workflow(
             entry.workflow, project_root=ctx.project_root, home=ctx.home, config=ctx.config
         )
     except RayspecError:
         return STATUS_MISSING
-    return STATUS_CURRENT if entry.hash.endswith(resolved.hash) else STATUS_CHANGED
+    return STATUS_CURRENT if store.problem_for(resolved) is None else STATUS_CHANGED
 
 
 def register(app: typer.Typer) -> None:
@@ -101,7 +107,7 @@ def register(app: typer.Typer) -> None:
                 "workflow": entry.workflow,
                 "hash": entry.hash,
                 "added": entry.added,
-                "status": _status(entry, ctx),
+                "status": _status(entry, ctx, store),
             }
             for entry in store.entries
         ]
@@ -164,17 +170,37 @@ def register(app: typer.Typer) -> None:
         """Exit 0 only when every named workflow is trusted at its current hash.
 
         With no arguments every discovered workflow is checked — the shape a scheduled job wants
-        in front of `rayspec run`.
+        in front of `rayspec run`. A workflow that does not load is reported as untrusted like
+        any other drift (exit 1); only a name given here that does not exist is exit 2.
         """
         json_ = resolve_output(output, json_)
         ctx = make_context(root)
         store = TrustStore.load(ctx.project_root)
-        targets = list(workflows or [])
-        if not targets:
-            targets = [ref.name for ref in discover_workflows(ctx.project_root, home=ctx.home)]
+        named = list(workflows or [])
+        known = {ref.name for ref in discover_workflows(ctx.project_root, home=ctx.home)}
+        targets = named or sorted(known)
+        for target in named:  # a name given on the command line has to exist
+            if target not in known and not Path(target).is_file():
+                _resolve(target, ctx)
         rows: list[dict[str, Any]] = []
         for target in targets:
-            resolved = _resolve(target, ctx)
+            try:
+                resolved = load_workflow(
+                    target, project_root=ctx.project_root, home=ctx.home, config=ctx.config
+                )
+            except RayspecError as exc:
+                # a workflow that does not load is not a trusted workflow, and one broken file
+                # must not hide the trust status of every other workflow in the repository
+                rows.append(
+                    {
+                        "workflow": target,
+                        "name": target,
+                        "hash": "",
+                        "trusted": False,
+                        "problem": f"does not load: {str(exc).splitlines()[0]}",
+                    }
+                )
+                continue
             problem = store.problem_for(resolved)
             rows.append(
                 {

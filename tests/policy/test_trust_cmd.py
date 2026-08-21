@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -136,3 +139,55 @@ def test_trusted_file_holds_no_workflow_content(project: Tree) -> None:
     text = Path(trusted_path(project.root)).read_text(encoding="utf-8")
     assert "echo hi" not in text
     assert set(text.split()) >= {"workflows:"}
+
+
+def test_list_uses_the_same_comparison_as_the_gate(project: Tree) -> None:
+    """`trust list` is read to predict `rayspec run`; a looser comparison would mislead."""
+    run("trust", "add", "wf", "--root", str(project.root))
+    path = trusted_path(project.root)
+    digest = TrustStore.load(project.root).entries[0].hash.split(":", 1)[1]
+    path.write_text(
+        f"workflows:\n- workflow: .rayspec/workflows/wf.yaml\n  hash: md5:{digest}\n",
+        encoding="utf-8",
+    )
+    res = run("trust", "list", "--root", str(project.root))
+    assert "changed" in res.output
+    res = run("trust", "check", "wf", "--root", str(project.root))
+    assert res.exit_code == 1, res.output
+
+
+def test_check_reports_every_workflow_even_when_one_does_not_load(project: Tree) -> None:
+    """One unparsable file must not hide the trust status of the rest of the repository."""
+    project.workflow("aaa", WF.replace("name: wf", "name: aaa"))
+    project.workflow("zzz", "rayspec: 1\nname: [oops\n")
+    res = run("trust", "check", "--root", str(project.root))
+    assert res.exit_code == 1, res.output
+    assert "aaa" in res.output
+    assert "zzz" in res.output
+    assert "does not load" in res.output
+
+
+def test_check_of_a_named_target_that_does_not_exist_is_exit_2(project: Tree) -> None:
+    res = run("trust", "check", "nope", "--root", str(project.root))
+    assert res.exit_code == 2, res.output
+
+
+def test_check_json_carries_the_load_failure(project: Tree) -> None:
+    project.workflow("zzz", "rayspec: 1\nname: [oops\n")
+    res = run("trust", "check", "--root", str(project.root), "--json")
+    assert res.exit_code == 1
+    rows = {row["workflow"]: row for row in json.loads(res.stdout)}
+    broken = next(row for name, row in rows.items() if "zzz" in name)
+    assert broken["trusted"] is False
+    assert "does not load" in broken["problem"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_the_trust_file_is_readable_by_everyone_in_the_checkout(project: Tree) -> None:
+    """It is committed to the repository and holds no secret; a 0600 file breaks a shared box."""
+    before = os.umask(0o077)
+    try:
+        run("trust", "add", "wf", "--root", str(project.root))
+    finally:
+        assert os.umask(before) == 0o077, "saving the trust list changed the process umask"
+    assert stat.S_IMODE(trusted_path(project.root).stat().st_mode) == 0o644
