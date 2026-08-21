@@ -83,6 +83,43 @@ either define one agent per provider (only `claude:` names on agents that resolv
 override `tools:` where the agent is used (`agent: {extends: triage, tools: {deny: [web]}}` —
 `tools` replaces wholesale).
 
+## Denied tool calls (`on_denial`)
+
+Both adapters can refuse a tool call the agent tried to make: Claude reports it in the result's
+`permission_denials`, Codex fails the turn with a `sandboxError`. Either way the agent could not
+do something it set out to do, and a run that only mentions that in a transcript nobody reads has
+failed silently.
+
+rayspec normalises both into one shape and keeps it:
+
+* the step record gains `denials: [{tool, reason, call_id}]` (`run.json`, `rayspec show`);
+* a `warning` event names them — `2 tool call(s) denied: Bash, Write`;
+* templates can read them: `{{ steps.review.denials | length }}`, `{% if steps.review.denials %}`.
+
+Only *what* was refused is recorded — the tool's name, the provider's wording and the call id.
+The arguments are step content (a command line, a file body) and never enter a record.
+
+```yaml
+agents:
+  reviewer:
+    provider: claude
+    access: read-only
+    on_denial: fail      # default: warn
+```
+
+| `on_denial` | Effect |
+|---|---|
+| `warn` (default) | the denials are recorded and warned about; the step's own status is whatever the turn produced |
+| `fail` | a turn that reports denials fails the step (`error.type: denied`, message naming the tools), even when the provider called the turn a success |
+
+`fail` is what an unattended run wants: an agent that quietly did three quarters of the job
+because the sandbox blocked the rest is worse than one that stops. Retries apply as usual
+(`error.type: denied` is not transient, so the kind defaults do not retry it), and
+`allow_failure: true` still tolerates the step.
+
+A denial is not the same thing as a *failed* turn: with `on_denial: warn` a step whose agent was
+refused one tool call and finished anyway still succeeds, and its record says what it could not do.
+
 ## Claude (`claude`)
 
 Runs `claude_agent_sdk.query()` — one `claude` CLI subprocess per prompt-step attempt, under the

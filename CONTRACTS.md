@@ -43,6 +43,9 @@ src/rayspec/
                (one case through Runner + StubProvider + CollectingSink), report.py (the
                four-line failure, JUnit, --json) + cli/commands/test.py; scripts/check_examples.py
                keeps only the coverage matrix and one CLI contract smoke per suite
+  limits/       operational limits: the model lockfile (.rayspec/rayspec.lock), the local
+                spend ledger + cross-run envelopes, and host run slots (flock) +
+                cli/commands/lock.py (which also owns the shared --locked gate)
   registry.py   store/sink/approval registries (entry points + builtins) +
                store/redacting.py (the redaction boundary a plugin store sits behind) +
                cli/plugins.py (the `rayspec.cli_plugins` group) + cli/commands/plugins.py
@@ -73,6 +76,9 @@ semantic changes without updating every consumer in the same PR.
   lazily — `loader/yaml.py` (the same YAML reader `config` uses for `config.yaml`); shells out to
   `git`. Nothing under `workspace/` imports the engine, providers, templating or the store —
   except the mode helpers `rayspec.store.file.secure_mkdir` / `open_private`.
+- `limits` → `errors`, `schema`, `loader`, `store/file` (mode helpers) only; never `engine`,
+  `providers/*` or `cli`. It CONSUMES `rayspec.policy` through one lazily imported accessor and
+  degrades to "nothing is limited" when that module is absent.
 - `cli` → everything; no business logic in the CLI layer.
 - Concurrency: anyio only (ruff `TID251` enforces the banned asyncio APIs).
 
@@ -2189,6 +2195,113 @@ CLI (all read-only: no provider is created, no step runs, nothing under the run 
   `explain.py` / `plan.py`. Untrusted text is never interpolated into a Rich markup string: it
   is printed as a `rich.text.Text` through `safe_text`, or — when a markup string is
   unavoidable (`plan --render`) — through `safe_markup`.
+
+### rayspec.limits — operational limits (lockfile · envelopes · run slots)
+```python
+from rayspec.limits import (
+    # -- model lockfile (.rayspec/rayspec.lock) --------------------------------------------
+    LOCKFILE_NAME,        # "rayspec.lock"        LOCKFILE_VERSION  # 1
+    lockfile_path,        # (project_root) -> <root>/.rayspec/rayspec.lock  (not created)
+    LockEntry,            # frozen: provider, model: str | None, effort: str | None; .to_data()
+    Lockfile,             # frozen: version, workflows: {wf name: {agent key: LockEntry}}, path
+    LockDrift,            # frozen: agent, field ∈ workflow|agent|provider|model|effort,
+    #                       pinned, resolved; .message() -> one line naming all three
+    LockfileError,        # RayspecError: the file exists but cannot be read as a lockfile
+    lock_entries_for,     # (ResolvedWorkflow) -> {agent key: LockEntry} for the agents the
+    #                       prompt steps resolve to (the RunRecord.toolchain["models"] keys)
+    check_locked,         # (ResolvedWorkflow, Lockfile | None) -> [LockDrift]  (None ⇒ [])
+    load_lockfile,        # (project_root) -> Lockfile | None      (strict YAML; LockfileError)
+    write_lockfile,       # (project_root, {wf: {key: LockEntry}}) -> Path  (sorted, stable bytes)
+    merged_workflows,     # (Lockfile | None, updates) -> dict  (re-locking one keeps the others)
+    parse_lockfile,       # (data, *, path=None) -> Lockfile
+    locked_default,       # (environ) -> bool   True unless CI is unset/0/false/no/off
+    # -- local spend ledger ----------------------------------------------------------------
+    ledger_path,          # (store_root) -> <store root>/limits/spend.json
+    SpendState,           # frozen: day_usd, month_usd, consecutive_failures
+    SpendLedger,          # (path); .read(when=None), .commit(run_id, cost_usd, when=) -> SpendState,
+    #                       .record_outcome(failed=) -> int, .reset_failures()
+    # -- envelopes -------------------------------------------------------------------------
+    BudgetEnvelope,       # frozen: per_run, per_day, per_month, max_consecutive_failures;
+    #                       .active, .spends
+    RunEnvelope,          # (envelope, ledger, *, run_id, started_at, waived=False)
+    #                       .check(run_usd) -> reason | None, .commit_final(run_usd),
+    #                       .record_outcome(failed=), .waive(), .active, .waived
+    envelope_reason, failure_breaker_reason,
+    ENVELOPE_PAUSE_REASON,  # "budget"   ENVELOPE_PAUSE_STEP  # "<run>"
+    # -- host run slots --------------------------------------------------------------------
+    slot_dir,             # (home, provider) -> <home>/limits/slots/<provider>/
+    SlotHolder,           # frozen: provider, index, run_id, pid, started_at; .describe()
+    RunSlot,              # (home, provider, limit, *, run_id); .acquire(wait_s=None, poll_s=),
+    #                       .release(), .held, .index, .path, .holders(); context manager
+    SlotBusyError,        # RayspecError: .provider, .limit  (hint names --wait-slot)
+    acquire_slots,        # ctx manager (home, providers, {provider: limit}, *, run_id, wait_s)
+    SLOT_POLL_S, WAIT_FOREVER,  # 0.25 · "forever"
+    # -- the policy this layer consumes ------------------------------------------------------
+    LimitsPolicy,         # frozen: budget: BudgetEnvelope, max_concurrent_runs: {id: int}; .active
+    limits_policy,        # (project_root, *, home, environ=None) -> LimitsPolicy
+    limits_for,           # ({provider|"*": int}, providers) -> {provider: int}
+    workflow_providers,   # (ResolvedWorkflow) -> [provider id] of its prompt steps
+    run_envelope,         # (LimitsPolicy, *, store_root, run_id, started_at) -> RunEnvelope | None
+    wait_seconds,         # ("30m" | "90" | "forever" | None) -> wait_s for RunSlot.acquire
+)
+```
+`limits` depends on `errors`, `schema`, `loader` and `store/file` (the `secure_mkdir` /
+`open_private` mode helpers) — never on `engine`, `providers/*` or `cli`. `engine` and `cli`
+import it.
+
+**Policy seam.** The policy FILE (schema, layering, loader) is owned by `rayspec.policy`; this
+layer only CONSUMES it, through `limits.policy.limits_policy` →
+`rayspec.policy.load_policy(project_root, *, home, environ=None)` (imported lazily; absent or
+signature-incompatible ⇒ `LimitsPolicy()`, i.e. nothing is limited). The two keys read are
+`policy.budget: {per_run, per_day, per_month}` (+ `policy.max_consecutive_failures`, also
+accepted inside `budget:`) and `policy.max_concurrent_runs: {provider id: int}` (a bare int =
+every provider). Values that are not positive numbers are ignored, never fatal.
+
+**Lockfile.** `rayspec lock [names...] [--check] [--root] [--json]` (`cli/commands/lock.py`,
+which also owns the shared `LockedOption` + `enforce_lockfile(ctx, resolved, *, locked,
+json_mode=False)` that `run`, `plan` and `validate` apply). Exit `0` written/in sync · `1`
+`--check` found drift · `2` usage. `--locked/--no-locked` defaults to `locked_default(os.environ)`
+(on under `CI`); a MISSING lockfile is refused under `--locked` too. `validate --locked` reports
+drift as an ERROR row (not a warning). The file is YAML, read with the loader's strict reader,
+`{version, workflows: {name: {agents: {key: {provider, model, effort}}}}}`; a newer major
+version is refused rather than guessed at. An agent with no literal model id is recorded
+`model: null` and named on stdout — the provider's default cannot be pinned.
+
+**Envelopes pause, they do not fail.** `RunContext(envelope=…)` (from `Runner(envelope=…)`,
+built by the CLI). `RunContext.check_envelope()` is asked FIRST by `check_budget` (so it applies
+with or without workflow caps): it commits the run's total to the ledger, and on a ceiling sets
+`ctx.envelope_pause` AND `ctx.budget_exceeded` (the drain flag: nothing new starts, running
+steps finish — the scheduler is untouched) and emits one `warning`. `Runner._finalize` ranks
+`envelope_pause` ABOVE `budget_exceeded`: status `paused`, exit 3, `run.pause =
+PauseInfo(token="budget#<resume_count>", step=<last finished path> | "<run>",
+message=<reason>, reason="budget")` plus a `run.paused` event carrying `reason`. The final
+spend is committed and the consecutive-failure counter moved in `_finalize` (succeeded ⇒ reset,
+failed ⇒ +1; `paused` is not an outcome). A dry run never touches the ledger and takes no slot.
+Any resume entry clears a budget pause (`Runner._consume_envelope_decision`) and re-evaluates the
+ceiling; a recorded `pause.decision.approved` additionally WAIVES the ceilings for that run and
+closes the breaker (`rayspec approve <run>`), a rejecting decision changes nothing.
+`RunContext.last_finished_path` is the last record persisted BEFORE the envelope tripped (frozen
+afterwards, so the pause names the step that reached the ceiling, not the drain's last skip).
+
+**Run slots.** `rayspec run` holds one `flock` slot per provider its prompt steps resolve to,
+around `Runner.run_sync()`; `--wait-slot DURATION|forever` queues instead of failing (default:
+`SlotBusyError` → exit 2 naming the holders). Crash safety is the kernel's: the lock dies with
+the process, so a slot held by a killed run is immediately free; slot files are never unlinked
+and their JSON is descriptive only.
+
+Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, reason, call_id)`
++ `AgentResult.denials: tuple[Denial, ...] = ()`; `store/model.DenialInfo(tool, reason, call_id)`
++ `StepRecord.denials: list[DenialInfo] = []` + `PauseInfo.reason: str = "approval"`;
+`schema/agent.AgentDef.on_denial: DenialPolicy = "warn"` (`warn|fail`) + `ResolvedAgent.on_denial`.
+`providers/claude.denial_of(entry) -> Denial` maps `permission_denials`;
+`providers/codex.sandbox_denial(TurnError | None) -> Denial | None` maps a `sandboxError` turn
+onto the same shape (`tool="shell"`). The prompt executor stamps `record.denials`, warns
+`"N tool call(s) denied: Bash, Write"` (`executors.prompt.denial_warning`/`denied_tools`) and,
+with `on_denial: fail`, turns a SUCCEEDED turn that reports denials into a failed step
+(`ErrorInfo(type="denied")`, output kept). `templating.StepView.denials` (a list of plain dicts
+for `prompt:` steps, `None` elsewhere) is in `STEP_ATTRIBUTES`, so `steps.<id>.denials` works and
+`context.json` carries it. Only the tool NAME, the provider's wording and the call id are
+recorded — never the tool input.
 
 ## Pinned semantics (settled early — do not re-litigate)
 

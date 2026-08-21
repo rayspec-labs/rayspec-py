@@ -200,8 +200,9 @@ otherwise), `secret: true` inputs, extension entry points for commands, stores, 
 prompts, the packaged Claude Code skill, and the `examples/` gallery.
 
 Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
-`plan`, `test`, `explain`, `eval`, `show`, `logs`, `runs`, `costs`, `workflows`, `agents`,
-`providers`, `plugins`, `projects`, `worktrees`, `schema`, `skill`, `completion`, `version`.
+`plan`, `test`, `explain`, `eval`, `show`, `logs`, `runs`, `costs`, `lock`, `workflows`,
+`agents`, `providers`, `plugins`, `projects`, `worktrees`, `schema`, `skill`, `completion`,
+`version`.
 
 Not in this build: a PyPI release — the `rayspec` name on PyPI currently holds a placeholder, so
 `pip install rayspec` does not yet get you this. Install from git (above) until the real release

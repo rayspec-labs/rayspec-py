@@ -64,6 +64,7 @@ rayspec run <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
             [--yes] [--no-interactive] [--json | --output FORMAT] [--quiet] [--verbose]
             [--allow-unsupported] [--fail-fast] [--resume RUN_ID] [--force]
             [--worktree | --no-worktree] [--base BRANCH] [--repo SOURCE]
+            [--locked | --no-locked] [--wait-slot DURATION]
 ```
 
 Load, validate, resolve inputs, prepare the workspace and run (or resume) a workflow. `<workflow>`
@@ -90,6 +91,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
 | `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/isolation.md#--repo)) |
+| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is also refused — "nothing to check" must not read as "everything is fine" |
+| `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 90`) or `forever`. Default: fail with exit 2 naming the run that holds the slot. A `--dry-run` takes no slot |
 
 Console output is one line per finished step (`✓ review succeeded 4.1s · 1.2k tok · $0.03`;
 a step replayed from the resume cache prints `↺ review reused (4.1s)`), plus run/workspace/
@@ -136,7 +139,8 @@ Stream records wrap agent events (`text_delta`, `tool_call`, …) and shell outp
 ### `rayspec validate`
 
 ```
-rayspec validate [names...] [--root DIR] [--allow-unsupported] [--json | --output FORMAT]
+rayspec validate [names...] [--root DIR] [--allow-unsupported] [--locked | --no-locked]
+                 [--json | --output FORMAT]
 ```
 
 Load and validate workflows (schema, graph, references, templates, provider capabilities);
@@ -147,6 +151,9 @@ regexes such as `^[a-z][a-z0-9_]*$` and `[...]` in messages survive — exit 2 w
 errors. A name that is neither a discovered workflow nor a file is `error: unknown workflow
 '<name>'` (exit 2). An empty project prints `no workflows found (nothing to validate)` plus the
 `rayspec init` hint (exit 0). `--allow-unsupported` turns capability mismatches into warnings.
+`--locked` / `--no-locked` additionally checks each workflow against
+[`.rayspec/rayspec.lock`](#rayspec-lock); a drifted agent is an **error** here, not a warning
+(on by default under `CI`).
 A workflow with `secret: true` inputs gets a dim marker line under its status —
 `secret inputs: token (secret; env-only, never persisted)`. `--json`: `[{name, path, ok, errors:
 [...], warnings: [...], secret_inputs: [...], problems: [...]}]` (exit 2 when any entry has
@@ -156,6 +163,44 @@ is neither a discovered name nor a file). `problems` is the same list as objects
 location, field, message, hint}`, one per problem, `path` never `null` — so a schema mistake can
 be jumped to in an editor. Include bodies are validated as closed scopes (only
 their own steps and the `inputs` bound by `with:` are visible), exactly as the engine runs them.
+
+### `rayspec lock`
+
+```
+rayspec lock [NAMES...] [--check] [--root DIR] [--json | --output FORMAT]
+```
+
+Write `.rayspec/rayspec.lock`, pinning the literal model id and effort every agent of the named
+workflows (default: all of them) resolves to today. Commit the file.
+
+`model: sonnet` is a tier, `@fast` is an alias and an unset `model:` is the provider's default —
+all three mean "whatever this resolves to *today*". Between the review of a change and its merge
+a provider can change what that is, and nothing in the run record would have said so. The
+lockfile is what makes that visible, and [`run`](#rayspec-run) / [`plan`](#rayspec-plan) /
+[`validate`](#rayspec-validate) `--locked` is what makes it fatal.
+
+| Option | Effect |
+|---|---|
+| `--check` | report drift and exit 1; never write the file (what a CI job runs) |
+| `--json` | `{"path", "workflows": {name: {agent key: {provider, model, effort}}}, "drift": [...], "checked": bool}` |
+| `--root DIR` | project root |
+
+Exit codes: `0` written / in sync · `1` `--check` found drift · `2` usage (unknown workflow, a
+workflow that does not load, an unreadable lockfile).
+
+```console
+$ rayspec lock
+wrote .rayspec/rayspec.lock (2 workflow(s), 3 agent(s))
+
+$ rayspec lock --check
+error: review_pr: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
+hint: run `rayspec lock` to re-pin
+```
+
+Agents are keyed the way `run.json`'s `toolchain.models` keys them (`agents.reviewer`,
+`file:.rayspec/agents/x.yaml`, `inline:<step path>`), so a record and the lockfile talk about the
+same agents. An agent that resolves to no literal model id (the provider's own default) is
+recorded with `model: null` and named on stdout: rayspec cannot pin what it never sees.
 
 ### `rayspec schema`
 
@@ -188,7 +233,7 @@ includes or provider capabilities — `rayspec validate` stays authoritative. Se
 
 ```
 rayspec plan <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
-             [--allow-unsupported] [--json | --output FORMAT]
+             [--allow-unsupported] [--locked | --no-locked] [--json | --output FORMAT]
 rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output FORMAT]
 ```
 

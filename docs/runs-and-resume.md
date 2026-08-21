@@ -383,6 +383,98 @@ defaults:
   successful (its `outputs:` are not published either). Raise the
   cap and resume with `--force` (the workflow hash changed) to continue where it stopped.
 
+## Operational limits (policy, not workflow)
+
+The caps above belong to the *workflow author*: "this task is not worth more than five dollars".
+Exceeding one is a defect, so the run fails. The limits in this section belong to the *operator*
+of the machine — "not more than twenty dollars a day without me looking" — and reaching one is
+not a defect. It is the moment the machine was supposed to stop and ask. So these **pause** the
+run (exit **3**) instead of failing it.
+
+All of it is local: one user, one machine. The state is a JSON file under `$RAYSPEC_HOME` next to
+that project's runs; there is no server, no shared ledger and nothing to roll up across projects
+or people. The file holds dates, run ids, counts and dollar amounts — never an input, never an
+environment variable, never a prompt.
+
+### Spending envelopes and the failure breaker
+
+```yaml
+# policy file
+budget:
+  per_run: 2.00
+  per_day: 20.00
+  per_month: 200.00
+max_consecutive_failures: 3
+```
+
+- Spend is committed to `<store root>/limits/spend.json` as the run goes, under an exclusive
+  `flock` that covers the whole read-modify-write — two runs finishing in the same instant both
+  land. A run commits its *absolute* total, never a delta, so a resume can never double-count.
+- A run is accounted to the day and month it **began** in, so one run is never split across two
+  envelopes at midnight.
+- When a ceiling is reached the run drains exactly like a capped run does — nothing new starts,
+  running steps finish — and then **pauses**: `run.json` gains
+  `pause: {reason: "budget", step: "<where it stopped>", message: "spending envelope reached
+  (today $20.4 > policy budget.per_day $20.0)"}` and the process exits **3**.
+- `max_consecutive_failures` is the same instrument counting failed runs instead of dollars. It
+  is checked before the first step, so a workflow that has been failing all night stops calling
+  the provider. A successful run resets the counter.
+- **Continuing**: `rayspec resume <run>` re-evaluates the ceiling — raise it (or wait for the
+  next day) and the run picks up where it stopped. `rayspec approve <run> "checked it"` says
+  "run it anyway": the ceilings stop stopping *this* run and the failure breaker is closed
+  again. `rayspec reject <run>` changes nothing, so the run pauses again on the same ceiling.
+- A `--dry-run` spends nothing and is never counted.
+
+### Host run slots
+
+```yaml
+# policy file
+max_concurrent_runs:
+  claude: 2
+  codex: 1
+```
+
+A scheduler that fires five workflows at 03:00 should not start five agents at 03:00.
+`rayspec run` takes one slot per provider the workflow's `prompt:` steps resolve to, and holds it
+for the run:
+
+```console
+$ rayspec run review_pr
+error: all 2 claude run slots on this host are taken (run 20260821-030001-ab12 (pid 5511); run 20260821-030002-cd34 (pid 5512))
+hint: wait with --wait-slot, or raise policy max_concurrent_runs
+
+$ rayspec run review_pr --wait-slot 30m     # queue instead; `forever` waits indefinitely
+```
+
+Slots are `flock` files under `$RAYSPEC_HOME/limits/slots/<provider>/`, which is what makes them
+crash-safe: the kernel drops the lock when the holding process dies, so a slot held by a run that
+was killed, crashed or lost power is free again the instant that process is gone. Nothing has to
+detect a stale holder and no lock file is ever deleted. The JSON inside a slot file (run id, pid,
+start time) only exists so the message above can name who is holding it. A `--dry-run` takes no
+slot.
+
+## Pinning models (`rayspec lock`)
+
+`model: sonnet` is a tier, `@fast` is an alias and an unset `model:` is the provider's default:
+all three mean "whatever this resolves to today". A provider can change what that is between the
+review of a change and the merge of it, and nothing in the run record would have said so.
+
+```console
+$ rayspec lock                       # writes .rayspec/rayspec.lock — commit it
+$ rayspec lock --check               # exit 1 on drift (a CI job)
+$ rayspec run review_pr --locked     # refuses to run a drifted workflow
+```
+
+`--locked` is on by default under `CI` and names exactly what moved:
+
+```
+error: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
+```
+
+`run`, `plan` and `validate` all take `--locked` / `--no-locked`; the details are in
+[cli.md](cli.md#rayspec-lock). Agents are keyed the way `run.json`'s `toolchain.models` keys them,
+so a stored run and the lockfile talk about the same agents.
+
 ## Security notes
 
 The run store is sensitive data: `run.json` holds the inputs (except `secret: true` inputs,
