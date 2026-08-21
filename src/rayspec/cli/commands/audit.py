@@ -136,7 +136,12 @@ def _row_time(row: dict[str, Any]) -> datetime:
 
 
 def actor_line(run: RunRecord) -> str:
-    """``launcher@example.com (git, ci: github-actions)`` — who ran it, ``—`` when unrecorded."""
+    """``launcher@example.com (env, ci: github-actions)`` — who ran it, ``—`` when unrecorded.
+
+    A ``declared_id`` is appended as what it is: an identity a ``.env`` file asked for and did
+    not get, because a workflow step can write that file. Showing it next to the identity that
+    WAS used is the difference between a refusal and a silence.
+    """
     actor = run.actor
     if actor is None:
         return "— (not recorded)"
@@ -145,7 +150,11 @@ def actor_line(run: RunRecord) -> str:
         extras.append(f"ci: {actor.ci}")
     for provider, account in sorted(actor.provider_accounts.items()):
         extras.append(f"{provider}: {account}")
-    return f"{safe_text(actor.id, keep_newlines=False)} ({', '.join(safe_text(e) for e in extras)})"
+    line = f"{safe_text(actor.id, keep_newlines=False)} ({', '.join(safe_text(e) for e in extras)})"
+    if actor.declared_id:
+        declared = safe_text(actor.declared_id, keep_newlines=False)
+        line += f" — a .env declared {declared!r}, which is not an identity"
+    return line
 
 
 def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dict[str, Any]:

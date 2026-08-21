@@ -95,17 +95,23 @@ class ActorInfo(_Model):
 
     ``id`` is the resolved identity and ``source`` says where it came from (``env`` for
     ``RAYSPEC_ACTOR``, ``os`` for the operating-system user, ``unknown`` when nothing answered).
-    Both are outside the reach of the run: no git configuration is read, in any scope, because a
-    ``shell:`` step can rewrite one. ``ci`` names the CI system the process ran under when there
-    is one, and ``provider_accounts`` maps a provider id to the account the environment NAMED —
-    an account, never the key that authenticates it.
-    :func:`rayspec.actor.resolve_actor` fills this in.
+    Every field here is resolved from sources the audited run cannot write: the environment as
+    the *operator* set it and the operating system. No git configuration is read, in any scope,
+    and no variable rayspec copied out of a ``.env`` file is read either — a ``shell:`` step can
+    write both. ``ci`` names the CI system the process ran under when there is one, and
+    ``provider_accounts`` maps a provider id to the account the environment NAMED — an account,
+    never the key that authenticates it. :func:`rayspec.actor.resolve_actor` fills this in.
     """
 
     id: str
     source: str = "unknown"
     ci: str | None = None
     provider_accounts: dict[str, str] = Field(default_factory=dict)
+    #: additive: a ``RAYSPEC_ACTOR`` that a ``.env`` file supplied. It is NOT ``id``: a run can
+    #: write ``$RAYSPEC_HOME/.env`` and its checkout's ``.rayspec/.env``, so this is a claim
+    #: made ON this machine BY a file, recorded so the refusal is visible rather than silent.
+    #: ``None`` whenever no ``.env`` supplied one, and in records written before the field.
+    declared_id: str | None = None
 
 
 class StepRecord(_Model):

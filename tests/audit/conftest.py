@@ -1,20 +1,29 @@
 """Fixtures for the audit tests: a deterministic identity environment and a real git repo.
 
-The actor resolver reads the process environment and the repository's git configuration, so
-every test here starts from a *cleared* identity: no ``RAYSPEC_ACTOR``, no CI markers and no
-provider-account variables leaking in from the developer's shell or from CI itself (this suite
-runs on GitHub Actions, where ``GITHUB_ACTIONS`` is set for real).
+The actor resolver reads the process environment, so every test here starts from a *cleared*
+identity: no ``RAYSPEC_ACTOR``, no CI markers and no provider-account variables leaking in from
+the developer's shell or from CI itself (this suite runs on GitHub Actions, where
+``GITHUB_ACTIONS`` is set for real).
+
+The whole environment is restored afterwards, not only what ``monkeypatch`` touched: these tests
+invoke commands that load ``.env`` files, and :func:`rayspec.config.load_env` writes straight
+into ``os.environ`` — including, in the poisoning cases, a planted ``RAYSPEC_ACTOR`` that would
+otherwise outlive the test that planted it. The record of what those loads applied is cleared for
+the same reason (:func:`rayspec.procenv.forget_env_file_values`): one command, one process.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from rayspec.actor import CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV
+from rayspec.procenv import forget_env_file_values
 from rayspec.store.file import FileRunStore
 
 GIT_ENV = {
@@ -27,8 +36,10 @@ GIT_ENV = {
 
 
 @pytest.fixture(autouse=True)
-def clean_identity_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def clean_identity_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
     """No inherited identity: the resolver must see only what a test puts there."""
+    saved = dict(os.environ)
+    forget_env_file_values()
     monkeypatch.delenv("RAYSPEC_ACTOR", raising=False)
     monkeypatch.delenv("RAYSPEC_AUDIT_LOG", raising=False)
     monkeypatch.delenv("RAYSPEC_PUSH_BRANCH", raising=False)
@@ -42,6 +53,10 @@ def clean_identity_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for key, value in GIT_ENV.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+    forget_env_file_values()
 
 
 def git(*args: str, cwd: Path) -> str:

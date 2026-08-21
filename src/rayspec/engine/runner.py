@@ -434,9 +434,11 @@ class Runner:
     def _resolve_actor(self) -> ActorInfo:
         """Who is launching this run (blocking: an account-database lookup can be slow).
 
-        Resolved from this process's environment and the operating-system user only — never from
-        the workspace the run is about to write to, and never from a git configuration, which one
-        ``shell:`` step can rewrite in any scope.
+        Resolved from the environment **as the operator set it** and from the operating-system
+        user only — never from the workspace the run is about to write to, never from a git
+        configuration (one ``shell:`` step rewrites one in any scope), and never from a variable
+        rayspec copied out of a ``.env`` file (a step can write those files too, and the home
+        one persists into every later run). See :func:`rayspec.actor.resolve_actor`.
         """
         return resolve_actor()
 

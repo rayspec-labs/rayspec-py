@@ -116,3 +116,67 @@ def test_no_git_configuration_is_ever_read(
     monkeypatch.setattr("subprocess.run", refuse)
     monkeypatch.setattr("subprocess.Popen", refuse)
     assert resolve_actor().source == "os"
+
+
+def test_an_env_file_cannot_name_the_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the whole class: a variable rayspec copied out of a `.env` is configuration, and both of
+    # those files are files a `shell:` step can write
+    from rayspec.procenv import forget_env_file_values, note_env_file_values
+
+    monkeypatch.setenv(ACTOR_ENV, "planted@corp.invalid")
+    note_env_file_values({ACTOR_ENV: "planted@corp.invalid"}, origin="/home/.rayspec/.env")
+    try:
+        actor = resolve_actor()
+        assert actor.id != "planted@corp.invalid"
+        assert actor.source == "os"
+        # refused, not swallowed: the claim is on the record, marked as a claim
+        assert actor.declared_id == "planted@corp.invalid"
+    finally:
+        forget_env_file_values()
+
+
+def test_an_env_file_cannot_forge_the_ci_system_or_a_provider_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # not only RAYSPEC_ACTOR: every field of the record is evidence, so every field is resolved
+    # from what the operator set. A planted GITHUB_ACTIONS would make a laptop run read as CI.
+    from rayspec.procenv import forget_env_file_values, note_env_file_values
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("ANTHROPIC_ACCOUNT", "security-team")
+    note_env_file_values(
+        {"GITHUB_ACTIONS": "true", "ANTHROPIC_ACCOUNT": "security-team"},
+        origin="/project/.rayspec/.env",
+    )
+    try:
+        actor = resolve_actor()
+        assert actor.ci is None
+        assert actor.provider_accounts == {}
+    finally:
+        forget_env_file_values()
+
+
+def test_the_shell_still_wins_over_an_env_file_of_the_same_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a `.env` never overrides an exported variable, so nothing is recorded for it and the
+    # operator's own identity keeps working — the control must not block the permitted case
+    from rayspec.procenv import forget_env_file_values, note_env_file_values
+
+    note_env_file_values({ACTOR_ENV: "planted@corp.invalid"}, origin="/project/.rayspec/.env")
+    monkeypatch.setenv(ACTOR_ENV, "operator@example.invalid")
+    try:
+        actor = resolve_actor()
+        assert actor.id == "operator@example.invalid"
+        assert actor.source == "env"
+        assert actor.declared_id is None
+    finally:
+        forget_env_file_values()
+
+
+def test_an_explicit_env_mapping_is_taken_as_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `resolve_actor(env=…)` is the caller saying "this mapping is the operator's environment";
+    # the subtraction applies to the process environment it would otherwise have read
+    actor = resolve_actor(env={ACTOR_ENV: "scheduler@example.invalid"})
+    assert actor.id == "scheduler@example.invalid"
+    assert actor.source == "env"

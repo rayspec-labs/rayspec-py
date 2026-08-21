@@ -54,8 +54,10 @@ runs/<run-id>/
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
-  "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run:
-             "provider_accounts": {}},                            // RAYSPEC_ACTOR, else the OS user
+  "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run: an exported
+             "provider_accounts": {}, "declared_id": null},        // RAYSPEC_ACTOR, else the OS user. A
+                                                                   // RAYSPEC_ACTOR from a .env is refused
+                                                                   // and kept as declared_id (see below)
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
@@ -137,25 +139,78 @@ start, and never rewritten — a resume by somebody else leaves it naming whoeve
 | `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user), `unknown` |
 | `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
 | `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
+| `declared_id` | a `RAYSPEC_ACTOR` a `.env` file asked for and did **not** get, kept as a claim; `null` normally |
 
 Resolution order is `RAYSPEC_ACTOR` > the OS user. Set `RAYSPEC_ACTOR` in the shell you launch a
 run from, or in a scheduler or CI job, whenever you want the ledger to name a person or a bot
 rather than the account that happens to own the process — an email address, a team name, anything
 that identifies the hand.
 
-**An identity is only evidence if the audited code could not have chosen it**, and that is the
-whole reason for those two sources and no others. rayspec reads **no git configuration** for an
-actor — not the repository's, not your global one, not the machine's. A run's `shell:` steps and
-its agents execute as you, with your `$HOME` and inside the repository the worktree came from
-(`workspace-write` is a permission mode of the agent, not an operating-system sandbox), so a
-single `git config --global user.email …` in one step would otherwise pick the name stamped on
-your next `rayspec approve` — and it would be rendered as a machine-derived identity, which reads
-as *more* trustworthy than a self-declared one, not less. `RAYSPEC_ACTOR` lives in the environment
-of the process that launches the run or answers the gate, and `os` comes from the account database
-rather than from `$USER`; neither is something a step can write.
+#### Which sources are allowed, and why
 
-If you want a per-project identity, set `RAYSPEC_ACTOR` — that is a decision of yours, taken
-outside the run, which is exactly what makes it worth recording.
+**An identity is only evidence if the audited code could not have chosen it.** That is one rule
+about the *source* of a value, not a list of attacks, and it is worth stating as a table because
+the answer is not obvious for any of these:
+
+| source | trusted for an identity? | why |
+|---|---|---|
+| the process environment **as the operator exported it** | yes | it lives in the process that launches the run or answers the gate; a step is a child of that process and cannot write it |
+| the operating-system user | yes | read from the account database (POSIX `pwd`), not from `$USER` |
+| a `RAYSPEC_ACTOR` rayspec loaded from `$RAYSPEC_HOME/.env` | **no** | `$RAYSPEC_HOME` is exported into every step: `printf 'RAYSPEC_ACTOR=…' > "$RAYSPEC_HOME/.env"` is one line, and the file is applied by *every* later command |
+| a `RAYSPEC_ACTOR` rayspec loaded from `<project>/.rayspec/.env` | **no** | it is a file in the tree the run works in, applied by `run`/`resume`/`approve`/`reject` |
+| `git config user.email`, any scope | **no** | a run's steps execute as you, with your `$HOME` and inside the repository the worktree came from, so `git config [--global] user.email …` is one command in one step |
+
+A run's `shell:` steps and its agents execute as you (`workspace-write` is a permission mode of
+the agent, not an operating-system sandbox). So every "no" above is one line in one step away
+from choosing the name stamped on your next `rayspec approve` — and it would be rendered as a
+machine-derived identity, which reads as *more* trustworthy than a self-declared one, not less.
+
+**How the rule is enforced**, because this is the part that has to keep holding: `.env` files
+are copied into the process environment by exactly one function, and that function reports every
+variable it applied, and from which file. Identity resolution then subtracts that set from the
+environment before it looks at anything. So the guarantee is not "these two filenames are
+special" — it is "rayspec never identifies you from a value rayspec itself put there", which
+holds for a `.env` location added later, too. Every field of `actor` is resolved that way, not
+only `id`: a planted `GITHUB_ACTIONS` would otherwise make a laptop run read as CI, and a planted
+`ANTHROPIC_ACCOUNT` would put somebody else's team in the record.
+
+A refused `RAYSPEC_ACTOR` is not swallowed. It is recorded as `declared_id` — a claim, next to
+the identity that was actually used — and every command that loads the file says so on stderr:
+
+```console
+$ rayspec approve 20260821-2228-5xwm "LGTM"
+warning: RAYSPEC_ACTOR in /home/you/.rayspec/.env is not used as an identity — a workflow step
+can write that file. Export RAYSPEC_ACTOR in the shell that runs rayspec instead.
+```
+
+`rayspec audit` then shows both: `approved by you (cli) — a .env declared
+'security-team@corp.invalid', which is not an identity`.
+
+If you want a per-project identity, set `RAYSPEC_ACTOR` in your shell, your scheduler or your CI
+job — that is a decision of yours, taken outside the run, which is exactly what makes it worth
+recording. Putting it in a `.rayspec/.env` that is committed to the repository does not work, and
+that is deliberate: the file is chosen by whoever pushed the checkout.
+
+`.env` files keep working for everything else. They exist so a project can supply configuration
+and they still do — `ANTHROPIC_BASE_URL`, an API key, whatever a step needs. The narrowing is to
+*identity only*; nothing else about `.env` changed.
+
+#### What this does not give you
+
+Worth saying plainly, because a guarantee that is described wider than it is built is worse than
+none:
+
+- **It is not tamper-evidence.** The run directory is yours, so anything that can run as you can
+  edit `run.json` after the fact. The rule above is about the moment a value is *recorded*: at
+  that moment it came from the operator, not from the run. `rayspec audit` re-resolves the
+  decision row from the record's actor, but its header line is read straight out of `run.json`.
+- **It is not authentication.** Nobody proved they are `alice@example.com`; the operator's shell
+  said so. An identity here names a hand for a log — it never grants a permission.
+- **A `.env` a run wrote still supplies configuration.** `$RAYSPEC_HOME/.env` in particular is
+  applied by every rayspec command, so a step that writes it changes the environment of your
+  later commands (a proxy URL, say). That is the same trust boundary the file always had — it is
+  a file on your machine — but the identity rule does not fix it, and this build does not either.
+  Keep an eye on it the way you would on `~/.bashrc`; `rayspec doctor` lists both files.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from
@@ -754,14 +809,20 @@ and `outputs` are in clear text. So:
   `run.json`, `events.jsonl` `run.finished`, every later step's `context.json`, and on the console
   / in `show`) — and so is whatever a script *prints*, secret or not. Agent steps cannot receive
   secret inputs in v1.
-- **Project `.rayspec/.env` trust.** A checkout's `.rayspec/.env` is controlled by whoever pushed
-  the repository and can redirect credentials (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `*_PROXY`)
-  or reconfigure git (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`). Inspection commands (`doctor`,
-  `validate`, `plan`, `workflows`, `agents`, `runs`, `costs`, `show`, `logs`, …) never load it; only
-  `run`, `resume`, `approve` and `reject` apply it — into the process environment that reaches
-  step, provider and git subprocesses — and they say so on stderr (`env: loaded N variables from
-  .rayspec/.env (project)`). `rayspec doctor` lists the file (`project .env` row) so you can read
-  it before the first run. `~/.rayspec/.env` (yours) is loaded by every project command.
+- **`.env` trust.** A checkout's `.rayspec/.env` is controlled by whoever pushed the repository
+  and can redirect credentials (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `*_PROXY`) or
+  reconfigure git (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`). Inspection commands (`doctor`, `validate`,
+  `plan`, `workflows`, `agents`, `runs`, `costs`, `show`, `logs`, …) never load it; only `run`,
+  `resume`, `approve` and `reject` apply it — into the process environment that reaches step,
+  provider and git subprocesses — and they say so on stderr, naming the variables (`env: loaded N
+  variables from .rayspec/.env (project): NAME, NAME`).
+  `~/.rayspec/.env` (yours) is loaded by **every** project command and is not announced, so read
+  it if you have not looked lately: `$RAYSPEC_HOME` is exported into every workflow step, which
+  makes that file writable by anything you run. `rayspec doctor` lists both (`home .env` and
+  `project .env` rows), with the variable counts, so you can check before the first run.
+  Neither file can supply an identity — see [Who ran it](#who-ran-it) — but both can still supply
+  configuration, which is what they are for, and that is a boundary you are trusting the way you
+  trust `~/.bashrc`.
 - **`cancel` pid check.** A `running` record keeps the engine's pid; after a crash or reboot the
   pid may belong to an unrelated process. `rayspec cancel` signals only a process whose start
   time equals the recorded `pid_started_at` (exact; older records without the field skip this)

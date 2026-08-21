@@ -5,7 +5,7 @@
   "description": "One rayspec run record (<run dir>/run.json).",
   "$defs": {
     "ActorInfo": {
-      "description": "Who acted — an identity for the ledger, never a credential and never a permission.\n\n``id`` is the resolved identity and ``source`` says where it came from (``env`` for\n``RAYSPEC_ACTOR``, ``os`` for the operating-system user, ``unknown`` when nothing answered).\nBoth are outside the reach of the run: no git configuration is read, in any scope, because a\n``shell:`` step can rewrite one. ``ci`` names the CI system the process ran under when there\nis one, and ``provider_accounts`` maps a provider id to the account the environment NAMED —\nan account, never the key that authenticates it.\n:func:`rayspec.actor.resolve_actor` fills this in.",
+      "description": "Who acted — an identity for the ledger, never a credential and never a permission.\n\n``id`` is the resolved identity and ``source`` says where it came from (``env`` for\n``RAYSPEC_ACTOR``, ``os`` for the operating-system user, ``unknown`` when nothing answered).\nEvery field here is resolved from sources the audited run cannot write: the environment as\nthe *operator* set it and the operating system. No git configuration is read, in any scope,\nand no variable rayspec copied out of a ``.env`` file is read either — a ``shell:`` step can\nwrite both. ``ci`` names the CI system the process ran under when there is one, and\n``provider_accounts`` maps a provider id to the account the environment NAMED — an account,\nnever the key that authenticates it. :func:`rayspec.actor.resolve_actor` fills this in.",
       "properties": {
         "id": {
           "title": "Id",
@@ -34,6 +34,18 @@
           },
           "title": "Provider Accounts",
           "type": "object"
+        },
+        "declared_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Declared Id"
         }
       },
       "required": [

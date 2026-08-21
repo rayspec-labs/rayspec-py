@@ -217,15 +217,23 @@ def _decision_detail(data: Mapping[str, Any]) -> str:
     through (``cli`` for ``rayspec approve``/``reject``, ``tty`` for the run's own terminal
     prompt, ``--yes``, ``dry-run``) and the actor is the identity behind it; a row that says
     only "approved" cannot tell a human sign-off from an auto-approval.
+
+    A ``declared_id`` — an identity a ``.env`` file asked for and was refused, because the run
+    can write that file — is appended when there is one. The ledger row is where somebody reads
+    what happened, so an attempt to name the approver belongs on it.
     """
     detail = "approved" if data.get("approved") else "rejected"
     actor = data.get("actor")
-    who = actor.get("id") if isinstance(actor, Mapping) else None
+    actor = actor if isinstance(actor, Mapping) else {}
+    who = actor.get("id")
     if who:
         detail += f" by {who}"
     by = data.get("by")
     if by:
         detail += f" ({by})"
+    declared = actor.get("declared_id")
+    if declared:
+        detail += f" — a .env declared {declared!r}, which is not an identity"
     return detail
 
 

@@ -46,8 +46,11 @@ def record_decision(
     The decision is stamped with the identity of whoever is running this command
     (:func:`rayspec.actor.resolve_actor`) — the person answering a gate is often not the one who
     launched the run, and the ledger has to be able to tell them apart. That identity comes from
-    this process's environment and the operating-system user, never from a git configuration and
-    never from the run's workspace: the run being approved had write access to both.
+    the environment **as the operator set it** and from the operating-system user. It never
+    comes from anything the run being approved could have written: not a git configuration, not
+    its workspace, and not ``$RAYSPEC_HOME/.env`` or ``<project>/.rayspec/.env``, both of which
+    this command applies to its own environment as configuration and neither of which may name
+    a person.
     """
     if run.pause is None:
         raise ValueError(f"run {run.run_id} has no pending gate")

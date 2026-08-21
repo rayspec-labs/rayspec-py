@@ -7,18 +7,34 @@ system. Four rules hold here and nowhere else has to repeat them:
 * it is an identity, never a credential — no token, key or password is read, derived or
   recorded (a provider account is taken only from variables that *name* an account, never from
   the ones that carry the secret);
-* **an identity is only evidence if the audited code could not have chosen it.** No git
-  configuration is read, in any scope: a run's ``shell:`` steps and its agents execute with the
-  user's own ``$HOME`` and inside the repository the worktree came from, so ``git config
-  user.email …`` — global, system or repository-local — is one command in one step. The
-  environment of the process that decides is not reachable that way, and neither is the
-  operating-system user (see :func:`os_user`);
+* **an identity is only evidence if the audited code could not have chosen it.** That is one
+  rule, and it is a rule about the *source*, so it does not need re-deciding per attack. Two
+  sources pass it and everything else is refused:
+
+  - the process environment **as the operator set it** — :func:`rayspec.procenv.operator_env`,
+    which is ``os.environ`` minus every variable rayspec itself copied out of a ``.env`` file;
+  - the operating-system user (:func:`os_user`).
+
+  Refused, and why: any **git configuration**, in any scope — a run's ``shell:`` steps and its
+  agents execute with the user's own ``$HOME`` and inside the repository the worktree came from,
+  so ``git config [--global] user.email …`` is one command in one step. And any **``.env`` file
+  rayspec loaded** — ``$RAYSPEC_HOME/.env`` (``$RAYSPEC_HOME`` is exported into every step) and
+  ``<project>/.rayspec/.env`` (a file in the tree the run works in) are both one ``printf`` away
+  from a step, and both are copied straight into ``os.environ``. A file the audited run can
+  write cannot say who audited it;
 * nothing here opens a socket: every answer is available on the machine the run happens on;
 * it never raises — a source that cannot answer simply falls through to the next one.
 
 Somebody who wants a per-project or per-person identity sets :data:`ACTOR_ENV` in the shell that
 launches the run or answers the gate. That is a decision taken outside the run, which is exactly
-what makes it worth recording.
+what makes it worth recording. Setting it in a ``.env`` instead does not fail silently: the
+value is refused as the identity and kept as :attr:`ActorInfo.declared_id` — a claim a file on
+this machine made — so the ledger shows what was asked for and what was recorded instead.
+
+What this does NOT do: the run store is user-owned by design, so nothing here survives somebody
+editing ``run.json`` afterwards, and ``rayspec audit`` says as much. The guarantee is narrower
+and worth stating exactly — *at the moment a decision is recorded, the identity on it came from
+the operator, not from the run.*
 
 The record shape (:class:`~rayspec.store.model.ActorInfo`) lives with the rest of ``run.json``;
 this module only fills it in.
@@ -30,6 +46,7 @@ import getpass
 import os
 from collections.abc import Mapping
 
+from rayspec.procenv import env_file_value, operator_env
 from rayspec.store.model import ActorInfo
 from rayspec.textsafe import safe_text
 
@@ -87,8 +104,12 @@ def _truthy(env: Mapping[str, str], name: str) -> bool:
 
 
 def detect_ci(env: Mapping[str, str] | None = None) -> str | None:
-    """The CI system this process runs under (``github-actions``, …), ``None`` on a laptop."""
-    env = os.environ if env is None else env
+    """The CI system this process runs under (``github-actions``, …), ``None`` on a laptop.
+
+    Defaults to :func:`rayspec.procenv.operator_env`, like everything else in this module: a
+    ``GITHUB_ACTIONS`` a run planted in a ``.env`` would otherwise make a laptop read as CI.
+    """
+    env = operator_env() if env is None else env
     for name, label in CI_ENV_MARKERS:
         if _truthy(env, name):
             return label
@@ -96,8 +117,12 @@ def detect_ci(env: Mapping[str, str] | None = None) -> str | None:
 
 
 def provider_accounts(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """``{provider id: account}`` for the accounts the environment NAMES (never a credential)."""
-    env = os.environ if env is None else env
+    """``{provider id: account}`` for the accounts the environment NAMES (never a credential).
+
+    Defaults to :func:`rayspec.procenv.operator_env`: an account a run wrote into a ``.env`` is
+    the run naming somebody, and this record is read as a fact about who acted.
+    """
+    env = operator_env() if env is None else env
     out: dict[str, str] = {}
     for provider, names in PROVIDER_ACCOUNT_ENV.items():
         for name in names:
@@ -118,8 +143,11 @@ def os_user(env: Mapping[str, str] | None = None) -> str | None:
     entry, as in a container run under a random uid — falls through to the environment.
 
     Never raises: every lookup that can fail is a lookup that may return ``None``.
+
+    ``env`` defaults to :func:`rayspec.procenv.operator_env` so the ``USER``/``LOGNAME`` fallback
+    cannot be answered by a ``.env`` a run wrote either.
     """
-    env = os.environ if env is None else env
+    env = operator_env() if env is None else env
     try:
         import pwd  # POSIX only, and needed nowhere else
 
@@ -143,17 +171,28 @@ def os_user(env: Mapping[str, str] | None = None) -> str | None:
 def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
     """Who is running this — :data:`ACTOR_ENV`, else the OS user, else ``"unknown"``.
 
-    Two sources, both outside the reach of the code being audited: the environment of *this*
-    process (the shell that launched the run or answered the gate) and the operating-system user
-    (:func:`os_user`). A git ``user.email`` is deliberately not among them, in any scope — see
-    the module docstring. There is likewise no parameter for a directory, because the only
-    directories on offer at the call sites are ones the run itself had write access to.
+    ``env`` defaults to :func:`rayspec.procenv.operator_env`: the process environment with every
+    variable rayspec copied out of a ``.env`` file taken back out again. **The whole record is
+    resolved from it**, not only :data:`ACTOR_ENV` — a planted ``GITHUB_ACTIONS`` would forge
+    ``ci`` and a planted ``ANTHROPIC_ACCOUNT`` would forge an account, and a ledger field that a
+    run can choose is not worth more than a field it cannot. A git ``user.email`` is not read
+    either, in any scope. There is no parameter for a directory, because the only directories on
+    offer at the call sites are ones the run itself had write access to.
 
-    The result also carries the CI system, when this is one, and the provider accounts the
-    environment names. It is an identity for a log, not an authorisation: nothing in rayspec
-    grants a permission because of it.
+    ``declared_id`` is the one place a ``.env`` still shows up: when one supplied
+    :data:`ACTOR_ENV`, that value is recorded as a *claim*, next to — never instead of — the
+    identity that was actually used. Refusing it silently would leave a person who put
+    ``RAYSPEC_ACTOR`` in a ``.env`` on purpose wondering why nothing happened.
+
+    It is an identity for a log, not an authorisation: nothing in rayspec grants a permission
+    because of it.
     """
-    env = os.environ if env is None else env
+    if env is None:
+        # only the process environment can hold a value rayspec put there
+        declared = clean_identity(env_file_value(ACTOR_ENV))
+        env = operator_env()
+    else:
+        declared = None  # the caller says this mapping IS the operator's environment
     identity = clean_identity(env.get(ACTOR_ENV))
     source = "env"
     if identity is None:
@@ -165,6 +204,7 @@ def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
         source=source,
         ci=detect_ci(env),
         provider_accounts=provider_accounts(env),
+        declared_id=declared,
     )
 
 
