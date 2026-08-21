@@ -653,8 +653,20 @@ omitted:
 
 - **status** — final status, `skip_reason`, `(tolerated)`, the error, attempts, duration, tokens
   and cost, plus where the step is defined (`file:line`);
+- **cap** — only for a step the run-level circuit breaker skipped: the cap that actually fired.
+  `skip_reason: budget_exceeded` names the *breaker*, and `budget_usd`, `max_tokens` and
+  `timeout_total` are one breaker sharing that one reason, so this line says which of them was
+  over (`cap  time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)`) — every cap that was
+  over, not just the first. When the run did not end on the breaker (it was interrupted or
+  paused, or a cap was raised since), the caps are re-checked against the totals and timestamps
+  the run record still holds and the line says so: `cap  budget exceeded (…) (recomputed from
+  the run record)`. A recomputed line answers "which cap is this run over", not "which cap
+  fired"; `--json` carries the same distinction as `cap.source` (`run.reason` | `recomputed`);
 - **join** — every `needs` with its recorded outcome (and what the join table *counts* it as: a
-  tolerated failure counts as succeeded) and the decision that followed;
+  tolerated failure counts as succeeded) and the decision that followed. A step whose skip reason
+  says the run itself was being torn down (`run_failed`, `stopped`, `budget_exceeded`) is
+  re-evaluated the way the scheduler saw it, and the row says so: `decision skip (run_failed) —
+  the run was already draining`;
 - **when** — the expression, its value re-evaluated in the step's own scope, and each operand
   with the value it had (`steps.assess.output = LGTM`);
 - **retries** — one line per `step.retry` event: attempt, delay and the error that caused it;
@@ -686,7 +698,7 @@ Options:
   characters are stripped on the way to the terminal, like everywhere else).
 - `--json` / `--output json` — Machine-readable output: `{run_id, workflow, step, def_path, kind, location,
   status, skip_reason, tolerated, attempts, error, exit_code, approved, duration_ms, tokens,
-  cost_usd, cost_source, usage_unknown, join: {join, needs: [{step, status, counts_as,
+  cost_usd, cost_source, usage_unknown, cap: {reason, knobs, source} | null, join: {join, needs: [{step, status, counts_as,
   skip_reason, tolerated}], decision, skip_reason}, when: {expression, value, error, operands:
   [{reference, value, error}]}, retries: [{attempt, delay_s, error}], agent, env, rendered:
   {kind, source, text, env}, fingerprint, reused, output_ref, output_kind, prompt_ref,

@@ -999,15 +999,31 @@ from rayspec.engine.runner import (
 from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
-    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived properties:
-    #     RunContext.fail_fast  = options.fail_fast OR defaults.on_step_failure == "fail_fast"
-    #     RunContext.keep_going = defaults.on_step_failure == "continue" AND NOT options.fail_fast
+    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
+    #   per graph, for the scope it is running — and NEVER options.fail_fast or a root-only
+    #   accessor, because the policy differs per sibling list:
+    #     RunContext.fail_fast_for(scope)  = options.fail_fast OR scope.on_step_failure == "fail_fast"
+    #     RunContext.keep_going_for(scope) = scope.on_step_failure == "continue" AND NOT options.fail_fast
     #   The flag may only ever TIGHTEN: it enables fail-fast and beats "continue", and never
     #   downgrades a workflow that asked for fail_fast. "drain" = 1.0.0 behaviour.
     #   keep_going relaxes draining caused by a FAILURE only — a pause/stop still halts new work,
     #   the failed step's dependents still skip (upstream_failed is decided before draining in
-    #   join_decision), and the run still ends FAILED. It is GLOBAL: run_graph runs every sibling
-    #   list, so the policy also applies inside each:/loop:/include: bodies (tested).
+    #   join_decision), and the run still ends FAILED.
+    #   ExecScope.on_step_failure is the policy in force for ONE sibling list
+    #   (context.effective_on_step_failure(defaults, parent), additive): the scope's own
+    #   defaults.on_step_failure when that workflow STATED one (pydantic model_fields_set), else
+    #   the parent scope's. So each:/loop: bodies always inherit (they share their parent's
+    #   Defaults) and an include:d workflow that writes the key governs its own body — lexical,
+    #   like defaults.timeout, unlike the run-wide defaults.max_parallel.
+    #   NESTING ONLY TIGHTENS. context.ON_STEP_FAILURE_ORDER = ("continue", "drain", "fail_fast")
+    #   is the strictness order; context.strictest_on_step_failure(*policies) picks the maximum.
+    #   ExecScope.on_step_failure_floor (additive, context.on_step_failure_floor) is the strictest
+    #   policy this scope or an enclosing one STATED, and a stated policy is clamped to at least
+    #   that floor — an include:d block can make its own body more careful than the run that
+    #   included it, never less. The floor is what enclosing workflows STATED (context.
+    #   stated_on_step_failure reads pydantic's model_fields_set), not what was in force for them:
+    #   a run that never writes the key has asked for nothing, so a block may still state
+    #   "continue" for its own body while the run keeps the "drain" default.
     #   NOT the same knob as each.on_failure: continue, which is per-ITEM (does a failed item
     #   fail the each step?) — see docs/schema.md under `each:`.
     #   DESIGN RULE (deliberate, not inherited from v1.0.0): the --fail-fast
@@ -1088,6 +1104,26 @@ Semantics fixed here (tests in `tests/engine/`):
   paused is `paused`. Control signals raised by several `each:` items concurrently collapse into
   one (first wins, a pause beats a stop; the other items are cancelled with reason
   `stopped`/`paused`) — never a failed composite.
+- Wind-down (`scheduler.run_graph`): when a sibling list ends because fail-fast tore down its task
+  group or a control signal cancelled it, the steps still PENDING are not blanket-skipped. They are
+  decided in dependency order by the same `join_decision(..., draining=True)`, so `join: always`
+  runs (the table's last row holds under drain, fail-fast and `stop:` alike) in a fresh task group;
+  nothing there cancels anything, and a cleanup step that PAUSES ends the wind-down and leaves the
+  rest pending for the resumed run (a pause never records pending steps at all). Skip reasons:
+  after a cancellation every leftover is `stopped` (nothing on those branches failed); after
+  fail-fast the join table's own reason stands (`upstream_failed`/`upstream_skipped`) and
+  `run_failed` is the fallback. The TEARDOWN reason wins over the run-level cap: a leftover of a
+  fail-fast/`stop:` teardown is `run_failed`/`stopped` even when `ctx.budget_exceeded` is also
+  set (the wind-down does not consult it — only `decide_and_launch` does, which is where
+  `budget_exceeded` is recorded). `when:` is still evaluated for the `join: always` steps.
+- Only TERMINAL records are joined. A step is considered (and a leftover is wound down) only once
+  every `needs` record is `status.is_terminal` — `PAUSED` is not, so an `approve:` gate that
+  paused, or a composite whose body paused, leaves its dependents undecided for the resumed run
+  instead of reaching `join_decision`/`graph.classify`, which raise on a non-terminal outcome.
+  One `RunControl` bubbles per sibling list, the first one raised, EXCEPT that a `RunPaused`
+  beats a `RunStopped` (the same rule `executors/each.py` applies to concurrent items): a gate
+  that pauses while a `stop:` is winding the list down leaves the run `paused` and answerable,
+  not `stopped`.
 - Approval: simultaneous gates are handled one at a time (`Runtime.approval_lock`); when a run is
   already pausing, a later gate is recorded `paused` too but `run.pause`/`run.paused` belong to
   the first gate (the later one asks again on resume). Ctrl-C at the prompt = pause: the gate
@@ -1197,8 +1233,14 @@ Semantics fixed here (tests in `tests/engine/`):
   2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
-  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged; the warning hint
-  names the knob that tripped. `scheduler.finish` asks the breaker after EVERY step when
+  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
+  EVERY cap that is over, not only the first: `context.cap_reasons(usage, cost, source, elapsed_s,
+  defaults) -> tuple[CapBreach, ...]` (`CapBreach(knobs, reason)`) reports them in `CAP_KNOBS`
+  order — the money caps (`defaults.budget_usd` / `defaults.max_tokens`, one sentence via
+  `budget_parts`/`budget_reason`) before `defaults.timeout_total` — and `check_budget` joins the
+  reasons with `"; "` and the knobs to raise with `" / "`. `context.is_cap_reason(reason)` says
+  whether a `RunRecord.reason` is one of them (`CAP_REASON_PREFIXES`).
+  `cap_reasons` is additive; `budget_reason`/`time_reason` keep their shape. `scheduler.finish` asks the breaker after EVERY step when
   `ctx.time_capped` (a shell-only run reports no usage), and `Runner.run` asks it once before
   the graph starts so a resumed run whose clock already expired starts nothing.
 - The breaker is asked at TWO points, and both are load-bearing: when a step becomes ready
@@ -2164,7 +2206,11 @@ reported as a warning. A definition path without indices (`build/implement`) rea
 / item 0 — that is what `plan --render` previews.
 
 CLI (all read-only: no provider is created, no step runs, nothing under the run dir is written):
-- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the join row (each
+- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the cap row (additive
+  `cap: {reason, knobs, source}` / `null`, `explain.cap_section`: for a step with
+  `skip_reason: budget_exceeded` it names the cap that actually fired — `RunRecord.reason` when
+  `is_cap_reason` says a cap ended the run, else `cap_reasons` recomputed from the run's own
+  step totals and `started_at`/`ended_at`; `source` is `run.reason` or `recomputed`), the join row (each
   `needs` with its recorded status and what `join_decision` counts it as), the `when:`
   re-evaluated with every operand's value, the `step.retry` events, the resolved agent after
   merge vs. the recorded provider/model, the rendered `env:`, the persisted `prompt:` body from
