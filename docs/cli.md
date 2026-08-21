@@ -342,7 +342,7 @@ The provider registry (builtins and entry-point plugins) and the capability matr
 ### `rayspec plugins`
 
 ```
-rayspec plugins [--json]
+rayspec plugins [--output table|json] [--json]
 ```
 
 Every installed rayspec plugin: the commands, run stores, event sinks, approval prompts and
@@ -527,7 +527,7 @@ Options:
 ### `rayspec costs`
 
 ```
-rayspec costs [--since WHEN] [--workflow NAME] [--json] [--root DIR]
+rayspec costs [--since WHEN] [--workflow NAME] [--output table|json] [--json] [--root DIR]
 ```
 
 Add the per-run figures of `rayspec runs` up, grouped by workflow, so "what has this project cost

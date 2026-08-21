@@ -41,7 +41,15 @@ from rich.table import Table
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, err_console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    err_console,
+    fail,
+    resolve_output,
+)
 from rayspec.providers.base import Usage
 from rayspec.providers.pricing import COST_SOURCES, combine_cost_sources, cost_marker
 from rayspec.schema import RunStatus
@@ -450,9 +458,11 @@ def register(app: typer.Typer) -> None:
             ),
         ] = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Sum what this project's runs cost, grouped by workflow."""
+        json_ = resolve_output(output, json_)
         from rayspec.cli.commands.runs import is_project_dir
 
         cutoff: datetime | None = None

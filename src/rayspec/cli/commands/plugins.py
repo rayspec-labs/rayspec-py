@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from rayspec.cli._docs import docs_url
+from rayspec.cli.commands._loader_common import JsonOption, OutputOption, resolve_output
 from rayspec.cli.plugins import CLI_ENTRY_POINT_GROUP, InstalledPlugin, installed_plugins
 
 #: Where a reader is sent to write one of these.
@@ -76,9 +77,11 @@ def render_builtins(builtins: dict[str, list[dict[str, str]]]) -> Table:
 def register(app: typer.Typer) -> None:
     @app.command()
     def plugins(
-        json_: bool = typer.Option(False, "--json", help="Print the listing as JSON."),
+        json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """List installed rayspec plugins: commands, stores, sinks, approvals and providers."""
+        json_ = resolve_output(output, json_)
         builtins = builtin_ids()  # also forces discovery, so a skipped plugin is reported
         installed = installed_plugins()
         if json_:
