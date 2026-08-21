@@ -23,6 +23,7 @@ from rayspec.policy.enforce import (
     PolicyReport,
     check_agent_controls,
     check_policy,
+    check_provider_options,
 )
 from rayspec.policy.layers import EffectivePolicy, load_policy
 from rayspec.policy.trust import TrustStore
@@ -60,21 +61,25 @@ def apply_policy(
     policy at all.
 
     The per-agent controls (``network:``, ``commands:``) are part of the workflow rather than of
-    a policy file, so they are always applied. Returns the problems to report; nothing is raised,
-    and the caller decides whether an error refuses the run. Calling it twice is harmless: a
-    denial already present on an agent is not added again.
+    a policy file, so they are always applied — and so is the ``provider_options`` check, because
+    a workflow field is a control the workflow must not be able to remove either. Returns the
+    problems to report; nothing is raised, and the caller decides whether an error refuses the
+    run. Calling it twice is harmless: a denial already present on an agent is not added again.
     """
     root = policy_root(resolved)
     report = _fold(resolved, check_agent_controls(resolved, capabilities_for=capabilities_for))
     effective = policy if policy is not None else load_policy(root, home=resolved.home)
-    if effective.is_empty:
-        return report
-    trusted = TrustStore.load(root) if effective.trust_required() else None
-    outcome = _fold(
-        resolved,
-        check_policy(resolved, effective, capabilities_for=capabilities_for, trusted=trusted),
-    )
-    return _merge(report, outcome)
+    report = _merge(report, check_provider_options(resolved, effective))
+    if not effective.is_empty:
+        trusted = TrustStore.load(root) if effective.trust_required() else None
+        outcome = _fold(
+            resolved,
+            check_policy(resolved, effective, capabilities_for=capabilities_for, trusted=trusted),
+        )
+        report = _merge(report, outcome)
+    report.policy_layers = effective.labels
+    report.policy_searched = effective.searched
+    return report
 
 
 def problem_line(problem: PolicyProblem) -> str:
@@ -103,6 +108,8 @@ def _merge(first: PolicyReport, second: PolicyReport) -> PolicyReport:
         errors=[*first.errors, *second.errors],
         warnings=[*first.warnings, *second.warnings],
         tool_denials=denials,
+        policy_layers=first.policy_layers or second.policy_layers,
+        policy_searched=first.policy_searched or second.policy_searched,
     )
 
 

@@ -21,8 +21,10 @@ from rayspec.policy.enforce import (
     POLICY_CONTROLLED_OPTIONS,
     PolicyProblem,
     PolicyReport,
+    agent_control_sources,
     check_agent_controls,
     check_policy,
+    check_provider_options,
 )
 from rayspec.policy.layers import (
     LAYER_NAMES,
@@ -35,6 +37,7 @@ from rayspec.policy.layers import (
     PolicyPath,
     PolicySource,
     load_policy,
+    policy_note,
     policy_paths,
     sources_text,
 )
@@ -84,10 +87,13 @@ __all__ = [
     "TrustStore",
     "WorkspacePolicy",
     "access_rank",
+    "agent_control_sources",
     "apply_policy",
     "check_agent_controls",
     "check_policy",
+    "check_provider_options",
     "load_policy",
+    "policy_note",
     "policy_paths",
     "policy_root",
     "problem_line",

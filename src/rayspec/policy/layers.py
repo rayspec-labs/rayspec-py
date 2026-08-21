@@ -126,6 +126,7 @@ class EffectivePolicy:
     """
 
     layers: tuple[PolicyLayer, ...] = ()
+    searched: tuple[str, ...] = ()
 
     # -- presence -----------------------------------------------------------------------------
 
@@ -133,6 +134,15 @@ class EffectivePolicy:
     def is_empty(self) -> bool:
         """True when no policy file was found at all (the default for a fresh project)."""
         return not self.layers
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """The display path of every layer in force, highest precedence first.
+
+        The same spelling the error messages use, so "which layer denied this" and "which
+        layers am I subject to" name the same files.
+        """
+        return tuple(layer.label for layer in self.layers)
 
     def layer(self, name: str) -> PolicyLayer | None:
         """The loaded layer called ``name`` (``project``, ``user``, ``RAYSPEC_POLICY``)."""
@@ -212,7 +222,9 @@ class EffectivePolicy:
         Used where the *presence* of a restriction matters rather than the value: an escape hatch
         that would undo ``tools.deny`` is only worth refusing when some layer actually denies a
         tool. Keys are spelled the way the file spells them (``tools.deny``, ``access.max``,
-        ``models.deny``).
+        ``models.deny``, ``mcp.allow_servers``) and are the keys of
+        :data:`~rayspec.policy.enforce.POLICY_CONTROLLED_OPTIONS`: a key that restricts
+        something without appearing here is a control ``provider_options`` can remove.
         """
         out: dict[str, list[PolicySource]] = {}
         for layer in self.layers:
@@ -226,6 +238,12 @@ class EffectivePolicy:
             if policy.access.max is not None:
                 out.setdefault("access.max", []).append(
                     layer.source(policy.access.max, "access", "max")
+                )
+            if policy.mcp.allow_servers is not None:
+                out.setdefault("mcp.allow_servers", []).append(
+                    layer.source(
+                        ", ".join(policy.mcp.allow_servers) or "(nothing)", "mcp", "allow_servers"
+                    )
                 )
         return {key: tuple(sources) for key, sources in out.items()}
 
@@ -420,7 +438,11 @@ def load_policy(
     root = None if project_root is None else Path(project_root)
     layers: list[PolicyLayer] = []
     seen: set[Path] = set()
-    for candidate in policy_paths(root, home, env):
+    candidates = policy_paths(root, home, env)
+    # the searched list is deliberately NOT shortened against the project root: "which root was
+    # this discovered against" is exactly the question it exists to answer.
+    searched = tuple(_label(c.path, None, Path(home)) for c in candidates)
+    for candidate in candidates:
         label = _label(candidate.path, root, Path(home))
         unusable = _unusable(candidate.path)
         if unusable == "missing":
@@ -444,7 +466,20 @@ def load_policy(
             continue
         seen.add(key)
         layers.append(_read_layer(candidate, label))
-    return EffectivePolicy(layers=tuple(layers))
+    return EffectivePolicy(layers=tuple(layers), searched=searched)
+
+
+def policy_note(layers: Sequence[str], searched: Sequence[str]) -> str:
+    """One line naming the policy layers in force — the positive signal a control needs.
+
+    "Silently absent" is the worst failure mode a guardrail has, so the empty case is the one
+    that carries information: it names the paths that were looked at, unshortened, because
+    policy is discovered against the project root and not against the workflow file.
+    """
+    if layers:
+        return "policy: " + ", ".join(layers)
+    where = ", ".join(searched)
+    return f"policy: none in force (searched {where})" if where else "policy: none in force"
 
 
 def sources_text(sources: Sequence[PolicySource] | Iterable[PolicySource]) -> str:
@@ -467,6 +502,7 @@ __all__ = [
     "PolicyPath",
     "PolicySource",
     "load_policy",
+    "policy_note",
     "policy_paths",
     "sources_text",
 ]

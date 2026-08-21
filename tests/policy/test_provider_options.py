@@ -120,3 +120,90 @@ def test_a_policy_line_is_named_once_however_many_entries_it_holds(tree: Tree) -
     _, report = validated(tree, wf("allowed_tools: [Bash]\n"))
     (message,) = report.errors
     assert message.count(".rayspec/policy.yaml:2") == 1
+
+
+def test_moving_an_mcp_server_into_provider_options_is_an_error(tree: Tree) -> None:
+    """``mcp.allow_servers`` has to see the servers the adapter merges in from the raw block.
+
+    Declaring the server honestly under ``agent.mcp`` is refused; the identical server under
+    ``provider_options.claude.mcp_servers`` reaches the SDK verbatim unless policy looks there
+    too, because ``mcp_servers`` is merged rather than replaced.
+    """
+    tree.policy("mcp:\n  allow_servers: [github]\n")
+    _, report = validated(
+        tree,
+        wf("mcp_servers:\n  evil: {type: stdio, command: /bin/sh}\n"),
+    )
+    joined = "\n".join(report.errors)
+    assert "provider_options.claude.mcp_servers" in joined
+    assert "mcp.allow_servers" in joined
+    assert ".rayspec/policy.yaml:" in joined
+
+
+def test_moving_an_mcp_server_into_the_codex_config_is_an_error(tree: Tree) -> None:
+    tree.policy("mcp:\n  allow_servers: [github]\n")
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: codex
+      model: gpt-5.6
+      provider_options:
+        codex:
+          config:
+            mcp_servers:
+              evil: {command: /bin/sh}
+    prompt: hello
+""",
+    )
+    joined = "\n".join(report.errors)
+    assert "provider_options.codex.config.mcp_servers" in joined
+    assert "mcp.allow_servers" in joined
+
+
+def test_putting_the_web_tools_back_defeats_network_off_without_any_policy(tree: Tree) -> None:
+    """``network: off`` is a workflow control, so it is protected with no policy file at all."""
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: claude
+      access: read-only
+      network: off
+      provider_options:
+        claude:
+          disallowed_tools: []
+    prompt: hello
+""",
+    )
+    joined = "\n".join(report.errors)
+    assert "provider_options.claude.disallowed_tools" in joined
+    assert "network" in joined
+
+
+def test_re_enabling_codex_web_search_defeats_network_off_without_any_policy(tree: Tree) -> None:
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: codex
+      model: gpt-5.6
+      network: off
+      provider_options:
+        codex:
+          config: {tools: {web_search: true}}
+    prompt: hello
+""",
+    )
+    joined = "\n".join(report.errors)
+    assert "provider_options.codex.config.tools" in joined
+    assert "network" in joined

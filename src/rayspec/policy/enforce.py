@@ -36,16 +36,23 @@ COMMAND_POLICY_CAPABILITY = "command_policy"
 #: its "no provider imports" boundary).
 TOOL_GROUPS: frozenset[str] = frozenset({"read", "edit", "shell", "web", "agent", "mcp"})
 
-#: ``provider_options`` key paths that an adapter applies straight over a field policy controls,
-#: keyed by the policy key and then by provider id (a path is a key path inside that provider's
-#: own option block). ``provider_options`` is a raw pass-through: the adapter sets the SDK field
-#: from it *after* rayspec computed that field, so an agent naming one of these keys would undo
-#: the policy from inside the workflow the policy governs. Refusing it at load time is what keeps
-#: a policy key from being a control that the party it constrains can silently remove.
+#: ``provider_options`` key paths that an adapter applies straight over a field a control
+#: computes, keyed by the control and then by provider id (a path is a key path inside that
+#: provider's own option block). ``provider_options`` is a raw pass-through: the adapter sets
+#: the SDK field from it *after* rayspec computed that field, so an agent naming one of these
+#: keys would undo the control from inside the workflow the control governs. Refusing it at load
+#: time is what keeps a control from being one the party it constrains can silently remove.
+#:
+#: This is the single table the check is derived from, and it covers BOTH kinds of control: the
+#: ``policy.yaml`` keys :meth:`EffectivePolicy.control_sources` reports, and the workflow's own
+#: security fields (:func:`agent_control_sources`) — those are unprotected by any policy file, so
+#: leaving them out was how ``network: off`` came to be defeatable with no policy at all. A new
+#: control belongs here on the day it is added; a key that restricts something and is missing
+#: from this table is an escape hatch waiting to be found.
 POLICY_CONTROLLED_OPTIONS: Mapping[str, Mapping[str, tuple[tuple[str, ...], ...]]] = {
     "tools.deny": {
         "claude": (("tools",), ("allowed_tools",), ("disallowed_tools",), ("permission_mode",)),
-        "codex": (("config", "tools"),),
+        "codex": (("config", "tools"), ("config", "web_search")),
     },
     "access.max": {
         "claude": (("permission_mode",),),
@@ -54,6 +61,20 @@ POLICY_CONTROLLED_OPTIONS: Mapping[str, Mapping[str, tuple[tuple[str, ...], ...]
     "models.deny": {
         "claude": (("model",),),
         "codex": (("model",), ("config", "model")),
+    },
+    # both adapters MERGE provider_options servers into the computed set instead of replacing
+    # them, so an allow-list has to be checked against what is merged in, not only against
+    # `agent.mcp`. `strict_mcp_config: false` is the same hole by another route: it lets the
+    # Claude CLI pick up MCP servers from files rayspec never saw.
+    "mcp.allow_servers": {
+        "claude": (("mcp_servers",), ("strict_mcp_config",)),
+        "codex": (("config", "mcp_servers"),),
+    },
+    # a workflow field, not a policy key: `network: off` is folded into tools.deny and is
+    # therefore undone by exactly the options that undo a denied tool.
+    "network: off": {
+        "claude": (("tools",), ("allowed_tools",), ("disallowed_tools",)),
+        "codex": (("config", "tools"), ("config", "web_search")),
     },
 }
 
@@ -73,11 +94,16 @@ class PolicyReport:
 
     ``tool_denials`` maps an agent key to the entries the caller should add to that agent's
     ``tools.deny`` — the part of the policy that is actually enforced rather than merely checked.
+    ``policy_layers`` / ``policy_searched`` are the positive signal: which files were read and,
+    when none were, which paths were looked at (see
+    :func:`~rayspec.policy.layers.policy_note`).
     """
 
     errors: list[PolicyProblem] = field(default_factory=list)
     warnings: list[PolicyProblem] = field(default_factory=list)
     tool_denials: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    policy_layers: tuple[str, ...] = ()
+    policy_searched: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -210,7 +236,6 @@ def check_policy(
     _check_trust(resolved, effective, trusted, report)
     _check_workspace(effective, report)
     denied = effective.denied_tools()  # once per pass, not once per agent
-    controls = effective.control_sources()
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
         caps = None if capabilities_for is None else capabilities_for(agent.provider)
@@ -219,7 +244,38 @@ def check_policy(
         _check_access(agent, effective, report)
         _check_mcp(agent, effective, report)
         _check_tools(key, agent, denied, report, caps)
-        _check_provider_options(agent, controls, report)
+    return report
+
+
+def agent_control_sources(agent: ResolvedAgent) -> dict[str, tuple[PolicySource, ...]]:
+    """The controls one agent sets on *itself*, in the shape :meth:`control_sources` returns.
+
+    ``network: off`` is a security claim a reviewer reads off the agent file, and it is enforced
+    by folding ``web`` into ``tools.deny`` — the same field ``provider_options`` can overwrite.
+    It comes with no policy file, which is the common case, so the escape-hatch check has to see
+    it from here rather than from a layer.
+    """
+    if agent.network != "off":
+        return {}
+    where = _location(agent, "network") or agent.field_path("network")
+    return {"network: off": (PolicySource(layer="workflow", label=where, line=None, value="off"),)}
+
+
+def check_provider_options(
+    resolved: ResolvedWorkflow, effective: EffectivePolicy | None = None
+) -> PolicyReport:
+    """Refuse every ``provider_options`` key that would undo a control in force.
+
+    Runs whether or not a policy file exists, because :func:`agent_control_sources` contributes
+    controls the workflow sets on itself. Everything it knows comes from
+    :data:`POLICY_CONTROLLED_OPTIONS`, so protecting a new control is one table entry rather than
+    a new special case.
+    """
+    report = PolicyReport()
+    from_policy = {} if effective is None else effective.control_sources()
+    for key in sorted(resolved.agents):
+        agent = resolved.agents[key]
+        _check_provider_options(agent, {**from_policy, **agent_control_sources(agent)}, report)
     return report
 
 
@@ -276,9 +332,9 @@ def _check_provider_options(
             _problem(
                 agent,
                 "provider_options",
-                f"{spelled} would undo {' and '.join(defeated)}: the {agent.provider} adapter "
+                f"{spelled} would undo {' and '.join(defeated)} — the {agent.provider} adapter "
                 f"applies provider_options over the value rayspec computed "
-                f"({sources_text(sources)}); remove that key, or drop the policy restriction",
+                f"({sources_text(sources)}); remove that key, or drop the restriction it undoes",
             )
         )
 
@@ -454,6 +510,8 @@ __all__ = [
     "TOOL_GROUPS",
     "PolicyProblem",
     "PolicyReport",
+    "agent_control_sources",
     "check_agent_controls",
     "check_policy",
+    "check_provider_options",
 ]
