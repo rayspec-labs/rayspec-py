@@ -2186,7 +2186,11 @@ reported as a warning. A definition path without indices (`build/implement`) rea
 / item 0 — that is what `plan --render` previews.
 
 CLI (all read-only: no provider is created, no step runs, nothing under the run dir is written):
-- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the join row (each
+- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the cap row (additive
+  `cap: {reason, knobs, source}` / `null`, `explain.cap_section`: for a step with
+  `skip_reason: budget_exceeded` it names the cap that actually fired — `RunRecord.reason` when
+  `is_cap_reason` says a cap ended the run, else `cap_reasons` recomputed from the run's own
+  step totals and `started_at`/`ended_at`; `source` is `run.reason` or `recomputed`), the join row (each
   `needs` with its recorded status and what `join_decision` counts it as), the `when:`
   re-evaluated with every operand's value, the `step.retry` events, the resolved agent after
   merge vs. the recorded provider/model, the rendered `env:`, the persisted `prompt:` body from

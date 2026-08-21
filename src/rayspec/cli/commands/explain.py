@@ -41,6 +41,14 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.cli.commands.eval import echo_block, format_value, print_warning
 from rayspec.cli.commands.plan import body_of
 from rayspec.engine import context_rebuild
+from rayspec.engine.context import (
+    BUDGET_SKIP_REASON,
+    CAP_KNOBS,
+    cap_reasons,
+    is_cap_reason,
+    totals_of,
+    utcnow,
+)
 from rayspec.engine.context_rebuild import RebuiltContext
 from rayspec.engine.graph import classify, join_decision
 from rayspec.engine.paths import StepPath
@@ -83,6 +91,42 @@ def status_section(record: StepRecord | None) -> dict[str, Any]:
         "cost_usd": record.cost_usd,
         "cost_source": record.cost_source,
         "usage_unknown": record.usage_unknown,
+    }
+
+
+def cap_section(
+    record: StepRecord | None, run: RunRecord, resolved: ResolvedWorkflow
+) -> dict[str, Any] | None:
+    """Which run-level cap skipped this step, or ``None`` when no cap did.
+
+    ``skip_reason: budget_exceeded`` names the circuit *breaker*: ``defaults.budget_usd``,
+    ``defaults.max_tokens`` and ``defaults.timeout_total`` are one breaker and share that one
+    reason, so on its own it points a reader at money for a run that ran out of time. The run's
+    own ``reason`` is the authority when a cap ended the run; otherwise (interrupted, paused, or
+    a cap raised since) the caps are recomputed from what ``run.json`` already stores — the
+    totals of its step records and the wall clock between ``started_at`` and ``ended_at``.
+    """
+    if record is None or record.skip_reason != BUDGET_SKIP_REASON:
+        return None
+    if is_cap_reason(run.reason):
+        reason = run.reason or ""
+        return {
+            "reason": reason,
+            "knobs": [knob for knob in CAP_KNOBS if knob.split(".", 1)[1] in reason],
+            "source": "run.reason",
+        }
+    usage, cost_usd, cost_source = totals_of(list(run.steps.values()))
+    elapsed_s: float | None = None
+    if run.started_at is not None:
+        end = run.ended_at or utcnow()
+        elapsed_s = max(0.0, (end - run.started_at).total_seconds())
+    breaches = cap_reasons(usage, cost_usd, cost_source, elapsed_s, resolved.workflow.defaults)
+    if not breaches:
+        return None
+    return {
+        "reason": "; ".join(breach.reason for breach in breaches),
+        "knobs": [knob for breach in breaches for knob in breach.knobs],
+        "source": "recomputed",
     }
 
 
@@ -312,6 +356,8 @@ def print_status(out: Console, payload: dict[str, Any]) -> None:
         _line(out, "defined at", payload["location"])
     if status.get("skip_reason"):
         _line(out, "skip reason", status["skip_reason"])
+    if payload.get("cap"):
+        _line(out, "cap", payload["cap"]["reason"])
     if status.get("error"):
         error = status["error"]
         _line(out, "error", f"{error.get('type')}: {error.get('message')}")
@@ -511,6 +557,7 @@ def build_payload(
         "kind": type(step).kind,
         "location": resolved.location_of(rebuilt.def_path),
         **status_section(record),
+        "cap": cap_section(record, run, resolved),
         "join": join_section(step, run, rebuilt.record_path),
         "when": when_section(step, rebuilt, engine),
         "retries": retries,
@@ -543,6 +590,7 @@ __all__ = [
     "RE_RENDERED",
     "agent_section",
     "build_payload",
+    "cap_section",
     "env_section",
     "event_summary",
     "join_section",
