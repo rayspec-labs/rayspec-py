@@ -136,8 +136,11 @@ def _suffix_prefix_len(text: str, needle: str) -> int:
 def _variants(value: str) -> tuple[str, ...]:
     """The literal plus the forms a writer may serialise it into.
 
-    ``run.json``/``events.jsonl``/``stream.jsonl`` are redacted as *serialised JSON text*, so a
-    value containing a quote, a backslash or a newline only matches in its escaped form.
+    A writer of raw TEXT — ``stdout.log``, an artifact, a step output that happens to contain a
+    JSON document — sees whatever form the producer wrote, so a value containing a quote, a
+    backslash or a newline has to match in its escaped form as well. The records themselves are
+    redacted on their parsed VALUES, where only the raw form ever appears; this variant is what
+    keeps the text writers covered.
     """
     escaped = json.dumps(value)[1:-1]
     return (value,) if escaped == value else (value, escaped)

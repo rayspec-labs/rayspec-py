@@ -243,3 +243,28 @@ def test_a_plugin_store_never_sees_a_secret_in_a_key_or_a_call_id() -> None:
     assert SECRET not in inner.everything()
     assert inner.records[0].outputs == {"probe": {"[REDACTED:token]": "v"}}
     assert inner.streams[0].call_id == "c-[REDACTED:token]"
+
+
+def test_a_record_redaction_cannot_produce_is_refused_with_a_reason() -> None:
+    """``redact_dump`` puts back a substitution the model cannot hold, but it can run out of
+    places to put back (a whole-object rule, a union it cannot resolve). The wrapper has to hand
+    the plugin a valid record, so it stops with an error that says why instead of letting a
+    bare pydantic ``ValidationError`` out of a write."""
+    from pydantic import model_validator
+
+    from rayspec.store.file import StoreError
+
+    class Guarded(RunRecord):
+        @model_validator(mode="after")
+        def _reason_is_not_a_marker(self) -> Guarded:
+            if self.reason and self.reason.startswith("["):
+                raise ValueError("reason must not be a marker")
+            return self
+
+    inner = RecordingStore()
+    store = RedactingStore(inner, Redactor.build({"token": SECRET}))
+    record = Guarded(**{**_run_record().model_dump(), "reason": SECRET})
+
+    with pytest.raises(StoreError, match="redact"):
+        store.create(record)
+    assert not inner.records

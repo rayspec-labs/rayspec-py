@@ -26,8 +26,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.redact import NULL_REDACTOR, Redactor, StreamRedactor
+from rayspec.store.file import StoreError
 from rayspec.store.model import RunRecord
 
 #: Read-only members forwarded to the wrapped store unchanged (they never carry a secret in).
@@ -165,13 +168,30 @@ class RedactingStore:
         secret value is a number (a PIN, a numeric account id) is a bare JSON token, and
         replacing it in the serialised text would leave a document that no longer parses —
         turning a checkpoint write into a run-ending :class:`ValidationError`.
-        :meth:`~rayspec.redact.Redactor.redact_dump` is what keeps the copy a valid record: a
-        marker cannot land in a field that only holds a number, so re-validating it here cannot
-        fail on a coincidence.
+        :meth:`~rayspec.redact.Redactor.redact_dump` puts a substitution the model cannot hold
+        back at exactly the field it broke, so the common coincidence — a marker landing where
+        only a number fits — is handled and re-validating here succeeds.
+
+        It is not a guarantee: a rule over a whole object has no single field to put back, and
+        ``redact_dump`` gives up rather than restore a subtree with the secret inside it. Unlike
+        :class:`~rayspec.store.file.FileRunStore`, which writes the redacted dump as JSON either
+        way, this boundary has to hand the wrapped store a *record*, and it has no way to
+        represent the residue — so it stops, with the reason, instead of letting a bare
+        :class:`ValidationError` out of a plugin store's write path.
         """
         if not self.redactor:
             return run
-        return type(run).model_validate(self.redactor.redact_dump(run))
+        dump = self.redactor.redact_dump(run)
+        try:
+            return type(run).model_validate(dump)
+        except ValidationError as exc:
+            raise StoreError(
+                f"redacting this {type(run).__name__} left a record the model rejects, so the "
+                f"run cannot be checkpointed without either persisting a secret or writing a "
+                f"record that will not read back ({_first_error(exc)})",
+                hint="a secret value that collides with a structural field is the usual "
+                "cause — declare a different value, or use a store rayspec ships",
+            ) from exc
 
     def _output(self, content: str, *, kind: str) -> str:
         """Redact one output body.
@@ -211,6 +231,16 @@ class RedactingStore:
         if record.call_id:
             update["call_id"] = self.redactor.redact(record.call_id)
         return record.model_copy(update=update) if update else record
+
+
+def _first_error(exc: ValidationError) -> str:
+    """``field: message`` for the first complaint — enough to name the field that broke."""
+    errors = exc.errors()
+    if not errors:  # pragma: no cover - pydantic always reports at least one
+        return str(exc)
+    first = errors[0]
+    location = ".".join(str(part) for part in first["loc"]) or "the record"
+    return f"{location}: {first['msg']}"
 
 
 def _redacting_write_prompt(store: RedactingStore, inner: Callable[..., Any]) -> Callable[..., Any]:

@@ -2116,8 +2116,10 @@ rolled back whole and reported. Cost: nothing is imported when the group is empt
 **Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
 in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record
 (`create`/`save` — `Redactor.redact_dump`, on the parsed value, so a secret that is a bare JSON
-token cannot make the record unparseable and re-validating the copy cannot fail on a structural
-coincidence), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
+token cannot make the record unparseable and the common structural coincidence is put back
+before the copy is re-validated; a residue `redact_dump` cannot repair raises `StoreError`
+naming the field, because this boundary has to hand the plugin a valid record and will not let a
+bare `ValidationError` out of a write), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
 value), the prompt (`write_prompt`), the events (`data`) and the stream records (a
 `StreamRedactor` per `(run_id, step_path, kind, attempt)`, flushed on `step.finished`/
 `run.finished`/`run.paused` exactly as `FileRunStore` does) BEFORE the wrapped store sees them —
