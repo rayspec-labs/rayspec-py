@@ -14,7 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from rayspec.cli.app import app
-from rayspec.engine.approval_classes import ApprovalClasses, ClassRules
+from rayspec.engine.approval_classes import ClassRules
 
 from .conftest import Tree
 
@@ -71,9 +71,13 @@ def test_a_case_still_passes_when_no_policy_holds_the_class(suite: Path) -> None
     assert (suite / "published_by_test.txt").exists()
 
 
-def test_run_case_takes_the_classes_from_its_caller() -> None:
-    """The harness does not read a policy itself: whoever drives it supplies the rules."""
-    from rayspec.testing.runner import run_case
+def test_the_harness_does_not_read_a_policy_itself() -> None:
+    """Whoever drives a case supplies the rules, so `testing/` keeps depending on nothing
+    above it — the CLI is what knows where an operator's rules come from."""
+    import inspect
 
-    assert "approval_classes" in run_case.__code__.co_varnames
-    assert ApprovalClasses().policy_in_force is False
+    from rayspec.testing import runner
+
+    parameter = inspect.signature(runner.run_case).parameters["approval_classes"]
+    assert parameter.default is None  # no rules unless the caller has some
+    assert "rayspec.cli" not in Path(inspect.getsourcefile(runner) or "").read_text()
