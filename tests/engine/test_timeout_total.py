@@ -186,3 +186,28 @@ async def test_the_tripped_clock_outranks_a_stop_step(harness: Harness) -> None:
     run = harness.record(result.run_id)
     assert run.status is RunStatus.FAILED and run.reason == result.reason
     assert not run.outputs
+
+
+async def test_each_items_queued_behind_the_item_limiter_do_not_start(harness: Harness) -> None:
+    """The same guarantee inside a fan-out: every item's body is a leaf, so the permit gate is
+    the choke point an item queued behind ``each.max_parallel`` has to pass."""
+    harness.workflow(
+        "t",
+        wf(
+            "  timeout_total: 0.4",
+            """
+  - id: fan
+    each: "['a', 'b', 'c']"
+    as: name
+    max_parallel: 1
+    steps:
+      - {id: work, shell: "sleep 0.5"}
+""",
+        ),
+    )
+    result = await harness.run("t")
+    assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
+    statuses = harness.statuses(result.run_id)
+    assert statuses["fan[0]/work"] == "succeeded"
+    assert statuses["fan[1]/work"] == "skipped"
+    assert statuses["fan[2]/work"] == "skipped"
