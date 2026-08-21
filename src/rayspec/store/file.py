@@ -35,10 +35,11 @@ on a run), the step ``context.json`` and the executor ``stdout.log``/``stderr.lo
 same two helpers; ``worktrees/`` (git checkouts, registry) is the remaining umask-mode writer.
 
 Redaction: the store carries a :class:`~rayspec.redact.Redactor` (``NULL_REDACTOR`` by
-default; the CLI installs the real one once the run's secrets are resolved) and applies it to
-**every** byte it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl``.
-Records and events are redacted as serialised JSON text, which is why the redactor also knows
-each value's JSON-escaped form. Streamed text is redacted through a
+default; the run installs the real one before it writes anything) and applies it to **every**
+byte it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl``. Everything
+JSON-shaped is redacted on the PARSED value and serialised afterwards, never the other way
+round: a secret that is a bare JSON token would otherwise be swapped for an unquoted marker and
+leave a file that no longer parses. Streamed text is redacted through a
 :class:`~rayspec.redact.StreamRedactor` per ``(run, step, kind, attempt)`` so a secret split
 across two deltas is still caught; only a tail that could still grow into a secret is held back,
 and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
@@ -477,8 +478,8 @@ class FileRunStore:
 
         With a redactor installed the record's ``text`` goes through a
         :class:`~rayspec.redact.StreamRedactor` for its ``(run, step, kind, attempt)`` so a
-        secret split across two deltas is caught; the rest of the line is redacted as JSON text.
-        Only a tail that could still grow into a secret is held back, and it is written by
+        secret split across two deltas is caught; ``data`` and ``name`` are redacted as parsed
+        values. Only a tail that could still grow into a secret is held back, and it is written by
         :meth:`flush_streams` — which :meth:`append_event` calls on ``step.finished`` and
         ``run.finished``/``run.paused``, so a finished stream is always complete on disk.
         """
