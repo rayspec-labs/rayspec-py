@@ -53,6 +53,7 @@ STEP_ATTRIBUTES: tuple[str, ...] = (
     "skip_reason",
     "error",
     "tolerated",
+    "denials",
 )
 
 
@@ -122,6 +123,10 @@ class StepView:
     skip_reason: str | None = None
     error: str | None = None
     tolerated: bool = False
+    #: tool calls the provider refused during a ``prompt:`` step, as plain dicts
+    #: (``{tool, reason, call_id}``); ``None`` for every other kind, ``[]`` when nothing was
+    #: refused — so ``when: steps.x.denials`` reads false rather than blowing up.
+    denials: list[Any] | None = None
     body_ids: frozenset[str] = field(default_factory=frozenset)
 
     @property

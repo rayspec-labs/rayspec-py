@@ -138,6 +138,15 @@
           "default": null,
           "title": "Thinking"
         },
+        "on_denial": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "fail"
+          ],
+          "title": "On Denial",
+          "type": "string"
+        },
         "mcp": {
           "additionalProperties": {
             "$ref": "#/$defs/McpServerDef"
@@ -290,6 +299,15 @@
           ],
           "default": null,
           "title": "Thinking"
+        },
+        "on_denial": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "fail"
+          ],
+          "title": "On Denial",
+          "type": "string"
         },
         "mcp": {
           "additionalProperties": {

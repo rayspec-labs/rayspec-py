@@ -36,6 +36,7 @@ CLAUDE_CAPABILITIES = ProviderCapabilities(
     effort_levels=frozenset({"low", "medium", "high", "xhigh", "max"}),
     effort_aliases={"minimal": "low"},
     thinking=True,
+    denial_reporting=True,  # result.permission_denials names every refused call
     mcp_servers=True,
     env_injection=True,
     images=False,
@@ -58,6 +59,9 @@ CODEX_CAPABILITIES = ProviderCapabilities(
     effort_levels=frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}),
     effort_aliases={},
     thinking=False,
+    # a refused command FAILS the turn (sandboxError), so a completed turn never carries a
+    # denial: there is nothing for `on_denial` to grade
+    denial_reporting=False,
     mcp_servers=True,
     env_injection=True,
     images=False,
@@ -79,6 +83,7 @@ STUB_CAPABILITIES = ProviderCapabilities(
     effort_levels=frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"}),
     effort_aliases={},
     thinking=True,
+    denial_reporting=True,
     mcp_servers=True,
     env_injection=True,
     images=True,

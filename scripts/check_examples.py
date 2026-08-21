@@ -120,6 +120,7 @@ def _invoke(
     }
     env["RAYSPEC_HOME"] = str(home)
     env.setdefault("NO_COLOR", "1")
+    env["CI"] = None  # commands whose defaults change under CI must not depend on the shell
     env.update(env_overrides or {})
     runner = CliRunner(env=env)
     result = runner.invoke(app, args, catch_exceptions=True)

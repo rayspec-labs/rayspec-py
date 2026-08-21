@@ -35,6 +35,7 @@ from rayspec.cli.commands._loader_common import (
     report_lines,
     resolve_output,
 )
+from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.config import ExtensionsSpec
 from rayspec.engine.approval import (
     ApprovalAnswer,
@@ -48,6 +49,16 @@ from rayspec.engine.errors import EngineError
 from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project_slug
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
+from rayspec.limits import (
+    OPERATIONAL_PAUSE_REASONS,
+    SlotBusyError,
+    acquire_slots,
+    limits_for,
+    limits_policy,
+    run_envelope,
+    wait_seconds,
+    workflow_providers,
+)
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 from rayspec.providers.pricing import PriceTable, cost_marker
@@ -63,6 +74,38 @@ from rayspec.secrets import (
 from rayspec.store.file import FileRunStore, StoreError
 from rayspec.store.model import new_run_id
 from rayspec.textsafe import safe_text
+
+WaitSlotOption = Annotated[
+    str | None,
+    typer.Option(
+        "--wait-slot",
+        metavar="DURATION",
+        help="Queue for a free host run slot instead of failing: a duration "
+        "(--wait-slot 30m, --wait-slot 90) or `forever`. `0` and the default do not wait.",
+        show_default=False,
+    ),
+]
+
+
+def pause_actions(run_id: str, reason: str) -> str:
+    """What to type next for a paused run — which is not the same thing for the two kinds.
+
+    An ``approve:`` gate is a question, and ``approve`` / ``reject`` answer it. An operational
+    ceiling is not a question: ``resume`` re-evaluates it (raise the ceiling, or wait for the
+    next day) and ``approve`` WAIVES it for this run. ``reject`` changes nothing at all, so it
+    is not offered. Leading with ``approve`` there would recommend that every CI script written
+    against "paused ⇒ approve" quietly waive the ceiling an operator had just installed.
+    """
+    if reason in OPERATIONAL_PAUSE_REASONS:
+        return (
+            f"continue with: rayspec resume {run_id} (re-checks the ceiling) · "
+            f"rayspec approve {run_id} [comment] (run it anyway, waiving the ceiling)"
+        )
+    return (
+        f"decide with: rayspec approve {run_id} [comment] · "
+        f"rayspec reject {run_id} [reason] · rayspec resume {run_id}"
+    )
+
 
 if TYPE_CHECKING:
     from rayspec.providers.stub import StubScript
@@ -515,13 +558,16 @@ def print_summary(
             # soft_wrap: paths stay on one line (copy-paste `cd …` / `git worktree remove …`)
             out.print(line, markup=False, highlight=False, soft_wrap=True)
     if result.status is RunStatus.PAUSED and result.pause is not None:
-        out.print(
-            pause_hint
-            if pause_hint is not None
-            else decide_hint(result.run_id, None, ApprovalClasses()),
-            markup=False,
-            highlight=False,
-        )
+        # Two kinds of pause, two different next steps. An operational ceiling is not a question
+        # an approval class governs, so it keeps its own `continue with:` line; an approval gate
+        # takes the caller's class-aware hint (which already carries its indent).
+        if result.pause.reason in OPERATIONAL_PAUSE_REASONS:
+            hint = "  " + pause_actions(result.run_id, result.pause.reason)
+        elif pause_hint is not None:
+            hint = pause_hint
+        else:
+            hint = decide_hint(result.run_id, None, ApprovalClasses())
+        out.print(hint, markup=False, highlight=False)
     footer: list[str] = []
     unknown = sum(1 for rec in result.steps.values() if rec.usage_unknown)
     if unknown:
@@ -623,6 +669,8 @@ def register(app: typer.Typer) -> None:
         base: Annotated[
             str | None, typer.Option("--base", help="Base branch for the worktree.")
         ] = None,
+        locked: LockedOption = None,
+        wait_slot: WaitSlotOption = None,
         repo: Annotated[
             str | None, typer.Option("--repo", help="Registered project / path / url.")
         ] = None,
@@ -687,6 +735,8 @@ def register(app: typer.Typer) -> None:
         if report.errors:
             error_lines(report.errors, json_mode=json_, kind="validation errors")
             raise typer.Exit(code=EXIT_USAGE)
+        # the lockfile of the project the workflow came from (with --repo: the checkout)
+        enforce_lockfile(ctx, rw, locked=locked, project_root=project_root, json_mode=json_)
         if stubs_init is not None:
             if stubs_init.exists() and not force:
                 fail(
@@ -861,6 +911,33 @@ def register(app: typer.Typer) -> None:
             price_table = PriceTable.from_config(ctx.config.pricing)
         except RayspecError:
             price_table = None
+        # The operator's ceilings for this machine (empty when no policy file applies). A dry
+        # run maps every provider to the stub: it spends nothing and occupies no real agent, so
+        # neither the envelope nor a host slot applies to it.
+        policy = limits_policy(project_root, home=ctx.home)
+        # a ceiling that cannot be read must be visible, not invisible: an operator who wrote
+        # one and never sees it applied would otherwise believe the machine is capped
+        report_lines(
+            "policy warnings:",
+            list(policy.warnings),
+            style="yellow",
+            printer=common.err_console().print,
+        )
+        providers_used = workflow_providers(rw)
+        envelope = (
+            None
+            if dry_run
+            else run_envelope(policy, store_root=ctx.home / "projects" / slug, run_id=run_id)
+        )
+        try:
+            slot_wait = wait_seconds(wait_slot)
+        except (RayspecError, ValueError) as exc:
+            fail(
+                f"--wait-slot: {exc}",
+                hint="pass a duration (--wait-slot 30m) or `forever`",
+            )
+            return
+        slot_limits = {} if dry_run else limits_for(policy.max_concurrent_runs, providers_used)
         runner = Runner(
             rw,
             inputs=values,
@@ -875,9 +952,16 @@ def register(app: typer.Typer) -> None:
             resume_run_id=resume_id,
             price_table=price_table,
             home=ctx.home,
+            envelope=envelope,
         )
         try:
-            result = runner.run_sync()
+            with acquire_slots(
+                ctx.home, providers_used, slot_limits, run_id=run_id, wait_s=slot_wait
+            ):
+                result = runner.run_sync()
+        except SlotBusyError as exc:
+            fail(str(exc), hint=exc.hint)
+            return
         except EngineError as exc:
             fail(str(exc), hint=exc.hint)
             return
@@ -1138,6 +1222,7 @@ __all__ = [
     "TERMINAL_PROMPT_ID",
     "ApproveClassOption",
     "SuspendingApprovalPrompt",
+    "WaitSlotOption",
     "approval_classes_for",
     "approval_prompt_for",
     "configured_approval",
@@ -1149,6 +1234,7 @@ __all__ = [
     "load_stub_script",
     "non_stub_agents",
     "operator_policy",
+    "pause_actions",
     "policy_class_rules",
     "prepare_workspace",
     "print_summary",

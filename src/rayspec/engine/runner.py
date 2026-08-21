@@ -51,6 +51,11 @@ from rayspec.engine.scheduler import run_graph
 from rayspec.engine.toolchain import capture_toolchain
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType
+from rayspec.limits.envelope import (
+    ENVELOPE_PAUSE_STEP,
+    FAILURE_PAUSE_REASON,
+    OPERATIONAL_PAUSE_REASONS,
+)
 from rayspec.loader import ResolvedWorkflow
 from rayspec.loader.inputs import (
     SECRET_PLACEHOLDER,
@@ -156,6 +161,7 @@ class Runner:
         handle_signals: bool = True,
         executors: Mapping[str, Any] | None = None,
         home: Path | None = None,
+        envelope: Any = None,
     ) -> None:
         self.resolved = resolved
         #: the public inputs (secrets split off into :attr:`secret_inputs`); on a resume the
@@ -183,6 +189,9 @@ class Runner:
         #: rayspec home; when given (and ``rayspec.workspace`` is importable) the run holds the
         #: workdir path lock ``<home>/projects/<slug>/locks/<sha1(workdir)>.lock`` while it runs
         self.home = Path(home) if home is not None else None
+        #: the operator's cross-run spending envelope / circuit breaker
+        #: (:class:`rayspec.limits.envelope.RunEnvelope`); ``None`` = no policy caps this machine
+        self.envelope = envelope
         self.ctx: RunContext | None = None
         self._lock: Any = None
         #: names this run declared secret whose value is too short to redact, discovered while
@@ -283,6 +292,7 @@ class Runner:
             cache=cache,
             hash_mismatch=hash_mismatch,
             secret_inputs=self.secret_inputs,
+            envelope=self.envelope,
         )
         ctx.price_table = self.price_table
         ctx.executors.update(self.executors)
@@ -319,6 +329,7 @@ class Runner:
                 branch=self.workspace.branch,
                 base_sha=self.workspace.base_sha,
             )
+        await self._consume_envelope_decision(ctx, run)
         if not resumed and run.toolchain is None:  # the SDK/CLI/models in effect, once
             run.toolchain = await capture_toolchain(ctx)
             await ctx.save_run()
@@ -428,6 +439,82 @@ class Runner:
         ``shell:`` step can rewrite in any scope.
         """
         return resolve_actor()
+
+    async def _settle_envelope(
+        self, ctx: RunContext, status: RunStatus, cost: float | None
+    ) -> None:
+        """Commit the run's final spend and move the consecutive-failure counter.
+
+        Called on every final status, from a shielded scope, so a run that reached a ceiling is
+        still counted even though the check itself stopped asking. A dry run spends nothing and
+        is not counted; a PAUSED run is not an outcome yet, so the failure streak is left alone.
+
+        A ledger that cannot be written loses this run's spend — a smaller failure than refusing
+        to run at all, but never a silent one: the operator is told, because an envelope that
+        quietly forgot a hundred dollars is worse than one that is simply absent.
+        """
+        envelope = self.envelope
+        if envelope is None or ctx.options.dry_run:
+            return
+        try:
+            await to_thread.run_sync(envelope.commit_final, cost)
+            if status is RunStatus.SUCCEEDED:
+                await to_thread.run_sync(_record_outcome, envelope, False)
+            elif status is RunStatus.FAILED:
+                await to_thread.run_sync(_record_outcome, envelope, True)
+        except OSError as exc:
+            await ctx.warn(
+                f"the spend ledger could not be written ({exc}) — this run's spend and its "
+                "outcome are not in the operator's totals"
+            )
+        for problem in envelope.take_warnings():
+            await ctx.warn(problem)
+
+    async def _refresh_envelope_pause(self, ctx: RunContext, cost: float | None) -> None:
+        """Re-phrase a ceiling pause from the run's FINAL totals.
+
+        The message is the operator's record of how far over the ceiling the run went, and it is
+        the number they decide on — so it must be the amount actually spent, not the amount at
+        the moment the check first tripped.
+        """
+        envelope = self.envelope
+        if envelope is None or ctx.envelope_pause is None or ctx.options.dry_run:
+            return
+        try:
+            reason = await to_thread.run_sync(envelope.settle, cost)
+        except OSError:
+            return  # _settle_envelope reports it; the first phrasing stands
+        if reason is not None:
+            ctx.envelope_pause = reason
+            ctx.envelope_pause_kind = envelope.pause_kind
+
+    async def _consume_envelope_decision(self, ctx: RunContext, run: RunRecord) -> None:
+        """Apply the decision an operator recorded on a ceiling pause, then clear it.
+
+        Any resume entry clears the pause — the envelope is evaluated again from scratch, so a
+        run continued after the ceiling was raised simply proceeds and one continued while it is
+        still exceeded pauses again with a fresh pause. ``rayspec approve <run>`` additionally
+        means "I have looked, run it anyway": the ceilings stop stopping THIS run. The
+        consecutive-failure breaker is only closed when the breaker is what stopped the run —
+        approving a spend is not approving a failure streak, and the console says which of the
+        two the approval covered. ``rayspec reject`` means "no" — the decision is dropped and
+        the run pauses again on the same ceiling, which is the honest outcome, because nothing
+        about the ceiling was changed.
+        """
+        pause = run.pause
+        if pause is None or pause.reason not in OPERATIONAL_PAUSE_REASONS:
+            return
+        approved = pause.decision is not None and pause.decision.approved
+        breaker = pause.reason == FAILURE_PAUSE_REASON
+        run.pause = None
+        if not approved or self.envelope is None:
+            return
+        self.envelope.waive(close_breaker=breaker)
+        await ctx.warn(
+            "the consecutive-failure breaker is closed again for this project"
+            if breaker
+            else "the spending ceilings are waived for this run (the failure breaker is not)"
+        )
 
     def _acquire_lock(self) -> None:
         """Take the workdir path lock (non-blocking) when a home is known.
@@ -631,6 +718,10 @@ class Runner:
             msg = first.error.message if first.error else first.status.value
             return f"step {first.path!r} {first.status.value}: {msg}"
 
+        usage, cost, cost_source = ctx.run_totals()
+        # the ceiling's wording is refreshed from the final totals before it becomes the run's
+        # reason: a drain can spend more after the check first tripped
+        await self._refresh_envelope_pause(ctx, cost)
         if engine_error is not None:
             status = RunStatus.FAILED
             reason = f"engine error: {type(engine_error).__name__}: {engine_error}"
@@ -642,6 +733,14 @@ class Runner:
             # to authorise a gate on a run that has already failed (resume ends it FAILED)
             status = RunStatus.PAUSED
             reason = f"awaiting approval at {ctx.paused.step_path}"
+            if failed:
+                reason += f" ({len(failed)} step(s) already failed: {_failure_reason()})"
+        elif ctx.envelope_pause is not None:
+            # an OPERATIONAL ceiling (policy budget / circuit breaker), not a workflow defect:
+            # the run stopped so a person can look at it. Ranked above ``budget_exceeded``
+            # because the envelope sets that flag too (it is what makes the run drain).
+            status = RunStatus.PAUSED
+            reason = ctx.envelope_pause
             if failed:
                 reason += f" ({len(failed)} step(s) already failed: {_failure_reason()})"
         elif ctx.budget_exceeded is not None:
@@ -674,6 +773,22 @@ class Runner:
                 outputs = None
         elif status is RunStatus.SUCCEEDED:
             outputs = {}
+        if ctx.envelope_pause is not None and run.pause is None:
+            kind = ctx.envelope_pause_kind
+            run.pause = PauseInfo(
+                token=f"{kind}#{run.resume_count}",
+                step=ctx.last_finished_path or ENVELOPE_PAUSE_STEP,
+                message=ctx.envelope_pause,
+                reason=kind,
+            )
+            await ctx.emit(
+                EventType.RUN_PAUSED,
+                step_path=run.pause.step,
+                token=run.pause.token,
+                step=run.pause.step,
+                message=run.pause.message,
+                reason=kind,
+            )
         run.status = status
         run.reason = reason
         run.outputs = outputs
@@ -683,8 +798,8 @@ class Runner:
         await to_thread.run_sync(self._refresh_head_sha)  # pause / run end
         run.workspace = self.workspace.info()
         await self._publish_branch(ctx)  # opt-in, best effort — never changes ``status``
-        usage, cost, cost_source = ctx.run_totals()
         run.cost_source = cost_source
+        await self._settle_envelope(ctx, status, cost)
         self._release_lock()  # released on every final status — a resume takes it again
         data: dict[str, Any] = {
             "status": status.value,
@@ -723,6 +838,11 @@ class Runner:
             interrupted=interrupted,
             record=run,
         )
+
+
+def _record_outcome(envelope: Any, failed: bool) -> None:
+    """``RunEnvelope.record_outcome`` as a positional call (``to_thread`` takes no kwargs)."""
+    envelope.record_outcome(failed=failed)
 
 
 def _on_other_host(run: RunRecord) -> bool:

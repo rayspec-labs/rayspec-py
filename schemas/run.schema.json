@@ -117,6 +117,37 @@
       "title": "Decision",
       "type": "object"
     },
+    "DenialInfo": {
+      "description": "One tool call a provider refused during a ``prompt:`` step.\n\nMirrors :class:`rayspec.providers.base.Denial`. Only what was refused is recorded — the\ntool's name, the provider's wording and the call id — never the arguments it was called\nwith, which are step content and may quote anything the step had in hand.",
+      "properties": {
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "DenialInfo",
+      "type": "object"
+    },
     "EachInfo": {
       "properties": {
         "total": {
@@ -196,6 +227,11 @@
         },
         "message": {
           "title": "Message",
+          "type": "string"
+        },
+        "reason": {
+          "default": "approval",
+          "title": "Reason",
           "type": "string"
         },
         "requested_at": {
@@ -463,6 +499,13 @@
             "$ref": "#/$defs/ArtifactRef"
           },
           "title": "Artifacts",
+          "type": "array"
+        },
+        "denials": {
+          "items": {
+            "$ref": "#/$defs/DenialInfo"
+          },
+          "title": "Denials",
           "type": "array"
         },
         "error": {

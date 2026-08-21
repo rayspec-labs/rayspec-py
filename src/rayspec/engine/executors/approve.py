@@ -330,7 +330,13 @@ async def _pause(ctx: RunContext, record: StepRecord, message: str) -> StepOutco
     ctx.run.pause = PauseInfo(token=token, step=record.path, message=message)
     await ctx.save_record(record)
     await ctx.emit(
-        EventType.RUN_PAUSED, step_path=record.path, token=token, step=record.path, message=message
+        EventType.RUN_PAUSED,
+        step_path=record.path,
+        token=token,
+        step=record.path,
+        message=message,
+        # every branch carries it, or no sink can switch on it: this is the commoner one
+        reason=ctx.run.pause.reason,
     )
     return StepOutcome(record=record, control=control)
 

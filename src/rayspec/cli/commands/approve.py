@@ -23,9 +23,11 @@ from rayspec.cli.commands._loader_common import (
     fail,
     resolve_output,
 )
+from rayspec.cli.commands.lock import LockedOption
 from rayspec.cli.commands.resume import (
     SecretInputsOption,
     StubsOption,
+    WaitSlotOption,
     guard_workflow_unchanged,
     resume_secret_inputs,
     resume_stub_script,
@@ -71,6 +73,8 @@ def decide_and_resume(
     force: bool,
     inputs: list[str] | None = None,
     stubs: Path | None = None,
+    locked: bool | None = None,
+    wait_slot: str | None = None,
 ) -> None:
     """Shared body of ``approve`` / ``reject``.
 
@@ -82,6 +86,8 @@ def decide_and_resume(
     """
     ctx = common.make_runs_context(root)
     store, record = common.lookup_run(ctx, run)
+    # the run may live in another project; from here on the command speaks for THAT one
+    ctx = common.record_context(ctx, record)
     word = "approve" if approved else "reject"
     if record.status is not RunStatus.PAUSED or record.pause is None:
         fail(
@@ -89,7 +95,7 @@ def decide_and_resume(
             hint="only a run awaiting approval (status paused) takes a decision",
         )
         return
-    resolved = guard_workflow_unchanged(ctx, record, force=force)  # the shared guard
+    resolved = guard_workflow_unchanged(ctx, record, force=force, locked=locked)
     secret_provider = secret_provider_for(ctx, record)  # one provider per command
     secrets = resume_secret_inputs(  # re-fetched from the configured source
         record, resolved, inputs or [], provider=secret_provider
@@ -112,6 +118,7 @@ def decide_and_resume(
         stub_script=stub_script,
         stubs_path=stubs_path,
         secret_provider=secret_provider,  # the same instance, no second helper run
+        wait_slot=wait_slot,
     )
     raise typer.Exit(code=code)
 
@@ -133,6 +140,8 @@ def register(app: typer.Typer) -> None:
         ] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        locked: LockedOption = None,
+        wait_slot: WaitSlotOption = None,
         root: RootOption = None,
     ) -> None:
         """Approve the pending gate of a paused run and resume it."""
@@ -147,6 +156,8 @@ def register(app: typer.Typer) -> None:
             force=force,
             inputs=inputs,
             stubs=stubs,
+            locked=locked,
+            wait_slot=wait_slot,
         )
 
 

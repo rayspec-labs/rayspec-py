@@ -200,7 +200,7 @@ otherwise), `secret: true` inputs, extension entry points for commands, stores, 
 prompts, the packaged Claude Code skill, and the `examples/` gallery.
 
 Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
-`plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `workflows`,
+`plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `lock`, `workflows`,
 `agents`, `providers`, `plugins`, `projects`, `worktrees`, `schema`, `skill`, `completion`,
 `version`.
 

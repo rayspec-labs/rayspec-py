@@ -59,6 +59,19 @@ class EachInfo(_Model):
     failed: int = 0
 
 
+class DenialInfo(_Model):
+    """One tool call a provider refused during a ``prompt:`` step.
+
+    Mirrors :class:`rayspec.providers.base.Denial`. Only what was refused is recorded — the
+    tool's name, the provider's wording and the call id — never the arguments it was called
+    with, which are step content and may quote anything the step had in hand.
+    """
+
+    tool: str
+    reason: str = ""
+    call_id: str | None = None
+
+
 class ArtifactRef(_Model):
     """One file a step promised (``artifacts:``) and delivered.
 
@@ -128,6 +141,11 @@ class StepRecord(_Model):
     #: none (and for records written before the field existed); a step that declared one and did
     #: not write it never gets here, it fails.
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    #: additive: the tool calls the provider refused in this step (permission or sandbox).
+    #: Empty for every non-prompt kind, for a step that was allowed everything, and for records
+    #: written before the field existed. With the agent's ``on_denial: fail`` a non-empty list
+    #: also fails the step; the default ``warn`` records them and lets the step stand.
+    denials: list[DenialInfo] = Field(default_factory=list)
     error: ErrorInfo | None = None
     skip_reason: str | None = None
     tolerated: bool = False
@@ -178,6 +196,10 @@ class PauseInfo(_Model):
     token: str
     step: str
     message: str
+    #: additive: why the run is waiting. ``approval`` (the default, and what every pause before
+    #: this field meant) is an ``approve:`` gate; ``budget`` is an operational spending envelope
+    #: or circuit breaker that stopped the run so a person can look at it.
+    reason: str = "approval"
     requested_at: datetime = Field(default_factory=utcnow)
     decision: Decision | None = None
 
@@ -253,6 +275,7 @@ __all__ = [
     "ActorInfo",
     "ArtifactRef",
     "Decision",
+    "DenialInfo",
     "EachInfo",
     "ErrorInfo",
     "LoopInfo",

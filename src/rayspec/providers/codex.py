@@ -113,6 +113,7 @@ from rayspec.providers.base import (
     AgentEvent,
     AgentRequest,
     AgentResult,
+    Denial,
     EmitFn,
     ErrorKind,
     ProviderCapabilities,
@@ -182,6 +183,33 @@ def error_info_code(error: TurnError | None) -> str | None:
         if len(dumped) == 1:
             return next(iter(dumped))
     return None
+
+
+def sandbox_denial(error: TurnError | None) -> Denial | None:
+    """A ``sandboxError`` turn error as a neutral :class:`Denial` (``None`` for anything else).
+
+    Codex reports a refused command as a turn ERROR rather than as a list of denied calls: the
+    turn fails, so the step fails anyway. Recording the denial is still worth it — the record
+    then names what the sandbox would not let the agent do instead of only that something went
+    wrong — but it is not the same instrument as Claude's ``permission_denials``, and the
+    ``denial_reporting`` capability says so.
+    """
+    if error_info_code(error) != "sandboxError":
+        return None
+    message = (getattr(error, "message", "") or "").strip()
+    return Denial(tool="shell", reason=message or "the sandbox refused the command")
+
+
+def turn_denials(turn: Any, _state: Any = None) -> tuple[Denial, ...]:
+    """The denials of one finished turn — from the TURN's own error only.
+
+    Deliberately not ``state.last_error``: that field collects every ``ErrorNotification`` the
+    stream reported, retried ones included, and is overwritten by any later error. Folding it
+    into a COMPLETED turn would retro-fail a step whose sandbox refusal was retried and
+    recovered, which is the opposite of what the step's outcome says.
+    """
+    denial = sandbox_denial(getattr(turn, "error", None) if turn is not None else None)
+    return (denial,) if denial is not None else ()
 
 
 def classify_turn_error(error: TurnError | None, *, fallback_message: str = "") -> AgentError:
@@ -1056,6 +1084,7 @@ class CodexProvider:
             error = AgentError(
                 kind="unknown", message="codex turn ended without turn/completed", transient=True
             )
+        denials = turn_denials(turn)
         cost = self.pricing.cost_usd(req.model, state.usage)
         total = self._last_totals.get(state.thread_id) if state.thread_id else None
         raw: dict[str, Any] = {
@@ -1082,6 +1111,7 @@ class CodexProvider:
             num_turns=1,
             model=req.model,  # as requested: the SDK handle does not expose the effective model
             error=error,
+            denials=denials,
             raw=raw,
         )
 
