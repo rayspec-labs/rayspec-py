@@ -12,8 +12,10 @@ no key that fetches it from elsewhere.
 """
 
 from rayspec.policy.enforce import (
+    COMMAND_POLICY_CAPABILITY,
     PolicyProblem,
     PolicyReport,
+    check_agent_controls,
     check_policy,
 )
 from rayspec.policy.layers import (
@@ -46,6 +48,7 @@ from rayspec.policy.model import (
 
 __all__ = [
     "ACCESS_ORDER",
+    "COMMAND_POLICY_CAPABILITY",
     "LAYER_NAMES",
     "POLICY_ENV",
     "POLICY_FILENAME",
@@ -66,6 +69,7 @@ __all__ = [
     "TrustPolicy",
     "WorkspacePolicy",
     "access_rank",
+    "check_agent_controls",
     "check_policy",
     "load_policy",
     "merged_summary",

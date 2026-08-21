@@ -27,6 +27,10 @@ if TYPE_CHECKING:  # type-only: importing the loader at runtime would close an i
     from rayspec.loader.loader import ResolvedAgent, ResolvedWorkflow
     from rayspec.providers.base import ProviderCapabilities
 
+#: Capability name a provider declares (in ``ProviderCapabilities.extra``) when it hands rayspec
+#: its tool calls before they run — the only way an agent ``commands:`` block can be enforced.
+COMMAND_POLICY_CAPABILITY = "command_policy"
+
 #: Neutral tool groups (mirrors ``providers.base.TOOL_GROUPS``; duplicated so this package keeps
 #: its "no provider imports" boundary).
 TOOL_GROUPS: frozenset[str] = frozenset({"read", "edit", "shell", "web", "agent", "mcp"})
@@ -90,6 +94,78 @@ def _enforceable(entry: str, agent: ResolvedAgent, caps: ProviderCapabilities | 
     if prefix and prefix == agent.provider:
         return bool(caps.raw_tool_names)
     return False  # a raw name addressed at another provider is ignored by the adapters
+
+
+def check_agent_controls(
+    resolved: ResolvedWorkflow,
+    *,
+    capabilities_for: Callable[[str], ProviderCapabilities | None] | None = None,
+) -> PolicyReport:
+    """Check the neutral per-agent controls — ``network:`` and ``commands:``.
+
+    These are workflow fields rather than policy-file keys, so they are checked whether or not a
+    ``policy.yaml`` exists. ``network: off`` maps onto the one mechanism both shipped providers
+    really have: their web tools are denied. That is a narrower promise than a firewall and the
+    documentation says so — a shell command the agent runs can still open a socket unless the
+    provider's own sandbox stops it.
+    """
+    report = PolicyReport()
+    for key in sorted(resolved.agents):
+        agent = resolved.agents[key]
+        caps = None if capabilities_for is None else capabilities_for(agent.provider)
+        _check_network(key, agent, report, caps)
+        _check_commands(agent, report, caps)
+    return report
+
+
+def _check_network(
+    key: str,
+    agent: ResolvedAgent,
+    report: PolicyReport,
+    caps: ProviderCapabilities | None,
+) -> None:
+    if agent.network != "off":
+        return
+    if "web" in agent.tools.allow:
+        report.errors.append(
+            _problem(
+                agent,
+                "network",
+                "network: off contradicts tools.allow: web — drop one of them",
+                "tools",
+            )
+        )
+        return
+    if caps is not None and "web" not in caps.tool_groups:
+        report.warnings.append(
+            _problem(
+                agent,
+                "network",
+                f"network: off cannot be enforced on provider {agent.provider!r} — it has no "
+                "'web' tool group, so the setting is advisory there",
+            )
+        )
+        return
+    if "web" not in agent.tools.deny:
+        report.tool_denials[key] = ("web",)
+
+
+def _check_commands(
+    agent: ResolvedAgent, report: PolicyReport, caps: ProviderCapabilities | None
+) -> None:
+    commands = agent.commands
+    if commands is None or not (commands.allow or commands.deny):
+        return
+    if caps is not None and COMMAND_POLICY_CAPABILITY in caps.extra:
+        return
+    report.warnings.append(
+        _problem(
+            agent,
+            "commands",
+            f"commands: cannot be enforced on provider {agent.provider!r} — it does not hand "
+            "rayspec its tool calls before they run, so the block is advisory there",
+        )
+    )
 
 
 def check_policy(
@@ -248,4 +324,11 @@ def _entries(sources: Sequence[PolicySource]) -> str:
     return ", ".join(f"{s.value!r} ({s.location})" for s in sources)
 
 
-__all__ = ["TOOL_GROUPS", "PolicyProblem", "PolicyReport", "check_policy"]
+__all__ = [
+    "COMMAND_POLICY_CAPABILITY",
+    "TOOL_GROUPS",
+    "PolicyProblem",
+    "PolicyReport",
+    "check_agent_controls",
+    "check_policy",
+]

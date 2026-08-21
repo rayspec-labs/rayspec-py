@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pydantic models for rayspec workflow documents (the YAML schema contract)."""
 
-from rayspec.schema.agent import AgentDef, AgentOverride, McpServerDef, ToolsSpec, parse_agent_def
+from rayspec.schema.agent import (
+    AgentDef,
+    AgentOverride,
+    CommandsSpec,
+    McpServerDef,
+    NetworkModeName,
+    ToolsSpec,
+    parse_agent_def,
+)
 from rayspec.schema.base import StrictModel
 from rayspec.schema.common import (
     IDENT_RE,
@@ -54,6 +62,7 @@ __all__ = [
     "AgentOverride",
     "ApproveSpec",
     "ApproveStep",
+    "CommandsSpec",
     "Defaults",
     "Duration",
     "EachStep",
@@ -65,6 +74,7 @@ __all__ = [
     "LoopStep",
     "McpServerDef",
     "Name",
+    "NetworkModeName",
     "PositiveDuration",
     "PromptStep",
     "PythonStep",

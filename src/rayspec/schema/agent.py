@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from rayspec.schema.base import StrictModel
 from rayspec.schema.common import AccessLevelName, EffortName, InstructionsModeName, Name
+
+#: ``network:`` — whether the agent may reach the network through its provider's own tools.
+NetworkModeName = Literal["on", "off"]
 
 
 class ToolsSpec(StrictModel):
@@ -20,6 +24,37 @@ class ToolsSpec(StrictModel):
 
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
+
+
+class CommandsSpec(StrictModel):
+    """``commands:`` — which shell commands an agent may run, as regular expressions.
+
+    Both lists are Python regular expressions matched against the command line a provider is
+    about to run; ``deny`` is checked first, and a non-empty ``allow`` means "nothing else".
+    They are validated (and compiled) at load time so a broken pattern is a file-and-line error
+    rather than a control that quietly matches nothing.
+
+    Enforcement needs the provider to hand rayspec its tool calls before they run. A provider
+    that can do that declares ``command_policy`` in its capabilities; on every other provider
+    ``rayspec validate`` warns that the block is advisory. See ``docs/policy.md``.
+    """
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "commands policy"
+
+    @field_validator("allow", "deny")
+    @classmethod
+    def _compilable(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"{pattern!r} is not a valid regular expression: {exc}") from None
+        return value
 
 
 class McpServerDef(StrictModel):
@@ -58,6 +93,8 @@ class AgentDef(StrictModel):
     max_turns: int | None = Field(default=None, ge=1)
     budget_usd: float | None = Field(default=None, gt=0)
     tools: ToolsSpec = Field(default_factory=ToolsSpec)
+    network: NetworkModeName | None = None
+    commands: CommandsSpec | None = None
     thinking: bool | None = None
     mcp: dict[Name, McpServerDef] = Field(default_factory=dict)
     provider_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -87,4 +124,12 @@ def parse_agent_def(data: Any, *, source: str | None = None) -> AgentDef:
     return AgentDef.parse(data, source=source)
 
 
-__all__ = ["AgentDef", "AgentOverride", "McpServerDef", "ToolsSpec", "parse_agent_def"]
+__all__ = [
+    "AgentDef",
+    "AgentOverride",
+    "CommandsSpec",
+    "McpServerDef",
+    "NetworkModeName",
+    "ToolsSpec",
+    "parse_agent_def",
+]

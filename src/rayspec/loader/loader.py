@@ -33,6 +33,7 @@ from rayspec.loader.yaml import LineMap, load_yaml_with_lines
 from rayspec.schema import (
     AgentDef,
     AgentOverride,
+    CommandsSpec,
     Defaults,
     EachStep,
     IncludeStep,
@@ -106,6 +107,8 @@ class ResolvedAgent:
     max_turns: int | None
     budget_usd: float | None
     tools: ToolsSpec
+    network: str | None
+    commands: CommandsSpec | None
     thinking: bool | None
     mcp: dict[str, McpServerDef]
     provider_options: dict[str, dict[str, Any]]
@@ -709,6 +712,8 @@ class _Loader:
             max_turns=definition.max_turns,
             budget_usd=definition.budget_usd,
             tools=definition.tools,
+            network=definition.network,
+            commands=definition.commands,
             thinking=definition.thinking,
             mcp=dict(definition.mcp),
             provider_options=dict(definition.provider_options),

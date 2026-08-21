@@ -52,10 +52,6 @@ def validated(tree: Tree, text: str, *, name: str = "wf", **kwargs):
 
     tree.workflow(name, text)
     rw = load_workflow(name, project_root=tree.root, home=tree.home)
-    report = validate_workflow(
-        rw,
-        capabilities_for=BUILTIN_CAPABILITIES.get,
-        provider_ids=sorted(BUILTIN_CAPABILITIES),
-        **kwargs,
-    )
-    return rw, report
+    kwargs.setdefault("capabilities_for", BUILTIN_CAPABILITIES.get)
+    kwargs.setdefault("provider_ids", sorted(BUILTIN_CAPABILITIES))
+    return rw, validate_workflow(rw, **kwargs)

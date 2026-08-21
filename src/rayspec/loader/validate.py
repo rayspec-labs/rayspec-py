@@ -25,7 +25,13 @@ from rayspec.loader.secrets import (
     secret_reference_message,
     secret_whole_inputs_message,
 )
-from rayspec.policy import EffectivePolicy, check_policy, load_policy
+from rayspec.policy import (
+    EffectivePolicy,
+    PolicyReport,
+    check_agent_controls,
+    check_policy,
+    load_policy,
+)
 from rayspec.providers.base import TOOL_GROUPS, ProviderCapabilities
 from rayspec.schema import (
     RESERVED_ROOTS,
@@ -308,12 +314,16 @@ class _Validator:
         else. Denials the policy imposes on an agent's tools are folded into that agent's
         ``tools.deny`` here, which is what turns the policy from a check into enforcement.
         """
+        self._apply_policy(check_agent_controls(self.rw, capabilities_for=self.caps_for))
         effective = self.policy
         if effective is None:
             effective = load_policy(self._policy_root(), home=self.rw.home)
         if effective.is_empty:
             return
-        outcome = check_policy(self.rw, effective, capabilities_for=self.caps_for)
+        self._apply_policy(check_policy(self.rw, effective, capabilities_for=self.caps_for))
+
+    def _apply_policy(self, outcome: PolicyReport) -> None:
+        """Report one policy outcome and fold its tool denials into the resolved agents."""
         for problem in outcome.errors:
             self.report.error(problem.where, problem.message, location=problem.location)
         for problem in outcome.warnings:
