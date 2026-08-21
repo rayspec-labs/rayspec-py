@@ -385,6 +385,15 @@ result = Runner(rw, inputs=values, store=FileRunStore(Path("/tmp/rayspec-store")
 print(result.status, result.exit_code, result.outputs)
 ```
 
+The run installs the **redaction boundary** itself: before it writes a byte it makes the store's
+`Redactor` cover every `secret: true` input it was given and every value in
+`RunOptions.config_secrets`, so an embedded run cannot persist a secret by forgetting to wire
+one. A redactor you assigned to `store.redactor` yourself is *extended*, never replaced — that is
+how the CLI adds `config.secrets` values and the opt-in detectors on top. A store whose
+`redactor` attribute cannot be assigned makes a workflow with secret inputs refuse to start
+rather than write anything. Event sinks are a separate surface: they print rather than persist,
+and a sink of your own is yours to wrap (`rayspec.redact.RedactingSink`) if it writes anywhere.
+
 `Runner` also accepts injected `providers={"claude": StubProvider(...)}`, `sinks`, an
 `approval_prompt` (`async (ApprovalRequest) -> ApprovalAnswer | None`, `None` = pause),
 `workspace`, `RunOptions(dry_run=…, yes=…, fail_fast=…, resume=…)` and `resume_run_id`. All three
