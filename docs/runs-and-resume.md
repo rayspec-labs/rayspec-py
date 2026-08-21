@@ -134,13 +134,19 @@ start, and never rewritten — a resume by somebody else leaves it naming whoeve
 | field | what it is |
 |---|---|
 | `id` | the identity itself |
-| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `git` (the workdir's `git config user.email`), `os` (the operating-system user), `unknown` |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `git` (your own `git config user.email`: the global, then the system configuration), `os` (the operating-system user), `unknown` |
 | `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
 | `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
 
-Resolution order is `RAYSPEC_ACTOR` > `git config user.email` in the run's workdir > the OS user;
-set `RAYSPEC_ACTOR` in a scheduler or a CI job so an unattended run is not attributed to whatever
-service account happens to own the process.
+Resolution order is `RAYSPEC_ACTOR` > your git `user.email` > the OS user; set `RAYSPEC_ACTOR` in
+a scheduler or a CI job so an unattended run is not attributed to whatever service account happens
+to own the process.
+
+Every source is one the **run** cannot reach. In particular the identity never comes from the
+repository's own git configuration, only from your global (then system) one: a run's worktree
+shares `.git/config` with the repository it was made from, so a single `git config user.email …`
+in a shell step would otherwise pick the name stamped on your next `rayspec approve`. If you want
+a per-project identity, set `RAYSPEC_ACTOR` — that is a decision of yours, outside the run.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from

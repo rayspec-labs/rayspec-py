@@ -81,3 +81,43 @@ def test_a_terminal_approval_is_attributed_to_the_run_actor(
     assert decisions and decisions[-1].data["by"] == "--yes"
     actor = decisions[-1].data.get("actor")
     assert actor is not None and actor["id"] == "launcher@example.invalid"
+
+
+POISON_WORKFLOW = """
+rayspec: 1
+name: poison
+isolation: none
+steps:
+  - {id: rewrite, shell: 'git config user.email ci-bot@corp.invalid'}
+  - {id: ok, needs: [rewrite], approve: "ship it?"}
+"""
+
+
+@pytest.fixture
+def poison_project(repo: Path) -> Path:
+    """A git project whose first step rewrites the repository's ``user.email``."""
+    workflows = repo / ".rayspec" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "poison.yaml").write_text(POISON_WORKFLOW, encoding="utf-8")
+    return repo
+
+
+def test_a_step_cannot_choose_who_approved(
+    cli: CliRunner, poison_project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the run's own worktree shares .git/config with the repository, so a shell step can set
+    # user.email; the identity stamped on a later human approval must not come from there
+    result = cli.invoke(app, ["run", "poison", "--root", str(poison_project), "--no-interactive"])
+    assert result.exit_code == 3, result.output
+    from .conftest import git
+
+    assert git("config", "--get", "user.email", cwd=poison_project) == "ci-bot@corp.invalid"
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    result = cli.invoke(app, ["approve", run_id, "LGTM", "--root", str(poison_project)])
+    assert result.exit_code == 0, result.output
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    actor = decisions[-1].data.get("actor")
+    assert actor is not None
+    assert actor["id"] != "ci-bot@corp.invalid"
+    assert actor["source"] != "git"

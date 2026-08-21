@@ -2194,15 +2194,18 @@ CLI (all read-only: no provider is created, no step runs, nothing under the run 
 
 ```python
 from rayspec.actor import (  # leaf module: identity resolution, no network, never raises
-    resolve_actor,  # (*, workdir: Path | None = None, env: Mapping | None = None) -> ActorInfo
-    #   RAYSPEC_ACTOR > `git config user.email` in workdir > the OS user > "unknown";
-    #   fills ActorInfo.ci (detect_ci) and .provider_accounts (provider_accounts)
+    resolve_actor,  # (*, env: Mapping | None = None) -> ActorInfo
+    #   RAYSPEC_ACTOR > the user's own `git config user.email` > the OS user > "unknown";
+    #   fills ActorInfo.ci (detect_ci) and .provider_accounts (provider_accounts).
+    #   No workdir parameter, on purpose: every source must be one the RUN cannot write to.
     clean_identity,  # (str | None) -> str | None   safe_text, whitespace-collapsed, capped
     detect_ci,       # (env=None) -> "github-actions" | … | "ci" | None  (CI_ENV_MARKERS, in order)
-    git_email,       # (workdir=None) -> str | None  (GitError/OSError/timeout -> None)
+    git_email,       # () -> str | None  GIT_SCOPES ("--global", then "--system") only — never
+    #   a repository's config: a worktree shares .git/config with the repo it came from, so a
+    #   shell step could name the actor of the next approval. (GitError/OSError/timeout -> None)
     os_user,         # (env=None) -> str | None      (getpass.getuser, then USER/LOGNAME/USERNAME)
     provider_accounts,  # (env=None) -> {provider id: account}  (PROVIDER_ACCOUNT_ENV only)
-    ACTOR_ENV, MAX_ACTOR_LEN, GIT_TIMEOUT_S, CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV,
+    ACTOR_ENV, MAX_ACTOR_LEN, GIT_TIMEOUT_S, GIT_SCOPES, CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV,
 )
 ```
 `ActorInfo` (additive, `store/model.py`): `id`, `source` (`env`|`git`|`os`|`unknown`), `ci: str |

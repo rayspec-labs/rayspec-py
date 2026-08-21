@@ -43,7 +43,9 @@ def record_decision(
 
     The decision is stamped with the identity of whoever is running this command
     (:func:`rayspec.actor.resolve_actor`) — the person answering a gate is often not the one who
-    launched the run, and the ledger has to be able to tell them apart.
+    launched the run, and the ledger has to be able to tell them apart. That identity is
+    resolved from this process and the user's own git configuration, never from the run's
+    workspace: the run had write access to it.
     """
     if run.pause is None:
         raise ValueError(f"run {run.run_id} has no pending gate")
@@ -51,7 +53,7 @@ def record_decision(
         approved=approved,
         comment=comment,
         by=by,
-        actor=resolve_actor(workdir=Path(run.workspace.workdir or run.project_root)),
+        actor=resolve_actor(),
     )
     run.pause.decision = decision
     store.save(run)

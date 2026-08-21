@@ -348,8 +348,12 @@ class Runner:
             await ctx.warn(f"could not push {branch} to {remote}: {outcome.reason}")
 
     def _resolve_actor(self) -> ActorInfo:
-        """Who is launching this run (blocking: reads the workdir's git configuration)."""
-        return resolve_actor(workdir=self.workspace.workdir)
+        """Who is launching this run (blocking: may shell out to ``git config``).
+
+        Resolved from this process and the user's own git configuration only — never from the
+        workspace, which the run is about to write to.
+        """
+        return resolve_actor()
 
     def _acquire_lock(self) -> None:
         """Take the workdir path lock (non-blocking) when a home is known.

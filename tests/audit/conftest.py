@@ -51,6 +51,12 @@ def git(*args: str, cwd: Path) -> str:
 
 
 @pytest.fixture
+def global_email(tmp_path: Path) -> None:
+    """A ``user.email`` in the git configuration the resolver IS allowed to read."""
+    (tmp_path / "gitconfig-global").write_text("[user]\n\temail = me@example.invalid\n")
+
+
+@pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A git repository with one commit and a repo-local ``user.email``."""
     path = tmp_path / "repo"
