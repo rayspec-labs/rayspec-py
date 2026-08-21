@@ -54,8 +54,8 @@ runs/<run-id>/
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
-  "actor": {"id": "me@example.com", "source": "git", "ci": null,   // who launched the run: RAYSPEC_ACTOR,
-             "provider_accounts": {}},                            // else git user.email, else the OS user
+  "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run:
+             "provider_accounts": {}},                            // RAYSPEC_ACTOR, else the OS user
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
@@ -134,19 +134,28 @@ start, and never rewritten — a resume by somebody else leaves it naming whoeve
 | field | what it is |
 |---|---|
 | `id` | the identity itself |
-| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `git` (your own `git config user.email`: the global, then the system configuration), `os` (the operating-system user), `unknown` |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user), `unknown` |
 | `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
 | `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
 
-Resolution order is `RAYSPEC_ACTOR` > your git `user.email` > the OS user; set `RAYSPEC_ACTOR` in
-a scheduler or a CI job so an unattended run is not attributed to whatever service account happens
-to own the process.
+Resolution order is `RAYSPEC_ACTOR` > the OS user. Set `RAYSPEC_ACTOR` in the shell you launch a
+run from, or in a scheduler or CI job, whenever you want the ledger to name a person or a bot
+rather than the account that happens to own the process — an email address, a team name, anything
+that identifies the hand.
 
-Every source is one the **run** cannot reach. In particular the identity never comes from the
-repository's own git configuration, only from your global (then system) one: a run's worktree
-shares `.git/config` with the repository it was made from, so a single `git config user.email …`
-in a shell step would otherwise pick the name stamped on your next `rayspec approve`. If you want
-a per-project identity, set `RAYSPEC_ACTOR` — that is a decision of yours, outside the run.
+**An identity is only evidence if the audited code could not have chosen it**, and that is the
+whole reason for those two sources and no others. rayspec reads **no git configuration** for an
+actor — not the repository's, not your global one, not the machine's. A run's `shell:` steps and
+its agents execute as you, with your `$HOME` and inside the repository the worktree came from
+(`workspace-write` is a permission mode of the agent, not an operating-system sandbox), so a
+single `git config --global user.email …` in one step would otherwise pick the name stamped on
+your next `rayspec approve` — and it would be rendered as a machine-derived identity, which reads
+as *more* trustworthy than a self-declared one, not less. `RAYSPEC_ACTOR` lives in the environment
+of the process that launches the run or answers the gate, and `os` comes from the account database
+rather than from `$USER`; neither is something a step can write.
+
+If you want a per-project identity, set `RAYSPEC_ACTOR` — that is a decision of yours, taken
+outside the run, which is exactly what makes it worth recording.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from

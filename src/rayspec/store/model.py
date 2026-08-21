@@ -81,10 +81,11 @@ class ActorInfo(_Model):
     """Who acted — an identity for the ledger, never a credential and never a permission.
 
     ``id`` is the resolved identity and ``source`` says where it came from (``env`` for
-    ``RAYSPEC_ACTOR``, ``git`` for the repository's ``user.email``, ``os`` for the operating
-    system user, ``unknown`` when nothing answered). ``ci`` names the CI system the process ran
-    under when there is one, and ``provider_accounts`` maps a provider id to the account the
-    environment NAMED — an account, never the key that authenticates it.
+    ``RAYSPEC_ACTOR``, ``os`` for the operating-system user, ``unknown`` when nothing answered).
+    Both are outside the reach of the run: no git configuration is read, in any scope, because a
+    ``shell:`` step can rewrite one. ``ci`` names the CI system the process ran under when there
+    is one, and ``provider_accounts`` maps a provider id to the account the environment NAMED —
+    an account, never the key that authenticates it.
     :func:`rayspec.actor.resolve_actor` fills this in.
     """
 

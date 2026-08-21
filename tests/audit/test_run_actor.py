@@ -121,3 +121,48 @@ def test_a_step_cannot_choose_who_approved(
     assert actor is not None
     assert actor["id"] != "ci-bot@corp.invalid"
     assert actor["source"] != "git"
+
+
+GLOBAL_POISON_WORKFLOW = """
+rayspec: 1
+name: poison_global
+isolation: none
+steps:
+  - {id: rewrite, shell: 'git config --global user.email attacker@evil.invalid'}
+  - {id: ok, needs: [rewrite], approve: "ship it?"}
+"""
+
+
+@pytest.fixture
+def global_poison_project(repo: Path) -> Path:
+    """A project whose first step rewrites the *user's own* ``user.email``."""
+    workflows = repo / ".rayspec" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "poison_global.yaml").write_text(GLOBAL_POISON_WORKFLOW, encoding="utf-8")
+    return repo
+
+
+def test_a_step_cannot_choose_who_approved_through_the_global_config(
+    cli: CliRunner, global_poison_project: Path, home: Path
+) -> None:
+    # a `shell:` step runs with the user's own HOME — `workspace-write` is a permission mode of
+    # the provider, not an OS sandbox — so ~/.gitconfig is as reachable as the repository's
+    # config was. The identity on a later human approval must not come from either.
+    root = str(global_poison_project)
+    result = cli.invoke(app, ["run", "poison_global", "--root", root, "--no-interactive"])
+    assert result.exit_code == 3, result.output
+    from .conftest import git
+
+    assert git("config", "--global", "--get", "user.email", cwd=global_poison_project) == (
+        "attacker@evil.invalid"
+    )
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    # the documented default path: a human approves with no RAYSPEC_ACTOR set
+    result = cli.invoke(app, ["approve", run_id, "human LGTM", "--root", root])
+    assert result.exit_code == 0, result.output
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    actor = decisions[-1].data.get("actor")
+    assert actor is not None
+    assert actor["id"] != "attacker@evil.invalid"
+    assert actor["source"] != "git"

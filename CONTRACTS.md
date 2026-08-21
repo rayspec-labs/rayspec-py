@@ -2290,20 +2290,22 @@ CLI (all read-only: no provider is created, no step runs, nothing under the run 
 ```python
 from rayspec.actor import (  # leaf module: identity resolution, no network, never raises
     resolve_actor,  # (*, env: Mapping | None = None) -> ActorInfo
-    #   RAYSPEC_ACTOR > the user's own `git config user.email` > the OS user > "unknown";
-    #   fills ActorInfo.ci (detect_ci) and .provider_accounts (provider_accounts).
-    #   No workdir parameter, on purpose: every source must be one the RUN cannot write to.
+    #   RAYSPEC_ACTOR > the OS user > "unknown"; fills ActorInfo.ci (detect_ci) and
+    #   .provider_accounts (provider_accounts). NO git configuration is read, in ANY scope, and
+    #   there is no workdir parameter: an identity is only evidence if the audited code could
+    #   not have chosen it, and a run's shell steps run as the user, with the user's $HOME and
+    #   inside the repository the worktree came from — `git config [--global] user.email …` is
+    #   one command in one step, and `source: git` would render it as machine-derived.
     clean_identity,  # (str | None) -> str | None   safe_text, whitespace-collapsed, capped
     detect_ci,       # (env=None) -> "github-actions" | … | "ci" | None  (CI_ENV_MARKERS, in order)
-    git_email,       # () -> str | None  GIT_SCOPES ("--global", then "--system") only — never
-    #   a repository's config: a worktree shares .git/config with the repo it came from, so a
-    #   shell step could name the actor of the next approval. (GitError/OSError/timeout -> None)
-    os_user,         # (env=None) -> str | None      (getpass.getuser, then USER/LOGNAME/USERNAME)
+    os_user,         # (env=None) -> str | None   pwd.getpwuid(os.getuid()) FIRST (so `os` means
+    #   the OS said so), then getpass.getuser, then USER/LOGNAME/USERNAME for a platform or a
+    #   container uid the account database cannot answer for.
     provider_accounts,  # (env=None) -> {provider id: account}  (PROVIDER_ACCOUNT_ENV only)
-    ACTOR_ENV, MAX_ACTOR_LEN, GIT_TIMEOUT_S, GIT_SCOPES, CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV,
+    ACTOR_ENV, MAX_ACTOR_LEN, CI_ENV_MARKERS, PROVIDER_ACCOUNT_ENV,
 )
 ```
-`ActorInfo` (additive, `store/model.py`): `id`, `source` (`env`|`git`|`os`|`unknown`), `ci: str |
+`ActorInfo` (additive, `store/model.py`): `id`, `source` (`env`|`os`|`unknown`), `ci: str |
 None`, `provider_accounts: dict[str, str]`. It is an **identity, never a credential**:
 `PROVIDER_ACCOUNT_ENV` names only variables that carry an *account* (`ANTHROPIC_ACCOUNT`,
 `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) — an API-key variable is never read, and its presence is

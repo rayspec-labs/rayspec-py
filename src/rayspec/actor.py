@@ -1,18 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Who acted — the local identity rayspec stamps on a run and on an approval decision.
 
-Module boundary: resolving an **identity** from the process environment, the repository's git
-configuration and the operating system. Three rules hold here and nowhere else has to repeat
-them:
+Module boundary: resolving an **identity** from the process environment and the operating
+system. Four rules hold here and nowhere else has to repeat them:
 
 * it is an identity, never a credential — no token, key or password is read, derived or
   recorded (a provider account is taken only from variables that *name* an account, never from
   the ones that carry the secret);
-* no source is one the run can write to — in particular a repository's own git configuration is
-  never read, because a run's worktree shares it with the repository (see :func:`git_email`);
+* **an identity is only evidence if the audited code could not have chosen it.** No git
+  configuration is read, in any scope: a run's ``shell:`` steps and its agents execute with the
+  user's own ``$HOME`` and inside the repository the worktree came from, so ``git config
+  user.email …`` — global, system or repository-local — is one command in one step. The
+  environment of the process that decides is not reachable that way, and neither is the
+  operating-system user (see :func:`os_user`);
 * nothing here opens a socket: every answer is available on the machine the run happens on;
-* it never raises — an unreadable git config or a missing ``git`` binary simply falls through
-  to the next source.
+* it never raises — a source that cannot answer simply falls through to the next one.
+
+Somebody who wants a per-project or per-person identity sets :data:`ACTOR_ENV` in the shell that
+launches the run or answers the gate. That is a decision taken outside the run, which is exactly
+what makes it worth recording.
 
 The record shape (:class:`~rayspec.store.model.ActorInfo`) lives with the rest of ``run.json``;
 this module only fills it in.
@@ -31,11 +37,6 @@ from rayspec.textsafe import safe_text
 ACTOR_ENV = "RAYSPEC_ACTOR"
 #: Longest identity recorded; anything longer is truncated with an ellipsis.
 MAX_ACTOR_LEN = 256
-#: Seconds a ``git config`` lookup may take before the resolver gives up on it.
-GIT_TIMEOUT_S = 5.0
-#: The git configuration scopes an identity may come from, in order. Repository-local
-#: configuration is absent on purpose — see :func:`git_email`.
-GIT_SCOPES: tuple[str, ...] = ("--global", "--system")
 
 #: ``(variable, label)`` pairs, most specific first: the first variable whose value is truthy
 #: names the CI system. ``CI`` is last because every one of the others sets it too.
@@ -107,45 +108,29 @@ def provider_accounts(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return out
 
 
-def git_email() -> str | None:
-    """``user.email`` from the git configuration **outside any repository**.
-
-    :data:`GIT_SCOPES` in order — the user's own configuration, then the machine's. The
-    repository is deliberately never asked: a run's worktree shares ``.git/config`` with the
-    repository it was made from, so one ``git config user.email …`` in a shell step or by an
-    agent would pick the identity stamped on the human's next approval. An identity the audited
-    code can choose is worse than no identity at all, because the ledger presents it as one git
-    itself derived. Somebody who wants a per-project identity sets :data:`ACTOR_ENV`.
-
-    Never raises: a missing ``git`` binary, an unreadable configuration or a timeout is simply
-    "no answer from git".
-    """
-    try:
-        from rayspec.workspace.errors import GitError
-        from rayspec.workspace.git import run_git
-    except ImportError:  # the workspace layer is optional; the OS user still answers
-        return None
-    for scope in GIT_SCOPES:
-        try:
-            result = run_git(
-                ["config", scope, "--get", "user.email"], None, check=False, timeout=GIT_TIMEOUT_S
-            )
-        except (GitError, OSError):
-            return None
-        if result.ok:
-            identity = clean_identity(result.stdout)
-            if identity is not None:
-                return identity
-    return None
-
-
 def os_user(env: Mapping[str, str] | None = None) -> str | None:
-    """The operating-system user, from :func:`getpass.getuser` or the usual variables."""
+    """The operating-system user: the account database first, the usual variables after.
+
+    :func:`getpass.getuser` consults ``LOGNAME``/``USER``/… *before* the account database, so it
+    answers with whatever the caller's environment says. That is fine as a fallback and wrong as
+    a first choice: ``source: "os"`` should mean the operating system said so. The user database
+    is asked first where it exists (POSIX), and only a platform without it — or a uid with no
+    entry, as in a container run under a random uid — falls through to the environment.
+
+    Never raises: every lookup that can fail is a lookup that may return ``None``.
+    """
     env = os.environ if env is None else env
     try:
-        name = clean_identity(getpass.getuser())
-    except (KeyError, OSError):
+        import pwd  # POSIX only, and needed nowhere else
+
+        name = clean_identity(pwd.getpwuid(os.getuid()).pw_name)
+    except (ImportError, AttributeError, KeyError, OSError):  # no pwd (Windows), no entry
         name = None
+    if name is None:
+        try:
+            name = clean_identity(getpass.getuser())
+        except (KeyError, OSError):
+            name = None
     if name is not None:
         return name
     for variable in _USER_ENV:
@@ -156,12 +141,13 @@ def os_user(env: Mapping[str, str] | None = None) -> str | None:
 
 
 def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
-    """Who is running this — :data:`ACTOR_ENV`, else the git identity, else the OS user.
+    """Who is running this — :data:`ACTOR_ENV`, else the OS user, else ``"unknown"``.
 
-    Every source is one a *run* cannot reach: this process's environment, the user's own git
-    configuration (:func:`git_email`, never a repository's) and the operating-system user.
-    There is deliberately no parameter for a directory, because the only directories on offer
-    at the call sites are ones the run itself had write access to.
+    Two sources, both outside the reach of the code being audited: the environment of *this*
+    process (the shell that launched the run or answered the gate) and the operating-system user
+    (:func:`os_user`). A git ``user.email`` is deliberately not among them, in any scope — see
+    the module docstring. There is likewise no parameter for a directory, because the only
+    directories on offer at the call sites are ones the run itself had write access to.
 
     The result also carries the CI system, when this is one, and the provider accounts the
     environment names. It is an identity for a log, not an authorisation: nothing in rayspec
@@ -170,8 +156,6 @@ def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
     env = os.environ if env is None else env
     identity = clean_identity(env.get(ACTOR_ENV))
     source = "env"
-    if identity is None:
-        identity, source = git_email(), "git"
     if identity is None:
         identity, source = os_user(env), "os"
     if identity is None:
@@ -187,13 +171,10 @@ def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
 __all__ = [
     "ACTOR_ENV",
     "CI_ENV_MARKERS",
-    "GIT_SCOPES",
-    "GIT_TIMEOUT_S",
     "MAX_ACTOR_LEN",
     "PROVIDER_ACCOUNT_ENV",
     "clean_identity",
     "detect_ci",
-    "git_email",
     "os_user",
     "provider_accounts",
     "resolve_actor",

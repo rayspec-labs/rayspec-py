@@ -255,8 +255,9 @@ class Runner:
                 await to_thread.run_sync(self._refresh_head_sha)
             # the ``ps`` probe is a blocking subprocess call — keep it off the event loop
             pid_started_at = await to_thread.run_sync(process_start_time, os.getpid())
-            # who is launching this — a git-config lookup, so it stays off the event loop too;
-            # a resume keeps the actor the record already carries and needs no lookup at all
+            # who is launching this — an account-database lookup, which a directory service
+            # can make slow, so it stays off the event loop too; a resume keeps the actor the
+            # record already carries and needs no lookup at all
             actor = None if self.resume_run_id else await to_thread.run_sync(self._resolve_actor)
             run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at, actor)
         except BaseException:
@@ -420,10 +421,11 @@ class Runner:
             )
 
     def _resolve_actor(self) -> ActorInfo:
-        """Who is launching this run (blocking: may shell out to ``git config``).
+        """Who is launching this run (blocking: an account-database lookup can be slow).
 
-        Resolved from this process and the user's own git configuration only — never from the
-        workspace, which the run is about to write to.
+        Resolved from this process's environment and the operating-system user only — never from
+        the workspace the run is about to write to, and never from a git configuration, which one
+        ``shell:`` step can rewrite in any scope.
         """
         return resolve_actor()
 
@@ -492,8 +494,8 @@ class Runner:
 
         ``pid_started_at`` is this process's start time (:func:`process_start_time`, computed by
         the caller off the event loop), recorded next to ``pid`` for ``rayspec cancel``.
-        ``actor`` is who launched the run (also resolved off the event loop — it may shell out
-        to ``git config``); it is stamped on a FRESH record only, so a resume by somebody else
+        ``actor`` is who launched the run (also resolved off the event loop — an account-database
+        lookup can be slow); it is stamped on a FRESH record only, so a resume by somebody else
         never rewrites who started the run.
         """
         workflow = self.resolved.workflow
