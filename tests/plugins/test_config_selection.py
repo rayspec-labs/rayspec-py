@@ -155,3 +155,32 @@ def test_an_unknown_approval_id_fails_even_without_a_tty(tmp_path: Path, home: P
     assert result.exit_code == 2, result.output
     assert "unknown approval 'nope'" in result.output
     assert "available approvals: console" in result.output
+
+
+def test_a_configured_sink_observes_the_rest_of_a_paused_run(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """`approve` resumes the run in-process, so the configured sinks apply there too."""
+    events = tmp_path / "events.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    project = _project(
+        tmp_path,
+        APPROVE_WORKFLOW,
+        f"extensions:\n  sinks: [recorder]\n  settings:\n    recorder: {{path: {events}}}\n",
+    )
+    paused = _run(["run", "demo", "--root", str(project), "--no-interactive"])
+    assert paused.exit_code == 3, paused.output
+    first = events.read_text(encoding="utf-8").splitlines()
+    assert "run.paused" in first
+    match = re.search(r"\d{8}-\d{6}-[a-z0-9]+", paused.output)
+    assert match, paused.output
+
+    approved = _run(["approve", match.group(0), "--root", str(project)])
+    assert approved.exit_code == 0, approved.output
+    rest = events.read_text(encoding="utf-8").splitlines()[len(first) :]
+    assert "run.resumed" in rest  # the resumed half of the run reaches the sink too
+    assert "run.finished" in rest

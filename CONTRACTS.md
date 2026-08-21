@@ -1826,7 +1826,10 @@ in configuration order; `extensions.approval` replaces the interactive prompt
 default path is byte-identical to before; the factory is handed the CLI's stderr `Console` as
 `ApprovalContext.console`); an unknown id is a usage error (exit 2) with did-you-mean before the
 run starts, for both keys and whether or not the run is interactive — a non-interactive run
-resolves the approval id it will not use, so a typo fails on a machine without a TTY too. There is deliberately no `store:` key: the run-management
+resolves the approval id it will not use, so a typo fails on a machine without a TTY too.
+`rayspec run` and the in-process resume behind `approve`/`reject`/`resume`
+(`_runs_common.resume_run_in_process`) build sinks and prompt the same way, so a run that paused
+at a gate delivers the rest of its events — `run.finished` included — to the configured sinks. There is deliberately no `store:` key: the run-management
 commands read `$RAYSPEC_HOME/projects/<slug>/runs/` directly, so a non-file store is an
 embedding seam (`Runner(store=create_store(...))`) until they go through the registry too.
 

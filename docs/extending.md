@@ -266,7 +266,9 @@ not a terminal; `--quiet` swaps it for a problems-only line sink), `JsonStdoutSi
 `CollectingSink` (tests), `NullSink`, `MultiSink` (fan-out).
 
 Registered ids: `console`, `json`, `quiet`, `null` — plus anything installed under
-`rayspec.sinks`. `extensions.sinks` in `config.yaml` names the ones a run adds; when embedding,
+`rayspec.sinks`. `extensions.sinks` in `config.yaml` names the ones a run adds — including the
+half of a run that happens after a pause, so `rayspec approve`/`reject`/`resume` deliver the
+remaining events and the final `run.finished` to the same sinks `rayspec run` did; when embedding,
 `rayspec.events.create_sink(id, SinkContext(...))` resolves one and
 `Runner(sinks=MultiSink([...]))` takes whatever you built yourself. Persistence is not a sink:
 the store owns `events.jsonl` / `stream.jsonl`.
