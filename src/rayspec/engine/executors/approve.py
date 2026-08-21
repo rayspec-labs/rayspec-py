@@ -1,20 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """``approve:`` executor — the human gate.
 
-Flow: ``--yes`` / dry run ⇒ auto-approve (``by: "--yes"``) · a stored ``pause.decision`` whose
-token matches this gate ⇒ consumed · otherwise **quiesce** (close the launch gate, wait until
-no leaf is active), then a TTY prompt (injected :class:`ApprovalPrompt`) when interactive, else
-write ``PauseInfo{token="<path>#<attempt>"}``, emit ``run.paused`` and signal
-:class:`RunPaused` (exit 3). Reject: ``on_reject`` cancel (default) ⇒ step ``rejected`` +
+Flow: a stored ``pause.decision`` whose token matches this gate ⇒ consumed · an automatic
+approval the gate's :mod:`approval class <rayspec.engine.approval_classes>` permits (``--yes``,
+a dry run, ``--approve-class``, ``auto_if``) ⇒ approved with that path as ``decision.by`` ·
+otherwise **quiesce** (close the launch gate, wait until no leaf is active), then a TTY prompt
+(injected :class:`ApprovalPrompt`) when interactive, else write
+``PauseInfo{token="<path>#<attempt>"}``, emit ``run.paused`` and signal :class:`RunPaused`
+(exit 3). Reject: ``on_reject`` cancel (default) ⇒ step ``rejected`` +
 :class:`RunStopped(cancelled)` · continue ⇒ succeeded with ``approved: false`` · fail ⇒ failed.
 The step output is the approver's comment (``''`` if none).
+
+The class rules are checked HERE, at the one place a gate is actually decided, rather than
+where a flag is parsed — an automatic approval that the class forbids is dropped (with a
+warning naming the rule) and the gate goes on to ask a human, whatever combination of flags
+asked for it. ``auto_if`` is not even evaluated for a class that may not be approved
+automatically, so an expression can never escalate a gate. A **rejection** is never
+constrained by a class.
 
 Simultaneous gates are handled one at a time (``Runtime.approval_lock`` is held from closing
 the launch gate until the decision or pause is recorded); when the run is already pausing at
 another gate, a later gate pauses too but does not overwrite ``run.pause`` (the decision slot
 belongs to the first gate; the later one asks again on resume).
 
-Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job.
+Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job and
+the rules are :mod:`rayspec.engine.approval_classes`'.
 """
 
 from __future__ import annotations
@@ -24,6 +34,15 @@ import json
 import anyio
 
 from rayspec.engine.approval import ApprovalAnswer, ApprovalNeed, ApprovalRequest
+from rayspec.engine.approval_classes import (
+    BY_AUTO_IF,
+    BY_TTY,
+    ApprovalClasses,
+    automatic_by,
+    out_of_band_refused,
+    prompt_not_a_terminal,
+    waiver_refused,
+)
 from rayspec.engine.context import (
     ExecScope,
     RunContext,
@@ -109,23 +128,37 @@ async def run_approve(
         record.error = error_info(exc, type_="render")
         return StepOutcome(record=record)
 
+    classes = ctx.options.approval_classes
+    class_name = spec.class_
     answer: ApprovalAnswer | None = None
     by = "cli"
     decision = stored_decision(ctx, path, record.attempts)
+    if (
+        decision is not None
+        and decision.approved
+        and not classes.may_decide_out_of_band(class_name)
+    ):
+        # `rayspec approve` can be scripted; `require_tty` says this gate may not be. A
+        # rejection is always honoured, so only an approval is dropped here.
+        await ctx.warn(out_of_band_refused(class_name, step_path=path), step_path=path)
+        decision = None
     if decision is not None:
         answer = ApprovalAnswer(decision.approved, decision.comment)
         by = decision.by
     else:
         record.attempts += 1
-        if ctx.options.yes or ctx.options.dry_run:
+        automatic = await _automatic(step, scope, ctx, record, classes)
+        if isinstance(automatic, StepOutcome):  # auto_if did not evaluate
+            return automatic
+        if automatic is not None:
             answer = ApprovalAnswer(True, "")
-            by = "--yes" if ctx.options.yes else "dry-run"
+            by = automatic
         else:
             async with ctx.runtime.approval_lock:  # one gate at a time
-                answer = await _ask(step, scope, ctx, record, message)
+                answer = await _ask(step, scope, ctx, record, message, classes=classes)
                 if answer is None:
                     return await _pause(ctx, record, message)
-            by = "tty"
+            by = BY_TTY
     if ctx.run.pause is not None and ctx.run.pause.step == path:
         # this gate owned the pause slot: any decision (stored, --yes, dry-run, TTY) clears it
         ctx.run.pause = None
@@ -158,8 +191,55 @@ async def run_approve(
     return outcome
 
 
+async def _automatic(
+    step: ApproveStep,
+    scope: ExecScope,
+    ctx: RunContext,
+    record: StepRecord,
+    classes: ApprovalClasses,
+) -> str | StepOutcome | None:
+    """The ``decision.by`` of an automatic approval this gate's class permits.
+
+    ``None`` means "ask a human"; a :class:`StepOutcome` means ``auto_if`` could not be
+    evaluated and the gate has failed. Every automatic path this invocation asked for is
+    refused as a whole when the class forbids automatic approval — and ``auto_if`` is then not
+    evaluated at all, which is what makes "an expression can never escalate a gate" a property
+    of the code rather than of the expression.
+    """
+    spec = step.approve
+    class_name = spec.class_
+    path = record.path
+    blanket = automatic_by(classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run)
+    if not classes.may_approve_automatically(class_name):
+        waiver = blanket or (BY_AUTO_IF if spec.auto_if is not None else None)
+        if waiver is not None:
+            rules = classes.rules_for(class_name)
+            await ctx.warn(
+                waiver_refused(class_name, rules, waiver=waiver, step_path=path), step_path=path
+            )
+        return None
+    if blanket is not None:
+        return blanket
+    if spec.auto_if is None:
+        return None
+    try:
+        approved = ctx.engine.eval_bool(spec.auto_if, ctx.template_context(scope))
+    except TemplateRenderError as exc:
+        record.status = StepStatus.FAILED
+        record.ok = False
+        record.error = error_info(exc, type_="render")
+        return StepOutcome(record=record)
+    return BY_AUTO_IF if approved else None
+
+
 async def _ask(
-    step: ApproveStep, scope: ExecScope, ctx: RunContext, record: StepRecord, message: str
+    step: ApproveStep,
+    scope: ExecScope,
+    ctx: RunContext,
+    record: StepRecord,
+    message: str,
+    *,
+    classes: ApprovalClasses,
 ) -> ApprovalAnswer | None:
     """Quiesce, then ask the injected prompt (TTY) or return ``None`` to pause."""
     rt = ctx.runtime
@@ -168,6 +248,14 @@ async def _ask(
         await rt.wait_quiesced()
         prompt = ctx.approval_prompt
         if prompt is None or not ctx.options.interactive:
+            return None
+        if not classes.may_prompt(step.approve.class_):
+            # `extensions.approval` replaced the terminal prompt; `require_tty` does not accept
+            # a substitute, so the gate pauses instead of being answered by one
+            await ctx.warn(
+                prompt_not_a_terminal(step.approve.class_, step_path=record.path),
+                step_path=record.path,
+            )
             return None
         request = ApprovalRequest(
             run_id=ctx.run.run_id,
