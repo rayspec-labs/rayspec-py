@@ -18,8 +18,10 @@ files on the machine it runs on and nothing else.
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import os
+import stat
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -337,6 +339,37 @@ def _label(path: Path, project_root: Path | None, home: Path) -> str:
         return str(path)
 
 
+def _unusable(path: Path) -> str | None:
+    """What is wrong with ``path`` as a policy file, or ``None`` when it is a regular file.
+
+    ``"missing"`` is the one answer that means "no such layer"; everything else describes a path
+    that exists in *some* shape and therefore must not be skipped. ``Path.is_file()`` cannot be
+    used here: it answers ``False`` — swallowing the error — for a dangling symlink, a symlink
+    loop, a directory and an unreadable parent alike, which is exactly how a guardrail disappears
+    without anyone noticing.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return "missing"
+    except OSError as exc:
+        return f"cannot be read: {exc.strerror or exc}"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            info = os.stat(path)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return "is a symlink loop"
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                return "is a dangling symlink"
+            return f"is a symlink that cannot be resolved: {exc.strerror or exc}"
+    if stat.S_ISDIR(info.st_mode):
+        return "is a directory"
+    if not stat.S_ISREG(info.st_mode):
+        return "is not a regular file"
+    return None
+
+
 def _read_layer(candidate: PolicyPath, label: str) -> PolicyLayer:
     """Parse one policy document; every failure becomes a :class:`PolicyError`."""
     # lazy: rayspec.loader imports rayspec.policy (the validator's policy pass) — importing the
@@ -389,13 +422,20 @@ def load_policy(
     seen: set[Path] = set()
     for candidate in policy_paths(root, home, env):
         label = _label(candidate.path, root, Path(home))
-        if not candidate.path.is_file():
+        unusable = _unusable(candidate.path)
+        if unusable == "missing":
             if candidate.name == POLICY_ENV:
                 raise PolicyError(
                     f"{label}: no such policy file ({POLICY_ENV} names it)",
                     hint=f"unset {POLICY_ENV} or point it at a file that exists",
                 )
             continue
+        if unusable is not None:
+            raise PolicyError(
+                f"{label}: policy file {unusable}",
+                hint="remove the path or make it a readable policy.yaml — a policy that cannot "
+                "be read is never treated as an empty policy",
+            )
         try:
             key = candidate.path.resolve()
         except OSError:  # pragma: no cover - resolve() on a live file

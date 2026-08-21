@@ -152,3 +152,54 @@ def test_the_same_file_named_twice_counts_once(tree: Tree) -> None:
     path = tree.policy("providers:\n  allow: [claude]\n")
     eff = load_policy(tree.root, home=tree.home, environ={"RAYSPEC_POLICY": str(path)})
     assert [layer.name for layer in eff.layers] == ["RAYSPEC_POLICY"]
+
+
+def test_a_policy_path_that_is_a_directory_is_an_error(tree: Tree) -> None:
+    """A layer that exists in some shape but is not a readable file must never be dropped."""
+    (tree.rayspec / "policy.yaml").mkdir(parents=True)
+    with pytest.raises(PolicyError) as exc:
+        load_policy(tree.root, home=tree.home, environ={})
+    assert "is a directory" in str(exc.value)
+    assert ".rayspec/policy.yaml" in str(exc.value)
+
+
+def test_a_dangling_symlink_policy_is_an_error(tree: Tree) -> None:
+    tree.rayspec.mkdir(parents=True, exist_ok=True)
+    (tree.rayspec / "policy.yaml").symlink_to(tree.rayspec / "gone.yaml")
+    with pytest.raises(PolicyError) as exc:
+        load_policy(tree.root, home=tree.home, environ={})
+    assert "dangling symlink" in str(exc.value)
+
+
+def test_a_symlink_loop_policy_is_an_error(tree: Tree) -> None:
+    tree.rayspec.mkdir(parents=True, exist_ok=True)
+    (tree.rayspec / "policy.yaml").symlink_to(tree.rayspec / "policy.yaml")
+    with pytest.raises(PolicyError) as exc:
+        load_policy(tree.root, home=tree.home, environ={})
+    assert "symlink loop" in str(exc.value)
+
+
+def test_the_user_layer_is_guarded_the_same_way(tree: Tree) -> None:
+    (tree.home / "policy.yaml").mkdir(parents=True)
+    with pytest.raises(PolicyError) as exc:
+        load_policy(tree.root, home=tree.home, environ={})
+    assert "is a directory" in str(exc.value)
+
+
+def test_a_broken_layer_is_refused_through_the_cli(tree: Tree, monkeypatch) -> None:
+    """The shape that matters: `rayspec validate` must not print OK when a layer vanished."""
+    from typer.testing import CliRunner
+
+    from rayspec.cli.app import app
+
+    monkeypatch.setenv("RAYSPEC_HOME", str(tree.home))
+    tree.workflow("wf", "rayspec: 1\nname: wf\nsteps:\n  - {id: go, shell: echo hi}\n")
+    tree.rayspec.mkdir(parents=True, exist_ok=True)
+    (tree.rayspec / "policy.yaml").symlink_to(tree.rayspec / "gone.yaml")
+    result = CliRunner().invoke(app, ["validate", "wf", "--root", str(tree.root)])
+    assert result.exit_code == 2, result.output
+    assert "dangling symlink" in result.output
+
+
+def test_a_genuinely_absent_layer_is_still_just_absent(tree: Tree) -> None:
+    assert load_policy(tree.root, home=tree.home, environ={}).is_empty
