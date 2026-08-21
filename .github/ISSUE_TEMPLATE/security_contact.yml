@@ -1,0 +1,34 @@
+name: Security contact (no details)
+description: Only when GitHub's private reporting form is unavailable to you. Say how to reach you — nothing else.
+title: "Security report — please open a private thread"
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        **Use
+        [private vulnerability reporting](https://github.com/rayspec-labs/rayspec-py/security/advisories/new)
+        instead if you can.** This form exists only for the case SECURITY.md describes: the private
+        form is not available to you.
+
+
+        **Do not describe the issue here.** This tracker is public and for this project a
+        reproduction is a working exploit. No steps, no affected version, no code, no logs — just a
+        way to reach you. I will open the private thread from there and we continue in it.
+  - type: input
+    id: contact
+    attributes:
+      label: How to reach you
+      description: >-
+        An email address, or a handle on a platform where I can message you. Nothing about the
+        issue itself.
+      placeholder: you@example.com
+    validations:
+      required: true
+  - type: checkboxes
+    id: no-details
+    attributes:
+      label: Confirm
+      options:
+        - label: I have not described the vulnerability anywhere in this issue.
+          required: true

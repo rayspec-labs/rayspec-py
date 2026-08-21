@@ -30,6 +30,7 @@ PR_TEMPLATE = GITHUB_DIR / "PULL_REQUEST_TEMPLATE.md"
 BUG_REPORT = GITHUB_DIR / "ISSUE_TEMPLATE" / "bug_report.yml"
 FEATURE_REQUEST = GITHUB_DIR / "ISSUE_TEMPLATE" / "feature_request.yml"
 QUESTION = GITHUB_DIR / "ISSUE_TEMPLATE" / "question.yml"
+SECURITY_CONTACT = GITHUB_DIR / "ISSUE_TEMPLATE" / "security_contact.yml"
 ISSUE_CONFIG = GITHUB_DIR / "ISSUE_TEMPLATE" / "config.yml"
 CI_WORKFLOW = GITHUB_DIR / "workflows" / "ci.yml"
 
@@ -582,3 +583,37 @@ def test_security_gives_a_reporter_a_route_when_the_private_form_is_unavailable(
     )
     for claim in ("not available to you", "no reproduction", "no details"):
         assert claim in flat, f"SECURITY.md does not tell a blocked reporter what to do: {claim!r}"
+
+
+def test_the_security_fallback_path_is_actually_reachable() -> None:
+    """SECURITY.md promises a route for a reporter the private form is closed to — it must exist.
+
+    It did not. The page told a blocked reporter to "open an issue saying that you have a security
+    report and how to reach you, and nothing else", while `blank_issues_enabled: false` removed the
+    blank-issue escape and every offered form required details. The documented path was impossible
+    to take, which for a security page is worse than having no fallback at all.
+    """
+    security = SECURITY.read_text(encoding="utf-8")
+    assert "Security contact (no details)" in security, (
+        "SECURITY.md must name the form that implements its fallback"
+    )
+    assert SECURITY_CONTACT.is_file(), f"{SECURITY_CONTACT} is missing"
+
+    form = yaml.safe_load(SECURITY_CONTACT.read_text(encoding="utf-8"))
+    assert form["name"] == "Security contact (no details)"
+    required = [
+        field
+        for field in form["body"]
+        if field.get("validations", {}).get("required")
+        or any(option.get("required") for option in field.get("attributes", {}).get("options", []))
+    ]
+    ids = {field.get("id") for field in required}
+    assert "contact" in ids, "the form must require a way to reach the reporter"
+    # Nothing in the form may ask for the vulnerability itself.
+    labels = " ".join(
+        str(field.get("attributes", {}).get("label", "")) for field in form["body"]
+    ).lower()
+    for forbidden in ("reproduc", "steps", "version", "logs", "what happened"):
+        assert forbidden not in labels, (
+            f"the security-contact form must not ask for {forbidden!r} — this tracker is public"
+        )

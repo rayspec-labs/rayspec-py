@@ -26,9 +26,9 @@ not open a public issue, a discussion or a pull request for anything you believe
 the tracker is public, and for this project a reproduction *is* a working exploit.
 
 If that form is not available to you — GitHub offers private reporting on public repositories only,
-and a maintainer can switch it off — open an issue saying that you have a security report and how
-to reach you, and nothing else: no reproduction, no affected version, no details. I will open the
-private thread from there.
+and a maintainer can switch it off — use the **Security contact (no details)** issue form. It asks
+for one thing, a way to reach you, and requires you to confirm you have described nothing: no
+reproduction, no affected version, no details. I will open the private thread from there.
 
 Useful in a report, roughly in order:
 
