@@ -13,8 +13,8 @@ from typer.testing import CliRunner
 from rayspec.cli.app import app
 from rayspec.cli.commands._loader_common import OutputFormat, resolve_output
 
-#: Commands that still take `--json` alone. `show` belongs to a different work stream's file;
-#: anything else appearing here means a new command skipped `OutputOption`.
+#: Commands that still take `--json` alone. Anything appearing here that is not already listed
+#: means a new command skipped `OutputOption`.
 KNOWN_GAPS = {"show"}
 
 #: What a command has to add: `output: OutputOption = None` plus one `resolve_output` line.

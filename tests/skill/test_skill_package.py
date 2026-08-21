@@ -92,7 +92,7 @@ def test_contracts_md_documents_the_public_surface() -> None:
         "rayspec skill install [--global] [--force] [--root DIR]",
         "rayspec skill show [--root DIR] [--json]",
         "rayspec skill path",
-        "rayspec init [--kind code|content] [--force] [--no-skill] [--root DIR]",
+        "rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]",
         "next_steps(kind, *,\n  skill=True)",
     ):
         assert needle in text, needle

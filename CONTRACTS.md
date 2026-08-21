@@ -27,6 +27,7 @@ src/rayspec/
                register(app). app.py auto-discovers them — never edit app.py.
   cli/_runs_common.py + cli/commands/{runs,show,logs,resume,approve,reject,cancel}.py
   cli/commands/{init,doctor}.py + cli/templates/<kind>/**
+  cli/commands/{new,completion}.py + cli/templates/new/** + the packaged examples corpus
   cli/_docs.py  DOCS_BASE + docs_url(rel) — the only way a hint cites a doc
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
@@ -1398,8 +1399,8 @@ CLI surface:
 `src/rayspec/cli/commands/{init,doctor}.py`; scaffold templates are package data under
 `src/rayspec/cli/templates/<kind>/**` (read with `importlib.resources`; one directory per kind).
 
-- `rayspec init [--kind code|content] [--force] [--no-skill] [--root DIR]` copies the `<kind>`
-  tree into `<root>/.rayspec/` (`workflows/example.yaml`, `agents/reviewer.yaml`,
+- `rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]`
+  copies the `<kind>` tree into `<root>/.rayspec/` (`workflows/example.yaml`, `agents/reviewer.yaml`,
   `prompts/*.md`, `config.yaml`, `stubs/example.yaml`; `workflows/agents/prompts/stubs` dirs
   always created) and — unless `--no-skill` — the packaged coding-agent
   skill into `<root>/.claude/skills/rayspec/` (`rayspec.skill.install_skill(project_skill_dir
@@ -1427,6 +1428,29 @@ CLI surface:
   `GIT_DEPENDENT_KINDS = {"code"}`, `non_git_warning(target, kind) -> str | None` — the `code`
   scaffold outside a git checkout prints that stderr `warning:` (names `git init` and
   `rayspec init --kind content`), exit stays 0; `content` is silent.
+- `rayspec init --from <example>` scaffolds one of the packaged **example projects** instead of a
+  `--kind` template: every file of `examples/<name>/` except `checks.yaml` (repository test data),
+  copied verbatim to the same relative path — `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml` and
+  `README.md` land at the root. Same `ScaffoldFile` actions, same `--force`/`--no-skill`/`--root`
+  behaviour and the same `error: cannot write the scaffold: …` mapping as `scaffold()`; the
+  kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
+  unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
+  `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars).
+  The corpus is package data: `pyproject.toml`'s
+  `[tool.hatch.build.targets.wheel.force-include]` maps the repository's `examples/` to
+  `rayspec/examples`, so `--from` works from a bare `uv tool install rayspec`; in a source
+  checkout `examples_root()` falls back to the repository directory four levels above the module
+  (guarded by a sibling `pyproject.toml`). Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`,
+  `examples_root() -> Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with
+  a `.rayspec/`), `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
+  `scaffold_example(root, name, *, force=False) -> list[ScaffoldFile]`, `example_catalogue() ->
+  [(name, description)]`, `unknown_example_hint(name)`, `example_dry_run(name) -> str | None`,
+  `example_next_steps(name, *, skill=True)`. `example_dry_run` reads the example's `checks.yaml`
+  and renders the **first scenario that scripts the agents** as a shell command (`rayspec run <wf>
+  [-i k=v]* [--allow-unsupported] --dry-run --stubs <file>`, `shlex.quote`d; scenarios that
+  declare `validate:`/`run: false` or carry a non-scalar input are skipped) — the printed next
+  step is therefore a command the example's own checks assert green, and
+  `tests/cli/test_init_cmd.py` runs the printed line for every example.
 - `rayspec doctor [--probe] [--provider ID]... [--json] [--root DIR]` loads `.env` + config like
   the project commands (tolerant: a broken config is the failed `config` check, not a crash) and
   collects `Check(id, label, status ∈ ok|warn|fail|info, detail, required, hint)` rows in a
@@ -1466,6 +1490,79 @@ CLI surface:
   `codex_checks(settings)`, `pricing_check(provider_id, config) -> Check | None`,
   `pricing_checks(ids, config)`, `probe_checks(ids, config)`, `find_claude_cli`, `find_codex_cli`,
   `known_claude_locations`, `version_of(cmd, *, timeout_s=5)`, `parse_version`, `render_table`.
+
+### CLI `new`
+`src/rayspec/cli/commands/new.py`; templates are package data under `cli/templates/new/`
+(`workflow.yaml`, `workflow_agent.yaml`, `agent.yaml`), rendered by literal `__NAME__` /
+`__AGENT__` / `__DESCRIPTION__` substitution — never Jinja, because the documents themselves are
+Jinja.
+
+- `rayspec new workflow <name> [--agent NAME] [--description TEXT] [--force] [--root DIR]` writes
+  `.rayspec/workflows/<name>.yaml`; `rayspec new agent <name> [--force] [--root DIR]` writes
+  `.rayspec/agents/<name>.yaml`. `rayspec new` with no subcommand ⇒ help, exit 2. Both print
+  `created`/`overwrote  <relative path>` plus a next-steps block, and both refuse an existing file:
+  exit 2 `error: <relative path> already exists` + `hint: pass --force to overwrite it`.
+- The project is `--root` or `find_project_root(cwd)` — the project-command walk-up, unlike
+  `init`'s cwd-only rule — and a directory without `.rayspec/` is exit 2 (`… is not a rayspec
+  project (no .rayspec/ directory)`, hint `rayspec init`): `new` grows a project, it never creates
+  one. `<name>` is checked with the loader's own validators (`validate_identifier` for a workflow,
+  `validate_name` for an agent) before anything is written, so the file name and the document's
+  `name:` cannot disagree.
+- With `--agent NAME` the workflow references `.rayspec/agents/<NAME>.yaml` and ships no inline
+  `agents:` block (a second template); without it the workflow carries one inline agent named
+  `assistant`. The rendered workflow validates and dry-runs as written
+  (`tests/cli/test_new_cmd.py`).
+- Python surface: `KINDS = {kind: (subdir, template file)}`, `DEFAULT_DESCRIPTION`,
+  `workflow_text(name, *, agent=None, description="")`, `agent_text(name)`, `yaml_scalar(text)`
+  (a one-line YAML scalar, quoted when it must be — a `--description` arrives from a shell),
+  `write_new(root, kind, name, text, *, force=False) -> NewFile(relative, path, action ∈
+  created|overwritten)` (raises `FileExistsError`/`IsADirectoryError`/`OSError`),
+  `project_root_for(root)`.
+
+### CLI `completion`
+`src/rayspec/cli/commands/completion.py` owns **everything** about shell completion; `app.py`
+keeps `add_completion=False` (Typer's `--install-completion` appends a `source` line to the user's
+shell rc file, and `--show-completion` sniffs the shell through `shellingham`; both would also sit
+in every `--help`).
+
+- `rayspec completion <bash|zsh|fish>` prints a script to stdout and nothing else. No shell ⇒
+  exit 2 `error: which shell? one of: bash, zsh, fish`; an unsupported shell ⇒ Typer's enum error,
+  exit 2.
+- `rayspec completion --values workflows|runs [--root DIR]` prints one candidate per line — what
+  the emitted script calls back for. `workflow_values(root)` = `discover_workflows`,
+  `run_values(root, *, limit=RUN_LIMIT=50)` = the project store's newest run ids. **Both return
+  `[]` and print nothing on any failure**, with stderr redirected, because a completion callback's
+  stdout is the shell's candidate list: no project, an unreadable `config.yaml` or a broken
+  workflow must never inject a diagnostic there. `--values` together with a shell is exit 2.
+- `enable_shell_completion()` calls Typer's private `completion_init()` and is invoked from
+  `register(app)` **only when `COMPLETE_VAR = "_RAYSPEC_COMPLETE"` is set** — with
+  `add_completion=False` Typer never registers its shell classes, so the protocol would answer
+  `Shell bash not supported`; gating on the variable keeps that process-global registry untouched
+  for every ordinary invocation. Returns `False` (and completion degrades to nothing) when the
+  private module is gone.
+- `completion_script(shell)` = Typer's own script for that shell plus a wrapper
+  (`_rayspec_values_completion`, bound last so it wins) that answers the two argument slots Typer
+  cannot know: `WORKFLOW_COMMANDS` (`run`, `plan`, `validate`, `test`) get workflow names,
+  `RUN_COMMANDS` (`show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `eval`, `explain`,
+  `diff`, `stubs`) get run ids; anything else falls through to Typer. No command module declares
+  an `autocompletion=` callback, so the completion seam stays in this one file.
+  `tests/cli/test_completion_cmd.py` sources the emitted script in a real `bash` and drives the
+  completion function non-interactively, and parses each script with its own shell.
+
+### CLI presentation — `--output` / `--json`
+`cli/commands/_loader_common.py`: `OutputFormat` (`table`/`json`), `OutputOption` (`--output`,
+default `None`) and `resolve_output(output, json_) -> bool`. Every command that has `--json` takes
+`output: OutputOption = None` and starts its body with `json_ = resolve_output(output, json_)`;
+nothing else about those commands changed, so `--json` behaves exactly as it always did and is
+documented as the older spelling of `--output json`. `--output` alone decides; `--json` alone
+decides; both together are fine while they agree and exit 2
+(`error: --json and --output table disagree`) when they do not — one of them silently winning
+would print a table into a pipe that asked for JSON. `rayspec runs` counts `--output` with
+`--json`/`--all`/`--limit` as a listing flag that a subcommand refuses. Two knowingly-open points:
+`rayspec show` still takes `--json` alone, and `rayspec runs stubs -o/--output PATH` predates the
+flag and keeps its own meaning (that command has no `--json`, so nothing is ambiguous).
+`tests/cli/test_output_option.py` holds the gap list and asserts `--json` and `--output json` are
+byte-identical per command.
 
 ### rayspec.skill + CLI `skill`
 The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`
