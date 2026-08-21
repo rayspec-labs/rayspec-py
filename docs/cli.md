@@ -209,7 +209,6 @@ providers: {id: {structured_output, cost_reporting, cost: provider|table|none, p
 unpriced_models, disabled_models, pricing_error?}}, errors, warnings, unsupported}` (a secret
 input's `value` is `"<secret>"`, `secret: true`).
 
-<<<<<<< HEAD
 #### `--render`: see what the agent will receive
 
 `rayspec plan <workflow> --render` prints the **rendered bodies** instead of the plan: every
@@ -244,7 +243,7 @@ With `--json` the usual plan payload gains `stubs` (the file, or `null`) and `re
 `[{path, def_path, kind, agent, model, provider, text, env, step_env, error, warnings}]`, where
 `path` is the *record* path the preview bound (`build[1]/echo`, `fan[0]/work`) and `def_path`
 the definition path.
-=======
+
 ### `rayspec test`
 
 ```
@@ -296,7 +295,6 @@ Exit `0` when every case passed, `1` when any failed, `2` for a usage error — 
 matches nothing (the known `<suite>:<case>` names are listed), no cases at all, a case that needs
 `--exec-shell`, or a malformed case file (`error: <file>:<line>: unknown field 'statuss' for
 expect; did you mean 'status'?`).
->>>>>>> origin/main
 
 ### `rayspec workflows`
 
