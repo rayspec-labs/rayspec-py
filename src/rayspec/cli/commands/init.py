@@ -167,24 +167,7 @@ def scaffold_example(root: Path, name: str, *, force: bool = False) -> list[Scaf
     both paths of ``rayspec init`` report identically. Raises :class:`LookupError` for an unknown
     example name.
     """
-    if root.exists() and not root.is_dir():
-        raise NotADirectoryError(f"{root} is not a directory")
-    files = example_files(name)
-    results: list[ScaffoldFile] = []
-    for sub in ALWAYS_DIRS:
-        (root / PROJECT_DIR / sub).mkdir(parents=True, exist_ok=True)
-    for rel, node in files:
-        target = root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_dir():
-            raise IsADirectoryError(f"{target} is a directory, expected a file (or nothing)")
-        existed = target.exists()
-        if existed and not force:
-            results.append(ScaffoldFile(rel, target, "skipped"))
-            continue
-        target.write_bytes(node.read_bytes())
-        results.append(ScaffoldFile(rel, target, "overwritten" if existed else "created"))
-    return results
+    return _place(root, example_files(name), force=force)
 
 
 def example_catalogue() -> list[tuple[str, str]]:
@@ -194,10 +177,7 @@ def example_catalogue() -> list[tuple[str, str]]:
     the loader, because the catalogue must render even for an example that deliberately fails to
     validate (``unsupported_demo``).
     """
-    rows: list[tuple[str, str]] = []
-    for name in example_names():
-        rows.append((name, _example_description(name)))
-    return rows
+    return [(name, _example_description(name)) for name in example_names()]
 
 
 def _example_description(name: str) -> str:
@@ -290,12 +270,22 @@ def scaffold(root: Path, *, kind: str = "code", force: bool = False) -> list[Sca
     without ``force``), and any other :class:`OSError` of the filesystem unchanged — the CLI
     maps them to ``error: …`` + exit 2.
     """
+    return _place(root, template_files(kind), force=force)
+
+
+def _place(root: Path, files: list[tuple[str, Traversable]], *, force: bool) -> list[ScaffoldFile]:
+    """Copy ``files`` below ``root`` (byte for byte) and report what happened to each.
+
+    The one writer behind :func:`scaffold` and :func:`scaffold_example`, so a template scaffold
+    and an example scaffold report and fail identically. The standard
+    ``.rayspec/{workflows,agents,prompts,stubs}`` directories are always created.
+    """
     if root.exists() and not root.is_dir():
         raise NotADirectoryError(f"{root} is not a directory")
-    results: list[ScaffoldFile] = []
     for sub in ALWAYS_DIRS:
         (root / PROJECT_DIR / sub).mkdir(parents=True, exist_ok=True)
-    for rel, node in template_files(kind):
+    results: list[ScaffoldFile] = []
+    for rel, node in files:
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_dir():
@@ -304,7 +294,7 @@ def scaffold(root: Path, *, kind: str = "code", force: bool = False) -> list[Sca
         if existed and not force:
             results.append(ScaffoldFile(rel, target, "skipped"))
             continue
-        target.write_text(node.read_text(encoding="utf-8"), encoding="utf-8")
+        target.write_bytes(node.read_bytes())
         results.append(ScaffoldFile(rel, target, "overwritten" if existed else "created"))
     return results
 
