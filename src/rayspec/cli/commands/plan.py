@@ -412,7 +412,12 @@ def print_risk(out: Any, rw: ResolvedWorkflow, findings: list[risk_report.Findin
     """
     out.print(f"[bold]risk report[/bold] {rw.workflow.name}  [dim]{safe_markup(rw.label)}[/dim]")
     if not findings:
-        out.print("  no risks found: nothing in this workflow leaves the workspace by itself")
+        # a statement about the ANALYSIS, never about the workflow: an empty list means no rule
+        # matched, which is not the same as "this workflow is safe"
+        out.print(
+            "  nothing matched: this report reads the workflow as written — a command a step "
+            "assembles at run time, or anything an agent decides to do, is not covered"
+        )
         return
     tally = risk_report.counts(findings)
     summary = " · ".join(f"{tally[name]} {name}" for name in risk_report.SEVERITIES)

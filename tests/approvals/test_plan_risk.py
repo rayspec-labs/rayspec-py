@@ -49,7 +49,10 @@ BENIGN = """
 rayspec: 1
 name: tidy
 agents:
-  helper: { provider: stub, access: workspace-write }
+  helper:
+    provider: stub
+    access: workspace-write
+    tools: { deny: [shell, edit] }
 steps:
   - id: build
     shell: echo building
@@ -89,7 +92,7 @@ def test_a_benign_workflow_reports_nothing(risky: Path) -> None:
     assert findings(risky, "tidy") == []
     res = risk(risky, "tidy")
     assert res.exit_code == 0
-    assert "no risks found" in res.output
+    assert "nothing matched" in res.output
 
 
 def test_every_pattern_is_flagged_on_the_dangerous_workflow(risky: Path) -> None:
@@ -207,3 +210,239 @@ def test_evidence_is_never_parsed_as_markup(tree: Tree) -> None:
     res = risk(tree.root, "markup")
     assert res.exit_code == 0, res.output
     assert "git push [/bold] origin main" in res.output
+
+
+# --------------------------------------------------------------------------------------------
+# What the analysis cannot read
+# --------------------------------------------------------------------------------------------
+
+
+TEMPLATED = """
+rayspec: 1
+name: templated
+inputs:
+  cmd: { type: string, default: "echo hi" }
+steps:
+  - id: go
+    shell: "{{ inputs.cmd }}"
+"""
+
+
+def test_a_templated_body_is_a_finding_not_silence(tree: Tree) -> None:
+    """A body assembled at run time is the one thing this report cannot read — so it says so."""
+    tree.workflow("templated", TEMPLATED)
+    found = [f for f in findings(tree.root, "templated") if f["category"] == "templated-body"]
+    assert found, findings(tree.root, "templated")
+    assert "{{ inputs.cmd }}" in found[0]["detail"]
+    assert found[0]["severity"] == "medium"
+
+
+def test_a_templated_cwd_is_a_finding(tree: Tree) -> None:
+    tree.workflow(
+        "tcwd",
+        """
+        rayspec: 1
+        name: tcwd
+        inputs:
+          dir: { type: string, default: build }
+        steps:
+          - id: go
+            cwd: "{{ inputs.dir }}"
+            shell: echo hi
+        """,
+    )
+    cats = categories(tree.root, "tcwd")
+    assert "templated-body" in cats, cats
+
+
+def test_the_empty_report_talks_about_the_analysis_not_about_the_workflow(risky: Path) -> None:
+    """An empty finding list means nothing matched, never that the workflow is safe."""
+    res = risk(risky, "tidy")
+    assert res.exit_code == 0, res.output
+    assert "leaves the workspace by itself" not in res.output
+    assert "nothing matched" in res.output
+    assert "assembles at run time" in res.output
+
+
+AGENTIC = """
+rayspec: 1
+name: agentic
+agents:
+  worker:
+    provider: stub
+    access: workspace-write
+    tools: { allow: [shell, edit, web] }
+steps:
+  - id: work
+    agent: worker
+    prompt: release the package however you see fit
+"""
+
+
+def test_an_agent_that_may_run_commands_is_reported_with_the_steps_that_use_it(
+    tree: Tree,
+) -> None:
+    tree.workflow("agentic", AGENTIC)
+    found = [f for f in findings(tree.root, "agentic") if f["category"] == "agent-tools"]
+    assert found, findings(tree.root, "agentic")
+    assert "shell" in found[0]["detail"]
+    assert "work" in found[0]["detail"]  # the step that drives it
+
+
+def test_an_agent_may_run_commands_by_default_too(tree: Tree) -> None:
+    """No `tools:` at all is not a restriction: the provider's defaults include running
+    commands, and a reviewer needs to know that."""
+    tree.workflow(
+        "default_tools",
+        """
+        rayspec: 1
+        name: default_tools
+        agents:
+          worker: { provider: stub }
+        steps:
+          - id: work
+            agent: worker
+            prompt: do the thing
+        """,
+    )
+    assert "agent-tools" in categories(tree.root, "default_tools")
+
+
+def test_an_agent_that_cannot_run_commands_is_not_reported(tree: Tree) -> None:
+    tree.workflow(
+        "read_only",
+        """
+        rayspec: 1
+        name: read_only
+        agents:
+          reader:
+            provider: stub
+            tools: { deny: [shell, edit] }
+        steps:
+          - id: work
+            agent: reader
+            prompt: read the code
+        """,
+    )
+    assert "agent-tools" not in categories(tree.root, "read_only")
+
+
+# --------------------------------------------------------------------------------------------
+# Where a finding is filed
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_private_key_read_is_outside_the_workspace_not_network(tree: Tree) -> None:
+    """`cat ~/.ssh/id_rsa` is not an ssh session; filing it under the network rule buries the
+    most dangerous line in the body under the wrong heading."""
+    tree.workflow(
+        "keys",
+        """
+        rayspec: 1
+        name: keys
+        steps:
+          - id: peek
+            shell: cat /Users/someone/.ssh/id_rsa
+        """,
+    )
+    cats = categories(tree.root, "keys")
+    assert "outside-workspace" in cats, cats
+    assert "shell-network" not in cats, cats
+
+
+def test_a_relative_escape_in_a_body_is_reported(tree: Tree) -> None:
+    tree.workflow(
+        "escape",
+        """
+        rayspec: 1
+        name: escape
+        steps:
+          - id: peek
+            shell: cat ../../.env
+        """,
+    )
+    assert "outside-workspace" in categories(tree.root, "escape")
+
+
+def test_an_absolute_read_is_reported(tree: Tree) -> None:
+    tree.workflow(
+        "abs",
+        """
+        rayspec: 1
+        name: abs
+        steps:
+          - id: peek
+            shell: cat /etc/passwd
+        """,
+    )
+    assert "outside-workspace" in categories(tree.root, "abs")
+
+
+def test_a_real_network_command_is_still_reported(tree: Tree) -> None:
+    tree.workflow(
+        "net",
+        """
+        rayspec: 1
+        name: net
+        steps:
+          - id: fetch
+            shell: |
+              curl -sS https://example.invalid/data
+              ssh build@host uptime
+        """,
+    )
+    assert "shell-network" in categories(tree.root, "net")
+
+
+def test_tmp_and_dev_are_not_reported_as_leaving_the_workspace(tree: Tree) -> None:
+    tree.workflow(
+        "quiet",
+        """
+        rayspec: 1
+        name: quiet
+        steps:
+          - id: go
+            shell: |
+              echo hi > /dev/null
+              echo hi > /tmp/scratch
+        """,
+    )
+    assert "outside-workspace" not in categories(tree.root, "quiet")
+
+
+def test_every_match_of_a_rule_is_reported_not_only_the_first(tree: Tree) -> None:
+    """Quoting the first, harmless `rm -rf` as the evidence for a body that also holds
+    `rm -rf /` misleads in the direction that matters."""
+    tree.workflow(
+        "many",
+        """
+        rayspec: 1
+        name: many
+        steps:
+          - id: clean
+            shell: |
+              rm -rf build
+              echo tidying
+              rm -rf /
+        """,
+    )
+    details = " ".join(
+        f["detail"] for f in findings(tree.root, "many") if f["category"] == "shell-delete"
+    )
+    assert "rm -rf build" in details
+    assert "rm -rf /" in details
+
+
+def test_a_raw_block_is_not_reported_as_templated(tree: Tree) -> None:
+    """`{% raw %}` is how a body keeps braces the shell needs; nothing is assembled there."""
+    tree.workflow(
+        "raw",
+        """
+        rayspec: 1
+        name: raw
+        steps:
+          - id: go
+            shell: "gh release list --template '{% raw %}{{range .}}{{.tagName}}{{end}}{% endraw %}'"
+        """,
+    )
+    assert "templated-body" not in categories(tree.root, "raw")

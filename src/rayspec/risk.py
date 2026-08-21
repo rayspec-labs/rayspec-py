@@ -27,7 +27,7 @@ from typing import Any, Final
 
 from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.loader import ResolvedWorkflow
-from rayspec.schema import ApproveStep, PythonStep, ShellStep, StepModel
+from rayspec.schema import ApproveStep, PythonStep, ShellStep, StepModel, ToolsSpec
 
 #: Severities, most serious first — the order the report is printed in.
 SEVERITIES: Final = ("high", "medium", "low")
@@ -65,16 +65,27 @@ class Finding:
 
 @dataclass(frozen=True, slots=True)
 class _Rule:
-    """A pattern over a step body, and what a match means."""
+    """A pattern over a step body, and what a match means.
+
+    ``ignore_raw`` skips matches inside a ``{% raw %}`` block — right for the rule that reports
+    *templating*, wrong for every other rule, because a shell still runs what a raw block holds.
+    """
 
     category: str
     severity: str
     pattern: re.Pattern[str]
     advice: str
+    ignore_raw: bool = False
 
 
-def _rule(category: str, severity: str, source: str, advice: str) -> _Rule:
-    return _Rule(category, severity, re.compile(source, re.IGNORECASE), advice)
+def _rule(
+    category: str, severity: str, source: str, advice: str, *, ignore_raw: bool = False
+) -> _Rule:
+    return _Rule(category, severity, re.compile(source, re.IGNORECASE), advice, ignore_raw)
+
+
+#: A ``{% raw %}…{% endraw %}`` block: text the template engine hands through untouched.
+_RAW_BLOCK: Final = re.compile(r"\{%\s*raw\s*%\}.*?\{%\s*endraw\s*%\}", re.DOTALL)
 
 
 #: Patterns applied to every ``shell:`` and ``python:`` body. A ``python:`` body reaches the
@@ -128,15 +139,21 @@ _BODY_RULES: Final[tuple[_Rule, ...]] = (
         r"(?:^|\s)~/|\$HOME\b|\bPath\.home\(\)|\bos\.path\.expanduser\b"
         r"|\bcd\s+/(?:etc|usr|var|bin|opt|Library|System)\b"
         # an absolute redirect target, but not the two every script writes to
-        r"|(?:^|\s)>>?\s*/(?!dev/|tmp/)",
+        r"|(?:^|\s)>>?\s*/(?!dev/|tmp/)"
+        # any absolute path token — a READ leaves the workspace too (`cat /etc/passwd`)
+        r"|(?:^|[\s\"'])/(?!dev\b|tmp\b)[A-Za-z0-9_.]"
+        # and a relative escape out of the step's working directory
+        r"|(?:^|[\s\"'=(])\.\./",
         "the step reads or writes outside the workspace, so worktree isolation does not contain "
         "it; use a path relative to the step's working directory",
     ),
     _rule(
         "shell-network",
         "medium",
-        r"\b(?:curl|wget|nc|ncat|ssh|scp|sftp|rsync|telnet)\b|\b(?:urllib|requests|httpx"
-        r"|http\.client|socket)\.",
+        # anchored on a COMMAND position: `cat ~/.ssh/id_rsa` names ssh but does not run it,
+        # and filing a private-key read under the network rule buries it at the wrong severity
+        r"(?:^|[;&|(]|\s)(?:sudo\s+)?(?:curl|wget|nc|ncat|ssh|scp|sftp|rsync|telnet)(?=\s|$)"
+        r"|\b(?:urllib|requests|httpx|http\.client|socket)\.",
         "the step reaches the network itself; whatever it fetches is not visible to this report",
     ),
     _rule(
@@ -160,7 +177,21 @@ _BODY_RULES: Final[tuple[_Rule, ...]] = (
         "the step shells out, so what it actually runs is assembled in Python and cannot be "
         "read off the workflow",
     ),
+    _rule(
+        "templated-body",
+        "medium",
+        r"\{\{.*?\}\}|\{%.*?%\}",
+        "the command is assembled at run time, so what this step runs is not what is written "
+        "here and is not covered by this report; read it with `rayspec plan <workflow> --render`",
+        ignore_raw=True,
+    ),
 )
+
+#: How many matches of one rule in one body are quoted before the rest are counted.
+_MATCH_CAP: Final = 3
+
+#: Tool groups that let an agent change something rather than only read it.
+_COMMAND_TOOLS: Final = ("shell", "edit")
 
 
 def _evidence(body: str, match: re.Match[str]) -> str:
@@ -180,23 +211,50 @@ def _body_of(step: StepModel) -> tuple[str, str] | None:
 
 
 def _body_findings(path: str, kind: str, body: str) -> Iterator[Finding]:
+    """Every rule that matches this body, and every distinct line each one matched.
+
+    The evidence line is what a reviewer reads instead of the body, so quoting only the first
+    ``rm -rf build`` of a body that also holds ``rm -rf /`` would mislead in the direction that
+    matters. Repeats of the same line are collapsed and matches beyond :data:`_MATCH_CAP` are
+    counted rather than quoted.
+    """
+    raw = [m.span() for m in _RAW_BLOCK.finditer(body)]
     for rule in _BODY_RULES:
-        match = rule.pattern.search(body)
-        if match is None:
-            continue
-        yield Finding(
-            severity=rule.severity,
-            category=rule.category,
-            where=path,
-            detail=f"{kind}: {_evidence(body, match)}",
-            advice=rule.advice,
-        )
+        lines: list[str] = []
+        for match in rule.pattern.finditer(body):
+            if rule.ignore_raw and any(a <= match.start() < b for a, b in raw):
+                continue
+            line = _evidence(body, match)
+            if line not in lines:
+                lines.append(line)
+        shown, extra = lines[:_MATCH_CAP], max(len(lines) - _MATCH_CAP, 0)
+        for index, line in enumerate(shown):
+            more = f"  (+{extra} more)" if extra and index == len(shown) - 1 else ""
+            yield Finding(
+                severity=rule.severity,
+                category=rule.category,
+                where=path,
+                detail=f"{kind}: {line}{more}",
+                advice=rule.advice,
+            )
 
 
 def _cwd_findings(path: str, cwd: str | None) -> Iterator[Finding]:
     """``cwd:`` that names a directory the workspace does not contain."""
-    if not cwd or "{{" in cwd or "{%" in cwd:
-        return  # a rendered cwd is not known before the run; this report does not guess
+    if not cwd:
+        return
+    if "{{" in cwd or "{%" in cwd:
+        # a rendered cwd is not known before the run — which is itself worth saying out loud,
+        # since the directory the step runs in is chosen at run time
+        yield Finding(
+            severity="medium",
+            category="templated-body",
+            where=path,
+            detail=f"cwd: {cwd}",
+            advice="the working directory is chosen at run time, so this report cannot tell "
+            "whether the step stays in the workspace",
+        )
+        return
     if cwd.startswith(("/", "~")) or any(part == ".." for part in cwd.split("/")):
         yield Finding(
             severity="high",
@@ -208,10 +266,32 @@ def _cwd_findings(path: str, cwd: str | None) -> Iterator[Finding]:
         )
 
 
+def _command_tools(tools: ToolsSpec) -> list[str]:
+    """The groups of :data:`_COMMAND_TOOLS` an agent's allow/deny lists leave available.
+
+    An empty ``allow`` is not a restriction: it means the provider's own default tool set, which
+    includes running commands and editing files.
+    """
+    deny, allow = set(tools.deny), set(tools.allow)
+    return [g for g in _COMMAND_TOOLS if g not in deny and (not allow or g in allow)]
+
+
 def _agent_findings(rw: ResolvedWorkflow) -> Iterator[Finding]:
     for key, agent in rw.agents.items():
         used_by = sorted(p for p, k in rw.step_agents.items() if k == key)
         used = f" (used by {', '.join(used_by)})" if used_by else ""
+        tools = _command_tools(agent.tools)
+        if tools:
+            how = "allowed" if agent.tools.allow else "the provider's defaults"
+            yield Finding(
+                severity="medium",
+                category="agent-tools",
+                where=f"agent {agent.name}",
+                detail=f"tools: {', '.join(tools)} ({how}){used}",
+                advice="the agent chooses its own commands, so nothing this agent does is "
+                "covered by this report; deny the groups it does not need "
+                "(tools: {deny: [shell, edit]}) and gate the steps that follow it",
+            )
         if agent.access == "full":
             yield Finding(
                 severity="high",
