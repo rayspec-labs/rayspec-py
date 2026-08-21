@@ -781,6 +781,37 @@ The catalogue is whatever the build ships (`rayspec init --from ''` prints it); 
 `fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `secret_via_tool`,
 `triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
 
+### `rayspec new workflow`
+
+```
+rayspec new workflow <name> [--agent NAME] [--description TEXT] [--force] [--root DIR]
+```
+
+Add one workflow to a project that already exists — `rayspec init` is for creating the project,
+`new` for growing it. Writes `.rayspec/workflows/<name>.yaml` (one read-only agent step, one
+`target` input, `isolation: none`) and prints `rayspec validate <name>` / `plan` / `run <name>
+--dry-run`; the fresh workflow validates and dry-runs without any login. `<name>` is both the
+`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, not a
+reserved context root such as `run`); anything else is a usage error naming the rule. `--agent
+NAME` references `.rayspec/agents/<NAME>.yaml` instead of writing an inline agent into the
+workflow. `--description TEXT` fills the `description:` (quoted for YAML when it needs to be).
+An existing file is never touched: `error: .rayspec/workflows/<name>.yaml already exists` +
+`hint: pass --force to overwrite it`, exit 2. Without `--root` the project is found the way every
+project command finds it (walk up to the first `.rayspec/`, then `.git`, else the cwd); a
+directory with no `.rayspec/` is exit 2 pointing at `rayspec init`.
+
+### `rayspec new agent`
+
+```
+rayspec new agent <name> [--force] [--root DIR]
+```
+
+The same for `.rayspec/agents/<name>.yaml`: a reusable `provider`/`model`/`access`/`instructions`
+agent that any workflow of the project can reference as `agent: <name>` (or extend per step with
+`agent: { extends: <name>, model: large }`). `--force`, `--root`, the name rule and the
+`already exists` refusal behave exactly as for `new workflow`. `rayspec new` without a subcommand
+prints the help and exits 2.
+
 ### `rayspec doctor`
 
 ```

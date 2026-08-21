@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+# Created by `rayspec new workflow __NAME__ --agent __AGENT__`. Try it:
+#   rayspec validate __NAME__
+#   rayspec plan __NAME__
+#   rayspec run __NAME__ --dry-run   # scripted stub answers, no login needed
+rayspec: 1
+name: __NAME__
+description: __DESCRIPTION__
+
+inputs:
+  target: { type: string, default: ".", description: "What this workflow looks at" }
+
+isolation: none                     # this workflow only reads; delete the line to get a git worktree per run
+
+steps:
+  - id: answer
+    agent: __AGENT__                # .rayspec/agents/__AGENT__.yaml (rayspec agents)
+    prompt: |
+      Look at {{ inputs.target }} and report what stands out.
+      Reply with at most five bullet points.
+
+outputs:
+  answer: "{{ steps.answer.output }}"
