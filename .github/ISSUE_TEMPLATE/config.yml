@@ -1,0 +1,15 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/rayspec-labs/rayspec-py/security/advisories/new
+    about: >-
+      Never in a public issue — a reproduction for this project is a working exploit. SECURITY.md
+      has the threat model and the 90-day coordinated-disclosure window.
+  - name: Read the documentation
+    url: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/README.md
+    about: >-
+      Concepts, the schema reference, templating, providers, the CLI reference, runs and resume —
+      most "how do I" questions are answered there.
+  - name: How to get a change merged
+    url: https://github.com/rayspec-labs/rayspec-py/blob/main/CONTRIBUTING.md
+    about: The gate command, the test expectations, the contracts and the schema bar.

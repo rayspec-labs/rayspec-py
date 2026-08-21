@@ -1,0 +1,70 @@
+name: Bug report
+description: Something rayspec did that it should not have done
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Think it is exploitable? Do not file it here — report it privately through
+        [SECURITY.md](https://github.com/rayspec-labs/rayspec-py/blob/main/SECURITY.md).
+        For everything else: the two fields that make a report diagnosable straight away are the
+        `rayspec doctor` output and a run id.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+      placeholder: |
+        $ rayspec run review -i target=src
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Smallest workflow that reproduces it
+      description: >-
+        The YAML trimmed down to what still shows the bug. Remove anything private — issues are
+        public.
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: doctor
+    attributes:
+      label: rayspec doctor
+      description: >-
+        Paste the whole output of `rayspec doctor`. It reports versions, paths, SDKs and the
+        *sources* of your secrets — never a secret value.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: run-id
+    attributes:
+      label: Run id
+      description: >-
+        A run that shows the problem — `rayspec runs` lists them, and `rayspec show <run>` /
+        `rayspec logs <run>` are what I will ask for next. Write "none" if the run never started.
+      placeholder: 20260821-080147-sccz
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform
+      description: The output of `rayspec version`, plus your OS and Python version.
+      placeholder: rayspec 1.0.0 · macOS 15.4 · Python 3.12.8
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Which provider was involved
+      options:
+        - claude
+        - codex
+        - stub (dry run or rayspec test)
+        - not provider-specific
+    validations:
+      required: true
