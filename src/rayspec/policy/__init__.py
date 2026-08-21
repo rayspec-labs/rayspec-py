@@ -29,7 +29,6 @@ from rayspec.policy.layers import (
     PolicyPath,
     PolicySource,
     load_policy,
-    merged_summary,
     policy_paths,
     sources_text,
 )
@@ -81,7 +80,6 @@ __all__ = [
     "check_agent_controls",
     "check_policy",
     "load_policy",
-    "merged_summary",
     "policy_paths",
     "sources_text",
     "trusted_path",

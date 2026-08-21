@@ -373,28 +373,6 @@ def load_policy(
     return EffectivePolicy(layers=tuple(layers))
 
 
-def merged_summary(effective: EffectivePolicy) -> list[str]:
-    """Human lines describing what the layers restrict (used by ``rayspec validate --json`` docs
-    and the policy documentation; safe to render anywhere)."""
-    out: list[str] = []
-    providers = effective.allowed_providers()
-    if providers is not None:
-        out.append("providers.allow: " + (", ".join(sorted(providers)) or "(nothing)"))
-    denied_models = sorted({p for layer in effective.layers for p in layer.policy.models.deny})
-    if denied_models:
-        out.append("models.deny: " + ", ".join(denied_models))
-    capped = effective.max_access()
-    if capped is not None:
-        out.append(f"access.max: {capped[0]}")
-    tools = sorted(effective.denied_tools())
-    if tools:
-        out.append("tools.deny: " + ", ".join(tools))
-    servers = effective.allowed_mcp_servers()
-    if servers is not None:
-        out.append("mcp.allow_servers: " + (", ".join(sorted(servers)) or "(nothing)"))
-    return out
-
-
 def sources_text(sources: Sequence[PolicySource] | Iterable[PolicySource]) -> str:
     """``.rayspec/policy.yaml:3, ~/.rayspec/policy.yaml:2`` — the locations of a restriction."""
     return ", ".join(source.location for source in sources)
@@ -411,7 +389,6 @@ __all__ = [
     "PolicyPath",
     "PolicySource",
     "load_policy",
-    "merged_summary",
     "policy_paths",
     "sources_text",
 ]

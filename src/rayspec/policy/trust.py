@@ -20,7 +20,6 @@ from __future__ import annotations
 import contextlib
 import os
 import tempfile
-from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -204,17 +203,11 @@ def _parse(data: Any, path: Path) -> tuple[TrustEntry, ...]:
     return tuple(out)
 
 
-def entries_of(store: TrustStore) -> Iterable[TrustEntry]:
-    """The entries of ``store`` sorted by workflow label (the order the file is written in)."""
-    return sorted(store.entries, key=lambda e: e.workflow)
-
-
 __all__ = [
     "HASH_PREFIX",
     "TRUSTED_FILENAME",
     "TrustEntry",
     "TrustStore",
-    "entries_of",
     "qualified",
     "trusted_path",
 ]
