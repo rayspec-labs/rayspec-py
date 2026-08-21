@@ -656,7 +656,7 @@ The rows are derived from the run's own `events.jsonl` and per-step `stream.json
 
 Options:
 
-- `--commands` — Only what was executed: the commands agents started plus the `shell:`/`python:` steps, which are rayspec running a command itself.
+- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps, which are rayspec running a command itself. A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
 - `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, dry_run, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 

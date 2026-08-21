@@ -129,9 +129,15 @@ _AUDIT_EVENT_KINDS: dict[EventType, str] = {
     EventType.WARNING: "warning",
 }
 
+#: Keys under which a ``tool_call`` carries the command it executes. Adapters disagree about
+#: the shape — the Claude adapter spreads the tool input across ``data``, the others nest it
+#: under ``data["input"]`` — so both are looked at (:func:`tool_command`).
+_COMMAND_ARG_KEYS = ("command", "cmd", "script")
+
 #: Stream record kinds that become an audit row, and the row kind each one gets. Deltas,
 #: transcripts and usage reports are NOT here: the ledger answers "what did it DO", and the
-#: full text is one file away in ``stream.jsonl``.
+#: full text is one file away in ``stream.jsonl``. A ``tool_call`` that carries a command line
+#: is promoted to a ``command`` row by :func:`audit_entry_for_stream`.
 _AUDIT_STREAM_KINDS: dict[str, str] = {
     "command_start": "command",
     "tool_call": "tool",
@@ -250,12 +256,50 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     }
 
 
+def tool_arguments(record: StreamRecord) -> Mapping[str, Any] | None:
+    """The arguments of a ``tool_call`` record, whichever shape the adapter used.
+
+    ``data["input"]`` when it is there (the Codex adapter, the stub, a tool denial), otherwise
+    ``data`` itself (the Claude adapter spreads the tool input across it). ``None`` when the
+    call carried no arguments at all.
+    """
+    nested = record.data.get("input")
+    if isinstance(nested, Mapping):
+        return nested
+    if nested is not None:
+        return {"input": nested}
+    return record.data or None
+
+
+def tool_command(record: StreamRecord) -> str | None:
+    """The command line a ``tool_call`` executes, or ``None`` when it executes nothing.
+
+    ``Bash``, ``shell``, a Codex ``local_shell``, an MCP tool that runs something: they differ
+    in name but all carry the command under one of :data:`_COMMAND_ARG_KEYS`, as a string or an
+    argv list. Matching on the argument rather than on the tool name is what keeps the ledger
+    from being provider-specific — ``command_start`` records only ever come from Codex, so
+    without this a Claude run would answer "what was executed?" with nothing at all.
+    """
+    arguments = tool_arguments(record)
+    if arguments is None:
+        return None
+    for key in _COMMAND_ARG_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        if isinstance(value, list) and value and all(isinstance(part, str) for part in value):
+            return " ".join(value)
+    return None
+
+
 def audit_entry_for_stream(step_path: str, record: StreamRecord) -> dict[str, Any] | None:
     """The ledger row for one stream record, or ``None`` for the kinds the ledger ignores.
 
     A ``command_start`` becomes a ``command`` row (the command line), a ``tool_call`` a ``tool``
     row (the tool name, with its arguments in ``data``), a ``file_change`` a ``file`` row (the
-    path) and a ``warning``/``error`` a ``warning`` row.
+    path) and a ``warning``/``error`` a ``warning`` row. A ``tool_call`` that carries a command
+    line (:func:`tool_command`) becomes a ``command`` row instead, with the tool's name in
+    ``data["tool"]`` — what was executed is the same fact whichever adapter reported it.
 
     The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
     """
@@ -266,9 +310,15 @@ def audit_entry_for_stream(step_path: str, record: StreamRecord) -> dict[str, An
         detail = _raw_detail(record.data.get("command") or record.text)
         data: dict[str, Any] = {"attempt": record.attempt}
     elif record.kind == "tool_call":
-        detail = _raw_detail(record.name or "tool")
-        arguments = record.data.get("input")
         data = {"attempt": record.attempt, "call_id": record.call_id}
+        arguments = tool_arguments(record)
+        command = tool_command(record)
+        if command is not None:  # a tool that runs a command IS the run executing something
+            kind = "command"
+            detail = _raw_detail(command)
+            data["tool"] = record.name
+        else:
+            detail = _raw_detail(record.name or "tool")
         if arguments is not None:
             data["input"] = json.dumps(arguments, ensure_ascii=False, default=str)
     elif record.kind == "file_change":
@@ -1060,4 +1110,6 @@ __all__ = [
     "finish_audit_row",
     "open_private",
     "secure_mkdir",
+    "tool_arguments",
+    "tool_command",
 ]

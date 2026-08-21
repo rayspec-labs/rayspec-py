@@ -64,8 +64,11 @@ COMMAND_STEP_KINDS = frozenset({"shell", "python"})
 def is_command_row(row: dict[str, Any]) -> bool:
     """Whether ``row`` describes something the run executed (``--commands``).
 
-    That is a ``command`` row — a command an agent started — or the row of a ``shell:``/
-    ``python:`` step, which is rayspec running a command itself.
+    That is a ``command`` row — a command an agent ran, whether the adapter reported it as a
+    ``command_start`` or as a tool call carrying a command line — or the row of a ``shell:``/
+    ``python:`` step, which is rayspec running a command itself. A step row names the step and
+    its kind, not the body: the rendered body is not kept in the run directory (``rayspec
+    explain`` re-renders it from the workflow).
     """
     if row["kind"] == "command":
         return True

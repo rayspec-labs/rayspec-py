@@ -45,6 +45,7 @@ steps:
     events:
       - {{command_start: {{command: "curl -H 'Authorization: {SECRET}' https://example.invalid"}}}}
       - {{tool_call: {{name: Bash, call_id: c1, input: {{cmd: "ls -la"}}}}}}
+      - {{tool_call: {{name: Read, call_id: c2, input: {{path: "src/a.py"}}}}}}
       - {{tool_result: {{call_id: c1, output: "a.py"}}}}
       - {{file_change: {{name: "src/a.py"}}}}
 """
@@ -106,8 +107,9 @@ def test_the_ledger_covers_the_run_its_steps_and_the_gate(
     assert "step" in kinds and "command" in kinds and "tool" in kinds and "file" in kinds
     commands = [e["detail"] for e in entries if e["kind"] == "command"]
     assert any("curl" in c for c in commands)
+    assert "ls -la" in commands  # a Bash tool call is a command, not just a tool name
     tools = [e["detail"] for e in entries if e["kind"] == "tool"]
-    assert "Bash" in tools
+    assert "Read" in tools
     files = [e["detail"] for e in entries if e["kind"] == "file"]
     assert "src/a.py" in files
     paused = [e for e in entries if e["kind"] == "run" and e["detail"] == "paused"]

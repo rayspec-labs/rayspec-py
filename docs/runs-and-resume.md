@@ -177,9 +177,9 @@ store learned it.
 | `kind` | one row per |
 |---|---|
 | `run` | the run being created (with the actor), started/resumed, its workspace, a pause, the final status |
-| `step` | a step starting, retrying, finishing |
-| `command` | a command an agent started |
-| `tool` | a tool an agent called (arguments in `data.input`, capped) |
+| `step` | a step starting, retrying, finishing (its kind, not its body — the rendered body is not stored with the run; `rayspec explain` re-renders it) |
+| `command` | a command an agent ran — a `command_start` record, or a tool call carrying a command line (`data.tool` names the tool: the Claude adapter reports a shell command as a `Bash` tool call) |
+| `tool` | a tool an agent called that ran nothing itself — an edit, a read, a search (arguments in `data.input`, capped) |
 | `file` | a file an agent reported changing |
 | `warning` | a warning or error, from the engine or from an agent |
 | `approval` | a decision — `detail` is `approved by alice@example.com (cli)`, and `data` carries `approved`, `comment`, `by` and `actor` |

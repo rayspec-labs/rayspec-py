@@ -2230,8 +2230,14 @@ from rayspec.store.file import (
     AUDIT_ENV,        # "RAYSPEC_AUDIT_LOG" — 1/true/yes/on turns it on (off by default)
     AUDIT_DETAIL_CAP, # 1000 characters of a row's ``detail``
     audit_log_enabled,      # (env=None) -> bool
-    audit_entry_for_event,  # (RunEvent) -> {ts, kind, step, detail, data} | None
-    audit_entry_for_stream, # (step_path, StreamRecord) -> row | None
+    audit_entry_for_event,  # (RunEvent) -> {ts, kind, step, detail, data} | None  RAW
+    audit_entry_for_stream, # (step_path, StreamRecord) -> row | None                RAW
+    finish_audit_row,       # (row, redactor=NULL_REDACTOR) -> row  redact FIRST, shape SECOND
+    #   the two builders return the row with its text untouched; this redacts the VALUES and
+    #   only then collapses/caps `detail` (and `data["input"]`). The order is load-bearing:
+    #   redaction is exact match, so a multi-line or overlong secret would survive shaping.
+    tool_command,           # (StreamRecord) -> str | None  the command a tool_call executes
+    tool_arguments,         # (StreamRecord) -> Mapping | None  data["input"], else data itself
 )
 # FileRunStore(root, *, redactor=NULL_REDACTOR, audit: bool | None = None)
 #   audit: True/False pin the ledger on/off; None (default) asks AUDIT_ENV at write time
@@ -2240,7 +2246,11 @@ from rayspec.store.file import (
 #   and append_stream(); row kinds: run | step | command | tool | file | warning | approval.
 #   Progress events (loop.iteration, each.item) produce no row. A stream row is derived from the
 #   ORIGINAL record, before the boundary buffer, and the row is redacted with
-#   Redactor.redact_obj (VALUES, not serialised text).
+#   Redactor.redact_obj (VALUES, not serialised text) before it is shaped.
+#   A tool_call carrying a command line is a "command" row (data.tool = the tool's name), so
+#   "what was executed" does not depend on which adapter reported it — command_start records
+#   come from Codex only. An approval row's detail is "approved by <actor id> (<by>)".
+#   A step row carries the step's KIND, never its body: the rendered body is not stored.
 ```
 The ledger is a **log**: append-only in behaviour, no chain, no digest, nothing about the file
 proves it was not edited. It is local to one run of one user on one machine. There is no export
