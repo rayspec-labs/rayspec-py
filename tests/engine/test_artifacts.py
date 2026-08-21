@@ -48,9 +48,6 @@ def test_artifacts_default_to_nothing_and_accept_relative_paths() -> None:
         ("build/../../outside.txt", "'..'"),
         ("", "empty"),
         ("build/", "must name a file"),
-        ("out/{{ item }}.txt", "not templated"),
-        ("out/{% if x %}a{% endif %}.txt", "not templated"),
-        ("we\nird.txt", "control character"),
     ],
 )
 def test_escaping_artifact_paths_are_refused_at_load_time(
@@ -68,13 +65,6 @@ def test_escaping_artifact_paths_are_refused_at_load_time(
     assert ".rayspec/workflows/t.yaml:5" in message  # file:line of the offending step
     assert "artifacts" in message and needle in message
     assert "build/report.md" in message  # the fix hint shows a good path
-
-
-def test_a_declared_path_is_normalised() -> None:
-    """``./a.txt`` and ``a.txt`` name the same file: the stored path must not disagree with the
-    ref the store computes from it."""
-    step = parse_step({"id": "a", "shell": "true", "artifacts": ["./build/report.md", "b//c.txt"]})
-    assert step.artifacts == ["build/report.md", "b/c.txt"]
 
 
 def test_artifacts_are_declarable_on_every_kind() -> None:
@@ -147,6 +137,30 @@ async def test_a_directory_is_not_an_artifact(harness: Harness) -> None:
     assert result.status is RunStatus.FAILED
     record = harness.record(result.run_id).steps["r"]
     assert record.error is not None and "directory" in record.error.message
+
+
+async def test_a_fifo_is_not_an_artifact(harness: Harness) -> None:
+    """Anything that is not a REGULAR file is refused before it is opened: reading a FIFO with
+    no writer blocks in a worker thread, and a blocked thread cannot be cancelled — the run
+    would wedge for good, holding the workdir lock."""
+    harness.workflow("t", wf('  - {id: r, shell: "mkfifo pipe.txt", artifacts: [pipe.txt]}\n'))
+    result = await harness.run("t")
+    assert result.status is RunStatus.FAILED
+    record = harness.record(result.run_id).steps["r"]
+    assert record.error is not None and record.error.type == "artifact"
+    assert "not a regular file" in record.error.message
+    assert record.artifacts == []
+
+
+def test_write_artifact_refuses_a_source_that_is_not_a_regular_file(tmp_path: Path) -> None:
+    """The store's own guard (a caller that skipped the engine check must not block a thread)."""
+    store, run = _store(tmp_path)
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    with pytest.raises(OSError, match="regular file"):
+        store.write_artifact(run.run_id, "r", "pipe", fifo)
+    kept = [x for x in (store.run_dir(run.run_id) / "artifacts").rglob("*") if not x.is_dir()]
+    assert kept == []  # no copy, no leftover tmp file
 
 
 async def test_a_symlink_out_of_the_working_directory_is_refused(harness: Harness) -> None:

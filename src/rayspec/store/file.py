@@ -50,6 +50,7 @@ store: a writer that opens a file under the run dir directly is not covered.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import itertools
 import json
@@ -57,6 +58,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import threading
 from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
@@ -669,6 +671,25 @@ def _open_private_bytes(path: Path) -> BinaryIO:
         raise
 
 
+def _open_regular_file(source: Path) -> BinaryIO:
+    """``open(source, "rb")`` that refuses anything but a regular file.
+
+    Opened non-blocking and checked by ``fstat`` on the OPEN descriptor, so a FIFO, a socket or
+    a device node raises instead of blocking the worker thread forever (a blocked thread cannot
+    be cancelled, so the run would never end). The engine already refuses those before it gets
+    here; this is the second lock on the door, for a caller that did not.
+    """
+    fd = os.open(source, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | _O_CLOEXEC)
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode):
+            raise OSError(errno.EINVAL, f"not a regular file: {source}")
+        return cast(BinaryIO, os.fdopen(fd, "rb"))
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _copy_bytes_durably(source: Path, path: Path, tmp: Path, redactor: Redactor) -> tuple[str, int]:
     """Copy ``source`` to ``tmp`` (redacted, chunked), fsync, ``os.replace`` onto ``path``.
 
@@ -682,7 +703,7 @@ def _copy_bytes_durably(source: Path, path: Path, tmp: Path, redactor: Redactor)
     size = 0
     stream = redactor.stream() if redactor else None
     try:
-        with _open_private_bytes(tmp) as out, open(source, "rb") as src:
+        with _open_private_bytes(tmp) as out, _open_regular_file(source) as src:
 
             def write(text: str) -> None:
                 nonlocal size

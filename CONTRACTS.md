@@ -612,7 +612,9 @@ from rayspec.store.file import (
 #       permissions as an output (tmp + fsync + os.replace, 0600 via a private-file open, 0700
 #       dirs); a later attempt overwrites the copy. ``rel_path`` must be relative, without
 #       ".." (ValueError otherwise — the schema already refuses those at load time, this is the
-#       second lock). Redaction covers arbitrary bytes: the file is streamed through a
+#       second lock). The SOURCE must be a regular file: it is opened non-blocking and checked
+#       with fstat, so a FIFO/socket/device raises OSError instead of blocking the worker
+#       thread forever (the engine refuses those first; this is the second lock on that door). Redaction covers arbitrary bytes: the file is streamed through a
 #       StreamRedactor decoded/encoded with ``surrogateescape``, so a binary file round-trips
 #       byte for byte unless it carried a secret (then the marker replaces it and the stored
 #       bytes — and the sha — differ from the step's original, deliberately)
@@ -1107,8 +1109,9 @@ Semantics fixed here (tests in `tests/engine/`):
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
   keeps its recorded artifacts; a dry run checks nothing — nothing was produced). Each declared
   path is resolved against the step's working directory (`artifact_dir`: the rendered `cwd:` of
-  a shell/python step, else `ctx.workdir`); a file that is missing, is a directory, or resolves
-  outside that directory (a planted symlink) turns the succeeded outcome into `failed` with
+  a shell/python step, else `ctx.workdir`); a file that is missing, is not a REGULAR file (a
+  directory, a FIFO, a socket, a device node — `Path.is_file()`, which resolves symlinks), or
+  resolves outside that directory (a planted symlink) turns the succeeded outcome into `failed` with
   `ErrorInfo(type="artifact")` naming the path — never a retry (the leaf loop is already over)
   and the step's own output is kept. The kept files go through
   `RunContext.write_artifacts(record, [(declared, path)])` → `store.write_artifact` in a worker

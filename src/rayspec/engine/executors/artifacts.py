@@ -3,7 +3,8 @@
 
 Module boundary: the check that runs once a step has SUCCEEDED, between the executor and the
 scheduler's :func:`~rayspec.engine.scheduler.finish`. It resolves each declared path against the
-step's working directory, fails the step when the promise was not kept, and hands the files to
+step's working directory, fails the step when the promise was not kept (missing, or not a
+regular file), and hands the files to
 :meth:`~rayspec.engine.context.RunContext.write_artifacts`, which copies them into the run
 directory through the store.
 
@@ -41,8 +42,8 @@ async def collect_artifacts(
 
     A no-op unless the step declared ``artifacts:`` and actually succeeded in this run — a
     replayed record keeps the artifacts it was recorded with, and a dry run checks nothing
-    (nothing was really produced). A declared file that is missing, is a directory or resolves
-    outside the working directory fails the step with a reason naming the path.
+    (nothing was really produced). A declared file that is missing, is not a regular file or
+    resolves outside the working directory fails the step with a reason naming the path.
     """
     record = outcome.record
     if not step.artifacts or outcome.reused or record.status is not StepStatus.SUCCEEDED:
@@ -83,6 +84,15 @@ def _problem(declared: str, path: Path, cwd: Path) -> str | None:
         )
     if path.is_dir():
         return f"declared artifact {declared!r} is a directory, not a file"
+    if not path.is_file():
+        # POSITIVE test, and deliberately the last one: a FIFO, a socket or a device node is
+        # not a promise that can be kept. Opening a FIFO with no writer blocks in the worker
+        # thread that copies the file, and a blocked thread cannot be cancelled — the run would
+        # wedge for good, holding the workdir lock. ``is_file()`` resolves symlinks.
+        return (
+            f"declared artifact {declared!r} is not a regular file — an artifact is a file the "
+            "step wrote, not a pipe, a socket or a device"
+        )
     return None
 
 
