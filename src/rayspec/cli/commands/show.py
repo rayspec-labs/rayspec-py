@@ -89,8 +89,9 @@ def show_payload(
 def artifact_rows(run: RunRecord) -> list[dict[str, Any]]:
     """One row per file a step declared under ``artifacts:`` and delivered, in record order.
 
-    ``ref`` is where the run directory keeps its copy (``None`` when no copy was kept); the
-    content of an artifact is never part of a record, so there is nothing else to report.
+    ``ref`` is where the run directory keeps its copy (``None`` when no copy was kept) and
+    ``sha256``/``size`` describe the stored (redacted) bytes; the content of an artifact is
+    never part of a record, so there is nothing else to report.
     """
     return [
         {

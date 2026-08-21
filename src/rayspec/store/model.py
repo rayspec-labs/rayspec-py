@@ -62,10 +62,13 @@ class EachInfo(_Model):
 class ArtifactRef(_Model):
     """One file a step promised (``artifacts:``) and delivered.
 
-    ``path`` is the path as declared, relative to the step's working directory; ``ref`` is the
-    run-dir-relative location of the copy the store kept (``artifacts/<step path>/<path>``,
-    ``None`` for a store that keeps no copies). ``sha256``/``size`` describe the stored bytes.
-    Only the path is recorded — the content of an artifact never enters a record or an event.
+    ``path`` is the path as declared (in normal form), relative to the step's working directory;
+    ``ref`` is the run-dir-relative location of the copy the store kept (``artifacts/<step
+    path>/<path>``, ``None`` for a store that keeps no copies). ``sha256``/``size`` describe the
+    stored bytes — the file's content AFTER redaction, which differs from what the step wrote
+    only where a secret was found; a store that keeps no copy reports the same digest, over the
+    bytes it would have kept. Only the path is recorded — the content of an artifact never
+    enters a record or an event.
     """
 
     path: str

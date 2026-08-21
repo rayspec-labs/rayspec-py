@@ -624,8 +624,12 @@ from rayspec.store.file import (
 #       byte for byte unless it carried a secret (then the marker replaces it and the stored
 #       bytes — and the sha — differ from the step's original, deliberately)
 #   StepRecord.artifacts: list[ArtifactRef] = [] (additive): what the step declared
-#       under ``artifacts:`` and delivered — ArtifactRef(path (as declared), ref (run-dir
-#       relative copy, None when the store keeps none), sha256, size). Only the PATH is
+#       under ``artifacts:`` and delivered — ArtifactRef(path (as declared, normal form), ref
+#       (run-dir relative copy, None when the store keeps none), sha256, size). sha256/size
+#       always describe the STORED (redacted) bytes: a store without write_artifact reports the
+#       digest of the bytes it WOULD have kept (engine.context._digest_of streams the file
+#       through store.redactor), so the field is comparable across runs and no digest of a
+#       secret is ever persisted. Only the PATH is
 #       recorded: an artifact's CONTENT never enters a record, an event, a template context or
 #       an output. Empty for older records and for steps that declared nothing
 #   write_prompt(run_id, step_path, text) -> prompt_ref (additive): the rendered

@@ -414,6 +414,28 @@ async def test_a_store_that_keeps_no_copy_still_records_the_promise(
     assert bool(warned) is (store_class is _FailingArtifactStore)
 
 
+async def test_a_store_that_keeps_no_copy_hashes_the_bytes_it_would_have_kept(
+    harness: Harness,
+) -> None:
+    """``sha256``/``size`` mean the same thing whichever store is installed: the bytes AFTER
+    redaction. Hashing the raw file here would both make the field incomparable across runs and
+    persist a digest of a secret the run took care never to store."""
+    harness.workflow("t", wf('  - {id: r, shell: "true", artifacts: [report.md]}\n'))
+    harness.store.redactor = Redactor.build({"token": "hunter2"})
+    graph = make_graph_harness(harness, harness.load("t"))
+    graph.ctx.store = _NoArtifactStore(harness.store)  # type: ignore[assignment]
+    source = harness.root / "report.md"
+    source.write_text("password is hunter2\n")
+    record = graph.ctx.new_record(harness.load("t").workflow.steps[0], graph.scope)
+
+    await graph.ctx.write_artifacts(record, [("report.md", source)])
+
+    redacted = b"password is [REDACTED:token]\n"
+    assert record.artifacts[0].ref is None
+    assert record.artifacts[0].sha256 == hashlib.sha256(redacted).hexdigest()
+    assert record.artifacts[0].size == len(redacted)
+
+
 # -- rayspec show ---------------------------------------------------------------------------------
 
 

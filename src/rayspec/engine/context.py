@@ -43,6 +43,7 @@ from rayspec.events.base import EventSink
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
+from rayspec.redact import Redactor
 from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
 from rayspec.store.base import RunStore
 from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord
@@ -62,6 +63,9 @@ REUSABLE_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python", "approv
 LEAF_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python"})
 #: ``skip_reason`` of steps that were not started because the run-level cap tripped.
 BUDGET_SKIP_REASON = "budget_exceeded"
+
+#: How much of an artifact is read at a time when the store keeps no copy of it.
+_ARTIFACT_CHUNK_BYTES = 1 << 20
 
 
 def budget_reason(
@@ -610,7 +614,7 @@ class RunContext:
                         )
                     )
                     continue
-            digest, size = _digest_of(path)
+            digest, size = _digest_of(path, self.store.redactor)
             refs.append(ArtifactRef(path=declared, ref=None, sha256=digest, size=size))
         record.artifacts = refs
         return warnings
@@ -780,15 +784,30 @@ class RunContext:
 # --------------------------------------------------------------------------------------------------
 
 
-def _digest_of(path: Path) -> tuple[str, int]:
-    """``(sha256, size)`` of a file, read in chunks (a store that keeps no copy still records
-    what the step produced)."""
+def _digest_of(path: Path, redactor: Redactor) -> tuple[str, int]:
+    """``(sha256, size)`` of a file as the store would KEEP it, read in chunks.
+
+    Used when the store keeps no copy: the record still describes what the step produced. The
+    bytes are streamed through ``redactor`` exactly as :meth:`FileRunStore.write_artifact` does,
+    so ``sha256``/``size`` mean the same thing whichever store is installed — and a file that
+    carried a ``secret: true`` value leaves no digest of the secret behind either.
+    """
     digest = hashlib.sha256()
     size = 0
+    stream = redactor.stream() if redactor else None
+
+    def feed(text: str) -> None:
+        nonlocal size
+        data = text.encode("utf-8", "surrogateescape")
+        digest.update(data)
+        size += len(data)
+
     with open(path, "rb") as fh:
-        while chunk := fh.read(1 << 20):
-            digest.update(chunk)
-            size += len(chunk)
+        while chunk := fh.read(_ARTIFACT_CHUNK_BYTES):
+            text = chunk.decode("utf-8", "surrogateescape")
+            feed(stream.feed(text) if stream is not None else text)
+        if stream is not None:
+            feed(stream.flush())
     return digest.hexdigest(), size
 
 
