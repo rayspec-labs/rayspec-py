@@ -137,6 +137,48 @@ def test_json_payload(
     assert all(set(row) == {"ts", "kind", "step", "detail", "data"} for row in payload["rows"])
 
 
+def test_an_approval_row_names_the_decider_and_the_door(
+    cli: CliRunner, work_project: Path, finished: tuple[str, FileRunStore]
+) -> None:
+    run_id, _store = finished
+    result = cli.invoke(app, ["audit", run_id, "--json", "--root", str(work_project)])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    (approval,) = [row for row in payload["rows"] if row["kind"] == "approval"]
+    assert approval["detail"] == "approved by launcher@example.invalid (--yes)"
+    table = cli.invoke(app, ["audit", run_id, "--root", str(work_project)])
+    assert "(--yes)" in table.output  # a human sign-off must not read like an auto-approval
+
+
+def test_a_dry_run_says_so(
+    cli: CliRunner, work_project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAYSPEC_ACTOR", "launcher@example.invalid")
+    result = cli.invoke(app, ["run", "work", "--root", str(work_project), "--yes", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    table = cli.invoke(app, ["audit", run_id, "--root", str(work_project)])
+    assert table.exit_code == 0, table.output
+    assert "dry run" in table.output  # nothing in it actually ran
+    payload = json.loads(
+        cli.invoke(app, ["audit", run_id, "--json", "--root", str(work_project)]).output
+    )
+    assert payload["dry_run"] is True
+
+
+def test_a_real_run_is_not_marked_as_a_dry_one(
+    cli: CliRunner, work_project: Path, finished: tuple[str, FileRunStore]
+) -> None:
+    run_id, _store = finished
+    table = cli.invoke(app, ["audit", run_id, "--root", str(work_project)])
+    assert "dry run" not in table.output
+    payload = json.loads(
+        cli.invoke(app, ["audit", run_id, "--json", "--root", str(work_project)]).output
+    )
+    assert payload["dry_run"] is False
+
+
 def test_unknown_run_is_exit_2(cli: CliRunner, work_project: Path, home: Path) -> None:
     result = cli.invoke(app, ["audit", "nope", "--root", str(work_project)])
     assert result.exit_code == 2

@@ -650,14 +650,14 @@ Options:
 rayspec audit [OPTIONS] {run}    # --output table|json (--json is the older spelling)
 ```
 
-Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch.
+Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (created, started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. An approval row names both halves — `approved by alice@example.com (cli)` — because `by` says which door the decision came through (`cli` for `rayspec approve`/`reject`, `tty` for the run's own prompt, `--yes`, `dry-run`) and the actor says whose hand it was. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch; a `--dry-run` rehearsal is marked `dry run — nothing was executed`, because it called no provider and ran no shell body.
 
 The rows are derived from the run's own `events.jsonl` and per-step `stream.jsonl` — the same derivation an enabled `audit.jsonl` stores (see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#the-local-audit-log)), so a rendered ledger and a stored one always agree. Reading only: the command never writes to the run directory, never re-runs anything and never contacts a network service. It is a report over the files of **one** run on **this** machine — it proves nothing about them (anybody who can read a run directory can also edit it) and knows nothing about other runs, projects or people. Every cell is untrusted text, printed with control characters and terminal escape sequences removed.
 
 Options:
 
 - `--commands` — Only what was executed: the commands agents started plus the `shell:`/`python:` steps, which are rayspec running a command itself.
-- `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
+- `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, dry_run, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec explain`

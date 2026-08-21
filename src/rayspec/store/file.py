@@ -192,6 +192,25 @@ def finish_audit_row(row: dict[str, Any], redactor: Redactor = NULL_REDACTOR) ->
     return row
 
 
+def _decision_detail(data: Mapping[str, Any]) -> str:
+    """``approved by alice@example.com (cli)`` — the decision, whose it was, and how it came in.
+
+    All three belong on the line a person actually reads. ``by`` is the door the decision came
+    through (``cli`` for ``rayspec approve``/``reject``, ``tty`` for the run's own terminal
+    prompt, ``--yes``, ``dry-run``) and the actor is the identity behind it; a row that says
+    only "approved" cannot tell a human sign-off from an auto-approval.
+    """
+    detail = "approved" if data.get("approved") else "rejected"
+    actor = data.get("actor")
+    who = actor.get("id") if isinstance(actor, Mapping) else None
+    if who:
+        detail += f" by {who}"
+    by = data.get("by")
+    if by:
+        detail += f" ({by})"
+    return detail
+
+
 def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     """The ledger row for one lifecycle event, or ``None`` when it carries no governance fact.
 
@@ -207,7 +226,7 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
         return None
     data = dict(event.data)
     if event.type is EventType.RUN_DECISION:
-        detail = "approved" if data.get("approved") else "rejected"
+        detail = _decision_detail(data)
     elif event.type is EventType.WARNING:
         detail = _raw_detail(data.get("message") or data.get("warning"))
     elif event.type is EventType.STEP_FINISHED:

@@ -182,7 +182,7 @@ store learned it.
 | `tool` | a tool an agent called (arguments in `data.input`, capped) |
 | `file` | a file an agent reported changing |
 | `warning` | a warning or error, from the engine or from an agent |
-| `approval` | a decision — `data` carries `approved`, `comment`, `by` and `actor` |
+| `approval` | a decision — `detail` is `approved by alice@example.com (cli)`, and `data` carries `approved`, `comment`, `by` and `actor` |
 
 `detail` is the one-line summary and is capped; `data` carries the structured extras. Progress
 events (loop iterations, `each` items) are deliberately absent: they say how far a run got, not what

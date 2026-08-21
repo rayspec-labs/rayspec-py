@@ -141,7 +141,7 @@ def test_an_approval_is_in_the_ledger_with_its_actor(
     )
     assert result.exit_code == 0, result.output
     approvals = [e for e in _entries(store, run_id) if e["kind"] == "approval"]
-    assert approvals and approvals[-1]["detail"] == "approved"
+    assert approvals and approvals[-1]["detail"] == "approved by reviewer@example.invalid (cli)"
     assert approvals[-1]["data"]["by"] == "cli"
     assert approvals[-1]["data"]["actor"]["id"] == "reviewer@example.invalid"
 

@@ -121,7 +121,7 @@ def actor_line(run: RunRecord) -> str:
 
 
 def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dict[str, Any]:
-    """The ``--json`` object: the run's identity plus its ledger rows."""
+    """The ``--json`` object: the run's identity, whether it was a rehearsal, and its rows."""
     rows = collect_rows(store, run)
     if commands:
         rows = [row for row in rows if is_command_row(row)]
@@ -129,6 +129,9 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
         "run_id": run.run_id,
         "workflow": run.workflow_name,
         "status": run.status.value,
+        # a rehearsal ran nothing: no shell body, no provider call. A ledger that reads like a
+        # completed run would be evidence for work that never happened.
+        "dry_run": run.dry_run,
         "actor": None if run.actor is None else run.actor.model_dump(mode="json"),
         "workdir": run.workspace.workdir,
         "branch": run.workspace.branch,
@@ -159,13 +162,18 @@ def rows_table(rows: list[dict[str, Any]]) -> Table:
 
 
 def print_audit(out: Console, store: FileRunStore, run: RunRecord, *, commands: bool) -> None:
-    """Header (run, actor, workspace) plus the ledger table, or a note when it is empty."""
+    """Header (run, actor, workspace) plus the ledger table, or a note when it is empty.
+
+    A ``--dry-run`` rehearsal is marked in the header: it executed no shell body and called no
+    provider, so its rows must never be mistaken for a record of work that happened.
+    """
     payload = audit_payload(store, run, commands=commands)
     out.print(
         Text.assemble(
             (f"{run.run_id}  ", "bold"),
             (f"{safe_text(run.workflow_name, keep_newlines=False)}  ", ""),
             (run.status.value, "dim"),
+            ("  [dry run — nothing was executed]" if run.dry_run else "", "bold yellow"),
         )
     )
     out.print(Text.assemble(("actor: ", "dim"), actor_line(run)))
