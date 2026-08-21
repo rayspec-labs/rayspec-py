@@ -56,6 +56,11 @@ _DURATION_PATTERN = r"^(?=.*\d)\s*(?:\d+(?:\.\d+)?h)?\s*(?:\d+(?:\.\d+)?m(?!s))?
 _MONEY_PATTERN = r"^\s*\$?\s*\d+(?:\.\d+)?\s*(?:[Uu][Ss][Dd])?\s*$"
 #: ``defaults.max_tokens`` (``schema.workflow.parse_token_count``): ``1500``, ``"500k"``, ``1.5M``.
 _TOKENS_PATTERN = r"^\s*\d+(?:_\d+)*(?:\.\d+)?\s*[kKmM]?\s*$"
+#: One ``artifacts:`` entry (``schema.steps.validate_artifact_path``): a relative file path, no
+#: ``~``, no ``..`` segment, no template syntax, no control characters, not a directory.
+_ARTIFACT_PATTERN = (
+    r"^(?!~)(?!/)(?!.*\{[{%])(?!.*(?:^|/)\.\.(?:/|$))[^\x00-\x1f\x7f]*[^/\x00-\x1f\x7f]$"
+)
 
 
 def _duration(*, positive: bool, nullable: bool) -> dict[str, Any]:
@@ -86,6 +91,19 @@ def _tokens() -> dict[str, Any]:
             {"type": "null"},
         ],
         "description": "A token count (500000) or a string ('500k', '1.5M').",
+    }
+
+
+def _artifacts() -> dict[str, Any]:
+    """``StepBase.artifacts``: the item type is a plain ``str`` in the model, so the published
+    schema would accept ``/etc/passwd`` and only the loader would object."""
+    return {
+        "type": "array",
+        "items": {"type": "string", "pattern": _ARTIFACT_PATTERN},
+        "description": (
+            "Files the step promises to write, relative to its working directory "
+            "(e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
+        ),
     }
 
 
@@ -125,6 +143,8 @@ def _workflow_patches() -> dict[str, dict[str, Any]]:
         patches[f"{step}Step.timeout"] = _duration(positive=True, nullable=True)
     for step in ("Prompt", "Shell", "Python"):
         patches[f"{step}Step.env"] = _env_map()
+    for step in ("Prompt", "Shell", "Python", "Loop", "Each", "Approve", "Include", "Stop"):
+        patches[f"{step}Step.artifacts"] = _artifacts()
     return patches
 
 

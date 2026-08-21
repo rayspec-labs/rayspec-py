@@ -411,11 +411,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "approve": {
           "anyOf": [
@@ -622,11 +624,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "each": {
           "title": "Each",
@@ -770,11 +774,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "include": {
           "title": "Include",
@@ -1017,11 +1023,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "loop": {
           "$ref": "#/$defs/LoopSpec"
@@ -1167,11 +1175,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "retry": {
           "anyOf": [
@@ -1350,11 +1360,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "retry": {
           "anyOf": [
@@ -1540,11 +1552,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "retry": {
           "anyOf": [
@@ -1720,11 +1734,13 @@
           "type": "boolean"
         },
         "artifacts": {
-          "items": {
-            "type": "string"
-          },
           "title": "Artifacts",
-          "type": "array"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?!~)(?!/)(?!.*\\{[{%])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\x00-\\x1f\\x7f]*[^/\\x00-\\x1f\\x7f]$"
+          },
+          "description": "Files the step promises to write, relative to its working directory (e.g. 'build/report.md'). Not templated: put what varies in the step's cwd:."
         },
         "stop": {
           "$ref": "#/$defs/StopSpec"

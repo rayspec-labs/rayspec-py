@@ -133,8 +133,21 @@ A step can name the files it promises to write:
 ```
 
 - Paths are relative to the step's **working directory** (its `cwd:` for `shell:`/`python:`,
-  otherwise the run's workdir). Absolute paths, `~` and `..` are refused when the workflow is
-  loaded, with the file and line of the step.
+  otherwise the run's workdir). Absolute paths, `~`, `..` and control characters are refused when
+  the workflow is loaded, with the file and line of the step. So is `{{ … }}`: an entry is a
+  literal file name, **not a template**. When the name varies per `each:` item, keep the file
+  name fixed and template the step's `cwd:` instead (that one *is* rendered per item):
+
+  ```yaml
+  - id: fan
+    each: "['api', 'web']"
+    as: name
+    steps:
+      - id: build
+        shell: "mkdir -p out/{{ name }} && ./build.sh > out/{{ name }}/report.md"
+        cwd: "out/{{ name }}"
+        artifacts: [report.md]
+  ```
 - They are checked once the step has **succeeded**: a declared file that is missing, is not a
   regular file (a directory, a FIFO, a socket, a device node), or resolves outside the working
   directory (a symlink) **fails the step**, with a reason naming the path. That is the whole point — a promise that can be broken silently is

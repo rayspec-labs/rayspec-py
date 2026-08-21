@@ -55,7 +55,9 @@ async def collect_artifacts(
     except Exception as exc:  # a cwd: that no longer renders is the step's failure, not a crash
         return _failed(outcome, f"cannot resolve the working directory of the step: {exc}")
     found: list[tuple[str, Path]] = []
-    for declared in step.artifacts:
+    # the same file declared twice is one promise: check, copy and record it once, in the order
+    # it was declared (the paths are already in normal form — the schema normalises them)
+    for declared in dict.fromkeys(step.artifacts):
         path = cwd / Path(*PurePosixPath(declared).parts)
         problem = _problem(declared, path, cwd)
         if problem is not None:

@@ -13,8 +13,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 from rich.console import Console
 
 from rayspec.cli.commands.show import print_show, show_payload
@@ -22,6 +24,7 @@ from rayspec.engine.context import RunOptions
 from rayspec.events.model import EventType
 from rayspec.redact import Redactor
 from rayspec.schema import RunStatus, SchemaError, StepStatus, parse_step
+from rayspec.schemagen import build_schema
 from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord
 
@@ -48,6 +51,8 @@ def test_artifacts_default_to_nothing_and_accept_relative_paths() -> None:
         ("build/../../outside.txt", "'..'"),
         ("", "empty"),
         ("build/", "must name a file"),
+        ("out/{{ item }}.txt", "not templated"),
+        ("out/{% if x %}a{% endif %}.txt", "not templated"),
     ],
 )
 def test_escaping_artifact_paths_are_refused_at_load_time(
@@ -65,6 +70,39 @@ def test_escaping_artifact_paths_are_refused_at_load_time(
     assert ".rayspec/workflows/t.yaml:5" in message  # file:line of the offending step
     assert "artifacts" in message and needle in message
     assert "build/report.md" in message  # the fix hint shows a good path
+
+
+@pytest.mark.parametrize("declared", ["we\nird.txt", "tab\ttab.txt", "bell\x07.txt"])
+def test_a_control_character_in_an_artifact_path_is_refused(declared: str) -> None:
+    """A run-store filename with a control character in it breaks any tooling over the run dir."""
+    with pytest.raises(SchemaError) as exc:
+        parse_step({"id": "a", "shell": "true", "artifacts": [declared]})
+    assert "control character" in str(exc.value)
+
+
+def test_a_declared_path_is_normalised() -> None:
+    """``./a.txt`` and ``a.txt`` name the same file: the recorded path must not disagree with
+    the ref the store derives from it."""
+    step = parse_step({"id": "a", "shell": "true", "artifacts": ["./build/report.md", "b//c.txt"]})
+    assert step.artifacts == ["build/report.md", "b/c.txt"]
+
+
+def test_the_published_schema_rejects_what_the_model_rejects() -> None:
+    """An editor validating against ``schemas/workflow.schema.json`` must red-line a bad
+    ``artifacts:`` entry there and then, not at load time."""
+    validator = Draft202012Validator(build_schema("workflow"))
+
+    def doc(declared: str) -> dict[str, Any]:
+        return {
+            "rayspec": 1,
+            "name": "x",
+            "steps": [{"id": "a", "shell": "true", "artifacts": [declared]}],
+        }
+
+    assert not list(validator.iter_errors(doc("build/report.md")))
+    assert not list(validator.iter_errors(doc("..hidden")))  # not a '..' segment
+    for bad in ("/etc/passwd", "~/notes.md", "../outside.txt", "build/", "out/{{ x }}.txt"):
+        assert list(validator.iter_errors(doc(bad))), bad
 
 
 def test_artifacts_are_declarable_on_every_kind() -> None:
@@ -108,6 +146,17 @@ async def test_a_written_artifact_is_recorded_and_copied(harness: Harness) -> No
     assert oct(copy.stat().st_mode)[-3:] == "600"
     # the step's own output is untouched (stdout, not the artifact)
     assert harness.record(result.run_id).steps["report"].output_ref == "steps/report/output.txt"
+
+
+async def test_the_same_file_declared_twice_is_kept_once(harness: Harness) -> None:
+    """``./a.txt`` and ``a.txt`` are the same promise: one copy, one row, one read."""
+    harness.workflow(
+        "t", wf('  - {id: r, shell: "printf hi > a.txt", artifacts: [a.txt, ./a.txt, a.txt]}\n')
+    )
+    result = await harness.run("t")
+    assert result.status is RunStatus.SUCCEEDED, result.reason
+    record = harness.record(result.run_id).steps["r"]
+    assert [(a.path, a.ref) for a in record.artifacts] == [("a.txt", "artifacts/r/a.txt")]
 
 
 async def test_a_missing_artifact_fails_the_step(harness: Harness) -> None:

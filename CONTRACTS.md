@@ -123,8 +123,13 @@ never rewrites: the cap is per RUN, not per attempt. Root workflow only.
 
 Additive: `StepBase.artifacts: list[ArtifactPath] = []` (every kind) — the files a step
 promises to write, relative to its working directory. `schema.steps.validate_artifact_path`
-refuses an empty path, an absolute one, `~`, a `..` segment and a directory path at LOAD time
-(house error format, `file:line` from the loader's line map); `ArtifactPath` /
+refuses an empty path, an absolute one, `~`, a `..` segment, a control character, a directory
+path and TEMPLATE SYNTAX (`{{` / `{%`) at LOAD time (house error format, `file:line` from the
+loader's line map), and returns the path in normal form (`./a.txt` → `a.txt`), so the recorded
+path and the store's ref always name the same file. An entry is a literal file name: the field
+is deliberately NOT rendered — `cwd:` on the same step is, which is how a per-item name is
+expressed — and the published schema carries the same rule as an `items.pattern`
+(`schemagen._ARTIFACT_PATTERN`). `ArtifactPath` /
 `validate_artifact_path` are exported from `rayspec.schema.steps`.
 
 Additive: `InputSpec.secret: bool = False` — the value is never persisted (stored
@@ -1109,7 +1114,8 @@ Semantics fixed here (tests in `tests/engine/`):
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
   keeps its recorded artifacts; a dry run checks nothing — nothing was produced). Each declared
   path is resolved against the step's working directory (`artifact_dir`: the rendered `cwd:` of
-  a shell/python step, else `ctx.workdir`); a file that is missing, is not a REGULAR file (a
+  a shell/python step, else `ctx.workdir`); duplicates are collapsed (first occurrence wins,
+  order preserved); a file that is missing, is not a REGULAR file (a
   directory, a FIFO, a socket, a device node — `Path.is_file()`, which resolves symlinks), or
   resolves outside that directory (a planted symlink) turns the succeeded outcome into `failed` with
   `ErrorInfo(type="artifact")` naming the path — never a retry (the leaf loop is already over)
