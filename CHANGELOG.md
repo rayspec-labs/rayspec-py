@@ -58,6 +58,52 @@ All notable changes to rayspec are documented here. The format follows
   changes and a machine-specific `platform` string on its first day — and a fault-injecting
   `RunStore` with 16 crash points across every persistence method, from all of which resume
   converges.
+- **Extension points** — a separate package can extend rayspec without forking it. Third-party CLI
+  commands through the `rayspec.cli_plugins` entry point, using the same `register(app)` a builtin
+  command module uses; builtin commands are never shadowed, and a plugin that fails to import is
+  skipped with a warning rather than breaking the CLI. `rayspec.stores`, `rayspec.sinks` and
+  `rayspec.approvals` follow the same precedence rules, with `rayspec.store.create_store` /
+  `rayspec.events.create_sink` / `rayspec.registry.create_approval` for embedders. A third-party run
+  store is wrapped so a run's secrets are redacted before it ever sees them.
+- **`rayspec plugins [--output table|json]`** — which package provides which command, store, sink,
+  approval or provider, and why one was skipped.
+- Optional **`extensions:` block in `config.yaml`** (`sinks:`, `approval:`, `settings:`) selecting
+  registered sinks and approval prompts by id; unset means unchanged behaviour.
+- **`defaults.timeout_total`** — a wall-clock cap for a whole run, alongside `budget_usd` and
+  `max_tokens`. Once exceeded no new step starts, including one already queued for a `max_parallel`
+  slot; running steps finish and the run ends `failed` with `time limit exceeded (elapsed … >
+  timeout_total …)`. The clock runs from the run's original start, so it keeps counting across
+  resumes.
+- **`artifacts:` on any step** — the files it promises to write, relative to its working directory.
+  A missing file, or one that is not a regular file, fails the step; delivered files are copied into
+  the run directory and recorded with a sha256, and `rayspec show` lists them. Absolute, `..` and
+  templated paths are refused when the workflow loads.
+- **`rayspec costs [--since WHEN] [--workflow NAME] [--output table|json]`** — sum a project's runs
+  by workflow: run count, tokens, total cost and the cost-source breakdown. Runs with no recorded
+  cost are counted and shown as `unknown`, and a total missing any of them is marked `≥` (a lower
+  bound) rather than being quietly wrong. Runs still running or paused are counted and named as not
+  final. `--since` takes a window (`7d`, `24h`, `90m`) or a date, inclusive at the cutoff. Read-only.
+- **`rayspec init --from <example>`** scaffolds one of the packaged example projects — its
+  `.rayspec/` tree, stub scripts and README — and prints the example's own scripted dry run as the
+  first step. Applied whole or not at all: conflicting files are named and the command exits 2
+  unless `--force`. An unknown name lists the catalogue with a did-you-mean. The examples now ship
+  inside the wheel, so this works without a checkout.
+- **`rayspec new workflow <name>`** and **`rayspec new agent <name>`** add one file to an existing
+  project. The workflow validates and dry-runs as written; neither overwrites without `--force`.
+- **`rayspec completion <bash|zsh|fish>`** prints a shell-completion script to source. It completes
+  commands and options, plus workflow names after `run`/`plan`/`validate`/`test` and run ids after
+  `show`/`logs`/`resume`/`approve`/`reject`/`cancel`/`eval`/`explain`/`runs diff`/`runs stubs`.
+- **`--output table|json`** on every command that has `--json`. `--json` keeps working unchanged as
+  the older spelling of `--output json`; passing both with different values is a usage error.
+- **Community health files** — `SECURITY.md` (private reporting, the supported 1.x line, a 90-day
+  coordinated-disclosure window, and the threat model: declared `shell:`/`python:` execution is by
+  design, a `secret: true` leak is not), `CONTRIBUTING.md` (the quality gate verbatim, TDD, the
+  frozen contract modules, DCO sign-off), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and the
+  `.github/` issue forms, pull-request template and `CODEOWNERS`.
+- README badges (CI, licence, supported Python versions, code of conduct) and a Contributing
+  section linking the new pages.
+- **`docs/extending.md`** rewritten around the extension points, with a complete copy-pasteable
+  example package that the test suite installs and runs.
 
 ### Changed
 - **Upgrade note — `defaults.on_step_failure: fail_fast` now takes effect.** In 1.0.0 the field was
