@@ -1088,6 +1088,15 @@ Semantics fixed here (tests in `tests/engine/`):
   paused is `paused`. Control signals raised by several `each:` items concurrently collapse into
   one (first wins, a pause beats a stop; the other items are cancelled with reason
   `stopped`/`paused`) — never a failed composite.
+- Wind-down (`scheduler.run_graph`): when a sibling list ends because fail-fast tore down its task
+  group or a control signal cancelled it, the steps still PENDING are not blanket-skipped. They are
+  decided in dependency order by the same `join_decision(..., draining=True)`, so `join: always`
+  runs (the table's last row holds under drain, fail-fast and `stop:` alike) in a fresh task group;
+  nothing there cancels anything, and a cleanup step that PAUSES ends the wind-down and leaves the
+  rest pending for the resumed run (a pause never records pending steps at all). Skip reasons:
+  after a cancellation every leftover is `stopped` (nothing on those branches failed); after
+  fail-fast the join table's own reason stands (`upstream_failed`/`upstream_skipped`) and
+  `run_failed` is the fallback. `when:` is still evaluated for the `join: always` steps.
 - Approval: simultaneous gates are handled one at a time (`Runtime.approval_lock`); when a run is
   already pausing, a later gate is recorded `paused` too but `run.pause`/`run.paused` belong to
   the first gate (the later one asks again on resume). Ctrl-C at the prompt = pause: the gate

@@ -201,7 +201,7 @@ shell/python default none), `env:` (templated, str-coerced) and `output_schema`.
 | any failed (untolerated) | skip (`upstream_failed`) | skip | run |
 | run draining / cancelled | skip (`run_failed`) | skip | run |
 
-Exception: under fail-fast every pending step is skipped `run_failed`, `join: always` included — the task group is already torn down. `always` is finally-semantics under `drain`/`continue` only.
+The last row holds however the list ended: under fail-fast and after a `stop:` the running siblings are cancelled first and the `join: always` steps then run on their own, so `always` is finally-semantics everywhere. After a cancellation the skipped leftovers all read `stopped`; after a failure they keep `upstream_failed`/`upstream_skipped` and fall back to `run_failed`.
 
 `defaults.on_step_failure` picks what a failed step does to its siblings:
 **`drain`** (default) — running steps finish, nothing new starts except `join: always` steps.

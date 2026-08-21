@@ -477,7 +477,8 @@ that map at load time.
 
 Ends the run with `status` (`succeeded` · `failed` · `cancelled`, default `cancelled`) and the
 rendered `reason`. Running siblings are cancelled (`interrupted`, skip reason `stopped`), pending
-ones `skipped`. `succeeded` still renders the workflow `outputs:`. Exit code 0 / 1 / 4.
+ones `skipped` (`stopped`) — except `join: always` steps, which still run, so a cancelled run
+reaches its cleanup. `succeeded` still renders the workflow `outputs:`. Exit code 0 / 1 / 4.
 
 ## Join truth table
 
@@ -492,11 +493,21 @@ succeeded.
 | ≥ 1 failed (untolerated, incl. interrupted/rejected) | skip (`upstream_failed`) | skip | run |
 | run draining (a sibling failed) or cancelled | skip (`run_failed`) | skip | run |
 
-> **Exception — fail-fast.** Under `--fail-fast` (or `defaults.on_step_failure: fail_fast`) the run cancels immediately and *every* pending step is skipped `run_failed`, **including `join: always`** ones: once the task group is torn down there is nothing left to run them in. So `always` gives you finally-semantics under `drain` and `continue`, but not under fail-fast. Whether that is the behaviour we want is still an open question.
+The last row holds however the sibling list ended. Under `drain` and `continue` the `join: always`
+steps run as the remaining work is skipped; under `--fail-fast` (or `defaults.on_step_failure:
+fail_fast`) and after a `stop:` the running siblings are cancelled first and the `join: always`
+steps then run on their own — `always` is finally-semantics everywhere. Cleanup steps do not
+cancel each other: one that fails leaves the others to run, and one that *pauses* (a `join: always`
+`approve:` gate) ends the wind-down and leaves the rest of the list for the resumed run.
+
+The reason recorded for the steps that are skipped depends on why the list ended: after a
+cancellation (`stop:`, a rejected gate) they are all `stopped` — nothing on those branches failed —
+while after a failure they keep the reason the table gives (`upstream_failed` / `upstream_skipped`),
+falling back to `run_failed` when nothing about their own `needs` explains the skip.
 
 Then `when:` is evaluated. A failure anywhere in a sibling list puts that list into **drain**:
 nothing new starts except `join: always` steps, running siblings finish; `--fail-fast` cancels
-them instead.
+them instead and then runs the `join: always` steps.
 
 ## Status vocabulary
 

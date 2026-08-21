@@ -83,6 +83,8 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     running: set[str] = set()
     state: dict[str, Any] = {"draining": False, "control": None}
     send, recv = anyio.create_memory_object_stream[StepOutcome](math.inf)
+    keep_going = ctx.keep_going
+    fail_fast = ctx.fail_fast
 
     def settle(outcome: StepOutcome) -> None:
         sid = outcome.record.id
@@ -90,7 +92,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
         scope.views[sid] = view_of(outcome, graph.by_id.get(sid))
         rec = outcome.record
         vetoed = rec.error is not None and rec.error.type == "rejected"
-        if rec.status in FAILED_LIKE and not rec.tolerated and (vetoed or not ctx.keep_going):
+        if rec.status in FAILED_LIKE and not rec.tolerated and (vetoed or not keep_going):
             # ``on_step_failure: continue`` keeps the ready-set open; dependents of this
             # step still skip (``upstream_failed`` is decided before ``draining`` in join_decision).
             # CARVE-OUT: a human rejecting a gate (``on_reject: fail``) always drains. ``continue``
@@ -152,6 +154,77 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                 running.add(sid)
                 tg.start_soon(run_one, step, scope, ctx, send)
 
+    def collect() -> None:
+        """Settle every outcome the stream already holds (the senders are all done)."""
+        while True:
+            try:
+                outcome = recv.receive_nowait()
+            except (anyio.WouldBlock, anyio.EndOfStream, anyio.ClosedResourceError):
+                return
+            running.discard(outcome.record.id)
+            settle(outcome)
+
+    async def wind_down(reason: str, *, cancelled: bool) -> None:
+        """Decide the steps still pending after the graph was torn down.
+
+        The graph's task group is gone — fail-fast cancelled it, or a ``stop:`` did — but the
+        last row of the join table says a ``join: always`` step runs when the run is draining
+        *or* cancelled, and that row is the whole point of the finally idiom. So the leftovers
+        are not blanket-skipped: they are decided in dependency order, ``always`` steps run in a
+        fresh task group and everything else is skipped.
+
+        The skip reason: after a **cancellation** every leftover is ``stopped``, because nothing
+        on those branches failed — the run was called off, and ``upstream_failed`` would read as
+        a failure that did not happen. After **fail-fast** a failure is exactly what happened, so
+        a skip that the step's own ``needs`` explain keeps that reason (``upstream_failed`` /
+        ``upstream_skipped``) and only the rest is ``run_failed``.
+
+        Nothing here cancels: a cleanup step that fails must not take the other cleanup steps
+        with it. A cleanup step that pauses ends the wind-down and leaves the rest pending, so
+        the resumed run decides them.
+        """
+        while pending:
+            if isinstance(state["control"], RunPaused):
+                return
+            ready = [sid for sid in pending if all(n in outcomes for n in graph.needs[sid])]
+            if not ready:  # unreachable for a DAG whose other steps are all decided
+                return
+            launch: list[str] = []
+            for sid in ready:
+                step = pending[sid]
+                decision = join_decision(
+                    step, [outcomes[n].record for n in graph.needs[sid]], draining=True
+                )
+                if decision.run:
+                    launch.append(sid)
+                    continue
+                del pending[sid]
+                explained = not cancelled and decision.skip_reason not in (None, "run_failed")
+                skip_reason = decision.skip_reason if explained else reason
+                outcome = _skipped(ctx.new_record(step, scope), skip_reason or reason)
+                await finish(outcome, step, scope, ctx)
+                settle(outcome)
+            if not launch:
+                continue
+            async with anyio.create_task_group() as tg:
+                for sid in launch:
+                    step = pending.pop(sid)
+                    if step.when is not None:
+                        verdict = _evaluate_when(step, scope, ctx)
+                        if verdict is not True:
+                            record = ctx.new_record(step, scope)
+                            outcome = (
+                                _skipped(record, "when_false")
+                                if verdict is False
+                                else _failed(record, verdict)
+                            )
+                            await finish(outcome, step, scope, ctx)
+                            settle(outcome)
+                            continue
+                    running.add(sid)
+                    tg.start_soon(run_one, step, scope, ctx, send)
+            collect()
+
     try:
         async with anyio.create_task_group() as tg:
             await decide_and_launch(tg)
@@ -164,36 +237,24 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                     scope.cancel_reason = cancel_reason_for(control)
                     tg.cancel_scope.cancel()
                     break
-                if state["draining"] and ctx.fail_fast and running:
+                if state["draining"] and fail_fast and running:
                     scope.cancel_reason = "failed"
                     tg.cancel_scope.cancel()
                     break
                 await decide_and_launch(tg)
     finally:
         # outcomes of siblings cancelled by a control signal / fail-fast / outer cancellation
-        while True:
-            try:
-                outcome = recv.receive_nowait()
-            except (anyio.WouldBlock, anyio.EndOfStream, anyio.ClosedResourceError):
-                break
-            running.discard(outcome.record.id)
-            settle(outcome)
+        collect()
+    control = state["control"]
+    if control is not None and not isinstance(control, RunPaused):
+        # a stop / reject cancelled the graph: the leftovers are decided, the cleanup ones run
+        await wind_down("stopped", cancelled=True)
+    elif control is None and state["draining"] and fail_fast:
+        await wind_down("run_failed", cancelled=False)
+    # a cleanup step may have signalled a stop or a pause of its own (only if nothing had yet)
     control = state["control"]
     if control is not None:
-        if not isinstance(control, RunPaused):
-            reason = "stopped"
-            for sid in list(pending):
-                step = pending.pop(sid)
-                outcome = _skipped(ctx.new_record(step, scope), reason)
-                await finish(outcome, step, scope, ctx)
-                settle(outcome)
         raise control
-    if state["draining"] and ctx.fail_fast:
-        for sid in list(pending):
-            step = pending.pop(sid)
-            outcome = _skipped(ctx.new_record(step, scope), "run_failed")
-            await finish(outcome, step, scope, ctx)
-            settle(outcome)
     return outcomes
 
 
