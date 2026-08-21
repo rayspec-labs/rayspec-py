@@ -19,10 +19,11 @@ Three entry-point groups, all shaped like :mod:`rayspec.providers.registry`::
 
 Precedence is fixed and order-independent, exactly as for providers: builtin ids can never be
 overridden, programmatic :func:`register_store` (…) calls win over entry points, and an entry
-point that fails to load, is the wrong type, or registers an id different from its name is
-skipped with a :class:`RuntimeWarning`. The builtins (``file`` store, ``console``/``json``/
-``quiet``/``null`` sinks, ``console`` approval) go through the same table, so the code path a
-plugin takes is the one rayspec itself takes.
+point that fails to load, is the wrong type, registers an id different from its name, or claims
+an id another installed distribution already took is skipped with a :class:`RuntimeWarning` —
+an id is first-come, so nothing is ever silently replaced. The builtins (``file`` store,
+``console``/``json``/``quiet``/``null`` sinks, ``console`` approval) go through the same table,
+so the code path a plugin takes is the one rayspec itself takes.
 
 **Redaction boundary.** Secrets stop one layer ABOVE a third-party store:
 :func:`create_store` wraps every store that did not come from the builtin table in
@@ -274,6 +275,7 @@ class _Registry(Generic[R]):
             )
             return []
         found: list[R] = []
+        claimed = set(known)  # grows as ids are accepted: the FIRST distribution keeps an id
         for ep in eps:
             if ep.name in self.builtin_ids:
                 # never even load the module: a builtin id is not up for grabs
@@ -281,6 +283,12 @@ class _Registry(Generic[R]):
                 continue
             if ep.name in known:
                 continue  # a programmatic registration wins, whenever it was made
+            if ep.name in claimed:
+                # two installed distributions publishing one id: whichever the metadata
+                # backend enumerated first keeps it, and the other is visible in `rayspec
+                # plugins` instead of quietly overwriting it
+                self._refuse(ep, f"id {ep.name!r} is already provided by another distribution")
+                continue
             try:
                 obj = ep.load()
             except Exception as exc:
@@ -298,6 +306,7 @@ class _Registry(Generic[R]):
                     f"registers id {obj.id!r}; the entry-point name must equal the id",
                 )
                 continue
+            claimed.add(obj.id)
             found.append(obj)
         return found
 

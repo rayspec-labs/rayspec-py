@@ -1757,8 +1757,10 @@ There is deliberately no `--strict-toolchain` resume guard.
 ### plugin entry points — `registry.py`, `cli/plugins.py`, `store/redacting.py`
 Four entry-point groups, all with the fixed precedence of `providers/registry.py` (builtins can
 never be shadowed; a programmatic registration beats an entry point; anything that fails to load,
-has the wrong type or names an id different from its entry-point name is skipped with a
-`RuntimeWarning` — never an exception into the CLI):
+has the wrong type, names an id different from its entry-point name, or claims an id another
+installed distribution already took is skipped with a `RuntimeWarning` — never an exception into
+the CLI. An id is first-come, so a second distribution never replaces the first: it is refused
+with a `DiscoveryProblem` and `rayspec plugins` shows it as `skipped`):
 
 | group | value | resolved by |
 |---|---|---|

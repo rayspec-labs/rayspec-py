@@ -18,9 +18,11 @@ came from, and — for anything that was refused — why. It is the first comman
 command, store or sink shows up that you did not write.
 
 The rules are the same for every group: **builtin ids can never be overridden**, entry points are
-visited in name order (so a collision resolves the same way on every machine), a programmatic
-registration wins over an entry point, and anything that fails to load, has the wrong type or
-collides is skipped with a `RuntimeWarning` instead of breaking the CLI.
+visited in name order, a programmatic registration wins over an entry point, and anything that
+fails to load, has the wrong type or collides is skipped with a `RuntimeWarning` instead of
+breaking the CLI. An id is first-come: if two installed distributions publish the same one, the
+first keeps it and the second is refused and listed as `skipped` in `rayspec plugins` — nothing
+is ever silently replaced, so an unexpected implementation always has a row explaining itself.
 
 ## A worked example: one command and one sink
 

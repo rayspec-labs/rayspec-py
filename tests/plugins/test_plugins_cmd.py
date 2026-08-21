@@ -135,3 +135,40 @@ def test_a_partially_refused_plugin_names_the_dropped_command(
     row = {(r["group"], r["name"]): r for r in payload["plugins"]}[("rayspec.cli_plugins", "acme")]
     assert row["status"] == "ok"
     assert row["detail"] == "adds acme-lint; dropped run (already provided)"
+
+
+DUPLICATE = """
+from rayspec.registry import SinkRegistration
+
+
+class Dup:
+    def __init__(self, context): self.context = context
+
+    async def emit(self, event): pass
+    async def emit_stream(self, step_path, record): pass
+    async def aclose(self): pass
+
+
+SINK = SinkRegistration("dup", "Duplicate sink", Dup)
+"""
+
+
+def test_one_of_two_distributions_claiming_an_id_is_shown_as_skipped(
+    install_plugin: InstallPlugin,
+) -> None:
+    """Both rows are listed, and the listing says which one actually provides the id."""
+    install_plugin(
+        "aaa-rayspec",
+        modules={"aaa_dup": DUPLICATE},
+        entry_points={"rayspec.sinks": {"dup": "aaa_dup:SINK"}},
+    )
+    install_plugin(
+        "zzz-rayspec",
+        modules={"zzz_dup": DUPLICATE},
+        entry_points={"rayspec.sinks": {"dup": "zzz_dup:SINK"}},
+    )
+    with pytest.warns(RuntimeWarning, match="already provided by another distribution"):
+        payload = json.loads(_invoke(["plugins", "--json"]).output)
+    rows = [row for row in payload["plugins"] if row["name"] == "dup"]
+    assert len(rows) == 2
+    assert sorted(row["status"] for row in rows) == ["ok", "skipped"]

@@ -200,3 +200,41 @@ def test_programmatic_registration_wins_and_builtins_are_immutable(
 
     with pytest.raises(RayspecError, match="builtin"):
         registry.register_sink(registry.SinkRegistration("console", "No", _null_sink))
+
+
+DUPLICATE = """
+from rayspec.registry import SinkRegistration
+
+
+class {cls}:
+    def __init__(self, context): self.context = context
+
+    async def emit(self, event): pass
+    async def emit_stream(self, step_path, record): pass
+    async def aclose(self): pass
+
+
+SINK = SinkRegistration("dup", "Duplicate sink", {cls})
+"""
+
+
+def test_two_distributions_claiming_one_id_do_not_silently_replace_each_other(
+    install_plugin: InstallPlugin,
+) -> None:
+    """The second distribution to be visited is refused, and says so."""
+    install_plugin(
+        "aaa-rayspec",
+        modules={"aaa_dup": DUPLICATE.format(cls="FromAaa")},
+        entry_points={"rayspec.sinks": {"dup": "aaa_dup:SINK"}},
+    )
+    install_plugin(
+        "zzz-rayspec",
+        modules={"zzz_dup": DUPLICATE.format(cls="FromZzz")},
+        entry_points={"rayspec.sinks": {"dup": "zzz_dup:SINK"}},
+    )
+    with pytest.warns(RuntimeWarning, match="already provided by another distribution"):
+        ids = [r.id for r in registry.list_sinks()]
+    assert ids.count("dup") == 1
+    problems = [p for p in registry.discovery_problems() if p.name == "dup"]
+    assert len(problems) == 1
+    assert "already provided by another distribution" in problems[0].message

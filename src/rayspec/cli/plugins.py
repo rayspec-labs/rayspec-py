@@ -308,8 +308,11 @@ def installed_plugins() -> list[InstalledPlugin]:
     from rayspec import registry
 
     cli_by_name = {plugin.name: plugin for plugin in loaded_cli_plugins()}
+    # keyed by the VALUE as well: two distributions can publish one id, and only the one that
+    # was refused should read as skipped
     problems = {
-        (problem.group, problem.name): problem.message for problem in registry.discovery_problems()
+        (problem.group, problem.name, problem.value): problem.message
+        for problem in registry.discovery_problems()
     }
     rows: list[InstalledPlugin] = []
     for group in PLUGIN_GROUPS:
@@ -329,7 +332,7 @@ def installed_plugins() -> list[InstalledPlugin]:
                         detail += "; dropped " + ", ".join(plugin.refused) + " (already provided)"
                     status = "ok"
             elif group in registry.GROUP_KINDS:
-                message = problems.get((group, ep.name))
+                message = problems.get((group, ep.name, ep.value))
                 if message:
                     status, detail = "skipped", message
                 elif registry.is_registered(registry.GROUP_KINDS[group], ep.name):
