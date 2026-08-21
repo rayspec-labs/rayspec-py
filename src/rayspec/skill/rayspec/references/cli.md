@@ -912,6 +912,37 @@ rayspec skill path
 Print the packaged skill directory (the one `install` copies; it holds `SKILL.md` and
 `references/`). Exit 0.
 
+### `rayspec completion`
+
+```
+rayspec completion <bash|zsh|fish>
+rayspec completion --values workflows|runs [--root DIR]
+```
+
+Print a shell-completion script to source, and nothing else — installing it is your decision:
+
+```sh
+rayspec completion zsh  > ~/.zsh/completions/_rayspec     # then: compinit
+rayspec completion bash > ~/.local/share/bash-completion/completions/rayspec
+rayspec completion fish > ~/.config/fish/completions/rayspec.fish
+```
+
+The script completes commands, sub-commands and options, plus the two argument slots that save
+real typing: a **workflow name** after `run`, `plan`, `validate` and `test`, and a **run id**
+after `show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `eval`, `explain`, `runs diff` and
+`runs stubs`. It gets those from `rayspec completion --values workflows|runs`, which prints one
+candidate per line for the project the shell is standing in (run ids: the 50 newest). That
+lookup never fails and never prints a diagnostic — no project, an unreadable `config.yaml` or a
+half-written workflow simply yields nothing, so a broken checkout can never inject an error
+message into the candidate list. `rayspec completion` with no shell, or with a shell that is not
+one of the three, is a usage error (exit 2) naming the supported ones; `--values` together with a
+shell is a usage error too.
+
+There is deliberately no `--install-completion`: Typer's version of it appends a `source` line to
+`~/.bashrc` / `~/.zshrc` as a side effect of a flag, which is not something a workflow runner
+should do to your dotfiles. `rayspec completion <shell>` prints the same script (Typer's, plus
+the workflow/run-id wrapper) and leaves the placement to you.
+
 ### `rayspec version`
 
 ```
