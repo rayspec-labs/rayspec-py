@@ -663,7 +663,10 @@ omitted:
   the run record)`. A recomputed line answers "which cap is this run over", not "which cap
   fired"; `--json` carries the same distinction as `cap.source` (`run.reason` | `recomputed`);
 - **join** — every `needs` with its recorded outcome (and what the join table *counts* it as: a
-  tolerated failure counts as succeeded) and the decision that followed;
+  tolerated failure counts as succeeded) and the decision that followed. A step whose skip reason
+  says the run itself was being torn down (`run_failed`, `stopped`, `budget_exceeded`) is
+  re-evaluated the way the scheduler saw it, and the row says so: `decision skip (run_failed) —
+  the run was already draining`;
 - **when** — the expression, its value re-evaluated in the step's own scope, and each operand
   with the value it had (`steps.assess.output = LGTM`);
 - **retries** — one line per `step.retry` event: attempt, delay and the error that caused it;

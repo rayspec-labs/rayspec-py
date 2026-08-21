@@ -157,8 +157,22 @@ def cap_section(
     }
 
 
-def join_section(step: StepModel, run: RunRecord, path: StepPath) -> dict[str, Any]:
-    """The ``needs`` row that decided the step: each need's outcome and the join verdict."""
+#: ``skip_reason`` values that say the RUN was being torn down, not that the step's own ``needs``
+#: decided it — the scheduler was draining when the step was considered.
+DRAIN_SKIP_REASONS = frozenset({"run_failed", "stopped", BUDGET_SKIP_REASON})
+
+
+def join_section(
+    step: StepModel, run: RunRecord, path: StepPath, record: StepRecord | None = None
+) -> dict[str, Any]:
+    """The ``needs`` row that decided the step: each need's outcome and the join verdict.
+
+    The table is re-evaluated rather than read off the record, so it has to be given the same
+    input the scheduler had. ``draining`` is that input: a step recorded with a teardown skip
+    reason (:data:`DRAIN_SKIP_REASONS`) was decided while the run was already failing, being
+    stopped or over a cap, and evaluating its row as if the run were healthy prints
+    ``decision run`` directly underneath the recorded skip.
+    """
     needs: list[dict[str, Any]] = []
     records: list[StepRecord] = []
     for need in step.needs:
@@ -179,16 +193,22 @@ def join_section(step: StepModel, run: RunRecord, path: StepPath) -> dict[str, A
                 "tolerated": rec.tolerated if rec is not None else None,
             }
         )
-    section: dict[str, Any] = {"join": step.join, "needs": needs, "decision": None}
+    draining = record is not None and record.skip_reason in DRAIN_SKIP_REASONS
+    section: dict[str, Any] = {
+        "join": step.join,
+        "needs": needs,
+        "decision": None,
+        "draining": draining,
+    }
     if step.needs and len(records) == len(step.needs):
         try:
-            decision = join_decision(step, records, draining=False)
-        except ValueError:
+            decision = join_decision(step, records, draining=draining)
+        except ValueError:  # a need that never reached a terminal status
             return section
         section["decision"] = "run" if decision.run else "skip"
         section["skip_reason"] = decision.skip_reason
     elif not step.needs:
-        section["decision"] = "run"
+        section["decision"] = "run" if not draining or step.join == "always" else "skip"
     return section
 
 
@@ -418,6 +438,8 @@ def print_join(out: Console, join: dict[str, Any]) -> None:
         verdict = join["decision"]
         if join.get("skip_reason"):
             verdict += f" ({join['skip_reason']})"
+        if join.get("draining"):
+            verdict += " — the run was already draining"
         _line(out, "decision", verdict)
 
 
@@ -587,7 +609,7 @@ def build_payload(
         "location": resolved.location_of(rebuilt.def_path),
         **status_section(record),
         "cap": cap_section(record, run, resolved),
-        "join": join_section(step, run, rebuilt.record_path),
+        "join": join_section(step, run, rebuilt.record_path, record),
         "when": when_section(step, rebuilt, engine),
         "retries": retries,
         "agent": agent_section(resolved, rebuilt.def_path, record),
