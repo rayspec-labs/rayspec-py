@@ -60,6 +60,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rayspec"]
 
+# `rayspec init --from <example>` scaffolds one of the example projects, so the corpus has
+# to be importable data — a `uv tool install rayspec` user has no checkout to copy from.
+[tool.hatch.build.targets.wheel.force-include]
+"examples" = "rayspec/examples"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -ra -p anyio"

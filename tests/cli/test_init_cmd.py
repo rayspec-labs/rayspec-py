@@ -12,7 +12,13 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.cli.commands import _loader_common as common
-from rayspec.cli.commands.init import SCAFFOLD_FILES, TEMPLATE_KINDS, scaffold
+from rayspec.cli.commands.init import (
+    SCAFFOLD_FILES,
+    TEMPLATE_KINDS,
+    example_files,
+    example_names,
+    scaffold,
+)
 from rayspec.loader import load_workflow, validate_workflow
 
 EXPECTED = {
@@ -307,3 +313,105 @@ def test_init_does_not_import_the_skill_command_module() -> None:
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+# --------------------------------------------------------------------------------------------------
+# `rayspec init --from <example>` — scaffold from a shipped example project
+# --------------------------------------------------------------------------------------------------
+
+
+def test_examples_are_reachable_from_the_package() -> None:
+    """The example corpus must be importable data, not a git-checkout-only directory: a
+    `uv tool install rayspec` user has no repository."""
+    names = example_names()
+    assert "hello_review" in names and "pr_review" in names
+    for name in names:
+        rels = [rel for rel, _ in example_files(name)]
+        assert any(rel.startswith(".rayspec/workflows/") for rel in rels), (name, rels)
+
+
+def test_wheel_ships_the_examples() -> None:
+    """The wheel build maps `examples/` into the package (`force-include`); without that
+    declaration `--from` works in a checkout and breaks for everybody else."""
+    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    assert "[tool.hatch.build.targets.wheel.force-include]" in text
+    assert '"examples" = "rayspec/examples"' in text
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_init_from_example_lands_a_working_project(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every shipped example scaffolds into an empty directory, and the dry run `init` printed
+    there runs green from that directory — no network, no credentials."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert (target / ".rayspec").is_dir()
+    assert (target / "README.md").is_file()
+    command = _printed_dry_run(res.output)
+    assert command[:1] == ["rayspec"], res.output
+    monkeypatch.chdir(target)
+    run = CliRunner().invoke(app, command[1:])
+    assert run.exit_code == 0, f"{command}\n{run.output}"
+
+
+def _printed_dry_run(output: str) -> list[str]:
+    """The `rayspec run … --dry-run …` line of the next-steps block, as argv."""
+    import shlex
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("rayspec run ") and "--dry-run" in stripped:
+            return shlex.split(stripped.split("#")[0].strip())
+    raise AssertionError(f"no dry-run next step in:\n{output}")
+
+
+def test_init_from_unknown_example_lists_the_real_ones(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(app, ["init", "--from", "bogus", "--root", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    for name in example_names():
+        assert name in res.output
+    assert not (tmp_path / ".rayspec").exists()
+
+
+def test_init_from_near_miss_suggests_the_right_example(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(app, ["init", "--from", "hello_reviw", "--root", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert "did you mean 'hello_review'?" in res.output
+
+
+def test_init_from_and_kind_together_is_a_usage_error(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--kind", "content", "--root", str(tmp_path)]
+    )
+    assert res.exit_code == 2, res.output
+    assert "--from" in res.output and "--kind" in res.output
+    assert not (tmp_path / ".rayspec").exists()
+
+
+def test_init_from_never_overwrites_without_force(tmp_path: Path, home: Path) -> None:
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert (
+        CliRunner()
+        .invoke(app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"])
+        .exit_code
+        == 0
+    )
+    workflow = target / ".rayspec" / "workflows" / "hello_review.yaml"
+    workflow.write_text("edited\n", encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 0, res.output
+    assert workflow.read_text(encoding="utf-8") == "edited\n"
+    assert "exists" in res.output and "--force" in res.output
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill", "--force"]
+    )
+    assert res.exit_code == 0, res.output
+    assert workflow.read_text(encoding="utf-8") != "edited\n"

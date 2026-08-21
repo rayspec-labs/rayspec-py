@@ -707,7 +707,7 @@ Options:
 ### `rayspec init`
 
 ```
-rayspec init [--kind code|content] [--force] [--no-skill] [--root DIR]
+rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
@@ -747,6 +747,43 @@ Both kinds ship the same `config.yaml` (commented `tiers`/`aliases`/`pricing`/`p
 blocks) and a `stubs/example.yaml` that makes `rayspec run example --dry-run --stubs
 .rayspec/stubs/example.yaml` succeed without any login (its header comment links the stub file
 format in [providers.md](providers.md#stub-stub) by URL).
+
+#### Starting from an example
+
+```
+rayspec init --from hello_review
+```
+
+`--from EXAMPLE` copies one of the example projects packaged with rayspec into the target
+directory instead of the generic template: its `.rayspec/` tree, its stub scripts and its
+`README.md`, all verbatim. The examples ship inside the wheel, so this works from a
+`uv tool install rayspec` with no checkout of the repository. `--from` and `--kind` are mutually
+exclusive (an example brings its own workflow), and an unknown name is a usage error (exit 2)
+that lists every example with its description and a `did you mean …?` when the name is close:
+
+```
+$ rayspec init --from helo_review
+error: unknown example 'helo_review'; did you mean 'hello_review'?
+hint: available examples (rayspec init --from <name>):
+  fix_issue         Fix a GitHub issue: implement, review and iterate until the reviewer approves.
+  hello_review      Review a file or directory with a single prompt step — the smallest useful workflow.
+  …
+```
+
+The next steps `--from` prints end with the example's own scripted dry run — the exact command
+(inputs included) that this repository asserts green on every commit, so a fresh directory has a
+working run before any credentials exist:
+
+```
+next steps:
+  rayspec validate                        # schema, graph, references, capabilities
+  rayspec run hello_review -i target=src/ -i focus=style --dry-run --stubs stubs.yaml   # scripted agents, no login needed
+  open README.md                          # what this example shows, and a real run
+```
+
+The catalogue is whatever the build ships (`rayspec init --from ''` prints it); today that is
+`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `secret_via_tool`,
+`triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
 
 ### `rayspec doctor`
 
