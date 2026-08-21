@@ -999,15 +999,31 @@ from rayspec.engine.runner import (
 from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
-    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived properties:
-    #     RunContext.fail_fast  = options.fail_fast OR defaults.on_step_failure == "fail_fast"
-    #     RunContext.keep_going = defaults.on_step_failure == "continue" AND NOT options.fail_fast
+    #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
+    #   per graph, for the scope it is running — and NEVER options.fail_fast or a root-only
+    #   accessor, because the policy differs per sibling list:
+    #     RunContext.fail_fast_for(scope)  = options.fail_fast OR scope.on_step_failure == "fail_fast"
+    #     RunContext.keep_going_for(scope) = scope.on_step_failure == "continue" AND NOT options.fail_fast
     #   The flag may only ever TIGHTEN: it enables fail-fast and beats "continue", and never
     #   downgrades a workflow that asked for fail_fast. "drain" = 1.0.0 behaviour.
     #   keep_going relaxes draining caused by a FAILURE only — a pause/stop still halts new work,
     #   the failed step's dependents still skip (upstream_failed is decided before draining in
-    #   join_decision), and the run still ends FAILED. It is GLOBAL: run_graph runs every sibling
-    #   list, so the policy also applies inside each:/loop:/include: bodies (tested).
+    #   join_decision), and the run still ends FAILED.
+    #   ExecScope.on_step_failure is the policy in force for ONE sibling list
+    #   (context.effective_on_step_failure(defaults, parent), additive): the scope's own
+    #   defaults.on_step_failure when that workflow STATED one (pydantic model_fields_set), else
+    #   the parent scope's. So each:/loop: bodies always inherit (they share their parent's
+    #   Defaults) and an include:d workflow that writes the key governs its own body — lexical,
+    #   like defaults.timeout, unlike the run-wide defaults.max_parallel.
+    #   NESTING ONLY TIGHTENS. context.ON_STEP_FAILURE_ORDER = ("continue", "drain", "fail_fast")
+    #   is the strictness order; context.strictest_on_step_failure(*policies) picks the maximum.
+    #   ExecScope.on_step_failure_floor (additive, context.on_step_failure_floor) is the strictest
+    #   policy this scope or an enclosing one STATED, and a stated policy is clamped to at least
+    #   that floor — an include:d block can make its own body more careful than the run that
+    #   included it, never less. The floor is what enclosing workflows STATED (context.
+    #   stated_on_step_failure reads pydantic's model_fields_set), not what was in force for them:
+    #   a run that never writes the key has asked for nothing, so a block may still state
+    #   "continue" for its own body while the run keeps the "drain" default.
     #   NOT the same knob as each.on_failure: continue, which is per-ITEM (does a failed item
     #   fail the each step?) — see docs/schema.md under `each:`.
     #   DESIGN RULE (deliberate, not inherited from v1.0.0): the --fail-fast
@@ -1088,6 +1104,26 @@ Semantics fixed here (tests in `tests/engine/`):
   paused is `paused`. Control signals raised by several `each:` items concurrently collapse into
   one (first wins, a pause beats a stop; the other items are cancelled with reason
   `stopped`/`paused`) — never a failed composite.
+- Wind-down (`scheduler.run_graph`): when a sibling list ends because fail-fast tore down its task
+  group or a control signal cancelled it, the steps still PENDING are not blanket-skipped. They are
+  decided in dependency order by the same `join_decision(..., draining=True)`, so `join: always`
+  runs (the table's last row holds under drain, fail-fast and `stop:` alike) in a fresh task group;
+  nothing there cancels anything, and a cleanup step that PAUSES ends the wind-down and leaves the
+  rest pending for the resumed run (a pause never records pending steps at all). Skip reasons:
+  after a cancellation every leftover is `stopped` (nothing on those branches failed); after
+  fail-fast the join table's own reason stands (`upstream_failed`/`upstream_skipped`) and
+  `run_failed` is the fallback. The TEARDOWN reason wins over the run-level cap: a leftover of a
+  fail-fast/`stop:` teardown is `run_failed`/`stopped` even when `ctx.budget_exceeded` is also
+  set (the wind-down does not consult it — only `decide_and_launch` does, which is where
+  `budget_exceeded` is recorded). `when:` is still evaluated for the `join: always` steps.
+- Only TERMINAL records are joined. A step is considered (and a leftover is wound down) only once
+  every `needs` record is `status.is_terminal` — `PAUSED` is not, so an `approve:` gate that
+  paused, or a composite whose body paused, leaves its dependents undecided for the resumed run
+  instead of reaching `join_decision`/`graph.classify`, which raise on a non-terminal outcome.
+  One `RunControl` bubbles per sibling list, the first one raised, EXCEPT that a `RunPaused`
+  beats a `RunStopped` (the same rule `executors/each.py` applies to concurrent items): a gate
+  that pauses while a `stop:` is winding the list down leaves the run `paused` and answerable,
+  not `stopped`.
 - Approval: simultaneous gates are handled one at a time (`Runtime.approval_lock`); when a run is
   already pausing, a later gate is recorded `paused` too but `run.pause`/`run.paused` belong to
   the first gate (the later one asks again on resume). Ctrl-C at the prompt = pause: the gate
@@ -1197,8 +1233,14 @@ Semantics fixed here (tests in `tests/engine/`):
   2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
-  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged; the warning hint
-  names the knob that tripped. `scheduler.finish` asks the breaker after EVERY step when
+  the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
+  EVERY cap that is over, not only the first: `context.cap_reasons(usage, cost, source, elapsed_s,
+  defaults) -> tuple[CapBreach, ...]` (`CapBreach(knobs, reason)`) reports them in `CAP_KNOBS`
+  order — the money caps (`defaults.budget_usd` / `defaults.max_tokens`, one sentence via
+  `budget_parts`/`budget_reason`) before `defaults.timeout_total` — and `check_budget` joins the
+  reasons with `"; "` and the knobs to raise with `" / "`. `context.is_cap_reason(reason)` says
+  whether a `RunRecord.reason` is one of them (`CAP_REASON_PREFIXES`).
+  `cap_reasons` is additive; `budget_reason`/`time_reason` keep their shape. `scheduler.finish` asks the breaker after EVERY step when
   `ctx.time_capped` (a shell-only run reports no usage), and `Runner.run` asks it once before
   the graph starts so a resumed run whose clock already expired starts nothing.
 - The breaker is asked at TWO points, and both are load-bearing: when a step becomes ready
@@ -1456,8 +1498,9 @@ CLI surface:
   to a file (refusing an existing one without `--force`; the write is atomic and any `OSError` is
   exit 2 `cannot write <path>: …`) or to stdout; prints `workflow_drift_warning` and
   `recording_notes` on stderr; exit 2 for a run with `secret_inputs` (naming them) and **always**
-  for `--redact` (not available until the redactor ships — the flag never silently records an
-  un-redacted script).
+  for `--redact` — a permanent refusal, not a gap: a recording command is never given secret
+  values, so the flag never silently records an un-redacted script and never promises a later
+  build.
 - `rayspec runs diff <a> <b> [--json] [--exit-code] [--outputs] [--steps] [--across-projects]
   [--root]` — two runs of
   ONE workflow. `RunDiff.changed` (what `--exit-code` returns 1 on) covers the run status, the set
@@ -1826,17 +1869,41 @@ Two new packages and one new loader module; nothing else moved.
   entry neither fails a run nor executes its `cmd:` helper),
   `build_redactor(config, {name: value}) -> Redactor`.
 - **`rayspec.redact`** — pure text transformation. `Redactor.build({name: value}, *,
-  detectors=()) -> Redactor` (`literals` longest-first, each value registered **twice** when its
-  JSON-escaped form differs, because records are redacted as serialised JSON text;
-  `MIN_REDACTABLE_LEN = 4` — shorter values are skipped and named in `.skipped`, which the CLI
-  turns into a `warning:` line at run start and a `doctor` note; `bool(redactor)` is False when
-  it would change nothing). `redact(text)`, `redact_obj(value)` (also replaces a **number** that
-  IS a secret, so a JSON document stays well-formed), `REDACTION = "[REDACTED:{name}]"`,
-  `NULL_REDACTOR` (the shared no-op). `StreamRedactor.feed(text)` holds back only the tail that
-  could still GROW into a match — the longest suffix that is a proper prefix of a known value, or
-  a detector shape in progress — so ordinary text is emitted immediately and a live log never
-  lags; `redactor.hold` is the documented upper bound, not what is held. `flush()` returns the
-  tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
+  detectors=()) -> Redactor` — `build` and `extend` also take `(name, value)` PAIRS
+  (`rayspec.redact.Secrets`), because `config.secrets` and the workflow's inputs are independent
+  namespaces that can use the same name for different values and a merge by name would drop one
+  of the values while the step still receives it — (`literals` longest-first, each value registered **twice** when its
+  JSON-escaped form differs, so a writer of raw TEXT — `stdout.log`, an artifact, a step output
+  that happens to contain JSON — still catches the escaped form; `MIN_REDACTABLE_LEN = 4` —
+  shorter values are skipped and named in `.skipped`, which the CLI turns into a `warning:` line
+  at run start and a `doctor` note; `bool(redactor)` is False when it would change nothing).
+  `redact(text)` = `redact_shapes(redact_values(text))` — the two halves are separate because
+  a known value can be replaced the moment it is whole while a detector shape may still be
+  growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
+  included (a structured result or a tool payload can put a secret in the key position), plus a
+  **number** whose whole text IS a secret, so a JSON document stays well-formed.
+  `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
+  redacted, and any substitution the model cannot hold put back at exactly the field it broke
+  (a structural number equal to a secret is a coincidence, not a leak). The record's own
+  STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
+  keyed by step path), names a place in the record rather than carrying a value — while
+  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
+  that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
+  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
+  `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
+  is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
+  already knew everything) are how a later caller ADDS a value without discarding one already
+  installed. `REDACTION = "[REDACTED:{name}]"`, `NULL_REDACTOR` (the shared no-op).
+  `StreamRedactor.feed(text)` holds back only the tail that could still GROW into a match (the
+  longest suffix that is a proper prefix of a known value, or a detector shape in progress) and
+  then moves that boundary further back rather than cutting a COMPLETE match in half — a value
+  that ends with its own prefix (`4242424242`) otherwise looks like one still being written and
+  has its head released raw. Both rules are measured on the RAW buffer: substituting complete
+  values before measuring would replace a known value that is a PREFIX of another known value
+  (`dbuser` inside `dbuser:pw@host`) and destroy the prefix the boundary needs. Ordinary text is
+  emitted immediately and a live log never lags; `redactor.hold` is the documented upper bound
+  for a partial match, not what is held, and a run of complete matches that overlap each other
+  is held whole. `flush()` returns the tail and MUST be called at the end of a stream. Detector patterns are bounded (`PEM_MAX_BODY =
   8192`, 4 KiB tokens) precisely so a shape split across two chunks is still caught. The
   concatenation of `feed`/`flush` equals the redaction of the concatenated input — only the
   chunk boundaries move. `RedactingSink(inner, redactor)` wraps any `EventSink` (event `data`,
@@ -1870,18 +1937,35 @@ Additive changes to existing modules:
   silent leak.
 - `store/file.py`: `FileRunStore(root, *, redactor=NULL_REDACTOR)` and the mutable
   `store.redactor` attribute (the store is built before the run's secrets are known; the CLI
-  assigns the real one at run start). Every writer redacts: `save` (the serialised `run.json`
-  payload), `write_output_with_sha` (before hashing, so the sha is the file's — and for
-  `kind="json"` the PARSED value is redacted, not the serialised text, so a secret that is a
-  bare JSON token cannot turn a valid document into an invalid one), `append_event`,
-  `append_stream` (boundary-safe per `(run, step, kind, attempt)`), and `record_step` through
-  those two. `flush_streams(run_id, step_path=None)` writes the held-back tail, and
+  assigns the real one at run start, and the Runner installs what the CLI did not). Every writer
+  redacts, and everything JSON-shaped is redacted on the PARSED value rather than on the
+  serialised text — a secret that is a bare JSON token would otherwise be swapped for an
+  unquoted marker and leave a file that no longer parses: `save` (`redact_dump(run)`, then
+  serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
+  `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
+  value), `append_event` (the event's `data`, the only free-form part), `append_stream`
+  (`text` boundary-safe per `(run, step, kind, attempt)`, plus `data`, `name` and `call_id` —
+  every part of the record that carries text, since the line is built from the parts), and
+  `record_step` through those two. `flush_streams(run_id, step_path=None)` writes the held-back tail, and
   **`append_event` calls it** on `step.finished` and on `run.finished`/`run.paused` — the events
   the engine emits for every step and every run — so a finished stream is always complete on
   disk and `stream.jsonl` reassembles to exactly what the step produced. **New writes must go
   through the store**: a writer that opens a file under the run dir directly is not covered.
 - `engine/context.py`: `RunOptions.config_secrets: Mapping[str, str] = {}` (additive) — the
   resolved `config.secrets`, handed only to `shell:`/`python:` steps.
+- `engine/runner.py`: `Runner._install_redactor()` runs first in `run()`, before the workdir lock
+  and before the record exists. It makes `store.redactor` cover every `secret: true` input the
+  run was given plus every `RunOptions.config_secrets` value, by `Redactor.extend` — as PAIRS,
+  so a `config.secrets` entry and an input of the same name both reach the redactor. A redactor
+  the caller installed is never replaced, and one that already knows every value and every name
+  is left alone (`extend` returns `self`), so the CLI path is a no-op. Everything else goes
+  through `extend`, including values `covers` reports as covered, so a value too short to redact
+  lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
+  emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
+  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
+  `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
+  caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
+  by construction.
 - `engine/executors/_process.py`: `process_env` adds `ctx.options.config_secrets` under their own
   names, below the step's own `env:` (never in `context.json`, `export_env` or the fingerprint);
   `_pump` redacts `stdout.log`/`stderr.log`, the captured chunks and the emitted stream records
@@ -1924,7 +2008,11 @@ Decided and **not** to be re-litigated:
 - Builtin detectors are **opt-in, default off**. A false positive in a run log is worse than the
   gap.
 - Tests: `tests/secrets/**` (sources, redactor, store writers, the `_pump` writer, sinks,
-  placement) — that package deliberately has **no** `__init__.py`, because `tests/` is on
+  placement, the Runner-installed boundary in `test_runner_boundary.py`, and
+  `test_secret_values_never_persist.py` — one real run per value shape (numeric, quoted,
+  multiline, unicode, tabs, leading zeroes, regex metacharacters, a value wrapped inside a
+  longer one), asserting the raw bytes are absent from every file under the run directory) —
+  that package deliberately has **no** `__init__.py`, because `tests/` is on
   `sys.path` and a package named `secrets` there shadows the standard library's for every
   dependency that imports it. `tests/integration/test_e2e_secret_sources.py` is the end-to-end
   leak test; `tests/integration/test_e2e_secret_inputs.py::
@@ -2078,8 +2166,11 @@ rolled back whole and reported. Cost: nothing is imported when the group is empt
 
 **Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
 in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record
-(`create`/`save` — on the parsed value, so a secret that is a bare JSON token cannot make the
-record unparseable), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
+(`create`/`save` — `Redactor.redact_dump`, on the parsed value, so a secret that is a bare JSON
+token cannot make the record unparseable and the common structural coincidence is put back
+before the copy is re-validated; a residue `redact_dump` cannot repair raises `StoreError`
+naming the field, because this boundary has to hand the plugin a valid record and will not let a
+bare `ValidationError` out of a write), the outputs (`write_output`, `write_output_with_sha` — `json` on the parsed
 value), the prompt (`write_prompt`), the events (`data`) and the stream records (a
 `StreamRedactor` per `(run_id, step_path, kind, attempt)`, flushed on `step.finished`/
 `run.finished`/`run.paused` exactly as `FileRunStore` does) BEFORE the wrapped store sees them —
@@ -2164,7 +2255,11 @@ reported as a warning. A definition path without indices (`build/implement`) rea
 / item 0 — that is what `plan --render` previews.
 
 CLI (all read-only: no provider is created, no step runs, nothing under the run dir is written):
-- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the join row (each
+- `rayspec explain <run> <step> [--full] [--json]` — status/skip_reason, the cap row (additive
+  `cap: {reason, knobs, source}` / `null`, `explain.cap_section`: for a step with
+  `skip_reason: budget_exceeded` it names the cap that actually fired — `RunRecord.reason` when
+  `is_cap_reason` says a cap ended the run, else `cap_reasons` recomputed from the run's own
+  step totals and `started_at`/`ended_at`; `source` is `run.reason` or `recomputed`), the join row (each
   `needs` with its recorded status and what `join_decision` counts it as), the `when:`
   re-evaluated with every operand's value, the `step.retry` events, the resolved agent after
   merge vs. the recorded provider/model, the rendered `env:`, the persisted `prompt:` body from
@@ -2303,6 +2398,108 @@ from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [-
 the store and prints them. It never writes, never re-runs anything and never opens a socket. Every
 cell goes through `rayspec.textsafe.safe_text`.
 
+### approval classes + `rayspec risk` / `plan --risk`
+
+Schema, additive (`schema/steps.py`, frozen → additive only): `ApproveSpec.class_: Name | None`
+(alias `class`) and `ApproveSpec.auto_if: str | None` (non-empty; `schema.steps.
+validate_auto_if`). A class is only ever NAMED by a workflow, never defined by one — a workflow
+must not be able to decide how strictly it is gated. `auto_if` is an expression field: the
+loader checks it with the same `_check_expr` as `when:` (braces refused, compiled, references
+resolved, a `secret: true` input refused) at `steps.<path>.approve.auto_if`.
+
+```python
+from rayspec.engine.approval_classes import (
+    ClassRules,          # frozen: allow_yes: bool = True, require_tty: bool = False; .named
+    DEFAULT_RULES,       # ClassRules() — an unnamed class, or one the rules do not mention
+    ApprovalClasses,     # frozen: rules: Mapping[str, ClassRules], pre_approved: frozenset[str],
+                         #   terminal_prompt: bool = True (this process's prompt is the built-in one)
+                         # .policy_in_force (any class defined at all) .rules_for(name)
+                         # .unheld(name)  → the gate names a class nothing in force defines
+                         # .may_approve_automatically(name) .may_decide_out_of_band(name)
+                         # .may_prompt(name, *, at_a_terminal=True)
+    automatic_by,        # (classes, name, *, yes, dry_run) -> "--yes"|"dry-run"|"--approve-class"|None
+    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`
+    unheld_classes,      # ([(step path, class|None)], classes) -> [warning]
+    waiver_refused, out_of_band_refused, prompt_not_a_terminal,   # the warning messages
+    class_not_held, gate_held, no_terminal,
+    BY_YES, BY_DRY_RUN, BY_APPROVE_CLASS, BY_AUTO_IF, BY_TTY,
+)
+```
+`engine/approval_classes.py` imports nothing from rayspec (a leaf like `engine/paths.py`), so
+`rayspec/risk.py` and the CLI may both import it.
+
+Additive: `RunOptions.approval_classes: ApprovalClasses = ApprovalClasses()` — the default
+permits everything, which is every run that names no class.
+
+Semantics, enforced in `engine/executors/approve.py` (the ONE place a gate is decided, so no
+caller can route around them):
+- `allow_yes: false` ⇒ no automatic approval at all: `--yes`, `--dry-run`, `--approve-class` and
+  `auto_if` are dropped (a `warning` event carries `waiver_refused(...)`) and the gate goes on to
+  ask. A human deciding this one gate still works (TTY prompt, or `rayspec approve <run>`).
+- `require_tty: true` ⇒ additionally a stored `pause.decision` that APPROVES is refused
+  (`out_of_band_refused`, the gate re-asks under a fresh `<path>#<attempt+1>` token), a
+  configured `extensions.approval` prompt is not asked (`prompt_not_a_terminal`), and the
+  built-in prompt is asked only when `executors.approve.at_a_terminal()` (a `sys.stdin.isatty()`
+  probe at the moment of asking, monkeypatchable) is true — otherwise `no_terminal`. A pty is
+  indistinguishable from a person and the docs say so.
+- A gate naming a class the rules in force do NOT define keeps `DEFAULT_RULES` (a workflow can no
+  more invent a restriction than lift one) but is never silent about it: the gate warns
+  (`class_not_held`, once per attempt), `rayspec plan` lists the same warning through
+  `unheld_classes(gate_classes(rw), classes)` and `plan --risk` reports `unheld-class`.
+- A gate that pauses under a class that constrains it warns `gate_held` even when no waiver was
+  asked for, so a held pause is distinguishable from an ordinary one in `stream.jsonl`.
+- A REJECTION is never constrained by a class — recorded rejections are always consumed.
+- `auto_if` is evaluated only when the class permits automatic approval, and only when no
+  blanket path already applied; it fails the step (`error.type == "render"`) when it does not
+  evaluate to a bool. Precedence: `--yes` > `dry-run` > `--approve-class` > `auto_if`.
+- `decision.by` gains `--approve-class` and `auto_if` (the domain is now
+  `--yes | dry-run | --approve-class | auto_if | tty | cli`).
+- `rayspec test` is governed by the same rules: `run_case(..., approval_classes=…)` takes them
+  from its caller (the harness reads no policy itself) and `cli/commands/test.py` passes
+  `approval_classes_for(suite.root, ctx.home)`. A case reaching a gate held shut pauses and
+  fails — which is what `--exec-shell` demands, since the gated body really runs.
+
+CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
+`run.ApproveClassOption`). `run.operator_policy(project_root, home)` is the ONE seam that reads
+the operator's policy (it returns `None` until `rayspec.policy` exists) and
+`run.policy_class_rules` turns it into `{name: ClassRules}` via `rules_from_policy`;
+`run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
+the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass;
+`terminal_prompt` comes from `run.terminal_prompt_id(extensions, configured)` — true when nothing
+was configured **or** when `extensions.approval` names the builtin (`TERMINAL_PROMPT_ID ==
+"console"`), so naming the terminal prompt explicitly does not read as replacing it.
+`resume` skips its "still paused" short-circuit when `--approve-class` was given.
+`run.gate_classes(rw)` lists `(step path, class)` for every gate; `run.paused_gate_class(rw,
+step_path)` resolves the paused gate's class (record path → definition path) and
+`run.decide_hint(run_id, class_name, classes)` builds the `decide with:` line, which
+`print_summary(..., pause_hint=…)` prints — a class that refuses `rayspec approve`/`reject` gets
+a line naming only `rayspec resume` (the "still paused" pointer of `resume` likewise, and it
+stops offering `--yes` when the class would refuse it).
+
+```python
+from rayspec import risk
+#   Finding(severity: "high"|"medium"|"low", category, where, detail, advice); .to_json()
+#   analyse(rw, *, classes: ApprovalClasses | None = None) -> [Finding]   worst first
+#   sort_findings(findings) / counts(findings) -> {severity: n} / to_json(findings)
+#   SEVERITIES = ("high", "medium", "low")
+```
+`rayspec/risk.py` is a pure, static analysis over a `ResolvedWorkflow` (schema + loader +
+`engine/approval_classes`): it executes no body, contacts no provider, opens no socket and
+writes no file — `tests/approvals/test_plan_risk.py::test_risk_executes_nothing` pins that.
+Bodies are matched as WRITTEN (templates unrendered), so a command assembled at run time is not
+seen — which is itself a finding rather than silence, and an empty report describes the analysis,
+never the workflow. Every distinct line a rule matches is reported (capped at 3 per rule per
+body, then `(+N more)`); a `{% raw %}` block is skipped by the templating rule only. Categories:
+`agent-access`, `mcp-command`, `shell-pipe-to-shell`, `shell-push`, `shell-force`,
+`shell-delete`, `shell-publish`, `shell-privilege`, `outside-workspace` (high); `agent-tools`,
+`mcp-remote`, `shell-network`, `shell-install`, `shell-credentials`, `python-process`,
+`reject-ignored`, `self-approving-gate`, `templated-body`, `unheld-class` (medium);
+`no-isolation`, `waivable-gate` (low). A gate whose class is held shut is not reported;
+`agent-tools` fires when the resolved tool policy leaves `shell` or `edit` available (an empty
+`allow:` is the provider's defaults, not a restriction).
+`rayspec plan --risk` renders it (`plan.print_risk`) and adds `risk: [...]` to `--json`; it never
+changes the exit code, and `--risk` with `--render` is a usage error.
+
 ## Pinned semantics (settled early — do not re-litigate)
 
 - **Identifiers**: step ids, `as:`, `session:` targets use `Identifier` (snake_case, not a reserved
@@ -2413,14 +2610,17 @@ store; nothing depends on it.
   `.of("expect", "status")` renders the `<file>:<line>` of any expectation, falling back to the
   closest known ancestor; for a directory suite `checks_path` is a *directory* and `checks_label`
   is its repo-relative rendering, which is what the fallback prints.
-- **`runner.py`** — `run_case(suite, case, *, home, exec_shell=False, keep_run_dir=True)` →
+- **`runner.py`** — `run_case(suite, case, *, home, exec_shell=False, keep_run_dir=True,
+  approval_classes=None)` →
   `CaseResult`; **never raises** — any unexpected exception becomes an `internal` failure carrying
   the traceback, so one broken case cannot lose a suite (or its `--junit` file). **`exec_shell` is
   the caller's authorisation and is never read from the case**: `case.exec_shell` is a declaration
   that `cli/commands/test.py` checks against `--exec-shell`, so a committed data file can never
   widen what the command does. It loads and validates the workflow (`validate: error` is
   satisfied by a load error *or* a validation error), then drives `Runner` with
-  `RunOptions(dry_run=True, exec_shell=…, interactive=False, stub_script=…)`, a `CollectingSink`,
+  `RunOptions(dry_run=True, exec_shell=…, interactive=False, stub_script=…,
+  approval_classes=…)` — the classes come from the caller, so a gate an operator holds shut is
+  not waived by the dry run — a `CollectingSink`,
   `Workspace.in_place(suite.root)`, `handle_signals=False` and no `home=` (so no path lock). The
   store is `FileRunStore(home / "projects" / fallback_project_slug(suite.root))` — the project's
   ordinary store, so `rayspec logs <run_id>` explains a failure. `case_environment` clears

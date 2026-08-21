@@ -12,7 +12,7 @@ import contextlib
 import json
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, TextIO, TypeVar
 
@@ -42,6 +42,7 @@ from rayspec.engine.approval import (
     ApprovalRequest,
     ConsoleApprovalPrompt,
 )
+from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, rules_from_policy
 from rayspec.engine.context import RunOptions
 from rayspec.engine.errors import EngineError
 from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project_slug
@@ -51,7 +52,7 @@ from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, vali
 from rayspec.loader.inputs import secret_input_names
 from rayspec.providers.pricing import PriceTable, cost_marker
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, RedactingSink, Redactor
-from rayspec.schema import PromptStep, RunStatus
+from rayspec.schema import ApproveStep, PromptStep, RunStatus
 from rayspec.secrets import (
     SecretError,
     build_redactor,
@@ -98,6 +99,89 @@ def non_stub_agents(rw: ResolvedWorkflow) -> str:
         return ""
     listed = ", ".join(f"{name!r} ({provider})" for name, provider in seen)
     return f"{'agent' if len(seen) == 1 else 'agents'} {listed}"
+
+
+#: ``--approve-class <name>`` — pre-authorise ONE kind of gate for this invocation. Shared by
+#: ``run`` and ``resume`` so the flag reads the same wherever a gate can be reached.
+ApproveClassOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--approve-class",
+        help="Pre-approve approval gates of this class (repeatable); other gates still ask. "
+        "A class the policy marks allow_yes: false is never pre-approved.",
+        show_default=False,
+    ),
+]
+
+
+def operator_policy(project_root: Path, home: Path | None) -> Any:
+    """The policy in force for this project, or ``None`` when there is none.
+
+    The policy file — its keys, its layering (environment over project over user, most
+    restrictive wins) and its loader — belongs to ``rayspec.policy``. This is the one place
+    ``run``/``resume`` reach for it, so wiring it up is a single line here; until then a run has
+    no policy, which is exactly today's behaviour.
+    """
+    return None
+
+
+def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, ClassRules]:
+    """The approval-class rules of that policy — the only part of it a gate reads."""
+    return rules_from_policy(operator_policy(project_root, home))
+
+
+def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
+    """``(step path, approval class)`` of every gate in a workflow, includes and bodies too."""
+    return [
+        (path, step.approve.class_)
+        for path, step in rw.all_steps()
+        if isinstance(step, ApproveStep)
+    ]
+
+
+def approval_classes_for(
+    project_root: Path,
+    home: Path | None,
+    *,
+    pre_approved: Sequence[str] = (),
+    terminal_prompt: bool = True,
+) -> ApprovalClasses:
+    """The approval-class rules and pre-authorisations one invocation runs under."""
+    return ApprovalClasses(
+        rules=policy_class_rules(project_root, home),
+        pre_approved=frozenset(pre_approved),
+        terminal_prompt=terminal_prompt,
+    )
+
+
+def decide_hint(run_id: str, class_name: str | None, classes: ApprovalClasses) -> str:
+    """The ``decide with:`` line of a paused run.
+
+    A class that requires a terminal refuses a decision recorded by ``rayspec approve`` /
+    ``rayspec reject``, so a run held by one must not recommend them: pointing at the command
+    the tool is about to refuse is how a control teaches people to work around it.
+    """
+    if class_name is not None and not classes.may_decide_out_of_band(class_name):
+        return (
+            f"  decide with: rayspec resume {run_id} from a terminal "
+            f"(approval class {class_name!r} requires one)"
+        )
+    return (
+        f"  decide with: rayspec approve {run_id} [comment] · "
+        f"rayspec reject {run_id} [reason] · rayspec resume {run_id}"
+    )
+
+
+def paused_gate_class(rw: ResolvedWorkflow | None, step_path: str) -> str | None:
+    """The approval class of the gate a run paused at (its record path carries iteration
+    indices; a definition path does not)."""
+    if rw is None:
+        return None
+    wanted = "/".join(segment.split("[")[0] for segment in step_path.split("/"))
+    for path, name in gate_classes(rw):
+        if path == wanted:
+            return name
+    return None
 
 
 #: ``RunRecord.stubs_path`` prefix for a run launched with ``--stubs-from <run>``: there is
@@ -376,8 +460,14 @@ def worktree_lines(workspace: Workspace) -> list[str]:
     ]
 
 
-def print_summary(out: Console, result: RunResult, *, json_mode: bool) -> None:
+def print_summary(
+    out: Console, result: RunResult, *, json_mode: bool, pause_hint: str | None = None
+) -> None:
     """Outputs, workspace, pause hint, tokens/cost footer and next-step hints.
+
+    ``pause_hint`` replaces the ``decide with:`` line for a paused run; callers that know the
+    gate's approval class build it with :func:`decide_hint` so the line names only the commands
+    the class accepts.
 
     The final ``run <id> <status>`` line itself is printed by the console sink (``run.finished``),
     so the text summary does not repeat it; ``--json`` prints the summary object instead.
@@ -426,8 +516,9 @@ def print_summary(out: Console, result: RunResult, *, json_mode: bool) -> None:
             out.print(line, markup=False, highlight=False, soft_wrap=True)
     if result.status is RunStatus.PAUSED and result.pause is not None:
         out.print(
-            f"  decide with: rayspec approve {result.run_id} [comment] · "
-            f"rayspec reject {result.run_id} [reason] · rayspec resume {result.run_id}",
+            pause_hint
+            if pause_hint is not None
+            else decide_hint(result.run_id, None, ApprovalClasses()),
             markup=False,
             highlight=False,
         )
@@ -501,6 +592,7 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--exec-shell", help="Run shell/python steps even in --dry-run.")
         ] = False,
         yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-approve gates.")] = False,
+        approve_class: ApproveClassOption = None,
         no_interactive: Annotated[
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
@@ -738,13 +830,10 @@ def register(app: typer.Typer) -> None:
                 redactor=redactor,
                 extensions=ctx.config.extensions,
             )
-            prompt = approval_prompt_for(
-                sinks,
-                interactive=interactive,
-                prompt=configured_approval(
-                    ctx.config.extensions, interactive=interactive, console=out
-                ),
+            configured = configured_approval(
+                ctx.config.extensions, interactive=interactive, console=out
             )
+            prompt = approval_prompt_for(sinks, interactive=interactive, prompt=configured)
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return
@@ -760,6 +849,13 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             provider_settings=ctx.config.providers,
             config_secrets=config_secrets,  # shell/python step env only
+            approval_classes=approval_classes_for(
+                project_root,
+                ctx.home,
+                pre_approved=approve_class or (),
+                # `require_tty` accepts the built-in terminal prompt and no substitute
+                terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
+            ),
         )
         try:
             price_table = PriceTable.from_config(ctx.config.pricing)
@@ -789,7 +885,16 @@ def register(app: typer.Typer) -> None:
             anyio.run(sinks.aclose, backend="asyncio")
         # --json: the summary object joins the JSONL events on stdout; console lines stay
         # on stderr
-        print_summary(common.console() if json_ else out, result, json_mode=json_)
+        print_summary(
+            common.console() if json_ else out,
+            result,
+            json_mode=json_,
+            pause_hint=decide_hint(
+                result.run_id,
+                paused_gate_class(rw, result.pause.step) if result.pause is not None else None,
+                options.approval_classes,
+            ),
+        )
         raise typer.Exit(code=result.exit_code)
 
 
@@ -920,6 +1025,25 @@ def _built(kind: str, extension_id: str, build: Callable[[], T]) -> T:
         ) from exc
 
 
+#: The registry id of the built-in terminal prompt — the one ``require_tty`` accepts.
+TERMINAL_PROMPT_ID = "console"
+
+
+def terminal_prompt_id(
+    extensions: ExtensionsSpec | None, configured: ApprovalPrompt | None
+) -> bool:
+    """Whether this run's approval prompt is the built-in terminal one.
+
+    ``configured is None`` means nothing was configured, so the builtin is used. Naming the
+    builtin explicitly (``extensions.approval: console``) resolves it through the registry and
+    hands back a prompt object — the same prompt, so it must not read as a replacement or
+    ``require_tty`` would refuse the very prompt it exists to require.
+    """
+    if configured is None:
+        return True
+    return bool(extensions and extensions.approval == TERMINAL_PROMPT_ID)
+
+
 def configured_approval(
     extensions: ExtensionsSpec | None, *, interactive: bool, console: Console | None = None
 ) -> ApprovalPrompt | None:
@@ -1011,14 +1135,21 @@ def _problems_only_sink(out: Console) -> Any:
 
 __all__ = [
     "SUMMARY_KEYS",
+    "TERMINAL_PROMPT_ID",
+    "ApproveClassOption",
     "SuspendingApprovalPrompt",
+    "approval_classes_for",
     "approval_prompt_for",
     "configured_approval",
     "configured_sinks",
     "cost_label",
+    "decide_hint",
     "failed_leaf_paths",
+    "gate_classes",
     "load_stub_script",
     "non_stub_agents",
+    "operator_policy",
+    "policy_class_rules",
     "prepare_workspace",
     "print_summary",
     "project_slug_for",
@@ -1028,6 +1159,7 @@ __all__ = [
     "replay_ref",
     "stub_scaffold",
     "stub_scaffold_keys",
+    "terminal_prompt_id",
     "workspace_from_record",
     "worktree_lines",
 ]

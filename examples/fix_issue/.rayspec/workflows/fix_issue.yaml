@@ -96,7 +96,13 @@ steps:
   - id: confirm
     needs: [build]
     join: all                       # the default, spelled out: every dependency must succeed
-    approve: "Open a PR for issue #{{ inputs.issue }} after {{ steps.build.iterations }} iteration(s)?"
+    approve:
+      message: "Open a PR for issue #{{ inputs.issue }} after {{ steps.build.iterations }} iteration(s)?"
+      class: chore                  # `rayspec run --approve-class chore` answers gates like this one
+      # One clean round means the reviewer agent asked for no changes — the case a human always
+      # waves through. Anything else still asks. `plan --risk` reports a self-approving gate, and
+      # an operator's `allow_yes: false` for this class overrides the condition entirely.
+      auto_if: steps.build.iterations == 1
 
   - id: pr
     needs: [confirm]

@@ -329,10 +329,13 @@ After Ctrl-C, partial `stream.jsonl` records and any changes in the worktree are
 
 An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
 
-1. `--yes` or `--dry-run` → approved automatically (`decision.by` = `--yes` / `dry-run`).
-2. A stored decision for this exact gate (`pause.decision` with token `<path>#<attempt>`) →
+1. A stored decision for this exact gate (`pause.decision` with token `<path>#<attempt>`) →
    consumed (this is what `rayspec approve <run> [comment]` / `rayspec reject <run> [reason]`
    write, with `by: cli`, before resuming in-process).
+2. An **automatic approval** this gate's [approval class](#approval-classes) permits → approved
+   without asking anybody, with the path that did it recorded as `decision.by`. First match
+   wins: `--yes` → `--dry-run` (`by: dry-run`) → `--approve-class <this gate's class>` →
+   the gate's own `auto_if:` expression evaluating to `true` (`by: auto_if`).
 3. Otherwise the run **quiesces**: no new leaf step starts anywhere and the gate waits until every
    running leaf has finished (several ready gates are handled one at a time). Then:
    - stdin is a terminal and neither `--no-interactive` nor `--yes` was given → a panel with the
@@ -347,6 +350,97 @@ An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
    succeeds with `approved: false`; `fail` → the gate fails. The approver's comment is the step
    output (`''` when empty).
 
+### Approval classes
+
+A gate can name a **class**; what that class permits is decided outside the workflow:
+
+```yaml
+- id: publish
+  needs: [build]
+  approve:
+    message: "publish {{ inputs.version }} to the registry?"
+    class: release
+```
+
+The split is the point. The workflow decides *that* a gate exists; the operator decides *how
+strictly* it is held. A workflow can name a class but cannot define one, so it can never loosen
+a rule an operator set — which is what makes it safe to leave a workflow running on a schedule
+that is also allowed to publish a release.
+
+**rayspec does not read an operator policy yet.** There is nowhere to load one from, so today
+naming a class records the intent, makes the gate addressable by `--approve-class`, and nothing
+more. Nothing pretends otherwise: `rayspec plan` and the gate itself warn
+(`steps.publish.approve.class: names approval class 'release', but no operator policy is in
+force, so the gate is not held`), and `rayspec plan --risk` reports the gate as `unheld-class`.
+The table below is what each rule does wherever the rules come from — the engine enforces
+them today — not a description of a file you can write.
+
+| Rule | What it forbids | What still works |
+|---|---|---|
+| *(none — the default)* | nothing | everything |
+| `allow_yes: false` | **every** automatic approval: `--yes`, `--dry-run`, `--approve-class`, `auto_if`, and any combination of them | a human answering this one gate: the terminal prompt, or `rayspec approve <run>` / `rayspec reject <run>` |
+| `require_tty: true` | the above, **and** a decision recorded out of band by `rayspec approve`/`rayspec reject` (it can be scripted), **and** a replacement prompt configured through `extensions.approval`, **and** asking at all from a process with no terminal | the built-in terminal prompt of the process running the workflow — reach it with `rayspec resume <run>` from a terminal |
+
+Where the rules are checked is what makes them rules: in the executor that decides a gate, not
+where a flag is parsed. So when a class is in force, no combination of `--yes`, `--dry-run`,
+`--approve-class` and `auto_if` approves a gate it holds — nor does an environment variable or a
+configuration key, because none of them is consulted there. `rayspec test` takes the same rules
+(see below). What you get instead of an approval is a warning naming the class and the rule, and
+a gate that goes on to ask a human.
+
+The limit of the mechanism is the **name**. A class the rules in force do not define keeps the
+permissive default: a workflow can no more invent a restriction than lift one, so a name that
+does not match on both sides — a typo, or an edit to the workflow — leaves the gate open. It does
+not leave it open quietly: `rayspec plan` before a run, `plan --risk` in review and the gate
+itself each report that the class is not held.
+
+`require_tty` cannot tell a person from a terminal. It refuses a decision recorded out of band,
+refuses a prompt that is not the built-in one, and refuses to ask at all unless the process
+really is attached to a terminal — checked when the gate is asked rather than taken from a flag.
+But a pty wrapper (`script`, `expect`, `unbuffer`) looks exactly like a human to it. The rule
+buys you "not from a pipe in a scheduled job", not "a person was there".
+
+**Rejecting is never constrained by a class.** Refusing to approve is the fail-closed direction,
+and a gate nobody can reject is a gate nobody can get out of.
+
+`--approve-class <name>` pre-approves gates of one class for one invocation — `rayspec run
+release_check --approve-class chore` answers the tidy-up gates and still stops at the release
+one. It is repeatable, and it pre-approves nothing at all for a class whose rules say
+`allow_yes: false`. A name no gate in the workflow uses simply pre-approves nothing: the run
+pauses exactly as it would have. Until a policy can be loaded, no class is marked
+`allow_yes: false`, so `--approve-class` is today the only half of this feature with an effect.
+
+`rayspec test` is governed by the same rules. A case is a dry run and a dry run approves gates,
+but a class held shut is not waived by the mode a gate is reached in — and with `--exec-shell` a
+gated `git push` really runs. A case that reaches such a gate pauses and fails, naming the gate,
+instead of publishing.
+
+### Approving by condition (`auto_if`)
+
+`auto_if:` approves a gate without asking when its expression is true:
+
+```yaml
+- id: gate
+  needs: [tests]
+  approve:
+    message: "tests passed — merge?"
+    class: merge
+    auto_if: steps.tests.output.failures == 0
+```
+
+It is an expression field like `when:` — a bare Jinja expression (no `{{ }}`), evaluated against
+the same context, checked at load time, and never allowed to name a `secret: true` input. It
+must evaluate to exactly `true` or `false`; anything else **fails** the gate rather than opening
+it.
+
+Precedence, pinned by tests:
+
+- `auto_if` only ever *adds* an automatic approval. It is not a veto: an `auto_if` that is false
+  does not stop `--yes` or `--approve-class` from approving the gate.
+- `auto_if` can never *escalate* one. Under a class that may not be approved automatically the
+  expression is not even evaluated, so no expression — however it is written, and whatever it
+  would evaluate to — can approve a gate the class holds shut.
+
 Continue a paused run with `rayspec resume <run>` (or `rayspec run <wf> --resume <run>`): after
 the workflow-hash check (a changed workflow is exit 2 whatever the flags, see above), on a
 terminal the gate asks again; with `--yes` it approves; with `--no-interactive` (or no TTY) it
@@ -355,8 +449,9 @@ prints the approve/reject hint and exits 3 again. `rayspec approve <run> [commen
 in-process (exit code = how the run ends). Whichever way the gate is answered, `run.pause` is
 cleared once the decision is recorded — a finished run never reports a pending gate. The summary
 printed after a pause (`decide with: rayspec approve <run> [comment] · rayspec reject <run>
-[reason] · rayspec resume <run>`) names these commands; a cancelled run (`rayspec cancel`,
-`stop:`, reject) is not resumable without `--force`.
+[reason] · rayspec resume <run>`) names these commands — except at a gate whose class requires a
+terminal, where it names only `rayspec resume <run>`, because the other two would be refused. A
+cancelled run (`rayspec cancel`, `stop:`, reject) is not resumable without `--force`.
 
 ## Failures, retries and timeouts
 
@@ -416,6 +511,12 @@ defaults:
   (input + output) and the cost of every step of this run — provider-reported cost, else the
   pricing-table estimate (`~$`); a step without any known cost counts 0 towards `budget_usd`
   (tokens are always known).
+- The three caps are **one breaker** with one skip reason, so the reason text is what says which
+  of them fired. It names **every** cap that is over, in a fixed order — `budget_usd` and
+  `max_tokens` first (one sentence: they are one budget), `timeout_total` after them — and the
+  warning names exactly the knobs you would have to raise. `rayspec explain <run> <step>` repeats
+  the cap next to the step's `skip_reason: budget_exceeded`, which on its own would point at
+  money for a run that ran out of time.
 - The first time a cap is exceeded a `warning` event is emitted and the breaker **trips**: no new
   step starts anywhere (pending steps — leaves, composites, gates — are recorded `skipped` with
   `skip_reason: budget_exceeded`; a leaf that was already queued for a `max_parallel` slot is

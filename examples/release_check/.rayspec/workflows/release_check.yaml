@@ -98,6 +98,7 @@ steps:
     approve:
       message: "Tag {{ inputs.tag }} — '{{ steps.notes.output.title }}'?"
       on_reject: continue           # a `no` does not cancel the run; steps.gate.approved is false
+      class: release                # the operator's rules for this kind of gate, named not defined
 
   - id: publish
     needs: [gate]

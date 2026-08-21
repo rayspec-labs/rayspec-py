@@ -20,7 +20,7 @@ import signal
 import socket
 import subprocess
 import sys
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -738,6 +738,7 @@ def resume_run(
     stub_script: StubScript | None = None,
     stubs_path: str | None = None,
     secret_provider: SecretProvider | None = None,
+    approve_classes: Sequence[str] = (),
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
 
@@ -749,6 +750,9 @@ def resume_run(
     3 paused · 4 cancelled · 130 interrupted). Errors (workflow gone, hash mismatch, live pid)
     are printed with exit 2.
 
+    ``approve_classes`` are the ``--approve-class`` names this invocation pre-authorises; the
+    operator's policy still decides whether a class may be approved that way at all.
+
     ``secret_provider`` is the caller's own :class:`~rayspec.secrets.SecretProvider` — the
     same instance :func:`~rayspec.cli.commands.resume.resume_secret_inputs` already used, so a
     ``cmd:`` helper runs at most once per command; one is built here only when the caller has
@@ -758,9 +762,13 @@ def resume_run(
 
     from rayspec.cli.commands.run import (
         _sinks,
+        approval_classes_for,
         approval_prompt_for,
         configured_approval,
+        decide_hint,
+        paused_gate_class,
         print_summary,
+        terminal_prompt_id,
         warn_unredactable_secrets,
         workspace_from_record,
     )
@@ -809,11 +817,10 @@ def resume_run(
             extensions=ctx.config.extensions,
         )
         # console tree paused while asking
-        prompt = approval_prompt_for(
-            sinks,
-            interactive=interactive,
-            prompt=configured_approval(ctx.config.extensions, interactive=interactive, console=out),
+        configured = configured_approval(
+            ctx.config.extensions, interactive=interactive, console=out
         )
+        prompt = approval_prompt_for(sinks, interactive=interactive, prompt=configured)
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
         return EXIT_USAGE
@@ -827,6 +834,13 @@ def resume_run(
         stubs_path=stubs_path,
         provider_settings=ctx.config.providers,
         config_secrets=config_secrets,  # shell/python step env only
+        approval_classes=approval_classes_for(
+            project_root,
+            ctx.home,
+            pre_approved=approve_classes,
+            # `require_tty` accepts the built-in terminal prompt and no substitute
+            terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
+        ),
     )
     try:
         price_table = PriceTable.from_config(ctx.config.pricing)
@@ -855,7 +869,16 @@ def resume_run(
     finally:
         anyio.run(sinks.aclose, backend="asyncio")
     # --json: the summary object joins the JSONL events on stdout (Rich progress stays on stderr)
-    print_summary(loader_common.console() if json_mode else out, result, json_mode=json_mode)
+    print_summary(
+        loader_common.console() if json_mode else out,
+        result,
+        json_mode=json_mode,
+        pause_hint=decide_hint(
+            result.run_id,
+            paused_gate_class(resolved, result.pause.step) if result.pause is not None else None,
+            options.approval_classes,
+        ),
+    )
     return result.exit_code
 
 

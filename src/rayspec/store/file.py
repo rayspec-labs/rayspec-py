@@ -36,10 +36,16 @@ on a run), the step ``context.json`` and the executor ``stdout.log``/``stderr.lo
 same two helpers; ``worktrees/`` (git checkouts, registry) is the remaining umask-mode writer.
 
 Redaction: the store carries a :class:`~rayspec.redact.Redactor` (``NULL_REDACTOR`` by
-default; the CLI installs the real one once the run's secrets are resolved) and applies it to
-**every** byte it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl``.
-Records and events are redacted as serialised JSON text, which is why the redactor also knows
-each value's JSON-escaped form. Streamed text is redacted through a
+default; the run installs the real one before it writes anything) and applies it to every file
+it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl`` — in every
+position that can carry a value: free-form values, the KEYS beside them (a structured result
+can put a secret in the key position) and every text-bearing field of a stream record,
+``call_id`` included. What is deliberately left alone is the STRUCTURE: a field name and a
+step-path key name a place in the record rather than carry a value, and rewriting one would
+drop the field or point a step at a directory that is not there. Everything JSON-shaped is
+redacted on the PARSED value and serialised afterwards, never the other way round: a secret
+that is a bare JSON token would otherwise be swapped for an unquoted marker and leave a file
+that no longer parses. Streamed text is redacted through a
 :class:`~rayspec.redact.StreamRedactor` per ``(run, step, kind, attempt)`` so a secret split
 across two deltas is still caught; only a tail that could still grow into a secret is held back,
 and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
@@ -496,10 +502,16 @@ class FileRunStore:
 
         The run directory skeleton (``steps/``, ``artifacts/``, ``tmp/``) is ensured as well, so
         a run saved without :meth:`create` is still a complete run dir.
+
+        The record is redacted on the PARSED values (:meth:`~rayspec.redact.Redactor.redact_dump`)
+        and serialised afterwards. Redacting the serialised text instead breaks the checkpoint
+        for a secret that is a bare JSON token: ``"budget": 4242`` becomes an unquoted
+        ``[REDACTED:pin]``, ``run.json`` stops parsing and ``show``/``resume``/``runs`` go down
+        with it.
         """
         run_dir = self.run_dir(run.run_id)
         _ensure_skeleton(run_dir)
-        payload = self.redactor.redact(run.model_dump_json(indent=2) + "\n")
+        payload = _record_json(run, self.redactor)
         with self._save_lock:
             tmp = run_dir / f"{RUN_JSON}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
             try:
@@ -738,9 +750,7 @@ class FileRunStore:
                 self.flush_streams(run_id, event.step_path)
             elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
                 self.flush_streams(run_id)
-        self._append_line(
-            self.run_dir(run_id) / EVENTS_JSONL, self.redactor.redact(event.to_json())
-        )
+        self._append_line(self.run_dir(run_id) / EVENTS_JSONL, _event_json(event, self.redactor))
         self._append_audit(run_id, audit_entry_for_event(event))
 
     def _append_audit(self, run_id: str, entry: dict[str, Any] | None) -> None:
@@ -791,8 +801,8 @@ class FileRunStore:
 
         With a redactor installed the record's ``text`` goes through a
         :class:`~rayspec.redact.StreamRedactor` for its ``(run, step, kind, attempt)`` so a
-        secret split across two deltas is caught; the rest of the line is redacted as JSON text.
-        Only a tail that could still grow into a secret is held back, and it is written by
+        secret split across two deltas is caught; ``data`` and ``name`` are redacted as parsed
+        values. Only a tail that could still grow into a secret is held back, and it is written by
         :meth:`flush_streams` — which :meth:`append_event` calls on ``step.finished`` and
         ``run.finished``/``run.paused``, so a finished stream is always complete on disk.
         """
@@ -803,9 +813,7 @@ class FileRunStore:
             record = self._redact_stream(run_id, step_path, record)
         # the transcript first: the ledger is a convenience and must not pre-empt the file the
         # run is actually judged by
-        self._append_line(
-            self.step_dir(run_id, step_path) / STREAM_JSONL, self.redactor.redact(record.to_json())
-        )
+        self._append_line(self.step_dir(run_id, step_path) / STREAM_JSONL, record.to_json())
         self._append_audit(run_id, entry)
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
@@ -821,20 +829,31 @@ class FileRunStore:
             tail = stream.flush()
             if tail:
                 record = StreamRecord(kind=key[2], attempt=key[3], text=tail)
-                self._append_line(
-                    self.step_dir(run_id, key[1]) / STREAM_JSONL,
-                    self.redactor.redact(record.to_json()),
-                )
+                self._append_line(self.step_dir(run_id, key[1]) / STREAM_JSONL, record.to_json())
 
     def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
-        """``record`` with its ``text`` passed through the step's boundary-safe buffer."""
-        if not record.text:
-            return record
-        key = (run_id, step_path, record.kind, record.attempt)
-        stream = self._stream_redactors.get(key)
-        if stream is None:
-            stream = self._stream_redactors[key] = StreamRedactor(self.redactor)
-        return record.model_copy(update={"text": stream.feed(record.text)})
+        """``record`` with every part that can carry a value redacted.
+
+        ``text`` goes through the step's boundary-safe buffer; ``data`` and ``name`` are
+        redacted as PARSED values, so a tool argument that is a numeric secret becomes the
+        marker instead of an unquoted token in the middle of the line. ``call_id`` is
+        provider-supplied and therefore covered too: every part of the record that carries text
+        has to be named here, because the serialised line is built from the parts.
+        """
+        update: dict[str, Any] = {}
+        if record.text:
+            key = (run_id, step_path, record.kind, record.attempt)
+            stream = self._stream_redactors.get(key)
+            if stream is None:
+                stream = self._stream_redactors[key] = StreamRedactor(self.redactor)
+            update["text"] = stream.feed(record.text)
+        if record.data:
+            update["data"] = self.redactor.redact_obj(record.data)
+        if record.name:
+            update["name"] = self.redactor.redact(record.name)
+        if record.call_id:
+            update["call_id"] = self.redactor.redact(record.call_id)
+        return record.model_copy(update=update) if update else record
 
     def read_events(self, run_id: str) -> Iterator[RunEvent]:
         """Iterate ``events.jsonl`` (empty if absent).
@@ -883,6 +902,32 @@ class FileRunStore:
         if not path.resolve(strict=False).is_relative_to(run_dir.resolve(strict=False)):
             raise ValueError(f"output_ref {output_ref!r} escapes the run directory")
         return path
+
+
+def _record_json(run: RunRecord, redactor: Redactor) -> str:
+    """The bytes of ``run.json``: the record serialised with every secret VALUE replaced.
+
+    Without a redactor pydantic serialises directly — the fast path a run with no secrets
+    takes. With one the JSON-able dump is redacted first and serialised afterwards; see
+    :meth:`~rayspec.redact.Redactor.redact_dump` for why the serialised text is never redacted
+    instead.
+    """
+    if not redactor:
+        return run.model_dump_json(indent=2) + "\n"
+    return json.dumps(redactor.redact_dump(run), indent=2, ensure_ascii=False) + "\n"
+
+
+def _event_json(event: RunEvent, redactor: Redactor) -> str:
+    """One ``events.jsonl`` line: the event with its ``data`` redacted as parsed values.
+
+    ``data`` is the only free-form part of a :class:`~rayspec.events.model.RunEvent` and
+    therefore the only one that can carry a value; type, run id, timestamp and step path are
+    structural. Redacting the serialised line instead would rewrite a numeric value in ``data``
+    into an unquoted marker and tear the line.
+    """
+    if not redactor or not event.data:
+        return event.to_json()
+    return event.model_copy(update={"data": redactor.redact_obj(event.data)}).to_json()
 
 
 def _check_run_id(run_id: str) -> str:
