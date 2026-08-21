@@ -163,3 +163,49 @@ def test_an_explicit_empty_policy_disables_discovery(tree: Tree) -> None:
     rw = load_workflow("wf", project_root=tree.root, home=tree.home)
     report = validate_workflow(rw, policy=EffectivePolicy())
     assert report.ok
+
+
+def _request_for(rw, path: str = "think"):
+    """The neutral provider request the engine would build for ``path``."""
+    from rayspec.engine.executors.prompt import build_request
+    from rayspec.providers.stub import StubProvider
+
+    return build_request(
+        rw.step(path),
+        rw.agent_for(path),
+        StubProvider(),
+        path=path,
+        prompt="hello",
+        instructions=None,
+        env={},
+        cwd=".",
+        resume_session=None,
+        timeout_s=None,
+        run_id="r",
+        attempt=1,
+    )
+
+
+def test_the_policy_denial_reaches_the_provider_request(tree: Tree) -> None:
+    """End of the enforcement path: the provider is really told to deny the tool."""
+    tree.policy("tools:\n  deny: [web]\n")
+    rw, report = validated(tree, wf())
+    assert report.ok
+    assert "web" in _request_for(rw).tools.deny
+
+
+def test_network_off_reaches_the_provider_request(tree: Tree) -> None:
+    rw, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: claude
+      network: off
+    prompt: hello
+""",
+    )
+    assert report.ok
+    assert "web" in _request_for(rw).tools.deny
