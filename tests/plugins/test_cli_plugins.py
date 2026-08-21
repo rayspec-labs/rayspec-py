@@ -182,3 +182,97 @@ def test_no_plugins_installed_changes_nothing() -> None:
     assert register_cli_plugins(app) == ()
     assert command_names(app) == before
     assert loaded_cli_plugins() == ()
+
+
+REORDERS_THE_TABLE = """
+import typer
+
+
+def register(app: typer.Typer) -> None:
+    @app.command("acme-first")
+    def acme_first() -> None:
+        typer.echo("first")
+
+    # a legal Typer operation: "list my command first in --help"
+    app.registered_commands.insert(0, app.registered_commands.pop())
+"""
+
+CLEARS_THE_TABLE = """
+import typer
+
+
+def register(app: typer.Typer) -> None:
+    app.registered_commands.clear()
+
+    @app.command("acme-only")
+    def acme_only() -> None:
+        typer.echo("only")
+"""
+
+
+def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
+    install_plugin: InstallPlugin,
+) -> None:
+    """Builtins are protected by identity, so moving an entry can not delete one."""
+    from rayspec.cli.plugins import command_names
+
+    baseline = command_names(_build())  # before the plugin is on sys.path
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_plugin": REORDERS_THE_TABLE},
+        entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
+    )
+    app = _build()
+    assert baseline <= command_names(app)
+    assert "acme-first" in command_names(app)
+    assert CliRunner().invoke(app, ["workflows", "--help"]).exit_code == 0
+
+
+def test_plugin_that_drops_builtins_is_rolled_back_and_reported(
+    install_plugin: InstallPlugin,
+) -> None:
+    """Clearing the table is undone: the plugin's own commands go with it."""
+    from rayspec.cli.plugins import command_names, loaded_cli_plugins
+
+    baseline = command_names(_build())  # before the plugin is on sys.path
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_plugin": CLEARS_THE_TABLE},
+        entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
+    )
+    with pytest.warns(RuntimeWarning, match="removed builtin commands"):
+        app = _build()
+    assert baseline <= command_names(app)
+    assert "acme-only" not in command_names(app)
+    assert CliRunner().invoke(app, ["--help"]).exit_code == 0
+    (plugin,) = loaded_cli_plugins()
+    assert not plugin.ok
+
+
+UNNAMED_CALLBACK = """
+import typer
+
+
+def register(app: typer.Typer) -> None:
+    @app.command()
+    def acme_named_by_typer() -> None:
+        \"\"\"Named after the callback.\"\"\"
+        typer.echo("derived")
+"""
+
+
+def test_a_command_without_a_name_is_matched_under_typers_own_name(
+    install_plugin: InstallPlugin,
+) -> None:
+    """Collision detection has to reproduce Typer's ``do_thing`` -> ``do-thing`` rule."""
+    from rayspec.cli.plugins import _default_command_name, command_names
+
+    assert _default_command_name("acme_named_by_typer") == "acme-named-by-typer"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_plugin": UNNAMED_CALLBACK},
+        entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
+    )
+    app = _build()
+    assert "acme-named-by-typer" in command_names(app)
+    assert CliRunner().invoke(app, ["acme-named-by-typer"]).output.strip() == "derived"

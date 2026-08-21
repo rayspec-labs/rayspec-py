@@ -15,7 +15,9 @@ code as ``rayspec/cli/commands/<name>.py``::
 The rules mirror :mod:`rayspec.providers.registry` and are fixed:
 
 * builtin commands are registered first and can never be shadowed — a plugin command whose name
-  is already taken is removed again and reported with a :class:`RuntimeWarning`;
+  is already taken is removed again and reported with a :class:`RuntimeWarning`. The protection
+  is by object identity, not by position: a plugin that reorders or empties the command table
+  cannot make a builtin disappear, and one that removed builtins is rolled back entirely;
 * plugins are visited in entry-point name order, so a collision between two plugins resolves
   the same way on every machine;
 * a plugin that fails to import, is not callable, or raises while registering is skipped with a
@@ -59,11 +61,16 @@ class LoadedCliPlugin:
     distribution: str | None = None
     version: str | None = None
     commands: tuple[str, ...] = ()
+    refused: tuple[str, ...] = ()
     error: str | None = None
 
     @property
     def ok(self) -> bool:
-        """True when the plugin loaded and at least nothing was refused."""
+        """True when the plugin loaded and contributed at least one command.
+
+        A plugin can be ``ok`` and still have had part of what it registered dropped:
+        :attr:`refused` names those, and ``rayspec plugins`` prints them.
+        """
         return self.error is None
 
 
@@ -95,15 +102,27 @@ def command_names(app: typer.Typer) -> set[str]:
     return names
 
 
+def _default_command_name(function_name: str) -> str:
+    """Typer's own rule for a command registered without ``name=``, if it can be imported.
+
+    The helper lives in a private module, and collision detection is what the
+    never-shadow-a-builtin guarantee rests on — so a Typer that moved it degrades to the rule
+    it has always implemented (``do_thing`` → ``do-thing``) instead of silently matching nothing.
+    """
+    try:
+        from typer.main import get_command_name
+    except ImportError:  # pragma: no cover - only a future Typer takes this path
+        return function_name.lower().replace("_", "-").strip("-")
+    return get_command_name(function_name)
+
+
 def _command_name(info: Any) -> str:
     """The name Typer will expose a registered command under (its own rule, applied early)."""
-    from typer.main import get_command_name
-
     name = getattr(info, "name", None)
     if name:
         return str(name)
     callback = getattr(info, "callback", None)
-    return get_command_name(callback.__name__) if callback is not None else ""
+    return _default_command_name(callback.__name__) if callback is not None else ""
 
 
 def _group_name(info: Any) -> str:
@@ -173,15 +192,21 @@ def _register_one(app: typer.Typer, ep: EntryPoint, taken: set[str]) -> LoadedCl
     if not callable(target):
         return failed(f"is not callable (got {type(target).__name__})")
 
-    commands_before = len(app.registered_commands)
-    groups_before = len(app.registered_groups)
+    # snapshots of the ENTRIES, not of their count: `register()` is handed the live lists and
+    # may reorder or empty them, which no index into them would survive
+    commands_before = list(app.registered_commands)
+    groups_before = list(app.registered_groups)
     callback_before = app.registered_callback
+
+    def rollback() -> None:
+        app.registered_commands[:] = commands_before
+        app.registered_groups[:] = groups_before
+        app.registered_callback = callback_before
+
     try:
         target(app)
     except Exception as exc:
-        del app.registered_commands[commands_before:]
-        del app.registered_groups[groups_before:]
-        app.registered_callback = callback_before
+        rollback()
         return failed(f"raised while registering: {type(exc).__name__}: {exc}")
 
     if app.registered_callback is not callback_before:
@@ -190,17 +215,29 @@ def _register_one(app: typer.Typer, ep: EntryPoint, taken: set[str]) -> LoadedCl
 
     kept: list[str] = []
     refused: list[str] = []
-    app.registered_commands[:] = _keep_new(
+    claimed = set(taken)  # only merged back once the plugin is accepted
+    commands, missing = _keep_new(
         app.registered_commands,
         commands_before,
         _command_name,
-        taken=taken,
+        taken=claimed,
         kept=kept,
         refused=refused,
     )
-    app.registered_groups[:] = _keep_new(
-        app.registered_groups, groups_before, _group_name, taken=taken, kept=kept, refused=refused
+    groups, missing_groups = _keep_new(
+        app.registered_groups, groups_before, _group_name, taken=claimed, kept=kept, refused=refused
     )
+    missing += missing_groups
+    if missing:
+        rollback()
+        noun = "entry" if missing == 1 else "entries"
+        return failed(
+            f"removed builtin commands while registering ({missing} {noun} gone from the "
+            "command table); everything it registered was rolled back"
+        )
+    app.registered_commands[:] = commands
+    app.registered_groups[:] = groups
+    taken.update(claimed)
     if refused:
         listed = ", ".join(repr(name) for name in refused)
         noun = "command" if len(refused) == 1 else "commands"
@@ -209,25 +246,34 @@ def _register_one(app: typer.Typer, ep: EntryPoint, taken: set[str]) -> LoadedCl
             "a plugin can not shadow an existing command, so it was dropped"
         )
     error = "every command it registers is already taken" if refused and not kept else None
-    return LoadedCliPlugin(ep.name, ep.value, distribution, version, tuple(kept), error)
+    return LoadedCliPlugin(
+        ep.name, ep.value, distribution, version, tuple(kept), tuple(refused), error
+    )
 
 
 def _keep_new(
     entries: list[Any],
-    first_new: int,
+    before: list[Any],
     name_of: Callable[[Any], str],
     *,
     taken: set[str],
     kept: list[str],
     refused: list[str],
-) -> list[Any]:
-    """``entries`` without the newly added ones whose name is already ``taken``.
+) -> tuple[list[Any], int]:
+    """``(the entries to keep, how many of ``before`` the plugin removed)``.
 
-    Everything registered before ``first_new`` is kept untouched — that is the builtin surface,
-    which a plugin may never displace.
+    ``before`` is the builtin surface as it stood before ``register()`` ran; those entries are
+    recognised by identity and put back in their original order, so a plugin can neither drop
+    one nor re-order the builtins. Everything else is new: it is kept unless its name is already
+    ``taken``.
     """
-    out = list(entries[:first_new])
-    for info in entries[first_new:]:
+    builtin_ids = {id(info) for info in before}
+    seen: set[int] = set()
+    out = list(before)
+    for info in entries:
+        if id(info) in builtin_ids:
+            seen.add(id(info))
+            continue
         name = name_of(info)
         if name in taken:
             refused.append(name)
@@ -235,7 +281,7 @@ def _keep_new(
         taken.add(name)
         kept.append(name)
         out.append(info)
-    return out
+    return out, len(builtin_ids - seen)
 
 
 @dataclass(frozen=True)
@@ -277,7 +323,11 @@ def installed_plugins() -> list[InstalledPlugin]:
                 elif not plugin.ok:
                     status, detail = "skipped", plugin.error or ""
                 else:
-                    status, detail = "ok", "adds " + ", ".join(plugin.commands)
+                    # a partially refused plugin is still ok — say what was dropped anyway
+                    detail = "adds " + ", ".join(plugin.commands)
+                    if plugin.refused:
+                        detail += "; dropped " + ", ".join(plugin.refused) + " (already provided)"
+                    status = "ok"
             elif group in registry.GROUP_KINDS:
                 message = problems.get((group, ep.name))
                 if message:

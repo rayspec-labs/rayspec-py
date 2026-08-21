@@ -1792,9 +1792,14 @@ module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROU
 `loaded_cli_plugins()`, `reset_cli_plugins()`, `command_names(app)`, `installed_plugins()`
 (`InstalledPlugin(group, name, value, distribution, version, status, detail)` — what
 `rayspec plugins [--json]` prints). A CLI plugin may not shadow a builtin command name (the
-command is removed again and reported), may not replace the root callback (the replacement is
-dropped), and anything it registered before raising is rolled back — `rayspec --help` exits 0
-with a broken plugin installed. Cost: nothing is imported when the group is empty (~2 ms scan).
+command is removed again and reported; a plugin that had only part of what it registered
+refused is still `ok` and `rayspec plugins` names what was dropped), may not replace the root
+callback (the replacement is dropped), and anything it registered before raising is rolled back
+— `rayspec --help` exits 0 with a broken plugin installed. `register()` is handed the live
+`app.registered_commands` / `app.registered_groups`, so the builtin surface is protected by
+object IDENTITY, not by position: the entries that existed before `register()` are put back in
+their original order, and a plugin that removed one (`clear()`, `pop()`, a filtered rebuild) is
+rolled back whole and reported. Cost: nothing is imported when the group is empty (~2 ms scan).
 
 **Redaction boundary of the store seam.** `create_store` returns every non-builtin store wrapped
 in `rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record

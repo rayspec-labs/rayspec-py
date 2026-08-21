@@ -137,6 +137,10 @@ What the loader guarantees, so that an installed plugin can never make rayspec u
 - builtin commands are registered first and are never shadowed: a plugin command whose name is
   already taken is removed again and reported with a `RuntimeWarning` naming the plugin and the
   name it wanted;
+- `register()` is handed rayspec's live command table, and the builtin entries in it are
+  protected by identity: reordering them is harmless, and a plugin that *removes* one is rolled
+  back whole (its own commands go with it) and reported — installing a package can never take a
+  rayspec command away;
 - a plugin that fails to import, is not callable, or raises inside `register()` is skipped —
   anything it managed to add before raising is rolled back;
 - the root callback belongs to rayspec: a plugin that replaces it (`@app.callback()`) has the

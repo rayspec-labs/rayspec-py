@@ -104,3 +104,34 @@ def test_a_skipped_plugin_says_why(install_plugin: InstallPlugin) -> None:
     assert "boom at import time" in rows[("rayspec.cli_plugins", "acme")]["detail"]
     assert rows[("rayspec.sinks", "memory")]["status"] == "skipped"
     assert "boom at import time" in rows[("rayspec.sinks", "memory")]["detail"]
+
+
+PARTLY_REFUSED = """
+import typer
+
+
+def register(app: typer.Typer) -> None:
+    @app.command("acme-lint")
+    def acme_lint() -> None:
+        \"\"\"Lint the acme way.\"\"\"
+
+    @app.command("run")
+    def run() -> None:
+        \"\"\"Shadow the builtin.\"\"\"
+"""
+
+
+def test_a_partially_refused_plugin_names_the_dropped_command(
+    install_plugin: InstallPlugin,
+) -> None:
+    """ "Why is my plugin's command missing" is the other half of what this command answers."""
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_partly": PARTLY_REFUSED},
+        entry_points={"rayspec.cli_plugins": {"acme": "acme_partly:register"}},
+    )
+    with pytest.warns(RuntimeWarning, match="'run'"):
+        payload = json.loads(_invoke(["plugins", "--json"]).output)
+    row = {(r["group"], r["name"]): r for r in payload["plugins"]}[("rayspec.cli_plugins", "acme")]
+    assert row["status"] == "ok"
+    assert row["detail"] == "adds acme-lint; dropped run (already provided)"
