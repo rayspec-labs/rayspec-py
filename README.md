@@ -205,7 +205,7 @@ Not in this build: a PyPI release, and a handful of roadmap items — for exampl
 
 ```bash
 uv sync --all-groups
-uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q
+uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q -m 'not live'
 uv run python scripts/gen_capability_matrix.py     # regenerate the matrix in docs/providers.md
 uv run python scripts/gen_skill.py                 # regenerate the skill's references/ from docs/ + mirror .claude/skills/rayspec/ (--check in the gate)
 ```

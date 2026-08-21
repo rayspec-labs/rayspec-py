@@ -29,6 +29,7 @@ CODEOWNERS = GITHUB_DIR / "CODEOWNERS"
 PR_TEMPLATE = GITHUB_DIR / "PULL_REQUEST_TEMPLATE.md"
 BUG_REPORT = GITHUB_DIR / "ISSUE_TEMPLATE" / "bug_report.yml"
 FEATURE_REQUEST = GITHUB_DIR / "ISSUE_TEMPLATE" / "feature_request.yml"
+QUESTION = GITHUB_DIR / "ISSUE_TEMPLATE" / "question.yml"
 ISSUE_CONFIG = GITHUB_DIR / "ISSUE_TEMPLATE" / "config.yml"
 CI_WORKFLOW = GITHUB_DIR / "workflows" / "ci.yml"
 
@@ -41,6 +42,7 @@ COMMUNITY_FILES = [
     PR_TEMPLATE,
     BUG_REPORT,
     FEATURE_REQUEST,
+    QUESTION,
     ISSUE_CONFIG,
 ]
 
@@ -383,6 +385,28 @@ def test_code_of_conduct_is_the_covenant_21_with_a_working_contact() -> None:
     assert ADVISORY_URL in enforcement, "the enforcement contact must be a channel that exists"
 
 
+def test_code_of_conduct_explains_what_the_reporting_form_actually_opens() -> None:
+    """The enforcement contact is GitHub's security-advisory intake, which asks for affected
+    versions and a severity. A reporter who is not told that files a harassment report as a fake
+    vulnerability, or gives up on the form."""
+    note = _flat(_text(CODE_OF_CONDUCT).split("## A note on the reporting channel", 1)[1])
+    assert "draft security advisory" in note, (
+        "the note must say the form opens a draft advisory, not a plain message"
+    )
+    assert "severity" in note, "the note must tell a conduct reporter to ignore the severity fields"
+
+
+def test_bug_report_warns_that_the_doctor_output_carries_paths() -> None:
+    """A required field on a public tracker. It prints no secret value — but it does print
+    absolute paths, the project path and every tool path it found."""
+    form: Any = yaml.safe_load(_text(BUG_REPORT))
+    doctor = next(field for field in form["body"] if field.get("id") == "doctor")
+    description = _flat(doctor["attributes"]["description"]).lower()
+    assert "home directory" in description, (
+        "the doctor field must warn that the output carries the reporter's home directory"
+    )
+
+
 def test_codeowners_gives_every_path_the_same_single_owner() -> None:
     rules = [
         line.split()
@@ -441,6 +465,51 @@ def test_pull_request_template_mirrors_the_sections_a_good_pr_here_has() -> None
         assert heading in text, f"the PR template lacks {heading!r}"
     gate = _gate_command(_text(CONTRIBUTING))
     assert _normalise(gate) in _normalise(text), "the PR template's gate must match CONTRIBUTING's"
+
+
+def test_readme_and_contributing_do_not_disagree_about_the_gate() -> None:
+    """Two canonical gates in one repository is one too many.
+
+    README's Development block sends readers to CONTRIBUTING for "the one-line quality gate", so
+    it has to be the same line — without ``-m 'not live'`` it spends real money and tokens for
+    anyone who has ``RAYSPEC_LIVE`` exported.
+    """
+    gate = _normalise(_gate_command(_text(CONTRIBUTING)))
+    assert gate and gate in _normalise(_text(README)), (
+        "README.md's Development block must run the same gate CONTRIBUTING.md documents"
+    )
+
+
+def test_a_question_has_somewhere_to_go() -> None:
+    """The README welcomes questions, blank issues are off and this repository has no Discussions,
+    so a question needs a route of its own — otherwise it arrives as a bug report with four
+    required fields invented to get past the form."""
+    assert "questions" in _flat(_text(README)).lower(), "the README invites questions"
+    config: Any = yaml.safe_load(_text(ISSUE_CONFIG))
+    # What the chooser puts in front of a reporter: the forms, and the contact links.
+    offered = [str(link["name"]) for link in config["contact_links"]]
+    offered += [
+        str(yaml.safe_load(_text(path))["name"])
+        for path in sorted((GITHUB_DIR / "ISSUE_TEMPLATE").glob("*.yml"))
+        if path != ISSUE_CONFIG
+    ]
+    assert config["blank_issues_enabled"] or any("question" in name.lower() for name in offered), (
+        f"README.md welcomes questions; the issue chooser offers only {offered}"
+    )
+
+
+def test_absolute_links_into_this_tree_from_the_github_templates_resolve() -> None:
+    """The forms cannot use relative links, so they name paths in ``blob/main/`` — a rename breaks
+    them silently, which is the drift this file exists to catch."""
+    pattern = re.compile(r"blob/main/([\w./-]+)")
+    problems = [
+        f"{path.relative_to(REPO_ROOT)}: blob/main/{rel} does not exist"
+        for path in sorted(GITHUB_DIR.rglob("*"))
+        if path.is_file()
+        for rel in pattern.findall(_text(path))
+        if not (REPO_ROOT / rel).exists()
+    ]
+    assert not problems, "\n".join(problems)
 
 
 def test_readme_carries_the_badges_and_the_links_a_public_repo_needs() -> None:

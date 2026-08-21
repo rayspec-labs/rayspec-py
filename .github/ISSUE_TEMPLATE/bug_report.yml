@@ -35,7 +35,9 @@ body:
       label: rayspec doctor
       description: >-
         Paste the whole output of `rayspec doctor`. It reports versions, paths, SDKs and the
-        *sources* of your secrets — never a secret value.
+        *sources* of your secrets — never a secret value. It does print absolute paths, including
+        your home directory and the path of every tool it found: trim those if you would rather
+        not have them on a public tracker.
       render: text
     validations:
       required: true

@@ -143,6 +143,12 @@ channel is GitHub's private reporting form for this repository: it reaches the
 maintainer and nobody else, it is not limited to security reports, and it keeps
 the thread out of the public tracker.
 
+That form was built for vulnerabilities, so it opens a draft security advisory
+and asks for affected versions, ecosystems and a severity. Ignore those fields
+for a conduct report and put what happened in the title and the description; a
+draft advisory is visible to the maintainer only and stays unpublished unless it
+is deliberately released.
+
 If your report is *about* the maintainer, that form is the wrong place. Use
 GitHub's own abuse reporting instead —
 <https://github.com/contact/report-abuse> — which goes to GitHub Support rather
