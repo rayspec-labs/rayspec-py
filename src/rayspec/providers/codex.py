@@ -143,6 +143,23 @@ _SANDBOX: Mapping[AccessLevel, Sandbox] = {
     AccessLevel.FULL: Sandbox.full_access,
 }
 
+#: ``provider_options.codex.config`` key paths the adapter computes itself, so a workflow may not
+#: set them (they are dropped with a warning). ``config`` is applied over the adapter's own keys,
+#: which is how a workflow could re-enable web search that ``tools.deny: [web]`` or
+#: ``network: off`` had switched off, raise its own sandbox or swap its own model. The
+#: equivalent for the Claude adapter is :data:`rayspec.providers.claude.ADAPTER_OWNED_OPTIONS`.
+#: ``mcp_servers`` is deliberately absent: it is MERGED under the request's own servers rather
+#: than replacing them, and ``mcp.allow_servers`` is what checks it (at load time).
+#: ``providers.codex.config`` in ``config.yaml`` is unaffected — that belongs to the machine
+#: owner, not to the workflow.
+ADAPTER_OWNED_CONFIG: tuple[tuple[str, ...], ...] = (
+    ("model",),
+    ("sandbox_mode",),
+    ("approval_policy",),
+    ("web_search",),
+    ("tools", "web_search"),
+)
+
 #: ``codexErrorInfo`` code → (neutral error kind, transient). Unknown codes → ("unknown", False).
 _ERROR_INFO: Mapping[str, tuple[ErrorKind, bool]] = {
     "serverOverloaded": ("api", True),
@@ -254,6 +271,42 @@ def _effort(effort: str | None) -> ReasoningEffort | None:
             ),
         )
     return ReasoningEffort(name)
+
+
+def _workflow_config(extra: Mapping[str, Any], warnings: list[str]) -> dict[str, Any]:
+    """``provider_options.codex.config`` minus every path in :data:`ADAPTER_OWNED_CONFIG`.
+
+    A dropped key is warned about rather than silently honoured or silently discarded: the
+    workflow author has to learn that the neutral field — ``model:``, ``access:``, ``tools:``,
+    ``network:`` — is the way to change it, and an operator reading the run has to be able to
+    see that the attempt was made.
+    """
+    config = {str(k): v for k, v in extra.items()}
+    for path in ADAPTER_OWNED_CONFIG:
+        head, *rest = path
+        if head not in config:
+            continue
+        spelled = ".".join(("provider_options", "codex", "config", *path))
+        note = f"{spelled}: computed by the codex adapter from the agent's own fields; ignored"
+        if not rest:
+            del config[head]
+            warnings.append(note)
+            continue
+        nested = config[head]
+        if not isinstance(nested, Mapping):
+            del config[head]  # cannot be narrowed, and it would replace the computed table
+            warnings.append(
+                f"provider_options.codex.config.{head}: must be a mapping to be merged; ignored"
+            )
+            continue
+        trimmed = {str(k): v for k, v in nested.items() if str(k) != rest[0]}
+        if len(trimmed) != len(nested):
+            warnings.append(note)
+        if trimmed:
+            config[head] = trimmed
+        else:
+            del config[head]
+    return config
 
 
 def _mcp_config(req: AgentRequest) -> dict[str, Any]:
@@ -543,7 +596,9 @@ class CodexProvider:
                 hint="use approval_mode: deny_all (default) or auto_review",
             ) from None
 
-    def _thread_kwargs(self, req: AgentRequest, opts: Mapping[str, Any]) -> dict[str, Any]:
+    def _thread_kwargs(
+        self, req: AgentRequest, opts: Mapping[str, Any], warnings: list[str]
+    ) -> dict[str, Any]:
         translation = translate_tools(req.tools.allow, req.tools.deny, self.id, self.capabilities)
         if translation.errors:
             raise ProviderError(
@@ -553,7 +608,7 @@ class CodexProvider:
         extra = opts.get("config") or {}
         if not isinstance(extra, Mapping):
             raise ProviderError("codex: provider_options.config must be a mapping")
-        config: dict[str, Any] = {**self.extra_config, **extra}
+        config: dict[str, Any] = {**self.extra_config, **_workflow_config(extra, warnings)}
         if req.mcp_servers:
             existing = config.get("mcp_servers") or {}
             if not isinstance(existing, Mapping):
@@ -621,7 +676,10 @@ class CodexProvider:
     async def _run(self, req: AgentRequest, emit: EmitFn) -> AgentResult:
         started = time.perf_counter()
         opts = self._options(req)
-        kwargs = self._thread_kwargs(req, opts)
+        option_warnings: list[str] = []
+        kwargs = self._thread_kwargs(req, opts, option_warnings)
+        for warning in option_warnings:
+            await emit(AgentEvent(kind="warning", text=warning, name="provider_options"))
         effort = _effort(req.effort)
         output_schema: dict[str, Any] | None = None
         if req.output_schema is not None:
@@ -1167,6 +1225,7 @@ class CodexProvider:
 
 
 __all__ = [
+    "ADAPTER_OWNED_CONFIG",
     "DEFAULT_DRAIN_S",
     "CodexProvider",
     "classify_turn_error",

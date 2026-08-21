@@ -142,19 +142,43 @@ _KNOWN_CLI_LOCATIONS: tuple[Path, ...] = (
     Path.home() / ".claude/local/claude",
 )
 _OPTION_FIELDS: frozenset[str] = frozenset(f.name for f in fields(ClaudeAgentOptions))
-#: ``ClaudeAgentOptions`` fields the adapter owns; ``provider_options`` may not override them.
+#: ``ClaudeAgentOptions`` fields the adapter computes itself; ``provider_options`` may not
+#: override them (they are ignored with a warning). The rule is mechanical rather than a taste
+#: judgement: **every** field :func:`build_options` sets is listed here unless it is in
+#: :data:`MERGED_OPTIONS`, so a raw option can never silently replace a value rayspec derived
+#: from the agent's own neutral fields. That matters most for the security-shaped ones —
+#: ``disallowed_tools`` carries ``tools.deny`` and ``network: off``, ``permission_mode`` carries
+#: ``access:``, ``model`` carries ``model:`` — where an override is not a customisation but a
+#: way for a workflow to shed the restrictions placed on it. The neutral field is the way to
+#: change any of them, and it is the field policy and review both look at.
 ADAPTER_OWNED_OPTIONS: frozenset[str] = frozenset(
     {
-        "stderr",
-        "cwd",
+        "allowed_tools",
         "cli_path",
-        "resume",
+        "cwd",
+        "disallowed_tools",
+        "effort",
         "fork_session",
-        "output_format",
         "include_partial_messages",
+        "max_budget_usd",
+        "max_turns",
+        "model",
+        "output_format",
+        "permission_mode",
+        "resume",
+        "setting_sources",
+        "stderr",
+        "strict_mcp_config",
+        "system_prompt",
+        "thinking",
+        "tools",
     }
 )
 #: Dict-valued ``provider_options`` merged *under* the computed value instead of replacing it.
+#: These two are extension points on purpose: an extra environment variable or an extra MCP
+#: server adds to what rayspec computed rather than replacing it, and rayspec's own entries win
+#: on a name collision. ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at
+#: load time — see :data:`rayspec.policy.POLICY_CONTROLLED_OPTIONS`.
 MERGED_OPTIONS: frozenset[str] = frozenset({"env", "mcp_servers"})
 #: Valid ``providers.claude.setting_sources`` entries.
 VALID_SETTING_SOURCES: frozenset[str] = frozenset({"user", "project", "local"})
@@ -230,11 +254,11 @@ def build_options(
     Claude Code preset prompt; ``replace`` passes the bare string (vanilla Claude: no Claude Code
     system prompt, CLAUDE.md is still loaded through ``setting_sources``).
 
-    ``provider_options``: keys in :data:`ADAPTER_OWNED_OPTIONS` are ignored with a warning (they
-    would break cancellation, env injection or resume); :data:`MERGED_OPTIONS` (``env``,
-    ``mcp_servers``) are merged under the computed mapping (``env`` precedence: CLIENT_APP <
-    settings.env < provider_options.env < open(env) < req.env); every other
-    ``ClaudeAgentOptions`` field is applied verbatim; unknown keys warn.
+    ``provider_options``: keys in :data:`ADAPTER_OWNED_OPTIONS` — every field this function
+    computes — are ignored with a warning; :data:`MERGED_OPTIONS` (``env``, ``mcp_servers``) are
+    merged under the computed mapping (``env`` precedence: CLIENT_APP < settings.env <
+    provider_options.env < open(env) < req.env); every other ``ClaudeAgentOptions`` field is
+    applied verbatim; unknown keys warn.
     """
     if not Path(req.cwd).is_dir():
         raise ProviderError(
@@ -346,7 +370,10 @@ def build_options(
     )
     for key, value in overrides.items():
         if key in ADAPTER_OWNED_OPTIONS:
-            warnings.append(f"provider_options.{key}: owned by the claude adapter; ignored")
+            warnings.append(
+                f"provider_options.{key}: computed by the claude adapter from the agent's own "
+                "fields; ignored"
+            )
         elif key in _OPTION_FIELDS:
             setattr(options, key, value)
         else:

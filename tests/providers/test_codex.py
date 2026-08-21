@@ -536,6 +536,66 @@ async def test_mcp_servers_and_web_deny_land_in_config(world: FakeWorld):
     await provider.aclose()
 
 
+async def test_provider_options_cannot_widen_the_computed_config(world: FakeWorld):
+    """``provider_options.codex.config`` may not name a key the adapter computes itself.
+
+    ``config`` is a raw pass-through applied over the adapter's own keys, so without this the
+    workflow re-enables web search, raises the sandbox or swaps the model from inside itself.
+    """
+    provider = await _open()
+    collector = Collector()
+    await provider.run(
+        _req(
+            tools=ToolPolicy(deny=("web",)),
+            model="gpt-5.6",
+            access=AccessLevel.READ_ONLY,
+            provider_options={
+                "codex": {
+                    "config": {
+                        "tools": {"web_search": True, "view_image": True},
+                        "web_search": "enabled",
+                        "model": "gpt-5.6-pro",
+                        "sandbox_mode": "danger-full-access",
+                        "model_reasoning_effort": "high",
+                    }
+                }
+            },
+        ),
+        collector,
+    )
+    call = world.clients[0].thread_start_calls[0]
+    config = call["config"]
+    assert config["web_search"] == "disabled"
+    assert config["tools"] == {"view_image": True}
+    assert "model" not in config and "sandbox_mode" not in config
+    assert config["model_reasoning_effort"] == "high"  # not a key the adapter computes
+    assert call["model"] == "gpt-5.6" and call["sandbox"] == "read-only"
+    warned = "\n".join(e.text or "" for e in collector.of("warning"))
+    for key in (
+        "config.tools.web_search",
+        "config.web_search",
+        "config.model",
+        "config.sandbox_mode",
+    ):
+        assert f"provider_options.codex.{key}" in warned
+    await provider.aclose()
+
+
+async def test_provider_options_mcp_servers_still_merge(world: FakeWorld):
+    """The merged keys stay merged: only the computed ones are refused."""
+    provider = await _open()
+    await provider.run(
+        _req(
+            mcp_servers=(McpServerSpec(name="gh", command="gh-mcp"),),
+            provider_options={"codex": {"config": {"mcp_servers": {"docs": {"command": "d"}}}}},
+        ),
+        Collector(),
+    )
+    config = world.clients[0].thread_start_calls[0]["config"]
+    assert set(config["mcp_servers"]) == {"gh", "docs"}
+    await provider.aclose()
+
+
 async def test_unsupported_tool_group_raises_provider_error(world: FakeWorld):
     provider = await _open()
     with pytest.raises(ProviderError) as info:
