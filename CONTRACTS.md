@@ -1436,11 +1436,16 @@ CLI surface:
   kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
   `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars).
-  The corpus is package data: `pyproject.toml`'s
-  `[tool.hatch.build.targets.wheel.force-include]` maps the repository's `examples/` to
-  `rayspec/examples`, so `--from` works from a bare `uv tool install rayspec`; in a source
-  checkout `examples_root()` falls back to the repository directory four levels above the module
-  (guarded by a sibling `pyproject.toml`). Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`,
+  The corpus is package data: `pyproject.toml`'s wheel target lists `examples` in `only-include`
+  and remaps it with `sources` (`"examples" = "rayspec/examples"`), so `--from` works from a bare
+  `uv tool install rayspec`; in a source checkout `examples_root()` falls back to the repository
+  directory four levels above the module (guarded by a sibling `pyproject.toml`). The remap goes
+  through the ordinary file selection **on purpose** — `force-include` copies a directory verbatim,
+  ignoring both the VCS ignore rules and `exclude`, so a release cut from a checkout that has been
+  used would publish its `.rayspec/.env` and `.rayspec/runs/`. The wheel target's `exclude` names
+  those two paths under `examples/` as well, because `.gitignore` anchors them at the repository
+  root only. `tests/cli/test_init_cmd.py` builds a wheel from a staged copy with that local state
+  planted and asserts the corpus is in and the state is out. Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`,
   `examples_root() -> Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with
   a `.rayspec/`), `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
   `scaffold_example(root, name, *, force=False) -> list[ScaffoldFile]`, `example_catalogue() ->

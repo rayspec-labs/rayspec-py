@@ -85,8 +85,9 @@ SCAFFOLD_FILES: dict[str, tuple[str, ...]] = {
 }
 
 
-#: The packaged example corpus, relative to the ``rayspec`` package (see ``pyproject.toml``:
-#: ``[tool.hatch.build.targets.wheel.force-include]`` maps the repository's ``examples/`` here).
+#: The packaged example corpus, relative to the ``rayspec`` package (see ``pyproject.toml``: the
+#: wheel target's ``sources`` maps the repository's ``examples/`` here, through the ordinary file
+#: selection, so a used checkout's local state never reaches the artefact).
 EXAMPLES_DIR = "examples"
 
 #: Files of an example that belong to the repository's test harness, not to a user's project.

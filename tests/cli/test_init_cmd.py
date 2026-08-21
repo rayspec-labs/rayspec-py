@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -330,12 +332,43 @@ def test_examples_are_reachable_from_the_package() -> None:
         assert any(rel.startswith(".rayspec/workflows/") for rel in rels), (name, rels)
 
 
-def test_wheel_ships_the_examples() -> None:
-    """The wheel build maps `examples/` into the package (`force-include`); without that
-    declaration `--from` works in a checkout and breaks for everybody else."""
-    text = (Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8")
-    assert "[tool.hatch.build.targets.wheel.force-include]" in text
-    assert '"examples" = "rayspec/examples"' in text
+def test_wheel_ships_the_examples_and_no_local_state(tmp_path: Path) -> None:
+    """Build a wheel and look inside it.
+
+    The wheel is the only copy of the corpus a `uv tool install rayspec` user ever has, so it
+    must carry every example — and nothing else. A checkout that has been *used* also holds
+    local state next to the examples (a `.rayspec/.env` with a real token, `.rayspec/runs/`), and
+    a release is normally cut from such a checkout; a published wheel cannot be recalled, so the
+    build has to drop those files rather than trust the maintainer's tree to be clean.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    stage = tmp_path / "repo"
+    stage.mkdir()
+    for rel in ("pyproject.toml", ".gitignore", "README.md", "LICENSE", "NOTICE"):
+        shutil.copy2(repo / rel, stage / rel)
+    shutil.copytree(repo / "src", stage / "src")
+    shutil.copytree(repo / "examples", stage / "examples")
+    example = stage / "examples" / "hello_review"
+    (example / ".env").write_text("GH_TOKEN=ghp_planted_by_the_test\n", encoding="utf-8")
+    (example / ".rayspec" / ".env").write_text(
+        "GH_TOKEN=ghp_planted_by_the_test\n", encoding="utf-8"
+    )
+    run_dir = example / ".rayspec" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "record.json").write_text('{"run_id": "r1"}\n', encoding="utf-8")
+
+    from hatchling.builders.wheel import WheelBuilder  # the build backend, a dev dependency
+
+    wheels = list(WheelBuilder(str(stage)).build(directory=str(tmp_path / "dist")))
+    assert len(wheels) == 1, wheels
+    names = zipfile.ZipFile(wheels[0]).namelist()
+
+    assert "rayspec/cli/commands/init.py" in names  # the package itself is intact
+    assert "rayspec/examples/hello_review/.rayspec/workflows/hello_review.yaml" in names
+    for name in example_names():
+        assert any(n.startswith(f"rayspec/examples/{name}/.rayspec/") for n in names), name
+    leaked = [n for n in names if n.endswith(".env") or "/runs/" in n]
+    assert leaked == [], leaked
 
 
 @pytest.mark.parametrize("name", sorted(example_names()))

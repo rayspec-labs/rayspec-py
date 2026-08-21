@@ -51,18 +51,26 @@ dev = [
   "pyright>=1.1.380",
   "types-PyYAML",
   "types-jsonschema",
+  "hatchling>=1.27",  # dev-only: tests/cli/test_init_cmd.py builds a wheel in-process
 ]
 
 [build-system]
 requires = ["hatchling>=1.27"]  # PEP 639 list-form `license-files` (metadata 2.4+)
 build-backend = "hatchling.build"
 
+# `rayspec init --from <example>` scaffolds one of the example projects, so the corpus has to be
+# importable data — a `uv tool install rayspec` user has no checkout to copy from. `examples/` is
+# listed as an ordinary source directory and remapped into the package by `sources` below, so the
+# usual file selection applies to it: force-include would copy the working tree verbatim, VCS
+# ignore rules and `exclude` alike, and publish whatever local state the release checkout holds.
 [tool.hatch.build.targets.wheel]
-packages = ["src/rayspec"]
+only-include = ["src/rayspec", "examples"]
+# A checkout that has been used collects run state and a `.env` next to the examples; `.gitignore`
+# only anchors those patterns at the repository root, so exclude them here as well.
+exclude = ["examples/**/.rayspec/runs", "examples/**/.env", "examples/**/.rayspec/.env"]
 
-# `rayspec init --from <example>` scaffolds one of the example projects, so the corpus has
-# to be importable data — a `uv tool install rayspec` user has no checkout to copy from.
-[tool.hatch.build.targets.wheel.force-include]
+[tool.hatch.build.targets.wheel.sources]
+"src/rayspec" = "rayspec"
 "examples" = "rayspec/examples"
 
 [tool.pytest.ini_options]
