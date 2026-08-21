@@ -2285,6 +2285,108 @@ CLI (all read-only: no provider is created, no step runs, nothing under the run 
   is printed as a `rich.text.Text` through `safe_text`, or — when a markup string is
   unavoidable (`plan --render`) — through `safe_markup`.
 
+### approval classes + `rayspec risk` / `plan --risk`
+
+Schema, additive (`schema/steps.py`, frozen → additive only): `ApproveSpec.class_: Name | None`
+(alias `class`) and `ApproveSpec.auto_if: str | None` (non-empty; `schema.steps.
+validate_auto_if`). A class is only ever NAMED by a workflow, never defined by one — a workflow
+must not be able to decide how strictly it is gated. `auto_if` is an expression field: the
+loader checks it with the same `_check_expr` as `when:` (braces refused, compiled, references
+resolved, a `secret: true` input refused) at `steps.<path>.approve.auto_if`.
+
+```python
+from rayspec.engine.approval_classes import (
+    ClassRules,          # frozen: allow_yes: bool = True, require_tty: bool = False; .named
+    DEFAULT_RULES,       # ClassRules() — an unnamed class, or one the rules do not mention
+    ApprovalClasses,     # frozen: rules: Mapping[str, ClassRules], pre_approved: frozenset[str],
+                         #   terminal_prompt: bool = True (this process's prompt is the built-in one)
+                         # .policy_in_force (any class defined at all) .rules_for(name)
+                         # .unheld(name)  → the gate names a class nothing in force defines
+                         # .may_approve_automatically(name) .may_decide_out_of_band(name)
+                         # .may_prompt(name, *, at_a_terminal=True)
+    automatic_by,        # (classes, name, *, yes, dry_run) -> "--yes"|"dry-run"|"--approve-class"|None
+    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`
+    unheld_classes,      # ([(step path, class|None)], classes) -> [warning]
+    waiver_refused, out_of_band_refused, prompt_not_a_terminal,   # the warning messages
+    class_not_held, gate_held, no_terminal,
+    BY_YES, BY_DRY_RUN, BY_APPROVE_CLASS, BY_AUTO_IF, BY_TTY,
+)
+```
+`engine/approval_classes.py` imports nothing from rayspec (a leaf like `engine/paths.py`), so
+`rayspec/risk.py` and the CLI may both import it.
+
+Additive: `RunOptions.approval_classes: ApprovalClasses = ApprovalClasses()` — the default
+permits everything, which is every run that names no class.
+
+Semantics, enforced in `engine/executors/approve.py` (the ONE place a gate is decided, so no
+caller can route around them):
+- `allow_yes: false` ⇒ no automatic approval at all: `--yes`, `--dry-run`, `--approve-class` and
+  `auto_if` are dropped (a `warning` event carries `waiver_refused(...)`) and the gate goes on to
+  ask. A human deciding this one gate still works (TTY prompt, or `rayspec approve <run>`).
+- `require_tty: true` ⇒ additionally a stored `pause.decision` that APPROVES is refused
+  (`out_of_band_refused`, the gate re-asks under a fresh `<path>#<attempt+1>` token), a
+  configured `extensions.approval` prompt is not asked (`prompt_not_a_terminal`), and the
+  built-in prompt is asked only when `executors.approve.at_a_terminal()` (a `sys.stdin.isatty()`
+  probe at the moment of asking, monkeypatchable) is true — otherwise `no_terminal`. A pty is
+  indistinguishable from a person and the docs say so.
+- A gate naming a class the rules in force do NOT define keeps `DEFAULT_RULES` (a workflow can no
+  more invent a restriction than lift one) but is never silent about it: the gate warns
+  (`class_not_held`, once per attempt), `rayspec plan` lists the same warning through
+  `unheld_classes(gate_classes(rw), classes)` and `plan --risk` reports `unheld-class`.
+- A gate that pauses under a class that constrains it warns `gate_held` even when no waiver was
+  asked for, so a held pause is distinguishable from an ordinary one in `stream.jsonl`.
+- A REJECTION is never constrained by a class — recorded rejections are always consumed.
+- `auto_if` is evaluated only when the class permits automatic approval, and only when no
+  blanket path already applied; it fails the step (`error.type == "render"`) when it does not
+  evaluate to a bool. Precedence: `--yes` > `dry-run` > `--approve-class` > `auto_if`.
+- `decision.by` gains `--approve-class` and `auto_if` (the domain is now
+  `--yes | dry-run | --approve-class | auto_if | tty | cli`).
+- `rayspec test` is governed by the same rules: `run_case(..., approval_classes=…)` takes them
+  from its caller (the harness reads no policy itself) and `cli/commands/test.py` passes
+  `approval_classes_for(suite.root, ctx.home)`. A case reaching a gate held shut pauses and
+  fails — which is what `--exec-shell` demands, since the gated body really runs.
+
+CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
+`run.ApproveClassOption`). `run.operator_policy(project_root, home)` is the ONE seam that reads
+the operator's policy (it returns `None` until `rayspec.policy` exists) and
+`run.policy_class_rules` turns it into `{name: ClassRules}` via `rules_from_policy`;
+`run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
+the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass;
+`terminal_prompt` comes from `run.terminal_prompt_id(extensions, configured)` — true when nothing
+was configured **or** when `extensions.approval` names the builtin (`TERMINAL_PROMPT_ID ==
+"console"`), so naming the terminal prompt explicitly does not read as replacing it.
+`resume` skips its "still paused" short-circuit when `--approve-class` was given.
+`run.gate_classes(rw)` lists `(step path, class)` for every gate; `run.paused_gate_class(rw,
+step_path)` resolves the paused gate's class (record path → definition path) and
+`run.decide_hint(run_id, class_name, classes)` builds the `decide with:` line, which
+`print_summary(..., pause_hint=…)` prints — a class that refuses `rayspec approve`/`reject` gets
+a line naming only `rayspec resume` (the "still paused" pointer of `resume` likewise, and it
+stops offering `--yes` when the class would refuse it).
+
+```python
+from rayspec import risk
+#   Finding(severity: "high"|"medium"|"low", category, where, detail, advice); .to_json()
+#   analyse(rw, *, classes: ApprovalClasses | None = None) -> [Finding]   worst first
+#   sort_findings(findings) / counts(findings) -> {severity: n} / to_json(findings)
+#   SEVERITIES = ("high", "medium", "low")
+```
+`rayspec/risk.py` is a pure, static analysis over a `ResolvedWorkflow` (schema + loader +
+`engine/approval_classes`): it executes no body, contacts no provider, opens no socket and
+writes no file — `tests/approvals/test_plan_risk.py::test_risk_executes_nothing` pins that.
+Bodies are matched as WRITTEN (templates unrendered), so a command assembled at run time is not
+seen — which is itself a finding rather than silence, and an empty report describes the analysis,
+never the workflow. Every distinct line a rule matches is reported (capped at 3 per rule per
+body, then `(+N more)`); a `{% raw %}` block is skipped by the templating rule only. Categories:
+`agent-access`, `mcp-command`, `shell-pipe-to-shell`, `shell-push`, `shell-force`,
+`shell-delete`, `shell-publish`, `shell-privilege`, `outside-workspace` (high); `agent-tools`,
+`mcp-remote`, `shell-network`, `shell-install`, `shell-credentials`, `python-process`,
+`reject-ignored`, `self-approving-gate`, `templated-body`, `unheld-class` (medium);
+`no-isolation`, `waivable-gate` (low). A gate whose class is held shut is not reported;
+`agent-tools` fires when the resolved tool policy leaves `shell` or `edit` available (an empty
+`allow:` is the provider's defaults, not a restriction).
+`rayspec plan --risk` renders it (`plan.print_risk`) and adds `risk: [...]` to `--json`; it never
+changes the exit code, and `--risk` with `--render` is a usage error.
+
 ## Pinned semantics (settled early — do not re-litigate)
 
 - **Identifiers**: step ids, `as:`, `session:` targets use `Identifier` (snake_case, not a reserved
@@ -2395,14 +2497,17 @@ store; nothing depends on it.
   `.of("expect", "status")` renders the `<file>:<line>` of any expectation, falling back to the
   closest known ancestor; for a directory suite `checks_path` is a *directory* and `checks_label`
   is its repo-relative rendering, which is what the fallback prints.
-- **`runner.py`** — `run_case(suite, case, *, home, exec_shell=False, keep_run_dir=True)` →
+- **`runner.py`** — `run_case(suite, case, *, home, exec_shell=False, keep_run_dir=True,
+  approval_classes=None)` →
   `CaseResult`; **never raises** — any unexpected exception becomes an `internal` failure carrying
   the traceback, so one broken case cannot lose a suite (or its `--junit` file). **`exec_shell` is
   the caller's authorisation and is never read from the case**: `case.exec_shell` is a declaration
   that `cli/commands/test.py` checks against `--exec-shell`, so a committed data file can never
   widen what the command does. It loads and validates the workflow (`validate: error` is
   satisfied by a load error *or* a validation error), then drives `Runner` with
-  `RunOptions(dry_run=True, exec_shell=…, interactive=False, stub_script=…)`, a `CollectingSink`,
+  `RunOptions(dry_run=True, exec_shell=…, interactive=False, stub_script=…,
+  approval_classes=…)` — the classes come from the caller, so a gate an operator holds shut is
+  not waived by the dry run — a `CollectingSink`,
   `Workspace.in_place(suite.root)`, `handle_signals=False` and no `home=` (so no path lock). The
   store is `FileRunStore(home / "projects" / fallback_project_slug(suite.root))` — the project's
   ordinary store, so `rayspec logs <run_id>` explains a failure. `case_environment` clears

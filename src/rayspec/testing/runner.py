@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from rayspec.config import load_config
+from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.engine.context import RunOptions
 from rayspec.engine.errors import EngineError
 from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project_slug
@@ -111,6 +112,7 @@ def run_case(
     home: Path,
     exec_shell: bool = False,
     keep_run_dir: bool = True,
+    approval_classes: ApprovalClasses | None = None,
 ) -> CaseResult:
     """Load, validate and dry-run ``case`` against ``suite.root``; never raises.
 
@@ -118,6 +120,12 @@ def run_case(
     ``rayspec logs <run_id>`` explains a failure); ``exec_shell`` makes ``shell:``/``python:``
     steps execute instead of being simulated. The case's own ``exec_shell:`` key is deliberately
     *not* consulted here — see the module docstring.
+
+    ``approval_classes`` are the operator's approval-class rules. The harness does not read a
+    policy itself — whoever drives it supplies the rules — but it must honour them: with
+    ``exec_shell`` a gated ``git push`` really runs, and a case file committed next to the
+    workflow must not be able to approve what an operator holds shut. The default is the
+    permissive one, which is every case in a project without a policy.
 
     Every expectation is checked, not just the first — a case reports all of its problems at once.
     With ``keep_run_dir=False`` a *passing* case deletes the run it created through the store
@@ -132,7 +140,15 @@ def run_case(
     started = time.monotonic()
     try:
         with case_environment(case.env, home=home):
-            _execute(suite, case, result, location, home=home, exec_shell=exec_shell)
+            _execute(
+                suite,
+                case,
+                result,
+                location,
+                home=home,
+                exec_shell=exec_shell,
+                approval_classes=approval_classes or ApprovalClasses(),
+            )
         if not keep_run_dir and result.ok:
             _delete_run(suite, result, home=home)
     except Exception as exc:
@@ -168,6 +184,7 @@ def _execute(
     *,
     home: Path,
     exec_shell: bool,
+    approval_classes: ApprovalClasses,
 ) -> None:
     """The body of :func:`run_case`, inside the patched environment."""
     reason = unreachable_expect(case)
@@ -242,6 +259,7 @@ def _execute(
         values=values,
         stub_script=stub_script,
         exec_shell=exec_shell,
+        approval_classes=approval_classes,
     )
     if run_result is None:
         return
@@ -324,6 +342,7 @@ def _run(
     values: Mapping[str, Any],
     stub_script: Any,
     exec_shell: bool,
+    approval_classes: ApprovalClasses,
 ) -> RunResult | None:
     """Drive the engine once; an engine error becomes a failure, never an exception."""
     store = FileRunStore(home / "projects" / fallback_project_slug(suite.root))
@@ -342,6 +361,9 @@ def _run(
             interactive=False,
             stub_script=stub_script or None,
             provider_settings=config.providers,
+            # a case is a dry run, and a dry run approves gates — but a class the operator
+            # holds shut is not waived by the mode a gate is reached in
+            approval_classes=approval_classes,
         ),
         handle_signals=False,
     )

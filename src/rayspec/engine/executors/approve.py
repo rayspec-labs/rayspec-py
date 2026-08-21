@@ -1,29 +1,58 @@
 # SPDX-License-Identifier: Apache-2.0
 """``approve:`` executor — the human gate.
 
-Flow: ``--yes`` / dry run ⇒ auto-approve (``by: "--yes"``) · a stored ``pause.decision`` whose
-token matches this gate ⇒ consumed · otherwise **quiesce** (close the launch gate, wait until
-no leaf is active), then a TTY prompt (injected :class:`ApprovalPrompt`) when interactive, else
-write ``PauseInfo{token="<path>#<attempt>"}``, emit ``run.paused`` and signal
-:class:`RunPaused` (exit 3). Reject: ``on_reject`` cancel (default) ⇒ step ``rejected`` +
+Flow: a stored ``pause.decision`` whose token matches this gate ⇒ consumed · an automatic
+approval the gate's :mod:`approval class <rayspec.engine.approval_classes>` permits (``--yes``,
+a dry run, ``--approve-class``, ``auto_if``) ⇒ approved with that path as ``decision.by`` ·
+otherwise **quiesce** (close the launch gate, wait until no leaf is active), then a TTY prompt
+(injected :class:`ApprovalPrompt`) when interactive, else write
+``PauseInfo{token="<path>#<attempt>"}``, emit ``run.paused`` and signal :class:`RunPaused`
+(exit 3). Reject: ``on_reject`` cancel (default) ⇒ step ``rejected`` +
 :class:`RunStopped(cancelled)` · continue ⇒ succeeded with ``approved: false`` · fail ⇒ failed.
 The step output is the approver's comment (``''`` if none).
+
+The class rules are checked HERE, at the one place a gate is actually decided, rather than
+where a flag is parsed — an automatic approval that the class forbids is dropped (with a
+warning naming the rule) and the gate goes on to ask a human, whatever combination of flags
+asked for it. ``auto_if`` is not even evaluated for a class that may not be approved
+automatically, so an expression can never escalate a gate. A **rejection** is never
+constrained by a class.
+
+The gate is also the last place where the operator's rules and the workflow's class name are
+both in hand, so it is where a mismatch is reported: a class nothing in force defines keeps the
+permissive default and says so (``class_not_held``), and a gate a class merely holds says which
+rule is holding it (``gate_held``) even when no waiver was asked for. ``require_tty`` asks
+:func:`at_a_terminal` at the moment of asking rather than trusting the caller's flags.
 
 Simultaneous gates are handled one at a time (``Runtime.approval_lock`` is held from closing
 the launch gate until the decision or pause is recorded); when the run is already pausing at
 another gate, a later gate pauses too but does not overwrite ``run.pause`` (the decision slot
 belongs to the first gate; the later one asks again on resume).
 
-Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job.
+Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job and
+the rules are :mod:`rayspec.engine.approval_classes`'.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 
 import anyio
 
 from rayspec.engine.approval import ApprovalAnswer, ApprovalNeed, ApprovalRequest
+from rayspec.engine.approval_classes import (
+    BY_AUTO_IF,
+    BY_TTY,
+    ApprovalClasses,
+    automatic_by,
+    class_not_held,
+    gate_held,
+    no_terminal,
+    out_of_band_refused,
+    prompt_not_a_terminal,
+    waiver_refused,
+)
 from rayspec.engine.context import (
     ExecScope,
     RunContext,
@@ -34,11 +63,25 @@ from rayspec.engine.context import (
 from rayspec.engine.errors import RunPaused, RunStopped
 from rayspec.events.model import EventType
 from rayspec.schema import ApproveStep, StepModel, StepStatus
+from rayspec.schema.steps import ApproveSpec
 from rayspec.store.model import Decision, ErrorInfo, PauseInfo, StepRecord
 from rayspec.templating import TemplateRenderError
 
 #: Characters of each need's output handed to the prompt for ``[v]iew``.
 _VIEW_CAP = 200_000
+
+
+def at_a_terminal() -> bool:
+    """Whether this process is attached to a terminal, asked at the moment a gate is decided.
+
+    ``require_tty`` is checked against this rather than against ``options.interactive``, which is
+    a flag a caller sets. It cannot tell a person from a pty (``script``, ``expect``): what it
+    rules out is a gate answered by a process that has no terminal at all.
+    """
+    try:
+        return bool(sys.stdin.isatty())
+    except (AttributeError, OSError, ValueError):  # stdin replaced, closed or detached
+        return False
 
 
 def gate_token(path: str, attempt: int) -> str:
@@ -109,23 +152,61 @@ async def run_approve(
         record.error = error_info(exc, type_="render")
         return StepOutcome(record=record)
 
+    classes = ctx.options.approval_classes
+    class_name = spec.class_
+    if class_name is not None and classes.unheld(class_name):
+        # the gate keeps the permissive default, but a class nobody defined must not pass for a
+        # lock: this is the one moment the operator's rules and the workflow's name are both here
+        await ctx.warn(
+            class_not_held(class_name, step_path=path, policy_in_force=classes.policy_in_force),
+            step_path=path,
+        )
     answer: ApprovalAnswer | None = None
     by = "cli"
     decision = stored_decision(ctx, path, record.attempts)
+    if (
+        decision is not None
+        and decision.approved
+        and not classes.may_decide_out_of_band(class_name)
+    ):
+        # `rayspec approve` can be scripted; `require_tty` says this gate may not be. A
+        # rejection is always honoured, so only an approval is dropped here.
+        await ctx.warn(out_of_band_refused(class_name, step_path=path), step_path=path)
+        decision = None
     if decision is not None:
         answer = ApprovalAnswer(decision.approved, decision.comment)
         by = decision.by
     else:
         record.attempts += 1
-        if ctx.options.yes or ctx.options.dry_run:
+        automatic: str | None = None
+        if classes.may_approve_automatically(class_name):
+            automatic = automatic_by(
+                classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run
+            )
+            if automatic is None and spec.auto_if is not None:
+                try:
+                    if ctx.engine.eval_bool(spec.auto_if, ctx.template_context(scope)):
+                        automatic = BY_AUTO_IF
+                except TemplateRenderError as exc:
+                    # fail closed: a condition nobody can evaluate does not open a gate
+                    record.status = StepStatus.FAILED
+                    record.ok = False
+                    record.error = error_info(exc, type_="render")
+                    return StepOutcome(record=record)
+        else:
+            # every automatic path this invocation asked for is refused as a whole — and
+            # `auto_if` was not even evaluated, which is what makes "an expression can never
+            # escalate a gate" a property of the code rather than of the expression
+            await _warn_refused(ctx, spec, classes, path)
+        if automatic is not None:
             answer = ApprovalAnswer(True, "")
-            by = "--yes" if ctx.options.yes else "dry-run"
+            by = automatic
         else:
             async with ctx.runtime.approval_lock:  # one gate at a time
-                answer = await _ask(step, scope, ctx, record, message)
+                answer = await _ask(step, scope, ctx, record, message, classes=classes)
                 if answer is None:
                     return await _pause(ctx, record, message)
-            by = "tty"
+            by = BY_TTY
     if ctx.run.pause is not None and ctx.run.pause.step == path:
         # this gate owned the pause slot: any decision (stored, --yes, dry-run, TTY) clears it
         ctx.run.pause = None
@@ -158,8 +239,35 @@ async def run_approve(
     return outcome
 
 
+async def _warn_refused(
+    ctx: RunContext, spec: ApproveSpec, classes: ApprovalClasses, path: str
+) -> None:
+    """Say what the class did to this gate: refused a named waiver, or simply held it."""
+    class_name = spec.class_
+    rules = classes.rules_for(class_name)
+    waiver = automatic_by(
+        classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run
+    ) or (BY_AUTO_IF if spec.auto_if is not None else None)
+    if waiver is None:
+        # nothing was waived, so nothing was refused — but the gate is still being held by a
+        # rule, and a control that only speaks when it refuses something cannot be read off the
+        # event stream at all
+        await ctx.warn(gate_held(class_name, rules, step_path=path), step_path=path)
+        return
+    await ctx.warn(
+        waiver_refused(class_name, rules, waiver=waiver, step_path=path),
+        step_path=path,
+    )
+
+
 async def _ask(
-    step: ApproveStep, scope: ExecScope, ctx: RunContext, record: StepRecord, message: str
+    step: ApproveStep,
+    scope: ExecScope,
+    ctx: RunContext,
+    record: StepRecord,
+    message: str,
+    *,
+    classes: ApprovalClasses,
 ) -> ApprovalAnswer | None:
     """Quiesce, then ask the injected prompt (TTY) or return ``None`` to pause."""
     rt = ctx.runtime
@@ -168,6 +276,14 @@ async def _ask(
         await rt.wait_quiesced()
         prompt = ctx.approval_prompt
         if prompt is None or not ctx.options.interactive:
+            return None
+        class_name = step.approve.class_
+        if not classes.may_prompt(class_name, at_a_terminal=at_a_terminal()):
+            # `require_tty` accepts the built-in prompt of a process that has a terminal, and
+            # nothing else: neither a prompt `extensions.approval` replaced nor one asked from a
+            # process whose stdin is a pipe. Which of the two it is decides the message.
+            refused = prompt_not_a_terminal if not classes.terminal_prompt else no_terminal
+            await ctx.warn(refused(class_name, step_path=record.path), step_path=record.path)
             return None
         request = ApprovalRequest(
             run_id=ctx.run.run_id,
@@ -214,4 +330,4 @@ async def _pause(ctx: RunContext, record: StepRecord, message: str) -> StepOutco
     return StepOutcome(record=record, control=control)
 
 
-__all__ = ["gate_token", "run_approve", "run_cost_source", "stored_decision"]
+__all__ = ["at_a_terminal", "gate_token", "run_approve", "run_cost_source", "stored_decision"]

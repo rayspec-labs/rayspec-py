@@ -36,6 +36,7 @@ import anyio
 from anyio import to_thread
 
 from rayspec.engine.approval import ApprovalPrompt, humanize_duration
+from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
@@ -238,6 +239,11 @@ class RunOptions:
     #: ``engine.executors._process.process_env``); never persisted, never templated, never in a
     #: fingerprint. Empty for every run without a ``secrets:`` block.
     config_secrets: Mapping[str, str] = field(default_factory=dict)
+    #: additive: the approval-class rules in force (from the operator's policy file) plus the
+    #: classes ``--approve-class`` pre-authorised. The default permits everything, which is the
+    #: behaviour of every run that names no class. See
+    #: :mod:`rayspec.engine.approval_classes`.
+    approval_classes: ApprovalClasses = field(default_factory=ApprovalClasses)
 
 
 @dataclass(slots=True)
