@@ -150,7 +150,10 @@ A step can name the files it promises to write:
   ```
 - They are checked once the step has **succeeded**: a declared file that is missing, is not a
   regular file (a directory, a FIFO, a socket, a device node), or resolves outside the working
-  directory (a symlink) **fails the step**, with a reason naming the path. That is the whole point — a promise that can be broken silently is
+  directory (a symlink) **fails the step**, with a reason naming the path. A file outside the
+  run's **workspace** is refused too, even when the step's `cwd:` points there: `cwd:` is
+  rendered at run time and may name any directory on the machine, and `artifacts:` is a promise
+  about the workspace, not a way to copy arbitrary files into the run directory. That is the whole point — a promise that can be broken silently is
   not worth declaring. The step's own output is kept, so you can still read what it printed.
 - Every artifact is copied into the run directory (`artifacts/<step path>/<declared path>`,
   `0600`, redacted like every other file the store writes) and recorded on the step as

@@ -226,6 +226,45 @@ async def test_a_symlink_out_of_the_working_directory_is_refused(harness: Harnes
     assert "not yours" not in json.dumps(record.model_dump(mode="json"))
 
 
+async def test_an_artifact_outside_the_workspace_is_refused(harness: Harness) -> None:
+    """``cwd:`` may point anywhere on disk, so the containment check cannot be anchored on it
+    alone: an artifact is a file the step wrote inside the run's workspace, or it is not one."""
+    outside = harness.tmp / "outside"
+    outside.mkdir()
+    (outside / "loot.txt").write_text("not my workspace\n")
+    harness.workflow(
+        "t", wf(f'  - {{id: r, shell: "true", cwd: "{outside}", artifacts: [loot.txt]}}\n')
+    )
+    result = await harness.run("t")
+    assert result.status is RunStatus.FAILED
+    record = harness.record(result.run_id).steps["r"]
+    assert record.error is not None and record.error.type == "artifact"
+    assert "workspace" in record.error.message
+    assert record.artifacts == []
+    run_dir = harness.store.run_dir(result.run_id)
+    assert "not my workspace" not in "".join(
+        path.read_text(errors="replace") for path in run_dir.rglob("*") if path.is_file()
+    )
+
+
+async def test_an_artifact_is_resolved_against_the_step_cwd(harness: Harness) -> None:
+    """Inside the workspace the anchor is still the step's own ``cwd:``."""
+    harness.workflow(
+        "t",
+        wf(
+            """
+  - {id: prepare, shell: "mkdir -p sub"}
+  - {id: r, needs: [prepare], cwd: sub, shell: "printf hi > report.md", artifacts: [report.md]}
+"""
+        ),
+    )
+    result = await harness.run("t")
+    assert result.status is RunStatus.SUCCEEDED, result.reason
+    record = harness.record(result.run_id).steps["r"]
+    assert [(a.path, a.ref) for a in record.artifacts] == [("report.md", "artifacts/r/report.md")]
+    assert (harness.root / "sub" / "report.md").is_file()
+
+
 async def test_artifact_content_never_leaks_into_the_run_record(harness: Harness) -> None:
     payload = "PAYLOAD-THAT-MUST-NOT-BE-RECORDED"
     harness.workflow(

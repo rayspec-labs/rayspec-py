@@ -1116,8 +1116,11 @@ Semantics fixed here (tests in `tests/engine/`):
   path is resolved against the step's working directory (`artifact_dir`: the rendered `cwd:` of
   a shell/python step, else `ctx.workdir`); duplicates are collapsed (first occurrence wins,
   order preserved); a file that is missing, is not a REGULAR file (a
-  directory, a FIFO, a socket, a device node — `Path.is_file()`, which resolves symlinks), or
-  resolves outside that directory (a planted symlink) turns the succeeded outcome into `failed` with
+  directory, a FIFO, a socket, a device node — `Path.is_file()`, which resolves symlinks),
+  resolves outside that directory (a planted symlink) or outside `ctx.workdir` (the run's
+  workspace — `cwd:` is rendered at run time and may name any directory, so the workspace is
+  what makes the "a file the step wrote in its own workspace" promise true)
+  turns the succeeded outcome into `failed` with
   `ErrorInfo(type="artifact")` naming the path — never a retry (the leaf loop is already over)
   and the step's own output is kept. The kept files go through
   `RunContext.write_artifacts(record, [(declared, path)])` → `store.write_artifact` in a worker

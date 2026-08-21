@@ -11,8 +11,10 @@ directory through the store.
 The promise is about a PATH. Nothing here reads an artifact's content into a record, an event, a
 template context or an output — the engine only ever learns that a file exists, where it is and
 what its stored copy hashes to. A path that resolves outside the working directory (a symlink
-planted by the step) is refused: the schema already rejects ``..`` and absolute paths at load
-time, this is the run-time half of the same rule.
+planted by the step) is refused, and so is one that leaves the run's WORKSPACE — a step's
+``cwd:`` is rendered at run time and may point anywhere, so the workspace, not ``cwd:``, is what
+makes "a file the step wrote inside its own workspace" true. The schema already rejects ``..``
+and absolute paths at load time; this is the run-time half of the same rule.
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ async def collect_artifacts(
     # it was declared (the paths are already in normal form — the schema normalises them)
     for declared in dict.fromkeys(step.artifacts):
         path = cwd / Path(*PurePosixPath(declared).parts)
-        problem = _problem(declared, path, cwd)
+        problem = _problem(declared, path, cwd, ctx.workdir)
         if problem is not None:
             return _failed(outcome, problem)
         found.append((declared, path))
@@ -67,17 +69,31 @@ async def collect_artifacts(
     return outcome
 
 
-def _problem(declared: str, path: Path, cwd: Path) -> str | None:
-    """Why ``declared`` is not a kept promise, or ``None`` when it is."""
+def _problem(declared: str, path: Path, cwd: Path, workdir: Path) -> str | None:
+    """Why ``declared`` is not a kept promise, or ``None`` when it is.
+
+    Containment is checked against BOTH the step's working directory (which is where the path is
+    anchored) and the run's workspace: ``cwd:`` is rendered at run time and may name any
+    directory on the machine, so anchoring on it alone would make ``artifacts:`` mean "copy any
+    file this process can read into the run directory" — a much larger promise than the one the
+    field documents.
+    """
     try:
         resolved = path.resolve(strict=False)
         inside = resolved.is_relative_to(cwd.resolve(strict=False))
+        in_workspace = resolved.is_relative_to(workdir.resolve(strict=False))
     except OSError as exc:  # a broken mount, a path that cannot be resolved
         return f"declared artifact {declared!r} cannot be read: {exc}"
     if not inside:
         return (
             f"declared artifact {declared!r} resolves outside the step's working directory "
             f"({cwd}) — an artifact must be a file the step wrote inside its own workspace"
+        )
+    if not in_workspace:
+        return (
+            f"declared artifact {declared!r} resolves outside the run's workspace ({workdir}) — "
+            f"an artifact must be a file the step wrote inside the workspace, whatever its "
+            f"cwd: ({cwd}) points at"
         )
     if not path.exists():
         return (
