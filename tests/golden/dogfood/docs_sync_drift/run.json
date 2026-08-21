@@ -35,6 +35,7 @@
   "steps": {
     "changed": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -74,6 +75,7 @@
     },
     "confirm": {
       "approved": true,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -113,6 +115,7 @@
     },
     "done": {
       "approved": null,
+      "artifacts": [],
       "attempts": 0,
       "cost_source": "none",
       "cost_usd": null,
@@ -152,6 +155,7 @@
     },
     "drift": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -194,6 +198,7 @@
     },
     "links": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -233,6 +238,7 @@
     },
     "pr": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -272,6 +278,7 @@
     },
     "update": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

@@ -59,6 +59,21 @@ class EachInfo(_Model):
     failed: int = 0
 
 
+class ArtifactRef(_Model):
+    """One file a step promised (``artifacts:``) and delivered.
+
+    ``path`` is the path as declared, relative to the step's working directory; ``ref`` is the
+    run-dir-relative location of the copy the store kept (``artifacts/<step path>/<path>``,
+    ``None`` for a store that keeps no copies). ``sha256``/``size`` describe the stored bytes.
+    Only the path is recorded — the content of an artifact never enters a record or an event.
+    """
+
+    path: str
+    ref: str | None = None
+    sha256: str
+    size: int = 0
+
+
 class StepRecord(_Model):
     path: str
     id: str
@@ -87,6 +102,11 @@ class StepRecord(_Model):
     #: additive: at least one attempt of this step was interrupted / timed out before the
     #: provider reported any usage — ``usage`` is a lower bound, never "zero tokens spent"
     usage_unknown: bool = False
+    #: additive: the files this step declared under ``artifacts:`` and wrote — path, the
+    #: run-dir-relative copy the store kept, sha256 and size. Empty for a step that declared
+    #: none (and for records written before the field existed); a step that declared one and did
+    #: not write it never gets here, it fails.
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
     error: ErrorInfo | None = None
     skip_reason: str | None = None
     tolerated: bool = False
@@ -200,6 +220,7 @@ class RunRecord(_Model):
 
 __all__ = [
     "RUN_RECORD_SCHEMA_VERSION",
+    "ArtifactRef",
     "Decision",
     "EachInfo",
     "ErrorInfo",

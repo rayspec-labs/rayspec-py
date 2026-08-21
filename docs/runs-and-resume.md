@@ -35,6 +35,7 @@ runs/<run-id>/
     stdout.log, stderr.log      shell/python: attempt 1 starts the file, later attempts append under "--- attempt N ---"
     context.json                the template context the step saw (what RAYSPEC_CONTEXT points at)
   artifacts/                    yours (RAYSPEC_ARTIFACTS_DIR)
+    <step path>/<declared path> a copy of every file a step promised under `artifacts:`
   tmp/                          scratch (spill files of oversized {{ }} values)
 ```
 
@@ -120,6 +121,33 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 `rayspec run --json` prints both streams interleaved on stdout (stream records wrapped as
 `{"type": "stream", "step_path", "record"}`); the final summary object is the last stdout line
 (see [cli.md](cli.md#rayspec-run)).
+
+### Declared artifacts
+
+A step can name the files it promises to write:
+
+```yaml
+- id: report
+  shell: "mkdir -p build && ./scripts/report.sh > build/report.md"
+  artifacts: [build/report.md]
+```
+
+- Paths are relative to the step's **working directory** (its `cwd:` for `shell:`/`python:`,
+  otherwise the run's workdir). Absolute paths, `~` and `..` are refused when the workflow is
+  loaded, with the file and line of the step.
+- They are checked once the step has **succeeded**: a declared file that is missing, is a
+  directory, or resolves outside the working directory (a symlink) **fails the step**, with a
+  reason naming the path. That is the whole point — a promise that can be broken silently is
+  not worth declaring. The step's own output is kept, so you can still read what it printed.
+- Every artifact is copied into the run directory (`artifacts/<step path>/<declared path>`,
+  `0600`, redacted like every other file the store writes) and recorded on the step as
+  `{path, ref, sha256, size}`. The run stays readable after the worktree is gone. Keep them
+  small: a build tree belongs in the workspace, not in the run directory.
+- Only the **path** is recorded. The content of an artifact is never read into a record, an
+  event, a template context or a step output — a downstream step that wants the content reads
+  the file.
+- A resumed step that is replayed from the cache keeps the artifacts it was recorded with (they
+  are not re-checked), and a `--dry-run` checks nothing at all: nothing was really produced.
 
 ## Recording a run as a stub script
 
@@ -341,8 +369,10 @@ and `outputs` are in clear text. So:
 
 - **Permissions.** Everything a run writes under `$RAYSPEC_HOME` is private regardless of the
   umask: the directories created on the way (`$RAYSPEC_HOME`, `projects/<slug>/`, `locks/`,
-  `runs/<id>/`, `steps/<path>/`) are `0700`; `run.json`, `events.jsonl`, `output.txt|json`,
-  `prompt.txt`, `stream.jsonl`, `steps/<path>/context.json`, `stdout.log`/`stderr.log` and the workdir lock
+  `runs/<id>/`, `steps/<path>/`, `artifacts/<step path>/`) are `0700`; `run.json`,
+  `events.jsonl`, `output.txt|json`,
+  `prompt.txt`, `stream.jsonl`, `steps/<path>/context.json`, `stdout.log`/`stderr.log`, the
+  copies of declared `artifacts:` and the workdir lock
   files (`locks/*.lock`) are `0600`. Directories that already exist (a `~/.rayspec` you created
   by hand, an older store) are never re-chmodded — tighten them yourself if you share the
   machine: `chmod -R go-rwx ~/.rayspec`. The one remaining umask-mode writer is

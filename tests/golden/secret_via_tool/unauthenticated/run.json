@@ -26,6 +26,7 @@
   "steps": {
     "open_issues": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -65,6 +66,7 @@
     },
     "triage": {
       "approved": null,
+      "artifacts": [],
       "attempts": 0,
       "cost_source": "none",
       "cost_usd": null,

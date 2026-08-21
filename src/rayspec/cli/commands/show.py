@@ -79,10 +79,68 @@ def show_payload(
     payload["workflow_hash"] = run.workflow_hash
     payload["project_root"] = run.project_root
     payload["steps"] = [common.step_row(store, run, rec) for rec in run.steps.values()]
+    payload["artifacts"] = artifact_rows(run)
     payload["warnings"] = collect_warnings(store, run)
     payload["pending_secret_inputs"] = list(pending_secret_inputs(run))
     payload["record"] = json.loads(run.model_dump_json())
     return payload
+
+
+def artifact_rows(run: RunRecord) -> list[dict[str, Any]]:
+    """One row per file a step declared under ``artifacts:`` and delivered, in record order.
+
+    ``ref`` is where the run directory keeps its copy (``None`` when no copy was kept); the
+    content of an artifact is never part of a record, so there is nothing else to report.
+    """
+    return [
+        {
+            "step": path,
+            "path": artifact.path,
+            "ref": artifact.ref,
+            "sha256": artifact.sha256,
+            "size": artifact.size,
+        }
+        for path, rec in run.steps.items()
+        for artifact in rec.artifacts
+    ]
+
+
+def artifacts_table(run: RunRecord) -> Table:
+    """The ``artifacts`` block: which step promised which file, and what was stored."""
+    table = Table(
+        show_edge=False,
+        pad_edge=False,
+        box=None,
+        header_style="bold",
+        title="artifacts",
+        title_justify="left",
+    )
+    table.add_column("step")
+    table.add_column("file")
+    table.add_column("size", justify="right")
+    table.add_column("sha256")
+    table.add_column("stored")
+    for row in artifact_rows(run):
+        table.add_row(
+            Text(_cell(row["step"])),
+            Text(_cell(row["path"])),
+            fmt_size(row["size"]),
+            Text(_cell(row["sha256"])[:12]),
+            Text(_cell(row["ref"] or "-")),
+        )
+    return table
+
+
+def fmt_size(size: Any) -> str:
+    """``0 B`` · ``512 B`` · ``1.4 KB`` · ``12.0 MB`` — never a raw byte count for a big file."""
+    if not isinstance(size, int) or size < 0:
+        return "-"
+    if size < 1024:
+        return f"{size} B"
+    for unit, scale in (("KB", 1024), ("MB", 1024**2), ("GB", 1024**3)):
+        if size < scale * 1024 or unit == "GB":
+            return f"{size / scale:.1f} {unit}"
+    return f"{size} B"  # pragma: no cover - the loop always returns
 
 
 def pending_secret_inputs(run: RunRecord) -> tuple[str, ...]:
@@ -286,6 +344,9 @@ def print_show(
         out.print(steps_table(store, run))
     else:
         out.print("  (no steps recorded yet)")
+    if any(rec.artifacts for rec in run.steps.values()):
+        out.print("")
+        out.print(artifacts_table(run))
     warnings = collect_warnings(store, run)
     if warnings:
         out.print("")
@@ -362,7 +423,10 @@ def register(app: typer.Typer) -> None:
 
 
 __all__ = [
+    "artifact_rows",
+    "artifacts_table",
     "collect_warnings",
+    "fmt_size",
     "pending_secret_inputs",
     "print_secret_inputs",
     "print_show",

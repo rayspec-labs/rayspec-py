@@ -304,6 +304,7 @@ Exactly one kind key per step. Fields that are valid on every kind:
 | `timeout` | `null` | [duration](#durations) > 0; per attempt for leaves, whole-step for composites; falls back to `defaults.timeout` |
 | `always_run` | `false` | ignore the resume cache (re-run on `--resume`) |
 | `allow_failure` | `false` | a failure is recorded as `failed` + `tolerated: true` (`ok: false`); joins treat it as satisfied; the run status is unaffected |
+| `artifacts` | `[]` | files this step promises to write, relative to its working directory (`cwd:` for `shell:`/`python:`, else the run's workdir). Checked after the step succeeds — a missing one **fails the step** — then copied into the run directory and recorded with a sha256. Absolute paths, `~` and `..` are refused when the workflow loads. See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#declared-artifacts). |
 
 Leaf steps (`prompt`, `shell`, `python`) add:
 

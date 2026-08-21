@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,7 +45,7 @@ from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
 from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import ErrorInfo, RunRecord, StepRecord
+from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord
 from rayspec.templating import (
     Scope,
     StepView,
@@ -570,6 +570,51 @@ class RunContext:
             record.output_kind = kind
             record.output_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
+    async def write_artifacts(self, record: StepRecord, files: Sequence[tuple[str, Path]]) -> None:
+        """Copy the step's declared artifacts into the run dir and stamp ``record.artifacts``.
+
+        ``files`` is ``(declared path, absolute path)`` per artifact, already checked by
+        :mod:`rayspec.engine.executors.artifacts`. The copies go through the store (redacted,
+        ``0600``, atomic) in a worker thread under the persistence lock, like every other file
+        the run writes. A store that cannot keep a copy is not a step failure: the promise was
+        kept, so the artifact is recorded without a ``ref`` and a warning says why.
+        """
+        if not files:
+            return
+        async with self.lock:
+            warnings = await to_thread.run_sync(self._write_artifacts, record, list(files))
+        for message in warnings:
+            await self.warn(message)
+
+    def _write_artifacts(self, record: StepRecord, files: list[tuple[str, Path]]) -> list[str]:
+        """Store each artifact; returns the warnings the caller must emit."""
+        writer: Any = getattr(self.store, "write_artifact", None)
+        refs: list[ArtifactRef] = []
+        warnings: list[str] = []
+        for declared, path in files:
+            if callable(writer):
+                try:
+                    info: Any = writer(self.run.run_id, record.path, declared, path)
+                except OSError as exc:
+                    warnings.append(
+                        f"could not keep a copy of artifact {declared!r} of step "
+                        f"{record.path}: {exc}"
+                    )
+                else:
+                    refs.append(
+                        ArtifactRef(
+                            path=declared,
+                            ref=info.artifact_ref,
+                            sha256=info.sha256,
+                            size=info.size,
+                        )
+                    )
+                    continue
+            digest, size = _digest_of(path)
+            refs.append(ArtifactRef(path=declared, ref=None, sha256=digest, size=size))
+        record.artifacts = refs
+        return warnings
+
     async def save_run(self) -> None:
         """Save ``run.json`` (worker thread, under the persistence lock)."""
         async with self.lock:
@@ -733,6 +778,18 @@ class RunContext:
 # --------------------------------------------------------------------------------------------------
 # helpers shared by scheduler/executors
 # --------------------------------------------------------------------------------------------------
+
+
+def _digest_of(path: Path) -> tuple[str, int]:
+    """``(sha256, size)`` of a file, read in chunks (a store that keeps no copy still records
+    what the step produced)."""
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def error_info(

@@ -60,8 +60,8 @@ import shutil
 import threading
 from collections.abc import Callable, Collection, Iterable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TextIO, TypeVar, cast
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO, TextIO, TypeVar, cast
 
 from pydantic import ValidationError
 
@@ -86,6 +86,10 @@ _CHUNK_CHARS = 1 << 20  # characters per write while streaming large outputs
 _OUTPUT_FILES = {"text": "output.txt", "json": "output.json"}
 
 RUN_JSON = "run.json"
+#: Where a step's declared ``artifacts:`` are copied (``artifacts/<step path>/<declared path>``).
+ARTIFACTS_DIR = "artifacts"
+#: Bytes per read while copying an artifact (constant memory for a large file).
+_ARTIFACT_CHUNK_BYTES = 1 << 20
 #: The rendered prompt of a ``prompt:`` step (``steps/<path>/prompt.txt``).
 PROMPT_TXT = "prompt.txt"
 EVENTS_JSONL = "events.jsonl"
@@ -134,6 +138,23 @@ class WrittenOutput:
     output_ref: str
     path: Path
     kind: str
+    sha256: str
+    size: int
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenArtifact:
+    """Result of :meth:`FileRunStore.write_artifact`.
+
+    ``artifact_ref`` is run-dir relative (the value stored in ``StepRecord.artifacts[].ref``),
+    ``path`` the copy inside the run directory, ``source`` where the step wrote the file, and
+    ``sha256``/``size`` describe the bytes actually stored (which is what redaction may have
+    changed, not what the step wrote).
+    """
+
+    artifact_ref: str
+    path: Path
+    source: Path
     sha256: str
     size: int
 
@@ -344,6 +365,48 @@ class FileRunStore:
         tmp = step_dir / f"{PROMPT_TXT}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
         _write_text_durably(path, tmp, _chunks(text))
         return path.relative_to(self.run_dir(run_id)).as_posix()
+
+    def write_artifact(
+        self, run_id: str, step_path: str, rel_path: str, source: Path
+    ) -> WrittenArtifact:
+        """Copy one declared artifact into ``artifacts/<step path>/<rel_path>`` and describe it.
+
+        Additive sibling of :meth:`write_output` for the files a step promises under
+        ``artifacts:``: the run directory keeps its own copy, so a run stays self-describing
+        after the worktree is gone. Same durability and permissions as an output (tmp file +
+        fsync + ``os.replace``, ``0600`` through :func:`open_private`, ``0700`` directories);
+        a later attempt of the same step overwrites the copy.
+
+        ``rel_path`` must be run-dir safe (relative, no ``..``) — the schema already refuses
+        anything else at load time, and this is the second lock on the door: a ``ValueError``
+        here means a caller bypassed it.
+
+        Redaction applies to artifacts like to every other byte the store writes, and works on
+        arbitrary bytes: the file is decoded with ``surrogateescape``, redacted and encoded back,
+        which round-trips a binary file exactly while still catching a secret that a step wrote
+        into one. A file that *did* contain a secret is stored with the marker in its place, so
+        its bytes (and its sha) differ from the step's original — that is the point.
+        """
+        rel = PurePosixPath(rel_path)
+        if not rel_path or rel.is_absolute() or ".." in rel.parts or rel.name in {"", ".", ".."}:
+            raise ValueError(f"artifact path must be relative to the workdir: {rel_path!r}")
+        run_dir = self.run_dir(run_id)
+        parsed = StepPath.parse(step_path)
+        if parsed.is_root:
+            raise ValueError("step path must not be empty")
+        path = run_dir / ARTIFACTS_DIR / parsed.fs_path() / Path(*rel.parts)
+        if not path.resolve(strict=False).is_relative_to(run_dir.resolve(strict=False)):
+            raise ValueError(f"artifact path {rel_path!r} escapes the run directory")
+        secure_mkdir(path.parent)
+        tmp = path.parent / f"{path.name}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
+        sha, size = _copy_bytes_durably(Path(source), path, tmp, self.redactor)
+        return WrittenArtifact(
+            artifact_ref=path.relative_to(run_dir).as_posix(),
+            path=path,
+            source=Path(source),
+            sha256=sha,
+            size=size,
+        )
 
     def read_output(self, run_id: str, output_ref: str) -> str:
         """Read an output by its run-dir-relative ref (``FileNotFoundError`` if missing).
@@ -586,6 +649,55 @@ def _write_text_durably(path: Path, tmp: Path, chunks: Iterable[str]) -> tuple[s
                 fh.write(chunk)
             fh.flush()
             os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        _unlink_quietly(tmp)
+        raise
+    _fsync_dir(path.parent)
+    return digest.hexdigest(), size
+
+
+def _open_private_bytes(path: Path) -> BinaryIO:
+    """``open(path, "wb")`` that creates the file ``0600`` — the binary twin of
+    :func:`open_private` (same ``O_NOFOLLOW``/``O_CLOEXEC`` guarantees)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW | _O_CLOEXEC
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        return cast(BinaryIO, os.fdopen(fd, "wb"))
+    except BaseException:  # pragma: no cover - fdopen failing is exotic
+        os.close(fd)
+        raise
+
+
+def _copy_bytes_durably(source: Path, path: Path, tmp: Path, redactor: Redactor) -> tuple[str, int]:
+    """Copy ``source`` to ``tmp`` (redacted, chunked), fsync, ``os.replace`` onto ``path``.
+
+    Returns ``(sha256, size_bytes)`` of the bytes actually written. The redaction is
+    boundary-safe (a :class:`~rayspec.redact.StreamRedactor` per copy) and byte-preserving for
+    content that is not text: each chunk is decoded with ``surrogateescape`` and encoded back,
+    so any byte sequence round-trips unless it contained a secret. On any failure ``tmp`` is
+    removed and ``path`` (a previous copy, if any) is left untouched.
+    """
+    digest = hashlib.sha256()
+    size = 0
+    stream = redactor.stream() if redactor else None
+    try:
+        with _open_private_bytes(tmp) as out, open(source, "rb") as src:
+
+            def write(text: str) -> None:
+                nonlocal size
+                data = text.encode("utf-8", "surrogateescape")
+                digest.update(data)
+                size += len(data)
+                out.write(data)
+
+            while chunk := src.read(_ARTIFACT_CHUNK_BYTES):
+                text = chunk.decode("utf-8", "surrogateescape")
+                write(stream.feed(text) if stream is not None else text)
+            if stream is not None:
+                write(stream.flush())
+            out.flush()
+            os.fsync(out.fileno())
         os.replace(tmp, path)
     except BaseException:
         _unlink_quietly(tmp)

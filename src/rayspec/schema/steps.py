@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import (
+    AfterValidator,
     BeforeValidator,
     Discriminator,
     Field,
@@ -48,6 +50,43 @@ class RetryPolicy(StrictModel):
 #: Engine default when a ``prompt:`` step has ``retry: None`` (shell/python default to no retry).
 DEFAULT_PROMPT_RETRY = RetryPolicy(attempts=3, delay=3.0, on_error="transient")
 
+#: What a bad ``artifacts:`` entry suggests instead.
+_ARTIFACT_HINT = "use a path relative to the step's working directory, e.g. 'build/report.md'"
+
+
+def validate_artifact_path(value: str) -> str:
+    """One ``artifacts:`` entry: a file path relative to the step's working directory.
+
+    Absolute paths, ``~``, ``..`` segments and directory paths are refused here — at LOAD time,
+    with the file and line of the step — because an artifact is written by the step and then
+    copied into the run directory: a path that can leave the working directory is a way out of
+    the workspace, not a promise about it.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"invalid artifact path {value!r}: empty; {_ARTIFACT_HINT}")
+    if "\x00" in value:
+        raise ValueError(f"invalid artifact path {value!r}: contains a NUL byte; {_ARTIFACT_HINT}")
+    path = PurePosixPath(value)
+    if path.is_absolute() or value.startswith("~"):
+        raise ValueError(
+            f"invalid artifact path {value!r}: must be relative to the step's working "
+            f"directory; {_ARTIFACT_HINT}"
+        )
+    if ".." in path.parts:
+        raise ValueError(
+            f"invalid artifact path {value!r}: must not leave the step's working directory "
+            f"('..'); {_ARTIFACT_HINT}"
+        )
+    if value.endswith("/") or path.name in {"", ".", ".."}:
+        raise ValueError(
+            f"invalid artifact path {value!r}: must name a file, not a directory; {_ARTIFACT_HINT}"
+        )
+    return value
+
+
+#: One ``artifacts:`` entry (see :func:`validate_artifact_path`).
+ArtifactPath = Annotated[str, AfterValidator(validate_artifact_path)]
+
 
 class StepBase(StrictModel):
     """Fields common to every step kind."""
@@ -62,6 +101,10 @@ class StepBase(StrictModel):
     timeout: PositiveDuration | None = None
     always_run: bool = False
     allow_failure: bool = False
+    #: files this step promises to write, relative to its working directory. Checked once the
+    #: step has succeeded (a missing one fails it) and copied into the run directory; the PATH
+    #: is recorded, the content is never read into a record, an event or an output.
+    artifacts: list[ArtifactPath] = Field(default_factory=list)
 
     @classmethod
     def _what(cls) -> str:
@@ -373,6 +416,7 @@ __all__ = [
     "AgentRef",
     "ApproveSpec",
     "ApproveStep",
+    "ArtifactPath",
     "EachStep",
     "IncludeStep",
     "LeafStep",
@@ -389,4 +433,5 @@ __all__ = [
     "StopStep",
     "iter_steps",
     "parse_step",
+    "validate_artifact_path",
 ]

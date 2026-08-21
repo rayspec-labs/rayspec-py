@@ -30,6 +30,7 @@
   "steps": {
     "assess": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -72,6 +73,7 @@
     },
     "bail": {
       "approved": null,
+      "artifacts": [],
       "attempts": 0,
       "cost_source": "none",
       "cost_usd": null,
@@ -111,6 +113,7 @@
     },
     "build": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -153,6 +156,7 @@
     },
     "build[1]/check": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -192,6 +196,7 @@
     },
     "build[1]/implement": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -234,6 +239,7 @@
     },
     "build[1]/review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -276,6 +282,7 @@
     },
     "build[2]/check": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -315,6 +322,7 @@
     },
     "build[2]/implement": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -357,6 +365,7 @@
     },
     "build[2]/review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -399,6 +408,7 @@
     },
     "confirm": {
       "approved": true,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -438,6 +448,7 @@
     },
     "fetch": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -477,6 +488,7 @@
     },
     "pr": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

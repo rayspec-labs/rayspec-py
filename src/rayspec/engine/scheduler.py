@@ -48,6 +48,7 @@ from rayspec.engine.context import (
     view_of,
 )
 from rayspec.engine.errors import RunControl, RunPaused
+from rayspec.engine.executors.artifacts import collect_artifacts
 from rayspec.engine.graph import FAILED_LIKE, StepGraph, join_decision
 from rayspec.engine.retry import TIMEOUT_ERROR_TYPE, delay_for, policy_for, should_retry
 from rayspec.events.model import EventType
@@ -268,6 +269,16 @@ async def _execute(
         EventType.STEP_STARTED, step_path=record.path, kind=kind, attempt=record.attempts + 1
     )
     await ctx.save_record(record)
+    outcome = await _dispatch(step, scope, ctx, record, kind)
+    # the files the step promised under ``artifacts:`` must be there — a broken promise turns a
+    # succeeded outcome into a failed one (never a retry: the file is missing, not flaky)
+    return await collect_artifacts(step, scope, ctx, outcome)
+
+
+async def _dispatch(
+    step: StepModel, scope: ExecScope, ctx: RunContext, record: StepRecord, kind: str
+) -> StepOutcome:
+    """Hand the step to its executor: leaf retry loop, gate, or one attempt with a timeout."""
     executor = _executor_for(ctx, kind)
     if kind in LEAF_KINDS:
         return await run_leaf(step, scope, ctx, record, executor)

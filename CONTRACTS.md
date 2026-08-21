@@ -121,6 +121,12 @@ WALL-CLOCK cap, the third circuit breaker beside `budget_usd`/`max_tokens` (same
 parsing as `defaults.timeout`, `> 0`). Measured from `RunRecord.started_at`, which a resume
 never rewrites: the cap is per RUN, not per attempt. Root workflow only.
 
+Additive: `StepBase.artifacts: list[ArtifactPath] = []` (every kind) — the files a step
+promises to write, relative to its working directory. `schema.steps.validate_artifact_path`
+refuses an empty path, an absolute one, `~`, a `..` segment and a directory path at LOAD time
+(house error format, `file:line` from the loader's line map); `ArtifactPath` /
+`validate_artifact_path` are exported from `rayspec.schema.steps`.
+
 Additive: `InputSpec.secret: bool = False` — the value is never persisted (stored
 and printed as `"<secret>"`) and reaches `shell:`/`python:` steps only as `RAYSPEC_INPUT_<NAME>` or
 through their `env:` mapping; `secret: true` + `default` is a schema error; `to_json_schema()`
@@ -600,6 +606,21 @@ from rayspec.store.file import (
 #       /proc/<pid>/stat starttime), from rayspec.engine.runner.process_start_time(pid); written
 #       with pid at launch and refreshed on every resume; None in older records. rayspec cancel
 #       compares it with the live process before the command-line heuristic
+#   write_artifact(run_id, step_path, rel_path, source) -> WrittenArtifact (additive):
+#       copies one declared artifact to artifacts/<step path>/<rel_path> and reports
+#       (artifact_ref, path, source, sha256, size) of the STORED bytes. Same durability and
+#       permissions as an output (tmp + fsync + os.replace, 0600 via a private-file open, 0700
+#       dirs); a later attempt overwrites the copy. ``rel_path`` must be relative, without
+#       ".." (ValueError otherwise — the schema already refuses those at load time, this is the
+#       second lock). Redaction covers arbitrary bytes: the file is streamed through a
+#       StreamRedactor decoded/encoded with ``surrogateescape``, so a binary file round-trips
+#       byte for byte unless it carried a secret (then the marker replaces it and the stored
+#       bytes — and the sha — differ from the step's original, deliberately)
+#   StepRecord.artifacts: list[ArtifactRef] = [] (additive): what the step declared
+#       under ``artifacts:`` and delivered — ArtifactRef(path (as declared), ref (run-dir
+#       relative copy, None when the store keeps none), sha256, size). Only the PATH is
+#       recorded: an artifact's CONTENT never enters a record, an event, a template context or
+#       an output. Empty for older records and for steps that declared nothing
 #   write_prompt(run_id, step_path, text) -> prompt_ref (additive): the rendered
 #       prompt of a prompt: step -> "steps/<path>/prompt.txt"; same durability/permissions as an
 #       output (tmp + fsync + os.replace, 0600 via open_private), overwritten by a later attempt,
@@ -623,7 +644,8 @@ from rayspec.store.file import (
 #       only records of those kinds are yielded and only lines containing one of the kind names
 #       as a JSON string are parsed (cheap scan of multi-MB transcripts; FileRunStore only)
 # Layout: <root>/runs/<run-id>/run.json, events.jsonl, steps/<path>/{output.txt|output.json,
-#   prompt.txt, stream.jsonl, stdout.log, stderr.log}, artifacts/, tmp/  (path = StepPath.fs_path())
+#   prompt.txt, stream.jsonl, stdout.log, stderr.log}, artifacts/[<path>/<declared>], tmp/
+#   (path = StepPath.fs_path())
 # Permissions: every directory the store creates — <root> and its missing parents
 #   ($RAYSPEC_HOME, projects/<slug>) included — is 0700, every file it writes 0600, regardless
 #   of the umask (PRIVATE_DIR_MODE / PRIVATE_FILE_MODE); pre-existing dirs are never chmodded.
@@ -1080,6 +1102,19 @@ Semantics fixed here (tests in `tests/engine/`):
   gate that owns it reaches a decision by any path (stored decision, `--yes`, dry run, TTY), so
   `RunResult.pause` is only non-None for a run that is `paused`. `RunRecord.dry_run` (additive)
   records `--dry-run`.
+- Declared `artifacts:`: `executors.artifacts.collect_artifacts(step, scope, ctx, outcome)` runs
+  in `scheduler._execute` after the executor (`_dispatch`) and before `finish`, for EVERY kind.
+  It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
+  keeps its recorded artifacts; a dry run checks nothing — nothing was produced). Each declared
+  path is resolved against the step's working directory (`artifact_dir`: the rendered `cwd:` of
+  a shell/python step, else `ctx.workdir`); a file that is missing, is a directory, or resolves
+  outside that directory (a planted symlink) turns the succeeded outcome into `failed` with
+  `ErrorInfo(type="artifact")` naming the path — never a retry (the leaf loop is already over)
+  and the step's own output is kept. The kept files go through
+  `RunContext.write_artifacts(record, [(declared, path)])` → `store.write_artifact` in a worker
+  thread under the persistence lock, before `run.json` names them; a store without the method
+  (or an `OSError` while copying) records the artifact with `ref=None` plus a `warning` — the
+  promise was kept, so it is not a step failure.
 - Sinks are observers: if a sink raises (`BrokenPipeError`, Rich's `SystemExit` after `| head`)
   `RunContext.emit` drops the sinks (`ctx.sinks_broken`) and the run continues; the store still
   receives every event and the run status is unaffected.
@@ -1250,8 +1285,12 @@ stderr).
   `warnings:` block (`show.collect_warnings`: `warning` events + stream `warning` records as
   `<step>: <message>`), outputs table, pause block with the `rayspec approve|reject|resume`
   hint. JSON = the `runs` row + `run_dir, inputs, outputs, workflow_path, workflow_hash,
-  project_root, steps[]` (record fields + `tokens`, `output_preview`), `warnings[]` + `record`
-  (raw `run.json`). Exit 0 · 2 unknown/ambiguous. All run data is safe plain text.
+  project_root, steps[]` (record fields + `tokens`, `output_preview`), `artifacts[]`
+  (`{step, path, ref, sha256, size}` per delivered `artifacts:` entry, `show.artifact_rows`),
+  `warnings[]` + `record`
+  (raw `run.json`). The human view adds an `artifacts` table (step, file, size via
+  `show.fmt_size`, sha256[:12], stored ref) after the steps table when any step recorded one.
+  Exit 0 · 2 unknown/ambiguous. All run data is safe plain text.
 - `rayspec logs <run> [--step <path>] [--follow] [--stream] [--verbose] [--raw] [--json]`:
   timestamped (UTC) event lines (`events.jsonl`, rendered like the quiet console sink, loop/each
   progress as generic lines); `--step` renders that step's `stream.jsonl` (text deltas buffered

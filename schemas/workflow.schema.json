@@ -410,6 +410,13 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
         "approve": {
           "anyOf": [
             {
@@ -614,6 +621,13 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
         "each": {
           "title": "Each",
           "type": "string"
@@ -754,6 +768,13 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
         },
         "include": {
           "title": "Include",
@@ -995,6 +1016,13 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
         "loop": {
           "$ref": "#/$defs/LoopSpec"
         }
@@ -1137,6 +1165,13 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
         },
         "retry": {
           "anyOf": [
@@ -1313,6 +1348,13 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
         },
         "retry": {
           "anyOf": [
@@ -1497,6 +1539,13 @@
           "title": "Allow Failure",
           "type": "boolean"
         },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
         "retry": {
           "anyOf": [
             {
@@ -1669,6 +1718,13 @@
           "default": false,
           "title": "Allow Failure",
           "type": "boolean"
+        },
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
         },
         "stop": {
           "$ref": "#/$defs/StopSpec"

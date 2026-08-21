@@ -13,10 +13,12 @@ from rayspec.store.file import (
     RunExistsError,
     StoreError,
     UnknownRunIdError,
+    WrittenArtifact,
     WrittenOutput,
 )
 from rayspec.store.model import (
     RUN_RECORD_SCHEMA_VERSION,
+    ArtifactRef,
     Decision,
     EachInfo,
     ErrorInfo,
@@ -33,6 +35,7 @@ from rayspec.store.model import (
 __all__ = [
     "RUN_RECORD_SCHEMA_VERSION",
     "AmbiguousRunIdError",
+    "ArtifactRef",
     "CorruptRunError",
     "Decision",
     "EachInfo",
@@ -48,6 +51,7 @@ __all__ = [
     "StoreError",
     "UnknownRunIdError",
     "WorkspaceInfo",
+    "WrittenArtifact",
     "WrittenOutput",
     "new_run_id",
     "utcnow",

@@ -29,6 +29,7 @@
   "steps": {
     "checkout": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -68,6 +69,7 @@
     },
     "comment": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -107,6 +109,7 @@
     },
     "contracts": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -146,6 +149,7 @@
     },
     "gate": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -185,6 +189,7 @@
     },
     "review": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,

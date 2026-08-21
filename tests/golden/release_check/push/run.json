@@ -30,6 +30,7 @@
   "steps": {
     "cleanup": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -69,6 +70,7 @@
     },
     "gate": {
       "approved": true,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -108,6 +110,7 @@
     },
     "history": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -147,6 +150,7 @@
     },
     "last_tag": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -186,6 +190,7 @@
     },
     "meta": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -225,6 +230,7 @@
     },
     "notes": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -267,6 +273,7 @@
     },
     "notify": {
       "approved": null,
+      "artifacts": [],
       "attempts": 0,
       "cost_source": "none",
       "cost_usd": null,
@@ -306,6 +313,7 @@
     },
     "publish": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
@@ -345,6 +353,7 @@
     },
     "tests": {
       "approved": null,
+      "artifacts": [],
       "attempts": 1,
       "cost_source": "none",
       "cost_usd": null,
