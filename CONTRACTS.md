@@ -2254,8 +2254,10 @@ from rayspec.store.file import (
 #   come from Codex only. An approval row's detail is "approved by <actor id> (<by>)".
 #   A step row carries the step's KIND, never its body: the rendered body is not stored.
 ```
-The ledger is a **log**: append-only in behaviour, no chain, no digest, nothing about the file
-proves it was not edited. It is local to one run of one user on one machine. There is no export
+The ledger is fail-soft and second in line: the run's own file (run.json / events.jsonl /
+stream.jsonl) is written first and an `OSError` from the ledger is a `_log.warning`, never an
+exception into the engine. It is a **log**: append-only in behaviour, no chain, no digest,
+nothing about the file proves it was not edited. It is local to one run of one user on one machine. There is no export
 format, no continuous export and no aggregation across runs, projects or people — deliberately.
 
 ```python

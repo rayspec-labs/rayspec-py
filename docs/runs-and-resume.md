@@ -190,6 +190,10 @@ it did. The file is written **through the run store**, so the redactor covers it
 else under the run directory — over the row's values rather than its serialised text, so a numeric
 secret becomes the marker instead of corrupting the JSON.
 
+The ledger can never cost a run anything: `run.json`, `events.jsonl` and each step's
+`stream.jsonl` are written first, and a ledger write that fails (a full disk, a read-only mount)
+is a warning in the log and nothing more.
+
 Two honest limits. The ledger is **append-only in behaviour, not tamper-evident**: rows are only
 ever appended, and nothing about the file proves it was not edited afterwards — anybody who can read
 a run directory can also write to it. And it is **local**: one file per run, on one machine, for one

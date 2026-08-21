@@ -754,14 +754,18 @@ class FileRunStore:
 
         The ledger is a log, not evidence: rows are appended in the order the store learns them
         and nothing about the file proves it was not edited afterwards.
+
+        It is also an opt-in convenience, so it may never cost the run an authoritative file: a
+        write that fails is a warning and nothing else.
         """
         if entry is None or not (audit_log_enabled() if self.audit is None else self.audit):
             return
-        payload = finish_audit_row(entry, self.redactor)
-        self._append_line(
-            self.run_dir(run_id) / AUDIT_JSONL,
-            json.dumps(payload, ensure_ascii=False, default=str),
-        )
+        path = self.run_dir(run_id) / AUDIT_JSONL
+        try:
+            payload = finish_audit_row(entry, self.redactor)
+            self._append_line(path, json.dumps(payload, ensure_ascii=False, default=str))
+        except OSError as exc:
+            _log.warning("%s: could not append to %s (%s)", path, AUDIT_JSONL, exc)
 
     def read_audit(self, run_id: str) -> Iterator[dict[str, Any]]:
         """Iterate the rows of ``audit.jsonl`` (empty when the ledger was never enabled).
@@ -794,12 +798,15 @@ class FileRunStore:
         """
         # derived from the ORIGINAL record: a boundary buffer may hold back the tail of the
         # very command the ledger is about, and a whole value redacts more reliably than a chunk
-        self._append_audit(run_id, audit_entry_for_stream(step_path, record))
+        entry = audit_entry_for_stream(step_path, record)
         if self.redactor:
             record = self._redact_stream(run_id, step_path, record)
+        # the transcript first: the ledger is a convenience and must not pre-empt the file the
+        # run is actually judged by
         self._append_line(
             self.step_dir(run_id, step_path) / STREAM_JSONL, self.redactor.redact(record.to_json())
         )
+        self._append_audit(run_id, entry)
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
         """Write the text a :meth:`append_stream` boundary buffer is still holding back.

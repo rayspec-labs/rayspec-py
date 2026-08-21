@@ -284,3 +284,42 @@ def test_a_tool_argument_is_redacted_before_it_is_capped(ledger_store: FileRunSt
     raw = (ledger_store.run_dir(run_id) / AUDIT_JSONL).read_text()
     assert OVERLONG_SECRET[:200] not in raw
     assert "[REDACTED:token]" in raw
+
+
+def test_a_broken_ledger_never_costs_the_run_its_own_files(
+    home: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from pathlib import Path as _Path
+
+    from rayspec.events.model import EventType, RunEvent, StreamRecord
+    from rayspec.schema import RunStatus
+    from rayspec.store.file import EVENTS_JSONL, RUN_JSON, STREAM_JSONL
+    from rayspec.store.model import RunRecord
+
+    store = FileRunStore(home / "brittle", audit=True)
+    original = FileRunStore._append_line
+
+    def refuse_the_ledger(self: FileRunStore, path: _Path, line: str) -> None:
+        if path.name == AUDIT_JSONL:  # a full disk, a read-only mount, a bad mode
+            raise OSError("no space left on device")
+        original(self, path, line)
+
+    monkeypatch.setattr(FileRunStore, "_append_line", refuse_the_ledger)
+    run = RunRecord(
+        run_id="20260821-000000-cccc",
+        workflow_name="w",
+        workflow_path="w.yaml",
+        workflow_hash="a" * 64,
+        project_slug="local/x",
+        project_root=str(home),
+        status=RunStatus.RUNNING,
+    )
+    with caplog.at_level("WARNING"):
+        store.create(run)
+        store.append_event(run.run_id, RunEvent(run_id=run.run_id, type=EventType.RUN_STARTED))
+        store.append_stream(run.run_id, "a", StreamRecord(kind="error", text="boom"))
+    run_dir = store.run_dir(run.run_id)
+    assert (run_dir / RUN_JSON).is_file()
+    assert (run_dir / EVENTS_JSONL).is_file()
+    assert "boom" in (store.step_dir(run.run_id, "a") / STREAM_JSONL).read_text()
+    assert any(AUDIT_JSONL in record.getMessage() for record in caplog.records)
