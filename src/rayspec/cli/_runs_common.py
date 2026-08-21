@@ -767,6 +767,7 @@ def resume_run(
     from rayspec.engine.context import RunOptions
     from rayspec.engine.errors import EngineError
     from rayspec.engine.runner import Runner
+    from rayspec.limits import limits_policy, run_envelope
     from rayspec.providers.pricing import PriceTable
     from rayspec.secrets import SecretError, build_redactor, provider_for, used_config_secrets
 
@@ -832,6 +833,19 @@ def resume_run(
         price_table = PriceTable.from_config(ctx.config.pricing)
     except RayspecError:
         price_table = None
+    # the operator's ceilings apply to the second half of a run exactly as to the first: a
+    # resume that would blow through the daily envelope pauses again rather than slipping past
+    # it. A dry run spends nothing and is never accounted.
+    envelope = (
+        None
+        if run.dry_run
+        else run_envelope(
+            limits_policy(project_root, home=ctx.home),
+            store_root=ctx.home / "projects" / (run.project_slug or ctx.slug),
+            run_id=run.run_id,
+            started_at=run.started_at or run.created_at,
+        )
+    )
     runner = Runner(
         resolved,
         inputs=dict(inputs or {}),
@@ -846,6 +860,7 @@ def resume_run(
         resume_run_id=run.run_id,
         price_table=price_table,
         home=ctx.home,
+        envelope=envelope,
     )
     try:
         result = runner.run_sync()

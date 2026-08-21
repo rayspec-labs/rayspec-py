@@ -32,6 +32,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.cli.commands.run import load_stub_script, refuse_stubs_for_real_agents
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
+from rayspec.limits import ENVELOPE_PAUSE_REASON
 from rayspec.loader import ResolvedWorkflow
 from rayspec.loader.inputs import resolve_resume_secrets, secret_input_names
 from rayspec.schema import RunStatus
@@ -211,7 +212,15 @@ def register(app: typer.Typer) -> None:
         # a changed workflow is refused before the paused/non-TTY short-circuit below
         resolved = guard_workflow_unchanged(ctx, record, force=force)
         interactive = common.stdin_is_tty() and not no_interactive and not yes
-        pending = record.pause is not None and record.pause.decision is None
+        # only an APPROVAL gate needs a person before the run may go on. A run the spending
+        # envelope paused (``pause.reason == "budget"``) is continued by resuming it — the
+        # ceiling is re-evaluated — so it must not be sent away to `approve`, least of all on
+        # the non-TTY path, which is exactly where an unattended run lives.
+        pending = (
+            record.pause is not None
+            and record.pause.decision is None
+            and record.pause.reason != ENVELOPE_PAUSE_REASON
+        )
         if record.status is RunStatus.PAUSED and pending and not interactive and not yes:
             assert record.pause is not None
             out = err_console()
