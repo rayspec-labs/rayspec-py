@@ -116,3 +116,53 @@ def test_push_remote_reads_the_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     assert push_remote() is None
     monkeypatch.setenv(PUSH_ENV, "  ")
     assert push_remote() is None
+
+
+def test_uncommitted_work_is_counted_not_published(clone: Path, origin: Path) -> None:
+    # rayspec never commits: a workflow that leaves work in the worktree publishes nothing of it
+    (clone / "note.txt").write_text("not committed\n")
+    outcome = push_branch(clone, "rayspec/work-abcd")
+    assert outcome.pushed is True
+    assert outcome.uncommitted == 1
+    shown = run_git(["show", "rayspec/work-abcd:note.txt"], origin, check=False)
+    assert not shown.ok, "only committed work can reach the remote"
+
+
+def test_a_clean_worktree_counts_nothing(clone: Path) -> None:
+    outcome = push_branch(clone, "rayspec/work-abcd")
+    assert outcome.pushed is True and outcome.uncommitted == 0
+
+
+def test_the_push_leaves_no_upstream_config_behind(clone: Path) -> None:
+    assert push_branch(clone, "rayspec/work-abcd").pushed
+    config = run_git(["config", "--get", "branch.rayspec/work-abcd.remote"], clone, check=False)
+    assert not config.ok, "a throwaway branch must not add entries to the repository's config"
+
+
+def test_the_push_cannot_ask_for_a_passphrase(clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Mapping, Sequence
+
+    from rayspec.workspace import git as gitmod
+
+    seen: dict[str, str] = {}
+    original = gitmod.run_git
+
+    def spy(
+        args: Sequence[str],
+        cwd: Path | str | None,
+        *,
+        check: bool = True,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> gitmod.GitResult:
+        if args and args[0] == "push":
+            seen.update(env or {})
+        return original(args, cwd, check=check, env=env, timeout=timeout)
+
+    monkeypatch.setattr(gitmod, "run_git", spy)
+    assert push_branch(clone, "rayspec/work-abcd").pushed
+    # the hook runs while a run is finishing: a locked ssh key must fail, not stall it for a
+    # minute or pop a dialog on somebody's desktop
+    assert "BatchMode=yes" in seen.get("GIT_SSH_COMMAND", "")
+    assert seen.get("SSH_ASKPASS_REQUIRE") == "never"
+    assert seen.get("GIT_ASKPASS")

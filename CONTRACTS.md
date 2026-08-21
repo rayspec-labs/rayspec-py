@@ -2262,10 +2262,13 @@ format, no continuous export and no aggregation across runs, projects or people 
 
 ```python
 from rayspec.workspace.git import (
-    PushOutcome,   # frozen: branch, remote, pushed: bool, reason: str | None
+    PushOutcome,   # frozen: branch, remote, pushed: bool, reason: str | None, uncommitted: int
     push_branch,   # (workdir, branch, *, remote="origin", timeout=PUSH_TIMEOUT_S) -> PushOutcome
-    #   `git push --set-upstream <remote> refs/heads/<b>:refs/heads/<b>`; NEVER forces; never
-    #   raises — no branch / no remote / rejected / timeout / no git all come back as a reason
+    #   `git push <remote> refs/heads/<b>:refs/heads/<b>`; NEVER forces, sets no upstream; never
+    #   raises — no branch / no remote / rejected / timeout / no git all come back as a reason.
+    #   Runs with BatchMode=yes and no askpass helper: a credential prompt fails, never waits.
+    #   `uncommitted` counts what the worktree still held (rayspec commits nothing itself).
+    uncommitted_count,  # (path) -> int   `git status --porcelain` lines, 0 when git cannot say
     push_remote,   # (env=None) -> str | None   RAYSPEC_PUSH_BRANCH: 1|true|yes|on -> "origin",
     #   any other non-empty value names the remote, unset/0/false/no/off -> None
     PUSH_ENV, DEFAULT_REMOTE, PUSH_TIMEOUT_S,  # "RAYSPEC_PUSH_BRANCH", "origin", 60.0
@@ -2275,7 +2278,10 @@ from rayspec.workspace.git import (
 `run.finished` — so it fires on a pause and on every final status. It imports
 `rayspec.workspace.git` through `import_optional` (like the workdir lock and `_refresh_head_sha`),
 skips dry runs and `isolation == "none"`, and turns a failed push into `ctx.warn` only: the run's
-status and exit code are unaffected. A successful push is silent.
+status and exit code are unaffected. A successful push is silent unless the worktree was dirty,
+which is a `ctx.warn` naming the number of changes that were not published.
+
+`run_git` runs every git command with `stdin=DEVNULL`: no git rayspec spawns is interactive.
 
 ```python
 from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [--json] [--root]`

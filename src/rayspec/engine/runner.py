@@ -312,10 +312,14 @@ class Runner:
     async def _publish_branch(self, ctx: RunContext) -> None:
         """Push the run's branch when ``RAYSPEC_PUSH_BRANCH`` asks for it — best effort.
 
-        The point is that a run left alone on a schedule leaves its work somewhere visible: the
-        branch is pushed when the run pauses and when it ends, so the laptop is not the only
-        copy. Only an isolated run publishes — an in-place run is on the user's own branch and
-        pushing that would be a surprise — and a dry run publishes nothing.
+        The point is that a run left alone on a schedule leaves its committed work somewhere
+        visible: the branch is pushed when the run pauses and when it ends, so the laptop is not
+        the only copy. Only an isolated run publishes — an in-place run is on the user's own
+        branch and pushing that would be a surprise — and a dry run publishes nothing.
+
+        A push moves commits, and rayspec commits nothing by itself: if the worktree still holds
+        uncommitted work, that work did NOT leave the machine, and the run says so rather than
+        letting a successful push read as "it is backed up".
 
         The push happens after the run's outcome is already decided, so it may never influence
         it: every failure (no remote, a rejected push, a timeout, no git at all) becomes a
@@ -346,6 +350,12 @@ class Runner:
             return
         if not outcome.pushed:
             await ctx.warn(f"could not push {branch} to {remote}: {outcome.reason}")
+        elif outcome.uncommitted:
+            # a push publishes commits; rayspec makes none, so this work stayed on the machine
+            await ctx.warn(
+                f"pushed {branch} to {remote}, but {outcome.uncommitted} uncommitted change(s) "
+                "in the worktree were not published"
+            )
 
     def _resolve_actor(self) -> ActorInfo:
         """Who is launching this run (blocking: may shell out to ``git config``).

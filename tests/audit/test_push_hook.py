@@ -24,6 +24,18 @@ steps:
 """
 
 
+DIRTY_WORKFLOW = """
+rayspec: 1
+name: dirty
+steps:
+  - id: work
+    shell: 'echo work > note.txt'
+  - id: gate
+    needs: [work]
+    approve: "ship?"
+"""
+
+
 @pytest.fixture
 def origin(tmp_path: Path) -> Path:
     path = tmp_path / "origin.git"
@@ -38,6 +50,7 @@ def gitproject(tmp_path: Path, origin: Path) -> Path:
     workflows = root / ".rayspec" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "gate.yaml").write_text(WORKFLOW)
+    (workflows / "dirty.yaml").write_text(DIRTY_WORKFLOW)
     git("init", "-q", "-b", "main", cwd=root)
     git("config", "user.email", "maintainer@example.invalid", cwd=root)
     git("config", "user.name", "Maintainer", cwd=root)
@@ -105,3 +118,24 @@ def test_an_in_place_run_is_never_pushed(
     )
     assert result.exit_code == 3, result.output
     assert _remote_branches(origin) == ["main"], "an in-place run pushes the user's own branch"
+
+
+def test_uncommitted_work_is_called_out(
+    cli: CliRunner, gitproject: Path, origin: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # rayspec never commits: a run whose agent left work in the worktree publishes a branch that
+    # does not contain it, and the user has to be told rather than left believing it is backed up
+    monkeypatch.setenv(PUSH_ENV, "1")
+    result = cli.invoke(app, ["run", "dirty", "--root", str(gitproject), "--no-interactive"])
+    assert result.exit_code == 3, result.output
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    branch = store.load(run_id).workspace.branch
+    assert branch and branch in _remote_branches(origin)
+    assert not run_git(["show", f"{branch}:note.txt"], origin, check=False).ok
+    warnings = [
+        e
+        for e in store.read_events(run_id)
+        if e.type.value == "warning" and "uncommitted" in str(e.data)
+    ]
+    assert warnings, "a push that published none of the work must say so"

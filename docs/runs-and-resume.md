@@ -474,6 +474,12 @@ RAYSPEC_PUSH_BRANCH=upstream rayspec run nightly                 # or to another
 The hook fires when the run **pauses** and when it **ends** (whatever the final status), and it
 publishes `rayspec/<workflow>-<shortid>` — the branch the run's worktree is on.
 
+**It publishes commits, and rayspec makes none.** A push moves what is committed; work an agent
+left in the worktree is not on the branch and does not leave the machine. Workflows that want
+their work published commit it themselves (`shell: git add -A && git commit -m …`). If the
+worktree is still dirty at push time you get a warning saying how many changes stayed behind —
+`pushed rayspec/x to origin, but 3 uncommitted change(s) in the worktree were not published`.
+
 Rules it keeps, deliberately:
 
 - **Opt-in.** Nothing is pushed unless the variable is set. `1`/`true`/`yes`/`on` mean `origin`;
@@ -482,6 +488,10 @@ Rules it keeps, deliberately:
   branch — pushing that would be a surprise, so it never happens. A `--dry-run` publishes nothing.
 - **It never forces.** If somebody else moved the remote branch on, git rejects the push and
   rayspec leaves it alone.
+- **It never asks you anything.** The push runs with `BatchMode=yes` and no askpass helper, so a
+  locked ssh key or a missing credential fails immediately and becomes the warning below,
+  instead of stalling a finishing run for a minute or opening a dialog. It writes no upstream
+  configuration either: a throwaway branch leaves nothing behind in your repository's config.
 - **It fails soft.** No remote, no such branch, a rejected push, a timeout (60s), no `git` at all:
   every one of them is a `warning` event on the finished run (`rayspec show` lists it under
   `warnings:`). The run's status and exit code are exactly what they would have been without the
