@@ -10,6 +10,7 @@ the secret contract it repeats from ``docs/schema.md``, the supported Python ran
 
 from __future__ import annotations
 
+import inspect
 import re
 import tomllib
 from pathlib import Path
@@ -75,6 +76,32 @@ def _gate_command(text: str) -> str:
         for line in block.splitlines():
             if line.startswith("uv run ruff check"):
                 return line.strip()
+    return ""
+
+
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+
+# Every position the loader refuses a `secret: true` input in. Both pages must keep naming them.
+REFUSED_PLACEMENTS = ("prompt", "`when:`", "`outputs:`", "`cwd:`", "`with:`")
+
+
+def _section(text: str, heading: str) -> str:
+    """One markdown section's body, up to the next heading of the same or a higher level."""
+    level = len(heading) - len(heading.lstrip("#"))
+    body = text[text.index(heading) + len(heading) :]
+    stop = re.search(rf"^#{{1,{level}}} ", body, re.MULTILINE)
+    return body[: stop.start()] if stop else body
+
+
+def _bullet(text: str, prefix: str) -> str:
+    """The one top-level ``- <prefix>…`` bullet of a page, flattened to a single line."""
+    start = re.compile(rf"- (?:\*\*)?{re.escape(prefix)}")
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if start.match(line):
+            rest = lines[index + 1 :]
+            end = next((n for n, later in enumerate(rest) if later.startswith("- ")), len(rest))
+            return _flat("\n".join([line, *rest[:end]]))
     return ""
 
 
@@ -151,13 +178,60 @@ def test_security_states_the_two_halves_of_the_threat_model() -> None:
     assert leak in flat, "SECURITY.md must say that a secret leak is in scope"
 
 
-def test_security_repeats_the_secret_contract_as_the_schema_docs_state_it() -> None:
-    """If the contract in ``docs/schema.md`` moves, the security page must move with it."""
-    security = _text(SECURITY)
-    schema = _text(DOCS_DIR / "schema.md")
-    for claim in ("RAYSPEC_INPUT_", "never persisted", "load-time"):
-        assert claim in security, f"SECURITY.md drops the secret-contract claim {claim!r}"
-        assert claim in schema, f"docs/schema.md no longer states {claim!r} — SECURITY.md drifted"
+def test_security_repeats_the_secret_contract_the_loader_enforces() -> None:
+    """The page's central claim, pinned to the code that enforces it and to ``docs/schema.md``.
+
+    Grepping for a few words would stay green while the policy became false — either because the
+    placement rule was relaxed in :mod:`rayspec.loader.secrets`, or because the page was edited
+    carelessly. Both sides are checked here.
+    """
+    from rayspec.loader.secrets import (
+        SECRET_OK_WHERE,
+        check_secret_reference,
+        secret_reference_message,
+    )
+    from rayspec.schema import InputSpec
+
+    inputs = {"token": InputSpec(secret=True)}
+    reference = ("inputs", "token", ())
+    assert check_secret_reference(None, reference, inputs, secret_ok=False).message, (
+        "the loader no longer refuses a secret input outside the one permitted position"
+    )
+    assert check_secret_reference(None, reference, inputs, secret_ok=True).message is None
+    assert check_secret_reference("inputs", None, inputs, secret_ok=False).message, (
+        "the loader no longer refuses `inputs` as a whole while an input is secret"
+    )
+    assert "env:" in SECRET_OK_WHERE, f"the one permitted position moved: {SECRET_OK_WHERE!r}"
+    assert "RAYSPEC_INPUT_TOKEN" in secret_reference_message("token")
+
+    flat = _flat(_text(SECURITY))
+    schema = _flat(_section(_text(DOCS_DIR / "schema.md"), "#### Secret inputs"))
+    assert "never persisted" in flat and "never persisted" in schema
+    assert "RAYSPEC_INPUT_<NAME>" in flat, "SECURITY.md must name the one delivery channel"
+    assert "is refused with a load-time error" in flat, (
+        "SECURITY.md must keep saying the refusal happens at load time, as the loader does it"
+    )
+    for placement in REFUSED_PLACEMENTS:
+        assert placement in flat, f"SECURITY.md stopped listing {placement} as a refused position"
+        assert placement in schema, f"docs/schema.md § Secret inputs stopped listing {placement}"
+
+
+def test_security_says_secret_delivery_is_run_wide_and_not_per_step() -> None:
+    """Fact 2 must not read as need-to-know delivery, because it is not.
+
+    ``RunContext.secret_env`` ignores the scope on purpose: every ``shell:``/``python:`` step of
+    the run gets every secret the run was given, an included body's steps included. That is what
+    makes including a body you have not read a decision about your credentials.
+    """
+    from rayspec.engine.context import RunContext
+
+    source = inspect.getsource(RunContext.secret_env)
+    assert "del scope" in source, (
+        "secret delivery is no longer scope-independent — SECURITY.md's run-wide claim must move"
+    )
+    flat = _flat(_text(SECURITY))
+    assert "run-wide, not per-step" in flat
+    assert "included bodies too" in flat
 
 
 def test_security_states_that_the_engine_opens_no_socket() -> None:
@@ -311,3 +385,45 @@ def test_readme_ci_badge_points_at_the_workflow_that_exists() -> None:
     assert badges, "README.md has no CI badge"
     for name in badges:
         assert (GITHUB_DIR / "workflows" / name).is_file(), f"badge points at a missing {name}"
+
+
+def test_security_permission_promise_matches_the_run_store_documentation() -> None:
+    """The store page owns the permission facts; SECURITY.md may not promise more than it does.
+
+    A reporter tests a stated invariant before filing, so an overstated one costs both sides a
+    round trip — and the umask exception for git checkouts is exactly the kind of detail a
+    security page rounds off.
+    """
+    security = _bullet(_text(SECURITY), "Permissions")
+    store = _bullet(_text(DOCS_DIR / "runs-and-resume.md"), "Permissions")
+    assert security, "SECURITY.md must keep a `- Permissions…` bullet in the in-scope list"
+    assert store, (
+        "docs/runs-and-resume.md § Security notes must keep its `- **Permissions.**` bullet"
+    )
+    assert "worktrees/" in store, (
+        "docs/runs-and-resume.md no longer documents an umask-mode writer — re-check SECURITY.md"
+    )
+    assert "worktrees/" in security, (
+        "SECURITY.md promises 0600/0700 without naming the umask exception the store page "
+        "documents: git's checkouts under projects/<slug>/worktrees/ keep your umask"
+    )
+    promise, _, _exception = security.partition("worktrees/")
+    for name in sorted(set(_BACKTICK_RE.findall(promise))):
+        assert name in store, (
+            f"SECURITY.md promises `{name}` is private, but docs/runs-and-resume.md "
+            "§ Security notes does not list it"
+        )
+
+
+def test_security_gives_a_reporter_a_route_when_the_private_form_is_unavailable() -> None:
+    """GitHub offers private vulnerability reporting on public repositories only, and it can be
+    switched off. A reporter who finds the form missing either drops the finding or posts the
+    reproduction in the public tracker — which for this project is a working exploit — so the page
+    must name a fallback that still keeps the details out of the tracker.
+    """
+    flat = _flat(_text(SECURITY))
+    assert flat.index(ADVISORY_URL) < flat.index("not available to you"), (
+        "the fallback must come after the private form, not instead of it"
+    )
+    for claim in ("not available to you", "no reproduction", "no details"):
+        assert claim in flat, f"SECURITY.md does not tell a blocked reporter what to do: {claim!r}"

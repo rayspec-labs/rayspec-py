@@ -25,6 +25,11 @@ The report is visible to the maintainer only and opens a draft advisory we can w
 not open a public issue, a discussion or a pull request for anything you believe is exploitable:
 the tracker is public, and for this project a reproduction *is* a working exploit.
 
+If that form is not available to you — GitHub offers private reporting on public repositories only,
+and a maintainer can switch it off — open an issue saying that you have a security report and how
+to reach you, and nothing else: no reproduction, no affected version, no details. I will open the
+private thread from there.
+
 Useful in a report, roughly in order:
 
 - the output of `rayspec doctor` and `rayspec version` (doctor prints sources, paths and versions —
@@ -61,7 +66,10 @@ reason a malicious shell script is not a vulnerability in your shell.
 
 **2. `secret: true` inputs are the real surface.** A secret input is never persisted, never
 printed, and reaches `shell:`/`python:` steps through `RAYSPEC_INPUT_<NAME>` or those steps' own
-`env:` — and nowhere else. Every other placement (a prompt body, an agent's instructions, a
+`env:` — and nowhere else. Delivery is run-wide, not per-step: every `shell:`/`python:` step of the
+run receives every secret the run was given, included bodies too, whether or not it names one
+(`RunContext.secret_env` ignores the scope on purpose). Including a body you have not read is
+therefore a decision about your credentials. Every other placement (a prompt body, an agent's instructions, a
 `when:`/`until:`/`each:` expression, `outputs:`, `cwd:`, an approval message, an include `with:`)
 is refused with a load-time error naming the step and field, and a redactor sits under those
 refusals as a net for values a step prints itself. The rules are documented in
@@ -82,10 +90,15 @@ telemetry, an update check, a workflow shipped somewhere — is a report.
   console — including a writer that reaches the run directory without passing through the redactor.
 - A placement rule that fails open: a template position that should be refused at load time and is
   not, or a resume path that stores a re-supplied secret.
-- Permissions on the run store: everything rayspec creates under `$RAYSPEC_HOME` is `0600`/`0700`
-  regardless of umask ([docs/runs-and-resume.md § Security notes](docs/runs-and-resume.md#security-notes)).
-  A file with run data created group- or world-readable, or a writer that follows a symlink out of
-  the store, is a bug worth reporting privately.
+- Permissions on the run store: every directory and file rayspec creates for a *run* under
+  `$RAYSPEC_HOME` is `0700`/`0600` regardless of umask — `runs/<id>/`, `steps/<path>/`, `locks/`,
+  `run.json`, `events.jsonl`, `stream.jsonl`, `context.json`, `prompt.txt`, `output.txt|json`,
+  `stdout.log`/`stderr.log` and the workdir lock files
+  ([docs/runs-and-resume.md § Security notes](docs/runs-and-resume.md#security-notes)). The one
+  documented exception is `worktrees/`: rayspec creates that directory `0700`, but the checkout
+  inside it belongs to git and keeps your umask — and no run data is written there. A file with
+  run data created group- or world-readable, or a writer that follows a symlink out of the store,
+  is a bug worth reporting privately.
 - `rayspec test` executing a `shell:`/`python:` body without `--exec-shell`. That flag exists so
   that pointing `rayspec test` at a checkout you have not read cannot execute anything
   ([docs/testing.md § Real shell steps](docs/testing.md#real-shell-steps)).
