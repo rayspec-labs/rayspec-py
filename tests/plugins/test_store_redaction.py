@@ -225,3 +225,21 @@ def test_a_numeric_secret_in_a_record_does_not_break_the_write() -> None:
     (seen,) = inner.records
     assert seen.inputs == {"count": "[REDACTED:pin]", "note": "[REDACTED:pin]"}
     json.loads(seen.model_dump_json())  # still a well-formed record
+
+
+def test_a_plugin_store_never_sees_a_secret_in_a_key_or_a_call_id() -> None:
+    """The wrapper and ``FileRunStore`` implement the same rule; both have to cover the
+    positions a value can reach that are not a plain string field."""
+    inner = RecordingStore()
+    store = RedactingStore(inner, Redactor.build({"token": SECRET}))
+    record = _run_record().model_copy(update={"outputs": {"probe": {SECRET: "v"}}})
+
+    store.create(record)
+    store.append_event(
+        "r", RunEvent(type=EventType.STEP_STARTED, run_id="r", data={SECRET: "seen"})
+    )
+    store.append_stream("r", "build", StreamRecord(kind="tool_call", call_id=f"c-{SECRET}"))
+
+    assert SECRET not in inner.everything()
+    assert inner.records[0].outputs == {"probe": {"[REDACTED:token]": "v"}}
+    assert inner.streams[0].call_id == "c-[REDACTED:token]"

@@ -4,12 +4,14 @@
 Module boundary: pure text transformation. This module knows the *values* it must never let
 through and nothing about runs, stores, sinks or configuration; the callers wire it in:
 
-* :class:`~rayspec.store.file.FileRunStore` redacts every byte it writes (``run.json``,
+* :class:`~rayspec.store.file.FileRunStore` redacts every file it writes (``run.json``,
   ``events.jsonl``, ``stream.jsonl``, output files) — a writer that goes through the store is
   covered automatically. Anything JSON-shaped goes through :meth:`Redactor.redact_dump` /
   :meth:`Redactor.redact_obj`, which work on the PARSED value: replacing a secret in the
   serialised text turns a bare JSON token (a numeric secret) into an unquoted marker and leaves
-  a file that no longer parses;
+  a file that no longer parses. Free-form KEYS are redacted beside their values; a record's own
+  structure (field names, the step paths its steps are keyed by) is left alone on purpose —
+  see :meth:`Redactor.redact_dump`;
 * the shared subprocess runner redacts ``stdout.log``/``stderr.log`` and the stdout/stderr
   stream records as they are produced;
 * :class:`RedactingSink` wraps the event sinks so the console and ``--json`` are covered too.
@@ -241,30 +243,36 @@ class Redactor:
             text = pattern.sub(REDACTION.format(name=name), text)
         return text
 
-    def redact_obj(self, value: Any, *, numbers: bool = True) -> Any:
+    def redact_obj(self, value: Any) -> Any:
         """:meth:`redact` applied to every string inside a JSON-shaped value.
+
+        Mapping KEYS are redacted as well: a structured provider result or a tool argument can
+        put a value in the key position (``{"<token>": …}``) just as easily as in the value
+        position, and a walk that only visits values writes it out raw. Two keys that redact to
+        the same marker collapse into one entry — the same thing that happens to two identical
+        values, and the right trade when the alternative is persisting the value. A record's
+        own structure is not free-form and is handled separately (see :meth:`redact_dump`).
 
         A *number* that IS a secret (a numeric account id, a PIN, a numeric token) becomes the
         marker string: redacting the serialised text instead would replace a bare JSON token
         with ``[REDACTED:…]`` and leave an invalid document behind. Only a number whose whole
         text equals a secret is replaced — rewriting the digits *inside* a longer number would
         produce the same broken document.
-
-        ``numbers=False`` leaves every number alone. It is for the caller that has just
-        discovered a substitution landed in a position where a string is not admissible (see
-        :meth:`redact_dump`): there the match is a coincidence rather than a leak.
         """
         if not self:
             return value
         if isinstance(value, str):
             return self.redact(value)
         if isinstance(value, Mapping):
-            return {k: self.redact_obj(v, numbers=numbers) for k, v in value.items()}
+            return {
+                (self.redact(k) if isinstance(k, str) else k): self.redact_obj(v)
+                for k, v in value.items()
+            }
         if isinstance(value, list | tuple):
-            return [self.redact_obj(v, numbers=numbers) for v in value]
+            return [self.redact_obj(v) for v in value]
         if isinstance(value, bool) or value is None:
             return value  # `true`/`null` are too common to match a value against
-        if numbers and isinstance(value, int | float):
+        if isinstance(value, int | float):
             text = str(value)
             for needle, replacement in self.literals:
                 if needle == text:
@@ -286,11 +294,22 @@ class Redactor:
         hold a marker string. Every free-form value keeps its redaction. If the dump is still
         invalid after that, the redacted form is written anyway and the caller is warned — a
         persisted secret is the worse outcome.
+
+        The record's STRUCTURE is left alone for the same reason: a field name and the key of a
+        mapping of records (the run's steps, keyed by step path) name a place in the record
+        rather than carry a value, and rewriting one drops the field on the way back in
+        (pydantic ignores what it does not know) or points a step at a directory that is not
+        there. Structural *strings* are a smaller version of the same coincidence and are NOT
+        exempt: a secret that equals the run id rewrites ``run_id``, and the record then no
+        longer names its own directory. That trade is deliberate — the value is far more likely
+        to be a leak than a generated id is to collide with it.
         """
         data = model.model_dump(mode="json")
         if not self:
             return data
-        out = self.redact_obj(data)
+        out = self._redact_record(model, data)
+        if out == data:  # nothing matched: skip the round trip a checkpoint pays on every save
+            return out
         cls = type(model)
         for _ in range(_MAX_UNDO_ROUNDS):
             error = _validation_error(cls, out)
@@ -304,6 +323,43 @@ class Redactor:
             cls.__name__,
         )
         return out
+
+    def _redact_record(self, model: BaseModel, data: Any) -> Any:
+        """``data`` (the dump of ``model``) redacted, with the model's own structure intact.
+
+        The model instance is walked beside its dump so that a field name stays a field name;
+        everything the record holds that is free-form — ``inputs``, ``outputs``, a toolchain
+        payload — goes through :meth:`redact_obj`, whose keys ARE redacted.
+        """
+        if not isinstance(data, dict):
+            return self.redact_obj(data)
+        fields = {
+            (info.serialization_alias or info.alias or name): name
+            for name, info in type(model).model_fields.items()
+        }
+        return {
+            key: (
+                self._redact_child(getattr(model, fields[key], None), value)
+                if key in fields
+                else self.redact_obj(value)
+            )
+            for key, value in data.items()
+        }
+
+    def _redact_child(self, attr: Any, value: Any) -> Any:
+        """One field's dump: descend into nested records, redact anything else whole."""
+        if isinstance(attr, BaseModel):
+            return self._redact_record(attr, value)
+        if isinstance(attr, list | tuple) and isinstance(value, list) and len(attr) == len(value):
+            return [self._redact_child(a, v) for a, v in zip(attr, value, strict=True)]
+        if (
+            isinstance(attr, Mapping)
+            and isinstance(value, dict)
+            and set(attr) == set(value)
+            and any(isinstance(v, BaseModel) for v in attr.values())
+        ):  # a mapping of records is addressed by its keys (step path → StepRecord)
+            return {k: self._redact_child(attr[k], v) for k, v in value.items()}
+        return self.redact_obj(value)
 
     def covers(self, value: Any) -> bool:
         """True when :meth:`redact` would remove ``value`` from any text it appears in.

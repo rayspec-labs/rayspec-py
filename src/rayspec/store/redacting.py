@@ -192,6 +192,11 @@ class RedactingStore:
         return json.dumps(self.redactor.redact_obj(parsed), ensure_ascii=False)
 
     def _stream_record(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
+        """The same rule ``FileRunStore._redact_stream`` applies, part for part.
+
+        Both implementations exist so that a plugin store is handed exactly what the built-in
+        one persists; they have to name the same fields, ``call_id`` included.
+        """
         update: dict[str, Any] = {}
         if record.text:
             key = (run_id, step_path, record.kind, record.attempt)
@@ -203,6 +208,8 @@ class RedactingStore:
             update["data"] = self.redactor.redact_obj(record.data)
         if record.name:
             update["name"] = self.redactor.redact(record.name)
+        if record.call_id:
+            update["call_id"] = self.redactor.redact(record.call_id)
         return record.model_copy(update=update) if update else record
 
 

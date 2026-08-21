@@ -299,3 +299,61 @@ def test_a_numeric_secret_keeps_stream_jsonl_parseable(tmp_path: Path) -> None:
     assert parsed["data"] == {"arg": "[REDACTED:pin]"}
     assert parsed["name"] == "t [REDACTED:pin]"
     assert parsed["attempt"] == 1
+
+
+def test_a_secret_used_as_a_json_key_does_not_reach_run_json(tmp_path: Path) -> None:
+    """A structured provider result is stored as parsed JSON, so a secret can arrive in the KEY
+    position; nothing else redacts it on the way in."""
+    store = _store(tmp_path, Redactor.build({"token": SECRET}))
+    run = _run()
+    run.outputs = {"probe": {SECRET: "value", "nested": {f"{SECRET}-suffix": 1}}}
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert SECRET not in text
+    assert json.loads(text)["outputs"]["probe"] == {
+        "[REDACTED:token]": "value",
+        "nested": {"[REDACTED:token]-suffix": 1},
+    }
+
+
+def test_a_secret_used_as_an_event_data_key_is_redacted(tmp_path: Path) -> None:
+    store = _store(tmp_path, Redactor.build({"token": SECRET}))
+    store.create(_run())
+    store.append_event(
+        "r1", RunEvent(type=EventType.WARNING, run_id="r1", data={SECRET: "seen", "n": SECRET})
+    )
+    text = (store.run_dir("r1") / "events.jsonl").read_text()
+    assert SECRET not in text
+    assert json.loads(text)["data"] == {"[REDACTED:token]": "seen", "n": "[REDACTED:token]"}
+
+
+def test_a_stream_records_call_id_is_redacted(tmp_path: Path) -> None:
+    """``call_id`` is provider-supplied and used to be covered by redacting the serialised
+    line; it needs its own pass now that the line is built from redacted values."""
+    store = _store(tmp_path, Redactor.build({"token": SECRET}))
+    store.create(_run())
+    store.append_stream("r1", "s", StreamRecord(kind="tool_call", call_id=f"call-{SECRET}"))
+    store.flush_streams("r1")
+    assert SECRET not in (store.step_dir("r1", "s") / "stream.jsonl").read_text()
+
+
+def test_a_secret_matching_a_field_name_does_not_drop_the_field(tmp_path: Path) -> None:
+    """A field name names a place in the record, it never carries a value. Rewriting one drops
+    the field on the way back in — pydantic ignores what it does not know — so a short secret
+    that happens to appear in a field name would silently empty the record it was protecting."""
+    store = _store(tmp_path, Redactor.build({"pw": "inputs"}))
+    run = _run()
+    run.inputs = {"kept": "value"}
+    store.create(run)
+    text = (store.run_dir("r1") / "run.json").read_text()
+    assert '"inputs"' in text
+    assert store.load("r1").inputs == {"kept": "value"}
+
+
+def test_a_secret_matching_a_step_path_keeps_the_steps_addressable(tmp_path: Path) -> None:
+    """``steps`` is keyed by step path — the name of a directory under the run, not a value."""
+    store = _store(tmp_path, Redactor.build({"pw": "build"}))
+    run = _run()
+    run.steps = {"build": StepRecord(id="build", path="build", kind="shell")}
+    store.create(run)
+    assert set(store.load("r1").steps) == {"build"}

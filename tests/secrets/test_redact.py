@@ -70,6 +70,18 @@ def test_redact_obj_walks_containers() -> None:
     assert out == {"a": ["[REDACTED:token]", {"b": "[REDACTED:token]"}], "n": 1, "k": None}
 
 
+def test_redact_obj_redacts_mapping_keys_too() -> None:
+    """A provider that returns ``{"<token>": …}`` puts the value in the KEY position; a store
+    that only walks values writes it out raw."""
+    red = _r(token=SECRET)
+    out = red.redact_obj({SECRET: "v", "outer": {f"k-{SECRET}": [SECRET]}, 3: SECRET})
+    assert out == {
+        "[REDACTED:token]": "v",
+        "outer": {"k-[REDACTED:token]": ["[REDACTED:token]"]},
+        3: "[REDACTED:token]",
+    }
+
+
 def test_non_string_values_are_stringified_for_matching() -> None:
     red = Redactor.build({"num": 1234567})
     assert red.redact("id=1234567") == "id=[REDACTED:num]"

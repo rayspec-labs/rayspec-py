@@ -1834,11 +1834,15 @@ Two new packages and one new loader module; nothing else moved.
   at run start and a `doctor` note; `bool(redactor)` is False when it would change nothing).
   `redact(text)` = `redact_shapes(redact_values(text))` — the two halves are separate because
   a known value can be replaced the moment it is whole while a detector shape may still be
-  growing. `redact_obj(value, *, numbers=True)` (also replaces a **number** whose whole text IS a
-  secret, so a JSON document stays well-formed; `numbers=False` leaves every number alone).
+  growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
+  included (a structured result or a tool payload can put a secret in the key position), plus a
+  **number** whose whole text IS a secret, so a JSON document stays well-formed.
   `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
   redacted, and any substitution the model cannot hold put back at exactly the field it broke
-  (a structural number equal to a secret is a coincidence, not a leak); the writer serialises
+  (a structural number equal to a secret is a coincidence, not a leak). The record's own
+  STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
+  keyed by step path), names a place in the record rather than carrying a value — while
+  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
   that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
   (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
@@ -1894,7 +1898,8 @@ Additive changes to existing modules:
   serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
   `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
   value), `append_event` (the event's `data`, the only free-form part), `append_stream`
-  (`text` boundary-safe per `(run, step, kind, attempt)`, plus `data` and `name`), and
+  (`text` boundary-safe per `(run, step, kind, attempt)`, plus `data`, `name` and `call_id` —
+  every part of the record that carries text, since the line is built from the parts), and
   `record_step` through those two. `flush_streams(run_id, step_path=None)` writes the held-back tail, and
   **`append_event` calls it** on `step.finished` and on `run.finished`/`run.paused` — the events
   the engine emits for every step and every run — so a finished stream is always complete on

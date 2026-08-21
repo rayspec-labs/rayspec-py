@@ -35,11 +35,16 @@ on a run), the step ``context.json`` and the executor ``stdout.log``/``stderr.lo
 same two helpers; ``worktrees/`` (git checkouts, registry) is the remaining umask-mode writer.
 
 Redaction: the store carries a :class:`~rayspec.redact.Redactor` (``NULL_REDACTOR`` by
-default; the run installs the real one before it writes anything) and applies it to **every**
-byte it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl``. Everything
-JSON-shaped is redacted on the PARSED value and serialised afterwards, never the other way
-round: a secret that is a bare JSON token would otherwise be swapped for an unquoted marker and
-leave a file that no longer parses. Streamed text is redacted through a
+default; the run installs the real one before it writes anything) and applies it to every file
+it writes — ``run.json``, output files, ``events.jsonl`` and ``stream.jsonl`` — in every
+position that can carry a value: free-form values, the KEYS beside them (a structured result
+can put a secret in the key position) and every text-bearing field of a stream record,
+``call_id`` included. What is deliberately left alone is the STRUCTURE: a field name and a
+step-path key name a place in the record rather than carry a value, and rewriting one would
+drop the field or point a step at a directory that is not there. Everything JSON-shaped is
+redacted on the PARSED value and serialised afterwards, never the other way round: a secret
+that is a bare JSON token would otherwise be swapped for an unquoted marker and leave a file
+that no longer parses. Streamed text is redacted through a
 :class:`~rayspec.redact.StreamRedactor` per ``(run, step, kind, attempt)`` so a secret split
 across two deltas is still caught; only a tail that could still grow into a secret is held back,
 and :meth:`FileRunStore.append_event` flushes it on ``step.finished`` and
@@ -507,7 +512,9 @@ class FileRunStore:
 
         ``text`` goes through the step's boundary-safe buffer; ``data`` and ``name`` are
         redacted as PARSED values, so a tool argument that is a numeric secret becomes the
-        marker instead of an unquoted token in the middle of the line.
+        marker instead of an unquoted token in the middle of the line. ``call_id`` is
+        provider-supplied and therefore covered too: every part of the record that carries text
+        has to be named here, because the serialised line is built from the parts.
         """
         update: dict[str, Any] = {}
         if record.text:
@@ -520,6 +527,8 @@ class FileRunStore:
             update["data"] = self.redactor.redact_obj(record.data)
         if record.name:
             update["name"] = self.redactor.redact(record.name)
+        if record.call_id:
+            update["call_id"] = self.redactor.redact(record.call_id)
         return record.model_copy(update=update) if update else record
 
     def read_events(self, run_id: str) -> Iterator[RunEvent]:
