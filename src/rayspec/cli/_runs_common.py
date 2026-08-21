@@ -768,6 +768,7 @@ def resume_run(
         decide_hint,
         paused_gate_class,
         print_summary,
+        terminal_prompt_id,
         warn_unredactable_secrets,
         workspace_from_record,
     )
@@ -838,7 +839,7 @@ def resume_run(
             ctx.home,
             pre_approved=approve_classes,
             # `require_tty` accepts the built-in terminal prompt and no substitute
-            terminal_prompt=configured is None,
+            terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
         ),
     )
     try:

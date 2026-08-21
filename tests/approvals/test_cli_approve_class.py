@@ -205,3 +205,25 @@ def test_plan_names_a_gate_whose_class_nothing_holds(project: Path) -> None:
     assert res.exit_code == 0, res.output
     assert "no operator policy is in force" in res.output
     assert "'release'" in res.output
+
+
+CONSOLE_APPROVAL = """
+extensions:
+  approval: console
+"""
+
+
+async def _never_asked(request: object) -> None:
+    """A stand-in for a prompt built from `extensions.approval` (it is never called here)."""
+    return None
+
+
+def test_naming_the_builtin_prompt_is_still_the_builtin_prompt() -> None:
+    """`extensions.approval: console` names the prompt require_tty accepts; resolving it
+    through the registry must not turn it into "something replaced the prompt"."""
+    from rayspec.cli.commands.run import terminal_prompt_id
+    from rayspec.config import ExtensionsSpec
+
+    assert terminal_prompt_id(ExtensionsSpec(approval="console"), _never_asked) is True
+    assert terminal_prompt_id(None, None) is True
+    assert terminal_prompt_id(ExtensionsSpec(approval="queue"), _never_asked) is False

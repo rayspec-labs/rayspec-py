@@ -854,7 +854,7 @@ def register(app: typer.Typer) -> None:
                 ctx.home,
                 pre_approved=approve_class or (),
                 # `require_tty` accepts the built-in terminal prompt and no substitute
-                terminal_prompt=configured is None,
+                terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
             ),
         )
         try:
@@ -1025,6 +1025,25 @@ def _built(kind: str, extension_id: str, build: Callable[[], T]) -> T:
         ) from exc
 
 
+#: The registry id of the built-in terminal prompt — the one ``require_tty`` accepts.
+TERMINAL_PROMPT_ID = "console"
+
+
+def terminal_prompt_id(
+    extensions: ExtensionsSpec | None, configured: ApprovalPrompt | None
+) -> bool:
+    """Whether this run's approval prompt is the built-in terminal one.
+
+    ``configured is None`` means nothing was configured, so the builtin is used. Naming the
+    builtin explicitly (``extensions.approval: console``) resolves it through the registry and
+    hands back a prompt object — the same prompt, so it must not read as a replacement or
+    ``require_tty`` would refuse the very prompt it exists to require.
+    """
+    if configured is None:
+        return True
+    return bool(extensions and extensions.approval == TERMINAL_PROMPT_ID)
+
+
 def configured_approval(
     extensions: ExtensionsSpec | None, *, interactive: bool, console: Console | None = None
 ) -> ApprovalPrompt | None:
@@ -1116,6 +1135,7 @@ def _problems_only_sink(out: Console) -> Any:
 
 __all__ = [
     "SUMMARY_KEYS",
+    "TERMINAL_PROMPT_ID",
     "ApproveClassOption",
     "SuspendingApprovalPrompt",
     "approval_classes_for",
@@ -1139,6 +1159,7 @@ __all__ = [
     "replay_ref",
     "stub_scaffold",
     "stub_scaffold_keys",
+    "terminal_prompt_id",
     "workspace_from_record",
     "worktree_lines",
 ]

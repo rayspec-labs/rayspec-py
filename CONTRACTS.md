@@ -2256,7 +2256,10 @@ CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
 the operator's policy (it returns `None` until `rayspec.policy` exists) and
 `run.policy_class_rules` turns it into `{name: ClassRules}` via `rules_from_policy`;
 `run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
-the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass.
+the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass;
+`terminal_prompt` comes from `run.terminal_prompt_id(extensions, configured)` — true when nothing
+was configured **or** when `extensions.approval` names the builtin (`TERMINAL_PROMPT_ID ==
+"console"`), so naming the terminal prompt explicitly does not read as replacing it.
 `resume` skips its "still paused" short-circuit when `--approve-class` was given.
 `run.gate_classes(rw)` lists `(step path, class)` for every gate; `run.paused_gate_class(rw,
 step_path)` resolves the paused gate's class (record path → definition path) and
