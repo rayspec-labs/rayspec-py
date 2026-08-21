@@ -277,9 +277,9 @@ Findings, worst first, each with where it is, the evidence, and what to do about
 | `shell-install` | medium | the step installs code it did not bring with it |
 | `shell-credentials` | medium | `gh auth`, `docker login`, `aws configure`, … |
 | `python-process` | medium | a `python:` body shells out, so what it runs cannot be read off the workflow |
-| `no-isolation` | medium | `isolation: none` — steps run in the project directory itself |
 | `reject-ignored` | medium | a gate with `on_reject: continue` — rejecting it does not stop the run |
 | `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](runs-and-resume.md#approval-classes) holds shut |
+| `no-isolation` | low | `isolation: none` — steps run in the project directory itself, not in a worktree |
 | `waivable-gate` | low | a gate `--yes` approves — the policy does not mark its class `allow_yes: false` |
 
 A gate whose class the policy marks `allow_yes: false` is *not* reported: it is a real gate.

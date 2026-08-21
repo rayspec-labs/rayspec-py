@@ -83,7 +83,7 @@ _BODY_RULES: Final[tuple[_Rule, ...]] = (
     _rule(
         "shell-pipe-to-shell",
         "high",
-        r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|ksh|python[0-9.]*)\b",
+        r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|ksh|python[0-9.]*)\b(?!\s+-[cm]\b)",
         "code downloaded at run time is executed; fetch it to a file, check it, then run it",
     ),
     _rule(
@@ -126,7 +126,9 @@ _BODY_RULES: Final[tuple[_Rule, ...]] = (
         "outside-workspace",
         "high",
         r"(?:^|\s)~/|\$HOME\b|\bPath\.home\(\)|\bos\.path\.expanduser\b"
-        r"|(?:>>?|\bcd)\s+/(?:etc|usr|var|bin|opt|Library|System)\b",
+        r"|\bcd\s+/(?:etc|usr|var|bin|opt|Library|System)\b"
+        # an absolute redirect target, but not the two every script writes to
+        r"|(?:^|\s)>>?\s*/(?!dev/|tmp/)",
         "the step reads or writes outside the workspace, so worktree isolation does not contain "
         "it; use a path relative to the step's working directory",
     ),
@@ -278,7 +280,7 @@ def _gate_findings(path: str, step: ApproveStep, classes: ApprovalClasses) -> It
 def _workflow_findings(rw: ResolvedWorkflow) -> Iterator[Finding]:
     if rw.workflow.isolation == "none":
         yield Finding(
-            severity="medium",
+            severity="low",
             category="no-isolation",
             where=rw.workflow.name,
             detail="isolation: none",

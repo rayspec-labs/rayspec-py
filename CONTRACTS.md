@@ -2258,8 +2258,8 @@ Bodies are matched as WRITTEN (templates unrendered), so a command assembled at 
 seen; the report states what a workflow declares. Categories: `agent-access`, `mcp-command`,
 `shell-pipe-to-shell`, `shell-push`, `shell-force`, `shell-delete`, `shell-publish`,
 `shell-privilege`, `outside-workspace` (high); `mcp-remote`, `shell-network`, `shell-install`,
-`shell-credentials`, `python-process`, `no-isolation`, `reject-ignored`, `self-approving-gate`
-(medium); `waivable-gate` (low). A gate whose class the policy holds shut is not reported.
+`shell-credentials`, `python-process`, `reject-ignored`, `self-approving-gate` (medium);
+`no-isolation`, `waivable-gate` (low). A gate whose class the policy holds shut is not reported.
 `rayspec plan --risk` renders it (`plan.print_risk`) and adds `risk: [...]` to `--json`; it never
 changes the exit code, and `--risk` with `--render` is a usage error.
 
