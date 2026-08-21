@@ -53,6 +53,7 @@ from rayspec.engine.context import (
 from rayspec.engine.errors import RunPaused, RunStopped
 from rayspec.events.model import EventType
 from rayspec.schema import ApproveStep, StepModel, StepStatus
+from rayspec.schema.steps import ApproveSpec
 from rayspec.store.model import Decision, ErrorInfo, PauseInfo, StepRecord
 from rayspec.templating import TemplateRenderError
 
@@ -147,9 +148,26 @@ async def run_approve(
         by = decision.by
     else:
         record.attempts += 1
-        automatic = await _automatic(step, scope, ctx, record, classes)
-        if isinstance(automatic, StepOutcome):  # auto_if did not evaluate
-            return automatic
+        automatic: str | None = None
+        if classes.may_approve_automatically(class_name):
+            automatic = automatic_by(
+                classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run
+            )
+            if automatic is None and spec.auto_if is not None:
+                try:
+                    if ctx.engine.eval_bool(spec.auto_if, ctx.template_context(scope)):
+                        automatic = BY_AUTO_IF
+                except TemplateRenderError as exc:
+                    # fail closed: a condition nobody can evaluate does not open a gate
+                    record.status = StepStatus.FAILED
+                    record.ok = False
+                    record.error = error_info(exc, type_="render")
+                    return StepOutcome(record=record)
+        else:
+            # every automatic path this invocation asked for is refused as a whole — and
+            # `auto_if` was not even evaluated, which is what makes "an expression can never
+            # escalate a gate" a property of the code rather than of the expression
+            await _warn_refused(ctx, spec, classes, path)
         if automatic is not None:
             answer = ApprovalAnswer(True, "")
             by = automatic
@@ -191,45 +209,20 @@ async def run_approve(
     return outcome
 
 
-async def _automatic(
-    step: ApproveStep,
-    scope: ExecScope,
-    ctx: RunContext,
-    record: StepRecord,
-    classes: ApprovalClasses,
-) -> str | StepOutcome | None:
-    """The ``decision.by`` of an automatic approval this gate's class permits.
-
-    ``None`` means "ask a human"; a :class:`StepOutcome` means ``auto_if`` could not be
-    evaluated and the gate has failed. Every automatic path this invocation asked for is
-    refused as a whole when the class forbids automatic approval — and ``auto_if`` is then not
-    evaluated at all, which is what makes "an expression can never escalate a gate" a property
-    of the code rather than of the expression.
-    """
-    spec = step.approve
+async def _warn_refused(
+    ctx: RunContext, spec: ApproveSpec, classes: ApprovalClasses, path: str
+) -> None:
+    """Name the automatic approval this invocation asked for and the rule that refused it."""
     class_name = spec.class_
-    path = record.path
-    blanket = automatic_by(classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run)
-    if not classes.may_approve_automatically(class_name):
-        waiver = blanket or (BY_AUTO_IF if spec.auto_if is not None else None)
-        if waiver is not None:
-            rules = classes.rules_for(class_name)
-            await ctx.warn(
-                waiver_refused(class_name, rules, waiver=waiver, step_path=path), step_path=path
-            )
-        return None
-    if blanket is not None:
-        return blanket
-    if spec.auto_if is None:
-        return None
-    try:
-        approved = ctx.engine.eval_bool(spec.auto_if, ctx.template_context(scope))
-    except TemplateRenderError as exc:
-        record.status = StepStatus.FAILED
-        record.ok = False
-        record.error = error_info(exc, type_="render")
-        return StepOutcome(record=record)
-    return BY_AUTO_IF if approved else None
+    waiver = automatic_by(
+        classes, class_name, yes=ctx.options.yes, dry_run=ctx.options.dry_run
+    ) or (BY_AUTO_IF if spec.auto_if is not None else None)
+    if waiver is None:
+        return  # nothing was waived: the gate would have asked anyway
+    await ctx.warn(
+        waiver_refused(class_name, classes.rules_for(class_name), waiver=waiver, step_path=path),
+        step_path=path,
+    )
 
 
 async def _ask(
