@@ -209,3 +209,27 @@ steps:
     )
     assert report.ok
     assert "web" in _request_for(rw).tools.deny
+
+
+def test_a_workspace_key_warns_that_nothing_enforces_it(tree: Tree) -> None:
+    """The change guard is a library in this build; a policy key that does nothing must say so."""
+    tree.policy("workspace:\n  protected_paths: ['.github/**']\n  max_changed_files: 2\n")
+    _, report = validated(tree, wf())
+    assert report.ok, report.errors
+    joined = "\n".join(report.warnings)
+    assert "the change guard is not run by this build" in joined
+    assert ".rayspec/policy.yaml:" in joined
+
+
+def test_the_workspace_warning_is_emitted_once_for_the_whole_run(tree: Tree) -> None:
+    tree.policy("workspace:\n  protected_paths: ['a/**', 'b/**']\n")
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - {id: one, agent: {provider: claude}, prompt: hello}
+  - {id: two, agent: {provider: claude}, prompt: hello}
+""",
+    )
+    assert sum("change guard is not run" in w for w in report.warnings) == 1

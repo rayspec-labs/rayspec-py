@@ -202,6 +202,31 @@ class EffectivePolicy:
         """The layers denying the tool entry ``entry`` (empty = allowed)."""
         return self.denied_tools().get(entry, ())
 
+    # -- what any layer restricts at all ------------------------------------------------------
+
+    def control_sources(self) -> dict[str, tuple[PolicySource, ...]]:
+        """Policy key → the layers that restrict it, for every key any layer has an opinion on.
+
+        Used where the *presence* of a restriction matters rather than the value: an escape hatch
+        that would undo ``tools.deny`` is only worth refusing when some layer actually denies a
+        tool. Keys are spelled the way the file spells them (``tools.deny``, ``access.max``,
+        ``models.deny``).
+        """
+        out: dict[str, list[PolicySource]] = {}
+        for layer in self.layers:
+            policy = layer.policy
+            for index, entry in enumerate(policy.tools.deny):
+                out.setdefault("tools.deny", []).append(layer.source(entry, "tools", "deny", index))
+            for index, pattern in enumerate(policy.models.deny):
+                out.setdefault("models.deny", []).append(
+                    layer.source(pattern, "models", "deny", index)
+                )
+            if policy.access.max is not None:
+                out.setdefault("access.max", []).append(
+                    layer.source(policy.access.max, "access", "max")
+                )
+        return {key: tuple(sources) for key, sources in out.items()}
+
     # -- mcp ----------------------------------------------------------------------------------
 
     def allowed_mcp_servers(self) -> frozenset[str] | None:
@@ -232,6 +257,15 @@ class EffectivePolicy:
             max_changed_files=self._min_cap("max_changed_files"),
             max_changed_lines=self._min_cap("max_changed_lines"),
         )
+
+    def workspace_sources(self) -> tuple[PolicySource, ...]:
+        """Every layer line that configures the change guard (empty when no layer does)."""
+        guard = self.change_guard()
+        sources = [source for _, source in guard.protected_paths]
+        for cap in (guard.max_changed_files, guard.max_changed_lines):
+            if cap is not None:
+                sources.extend(cap[1])
+        return tuple(sources)
 
     # -- trust --------------------------------------------------------------------------------
 

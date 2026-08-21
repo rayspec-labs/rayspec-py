@@ -18,6 +18,7 @@ from rayspec.policy.apply import (
 )
 from rayspec.policy.enforce import (
     COMMAND_POLICY_CAPABILITY,
+    POLICY_CONTROLLED_OPTIONS,
     PolicyProblem,
     PolicyReport,
     check_agent_controls,
@@ -60,6 +61,7 @@ __all__ = [
     "ACCESS_ORDER",
     "COMMAND_POLICY_CAPABILITY",
     "LAYER_NAMES",
+    "POLICY_CONTROLLED_OPTIONS",
     "POLICY_ENV",
     "POLICY_FILENAME",
     "TRUSTED_FILENAME",

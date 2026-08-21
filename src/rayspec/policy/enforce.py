@@ -17,7 +17,7 @@ Two rules shape every message here:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -35,6 +35,27 @@ COMMAND_POLICY_CAPABILITY = "command_policy"
 #: Neutral tool groups (mirrors ``providers.base.TOOL_GROUPS``; duplicated so this package keeps
 #: its "no provider imports" boundary).
 TOOL_GROUPS: frozenset[str] = frozenset({"read", "edit", "shell", "web", "agent", "mcp"})
+
+#: ``provider_options`` key paths that an adapter applies straight over a field policy controls,
+#: keyed by the policy key and then by provider id (a path is a key path inside that provider's
+#: own option block). ``provider_options`` is a raw pass-through: the adapter sets the SDK field
+#: from it *after* rayspec computed that field, so an agent naming one of these keys would undo
+#: the policy from inside the workflow the policy governs. Refusing it at load time is what keeps
+#: a policy key from being a control that the party it constrains can silently remove.
+POLICY_CONTROLLED_OPTIONS: Mapping[str, Mapping[str, tuple[tuple[str, ...], ...]]] = {
+    "tools.deny": {
+        "claude": (("tools",), ("allowed_tools",), ("disallowed_tools",), ("permission_mode",)),
+        "codex": (("config", "tools"),),
+    },
+    "access.max": {
+        "claude": (("permission_mode",),),
+        "codex": (("config", "sandbox_mode"),),
+    },
+    "models.deny": {
+        "claude": (("model",),),
+        "codex": (("model",), ("config", "model")),
+    },
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +208,9 @@ def check_policy(
     if effective.is_empty:
         return report
     _check_trust(resolved, effective, trusted, report)
+    _check_workspace(effective, report)
+    denied = effective.denied_tools()  # once per pass, not once per agent
+    controls = effective.control_sources()
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
         caps = None if capabilities_for is None else capabilities_for(agent.provider)
@@ -194,8 +218,69 @@ def check_policy(
         _check_model(agent, effective, report)
         _check_access(agent, effective, report)
         _check_mcp(agent, effective, report)
-        _check_tools(key, agent, effective, report, caps)
+        _check_tools(key, agent, denied, report, caps)
+        _check_provider_options(agent, controls, report)
     return report
+
+
+def _check_workspace(effective: EffectivePolicy, report: PolicyReport) -> None:
+    """``workspace:`` is recorded but enforced by nothing in this build — say so, once.
+
+    The change guard ships as a library (:mod:`rayspec.workspace.guard`) and the policy key that
+    configures it is parsed and merged, but no executor runs it yet. A policy key that silently
+    does nothing is worse than a missing one, so every run that sets one gets told.
+    """
+    sources = effective.workspace_sources()
+    if not sources:
+        return
+    report.warnings.append(
+        PolicyProblem(
+            where="workspace",
+            message=(
+                "the change guard is not run by this build — protected_paths and "
+                "max_changed_files/max_changed_lines are recorded but nothing enforces them "
+                f"({sources_text(sources)})"
+            ),
+        )
+    )
+
+
+def _names(options: Mapping[str, object], path: Sequence[str]) -> bool:
+    """Whether ``options`` sets the key path ``path`` (``("config", "tools")``)."""
+    current: object = options
+    for key in path:
+        if not isinstance(current, Mapping) or key not in current:
+            return False
+        current = current[key]
+    return True
+
+
+def _check_provider_options(
+    agent: ResolvedAgent,
+    controls: Mapping[str, tuple[PolicySource, ...]],
+    report: PolicyReport,
+) -> None:
+    """Refuse an agent whose ``provider_options`` would overwrite a field policy controls."""
+    options = agent.provider_options.get(agent.provider)
+    if not options or not controls:
+        return
+    hits: dict[tuple[str, ...], list[str]] = {}
+    for control in sorted(controls):
+        for path in POLICY_CONTROLLED_OPTIONS.get(control, {}).get(agent.provider, ()):
+            if _names(options, path):
+                hits.setdefault(path, []).append(control)
+    for path, defeated in sorted(hits.items()):
+        sources = tuple(source for control in defeated for source in controls[control])
+        spelled = ".".join(("provider_options", agent.provider, *path))
+        report.errors.append(
+            _problem(
+                agent,
+                "provider_options",
+                f"{spelled} would undo {' and '.join(defeated)}: the {agent.provider} adapter "
+                f"applies provider_options over the value rayspec computed "
+                f"({sources_text(sources)}); remove that key, or drop the policy restriction",
+            )
+        )
 
 
 def _check_trust(
@@ -320,11 +405,10 @@ def _check_mcp(agent: ResolvedAgent, effective: EffectivePolicy, report: PolicyR
 def _check_tools(
     key: str,
     agent: ResolvedAgent,
-    effective: EffectivePolicy,
+    denied: Mapping[str, tuple[PolicySource, ...]],
     report: PolicyReport,
     caps: ProviderCapabilities | None,
 ) -> None:
-    denied = effective.denied_tools()
     if not denied:
         return
     for entry in agent.tools.allow:
@@ -366,6 +450,7 @@ def _entries(sources: Sequence[PolicySource]) -> str:
 
 __all__ = [
     "COMMAND_POLICY_CAPABILITY",
+    "POLICY_CONTROLLED_OPTIONS",
     "TOOL_GROUPS",
     "PolicyProblem",
     "PolicyReport",
