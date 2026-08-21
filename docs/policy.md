@@ -133,45 +133,88 @@ Where the resolved provider cannot express a denial — the Codex adapter only u
 `deny: [web]` — nothing is folded in and `rayspec validate` warns that the restriction is
 advisory on that provider. See [Honest enforcement](#honest-enforcement) below.
 
-### `provider_options` cannot remove a control
+### `provider_options` is an allow-list while a control is in force
 
 A control is only real if the party it constrains cannot remove it. An agent's `provider_options:`
-block is handed to the adapter as-is, so without care four lines of YAML *inside the very workflow
-a policy governs* would hand the denied tools, the access level, a denied model or an excluded MCP
-server straight back. Two mechanisms stop that, and both are needed.
+block is handed to the adapter *over* the options rayspec computed, so without care a few lines of
+YAML **inside the very workflow a policy governs** hand the denied tools, the access level, a
+denied model or an excluded MCP server straight back.
 
-**The adapter never lets a raw option replace a value rayspec computed.** Every field the adapter
-derives from an agent's neutral fields — `tools`, `allowed_tools`, `disallowed_tools`,
-`permission_mode`, `model`, `system_prompt`, `setting_sources`, `strict_mcp_config`, the limits —
-is adapter-owned: naming it under `provider_options` is ignored, with a warning on the run. The
-Codex adapter does the same for the `config` keys it computes (`model`, `sandbox_mode`,
-`approval_policy`, `web_search`, `tools.web_search`). The rule is mechanical, not a list of the
-dangerous ones: if `build_options` sets it, `provider_options` cannot. Change it through the
-neutral field, which is the field policy and code review both look at.
+**A key rayspec cannot reason about is refused, rather than passed through.** That is the whole
+rule, and the default is the point. Listing the dangerous keys cannot work: Claude's `extra_args`
+re-emits *any* CLI flag, appended after the ones rayspec computed, where the last one wins — so
+`extra_args: {"permission-mode": bypassPermissions}` is `--permission-mode dontAsk … --permission-mode
+bypassPermissions`. `settings` carries a whole permissions document. `hooks`, `sandbox`, `plugins`,
+`add_dirs`, `can_use_tool` each have their own route, and the SDKs grow fields between releases.
 
-Two keys are deliberately *merged* rather than replaced, because adding to what rayspec computed
-is a real need: `env` and `mcp_servers` (`config.mcp_servers` on Codex). rayspec's own entries win
-on a name collision.
+So while **any** control governs an agent — a `policy.yaml` key, or one the agent imposes on
+itself with `network: off` — every key of its own provider's block has to be one rayspec has
+written down the effect of. Anything else is a load-time error that names the key, the control, the
+file and line that imposed it, and the keys that *are* permitted:
 
-**Policy checks the merged keys, and the workflow's own controls too.** While any control is in
-force, naming a `provider_options` key that would undo it is a load-time error quoting both the
-option and the line that imposed the control:
+```
+steps.review.agent.provider_options: provider_options.claude.extra_args is refused while
+access.max (.rayspec/policy.yaml:2) is in force: the claude adapter applies provider_options over
+the options rayspec computed, and rayspec cannot say whether this key widens what that control
+narrowed — under a control only the keys it has reasoned about pass (env, load_timeout_ms,
+max_buffer_size, max_thinking_tokens, mcp_servers, user). Remove the key, or drop the control it
+could undo
+```
+
+An agent that **no** control applies to is untouched: the escape hatch is still an escape hatch
+when nothing is being escaped. `network: off` is a *workflow* control rather than a policy key, so
+an agent that sets it is governed with no policy file at all — the common case, and the case where
+an unprotected control does the most damage.
+
+The keys that pass, and why:
+
+| Provider | Key | Why it is safe |
+| --- | --- | --- |
+| claude | `env` | extra environment variables, merged **under** rayspec's own — an added variable cannot displace one rayspec set |
+| claude | `mcp_servers` | extra MCP servers, merged under the agent's `mcp:` block; checked server by server (below) |
+| claude | `max_thinking_tokens` | a ceiling on thinking — it narrows a turn, never widens it |
+| claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI |
+| claude | `user` | an opaque end-user id forwarded to the API |
+| codex | `config.mcp_servers` | as above, checked server by server |
+| codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; see below |
+| codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
+| codex | `usage_baseline` | token counters carried over a resumed thread; accounting only |
+
+**A control that blocks the permitted case is its own defect** — it teaches people to switch the
+control off. So the two merged keys are checked by *value*, not refused wholesale: under
+`mcp.allow_servers: [github]` an agent may still add `github` through
+`provider_options.claude.mcp_servers`, and only a server the policy excludes is named:
 
 ```yaml
 provider_options:
   claude:
-    allowed_tools: [Bash, WebSearch]     # refused while a layer sets tools.deny
-    permission_mode: bypassPermissions   # refused while a layer sets tools.deny or access.max
-    model: claude-opus-4-1               # refused while a layer sets models.deny
-    mcp_servers: {evil: {...}}           # refused while a layer sets mcp.allow_servers
-    disallowed_tools: []                 # refused on an agent with network: off
+    mcp_servers:
+      github: {type: stdio, command: github-mcp-server}   # allowed — github is on the list
+      evil: {type: stdio, command: /bin/sh}               # refused, by name
 ```
 
-The last line is the one worth dwelling on: `network: off` is a *workflow* control, not a policy
-key, so it is checked with no policy file at all — which is the common case, and the case where an
-unprotected control does the most damage. The table the check is derived from
-(`POLICY_CONTROLLED_OPTIONS` in `policy/enforce.py`) has one entry per control and covers both
-kinds; a control added without an entry there is an escape hatch waiting to be found.
+Codex's `approval_mode` is guarded the same way. `deny_all` passes anywhere; `auto_review` answers
+the agent's sandbox escalation requests *for* it, so it is refused under `access.max` or
+`network: off` — the two controls it would grant from inside.
+
+**Everything else the adapter already refused, it still refuses.** Every field an adapter derives
+from an agent's neutral fields — `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`,
+`model`, `system_prompt`, `setting_sources`, `strict_mcp_config`, the limits, and on Codex the
+`config` keys `model`, `sandbox_mode`, `approval_policy`, `web_search`, `tools.web_search` — is
+adapter-owned and ignored with a warning even without a policy. The rule there is mechanical: if
+`build_options` sets it, `provider_options` cannot. Change it through the neutral field, which is
+the field policy and code review both look at.
+
+**The check reads the block the adapter will act on.** Both adapters and this check narrow
+`provider_options` with the same function, because a check that walks one shape while an adapter
+accepts two leaves the shape it does not walk unguarded — `provider_options.codex.codex.config`
+is a real spelling the adapter honours, and it is checked as the same block.
+
+A provider from a [plugin](extending.md) has no allow-list yet, so under a control its
+`provider_options` block is refused whole. That is the same fail-closed default applied to a
+provider rayspec knows nothing about; run such an agent without a policy, or keep the knob in
+`config.yaml` under `providers.<id>`, which belongs to the machine owner rather than to the
+workflow.
 
 ## The worktree change guard
 
@@ -289,7 +332,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; policy refuses keys that would undo a control | same, for the `config` keys the adapter computes |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env`, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `approval_mode`, `ephemeral`, `usage_baseline` |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the

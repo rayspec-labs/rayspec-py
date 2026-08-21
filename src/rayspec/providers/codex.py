@@ -125,6 +125,7 @@ from rayspec.providers.base import (
 )
 from rayspec.providers.capabilities import CODEX_CAPABILITIES
 from rayspec.providers.pricing import PriceTable
+from rayspec.schema import provider_option_block
 
 log = logging.getLogger("rayspec.providers.codex")
 
@@ -150,7 +151,10 @@ _SANDBOX: Mapping[AccessLevel, Sandbox] = {
 #: ``network: off`` had switched off, raise its own sandbox or swap its own model. The
 #: equivalent for the Claude adapter is :data:`rayspec.providers.claude.ADAPTER_OWNED_OPTIONS`.
 #: ``mcp_servers`` is deliberately absent: it is MERGED under the request's own servers rather
-#: than replacing them, and ``mcp.allow_servers`` is what checks it (at load time).
+#: than replacing them, and ``mcp.allow_servers`` is what checks it (at load time, server by
+#: server, so the server a policy ALLOWS may still be added here). Every other ``config`` key —
+#: ``sandbox_workspace_write`` included — is refused at load time once a control governs the
+#: agent: see :data:`rayspec.policy.ALLOWED_PROVIDER_OPTIONS`.
 #: ``providers.codex.config`` in ``config.yaml`` is unaffected — that belongs to the machine
 #: owner, not to the workflow.
 ADAPTER_OWNED_CONFIG: tuple[tuple[str, ...], ...] = (
@@ -607,12 +611,13 @@ class CodexProvider:
 
     @staticmethod
     def _options(req: AgentRequest) -> Mapping[str, Any]:
-        """``provider_options`` narrowed to codex (accepts ``{codex: {...}}`` or the inner map)."""
-        opts = req.provider_options or {}
-        inner = opts.get("codex")
-        if isinstance(inner, Mapping):
-            return inner
-        return opts
+        """``provider_options`` narrowed to codex (accepts ``{codex: {...}}`` or the inner map).
+
+        The narrowing itself is :func:`rayspec.schema.provider_option_block`, shared with the
+        load-time check in :mod:`rayspec.policy`, so the block this adapter acts on and the block
+        that check inspects are the same object by construction.
+        """
+        return provider_option_block("codex", req.provider_options)
 
     def _approval_mode(self, opts: Mapping[str, Any]) -> ApprovalMode:
         raw = opts.get("approval_mode", self.approval_mode)

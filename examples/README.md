@@ -170,7 +170,7 @@ named example must back at least one token of its row (comment-only YAML lines d
 | `tools.deny` | `fix_issue`, `pr_review`, `unsupported_demo` | `[web]` works on Codex too |
 | `thinking` | `pr_review`, `dogfood` | |
 | `mcp` | `pr_review` | GitHub MCP over stdio |
-| `provider_options` | `pr_review`, `dogfood` | `claude.setting_sources`, `codex.config` |
+| `provider_options` | `pr_review`, `dogfood` | `claude.max_thinking_tokens`, `codex.config` |
 | `agent: {extends: …}` | `pr_review` | `judge` |
 | inline agent mapping | `triage_fanout` | `classify` |
 | named agents in `.rayspec/agents/` | `pr_review`, `dogfood` | |

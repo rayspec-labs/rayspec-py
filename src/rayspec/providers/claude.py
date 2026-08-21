@@ -91,6 +91,7 @@ from rayspec.providers.base import (
     Usage,
 )
 from rayspec.providers.capabilities import CLAUDE_CAPABILITIES
+from rayspec.schema import provider_option_block
 
 #: ``claude_agent_sdk.__version__`` (re-exported for ``rayspec doctor``).
 SDK_VERSION: str = claude_agent_sdk.__version__
@@ -178,8 +179,10 @@ ADAPTER_OWNED_OPTIONS: frozenset[str] = frozenset(
 #: Dict-valued ``provider_options`` merged *under* the computed value instead of replacing it.
 #: These two are extension points on purpose: an extra environment variable or an extra MCP
 #: server adds to what rayspec computed rather than replacing it, and rayspec's own entries win
-#: on a name collision. ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at
-#: load time — see :data:`rayspec.policy.POLICY_CONTROLLED_OPTIONS`.
+#: on a name collision. ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at load
+#: time, server by server — see :data:`rayspec.policy.ALLOWED_PROVIDER_OPTIONS`, which is also
+#: what refuses every field of this dataclass that rayspec has NOT reasoned about (``extra_args``
+#: re-emits any CLI flag after the ones computed here) once a control governs the agent.
 MERGED_OPTIONS: frozenset[str] = frozenset({"env", "mcp_servers"})
 #: Valid ``providers.claude.setting_sources`` entries.
 VALID_SETTING_SOURCES: frozenset[str] = frozenset({"user", "project", "local"})
@@ -326,7 +329,9 @@ def build_options(
             warnings.append(f"effort {req.effort!r} is not a Claude effort level; ignored")
             effort = None
 
-    overrides = dict(req.provider_options)
+    # the same narrowing the codex adapter and the load-time check apply, so all three act
+    # on one block (rayspec.schema.provider_option_block)
+    overrides = dict(provider_option_block("claude", req.provider_options))
     env: dict[str, str] = {
         "CLAUDE_AGENT_SDK_CLIENT_APP": f"rayspec/{__version__}",
         **provider.settings_env,

@@ -9,6 +9,7 @@ from rayspec.schema.agent import (
     NetworkModeName,
     ToolsSpec,
     parse_agent_def,
+    provider_option_block,
 )
 from rayspec.schema.base import StrictModel
 from rayspec.schema.common import (
@@ -97,4 +98,5 @@ __all__ = [
     "parse_duration",
     "parse_step",
     "parse_workflow",
+    "provider_option_block",
 ]

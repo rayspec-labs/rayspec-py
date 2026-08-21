@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -127,6 +128,28 @@ class AgentOverride(AgentDef):
         return "agent override"
 
 
+def provider_option_block(provider: str, options: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """The block one provider adapter reads out of a ``provider_options`` value.
+
+    ``provider_options:`` is keyed by provider id and the engine narrows it to the running
+    provider's block before an adapter sees it — but a request built by hand may carry either
+    shape, so both are understood: a block whose only key is the provider id and whose value is a
+    mapping unwraps to that inner mapping; anything else is the block itself.
+
+    It lives next to the field, in the one package the adapters and :mod:`rayspec.policy` both
+    import, because those two MUST narrow a block identically. A check that walks one shape while
+    an adapter accepts two leaves the shape the check does not walk as an unguarded pass-through:
+    that is exactly how ``provider_options.codex.codex.config`` reached a thread unexamined. One
+    function, and no room for a nesting variant to diverge.
+    """
+    if not options:
+        return {}
+    inner = options.get(provider)
+    if len(options) == 1 and isinstance(inner, Mapping):
+        return inner
+    return options
+
+
 def parse_agent_def(data: Any, *, source: str | None = None) -> AgentDef:
     return AgentDef.parse(data, source=source)
 
@@ -140,4 +163,5 @@ __all__ = [
     "NetworkModeName",
     "ToolsSpec",
     "parse_agent_def",
+    "provider_option_block",
 ]

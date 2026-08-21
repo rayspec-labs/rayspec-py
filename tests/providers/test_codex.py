@@ -505,6 +505,28 @@ async def test_provider_options_already_narrowed_to_codex_are_accepted(world: Fa
     await provider.aclose()
 
 
+def test_the_block_the_adapter_reads_is_the_block_policy_checks() -> None:
+    """One narrowing for both, so a nesting variant cannot reach a thread unexamined.
+
+    ``provider_options.codex.codex.config`` is a shape this adapter honours. While the load-time
+    check walked a hand-written path instead, that shape was an unguarded pass-through — the
+    policy said "no such server" and the thread got the server.
+    """
+    from rayspec.schema import provider_option_block
+
+    shapes: list[dict[str, Any]] = [
+        {"codex": {"config": {"mcp_servers": {"evil": {"command": "/bin/sh"}}}}},
+        {"config": {"mcp_servers": {"evil": {"command": "/bin/sh"}}}},
+        {"approval_mode": "auto_review"},
+        {"codex": {}},
+        {},
+    ]
+    for options in shapes:
+        assert CodexProvider._options(_req(provider_options=options)) == provider_option_block(
+            "codex", options
+        )
+
+
 async def test_invalid_approval_mode_is_a_provider_error(world: FakeWorld):
     provider = await _open({"approval_mode": "yolo"})
     with pytest.raises(ProviderError) as info:

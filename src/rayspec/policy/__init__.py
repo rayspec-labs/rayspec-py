@@ -17,8 +17,11 @@ from rayspec.policy.apply import (
     problem_line,
 )
 from rayspec.policy.enforce import (
+    ALLOWED_PROVIDER_OPTIONS,
     COMMAND_POLICY_CAPABILITY,
-    POLICY_CONTROLLED_OPTIONS,
+    SAFE_APPROVAL_MODE,
+    AllowedOption,
+    ControlsInForce,
     PolicyProblem,
     PolicyReport,
     agent_control_sources,
@@ -62,14 +65,17 @@ from rayspec.policy.trust import (
 
 __all__ = [
     "ACCESS_ORDER",
+    "ALLOWED_PROVIDER_OPTIONS",
     "COMMAND_POLICY_CAPABILITY",
     "LAYER_NAMES",
-    "POLICY_CONTROLLED_OPTIONS",
     "POLICY_ENV",
     "POLICY_FILENAME",
+    "SAFE_APPROVAL_MODE",
     "TRUSTED_FILENAME",
     "AccessPolicy",
+    "AllowedOption",
     "ChangeGuard",
+    "ControlsInForce",
     "EffectivePolicy",
     "McpPolicy",
     "ModelsPolicy",

@@ -17,12 +17,13 @@ Two rules shape every message here:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rayspec.policy.layers import EffectivePolicy, PolicySource, sources_text
 from rayspec.policy.trust import TrustStore
+from rayspec.schema import provider_option_block
 
 if TYPE_CHECKING:  # type-only: importing the loader at runtime would close an import cycle
     from rayspec.loader.loader import ResolvedAgent, ResolvedWorkflow
@@ -36,45 +37,187 @@ COMMAND_POLICY_CAPABILITY = "command_policy"
 #: its "no provider imports" boundary).
 TOOL_GROUPS: frozenset[str] = frozenset({"read", "edit", "shell", "web", "agent", "mcp"})
 
-#: ``provider_options`` key paths that an adapter applies straight over a field a control
-#: computes, keyed by the control and then by provider id (a path is a key path inside that
-#: provider's own option block). ``provider_options`` is a raw pass-through: the adapter sets
-#: the SDK field from it *after* rayspec computed that field, so an agent naming one of these
-#: keys would undo the control from inside the workflow the control governs. Refusing it at load
-#: time is what keeps a control from being one the party it constrains can silently remove.
+#: ``provider_options.codex.approval_mode`` value that grants nothing: every sandbox escalation
+#: request the agent makes is refused. Any other value answers them on the agent's behalf.
+SAFE_APPROVAL_MODE = "deny_all"
+
+
+@dataclass(frozen=True, slots=True)
+class ControlsInForce:
+    """The controls governing one agent: which ones, and where each of them came from.
+
+    ``sources`` is keyed the way the policy file spells the key (``tools.deny``, ``access.max``)
+    plus the workflow's own controls (``network: off``), and carries the layer lines that impose
+    each one, so a refusal can always quote the file a person has to edit. ``effective`` is the
+    policy those layers came from, or ``None`` when the agent's own fields are the only controls
+    — a value-level check consults it and treats its absence as "that policy key restricts
+    nothing here".
+    """
+
+    sources: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
+    effective: EffectivePolicy | None = None
+
+    @property
+    def governed(self) -> bool:
+        """True when the agent is subject to any control at all."""
+        return bool(self.sources)
+
+    def named(self, keys: Iterable[str] | None = None) -> str:
+        """``access.max and network: off (.rayspec/policy.yaml:2, agents/a.yaml:4)``."""
+        chosen = sorted(set(self.sources) & set(keys)) if keys is not None else sorted(self.sources)
+        sources = [source for key in chosen for source in self.sources[key]]
+        where = sources_text(sources)
+        joined = " and ".join(chosen)
+        return f"{joined} ({where})" if where else joined
+
+    def mcp_denied(self, server: str) -> tuple[PolicySource, ...]:
+        """The layers whose ``mcp.allow_servers`` leaves ``server`` out."""
+        return () if self.effective is None else self.effective.mcp_denied(server)
+
+    def allowed_mcp_servers(self) -> str:
+        """The servers ``mcp.allow_servers`` does permit, for the "use one of these" half."""
+        allowed = None if self.effective is None else self.effective.allowed_mcp_servers()
+        return ", ".join(sorted(allowed or ())) or "(nothing)"
+
+    def tool_denied(self, entry: str) -> tuple[PolicySource, ...]:
+        """The layers whose ``tools.deny`` denies ``entry``."""
+        return () if self.effective is None else self.effective.tool_denied(entry)
+
+
+#: A value-level check on one allow-listed option: the parts of the requested value the controls
+#: refuse, each as ``(key path suffix, message)`` — empty meaning the request is permitted.
+OptionCheck = Callable[[object, ControlsInForce], tuple[tuple[str, str], ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class AllowedOption:
+    """One ``provider_options`` key path rayspec can state the effect of.
+
+    ``summary`` is that statement, in one line — the reasoning that earned the key its place on
+    the allow-list, kept next to the entry so the next reader can check it rather than trust it.
+    ``guarded_by`` names the controls whose value has to be consulted before the key is let
+    through and ``offenders`` performs that consultation; a key with neither is inert under every
+    control. A guard exists so the check can refuse the *value* a control refuses instead of the
+    key: refusing ``mcp_servers`` outright would block the server ``mcp.allow_servers`` allows,
+    and a control that blocks the permitted case teaches people to switch the control off.
+    """
+
+    summary: str
+    guarded_by: frozenset[str] = frozenset()
+    offenders: OptionCheck | None = None
+
+
+def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
+    """Each server the block would merge in, against ``mcp.allow_servers`` and ``tools.deny``.
+
+    Both adapters merge these under the agent's own servers, which is a real need — an extra
+    allowed server is exactly what the escape hatch is for. So the servers are checked one by
+    one and only the refused ones are named.
+    """
+    if not isinstance(value, Mapping):
+        return (
+            (
+                "",
+                "must be a mapping of server name -> config; policy cannot tell which servers "
+                "this would add",
+            ),
+        )
+    out: list[tuple[str, str]] = []
+    for name in sorted(str(key) for key in value):
+        sources = controls.mcp_denied(name)
+        if sources:
+            out.append(
+                (
+                    name,
+                    f"MCP server {name!r} is not allowed by policy: mcp.allow_servers = "
+                    f"{controls.allowed_mcp_servers()} ({sources_text(sources)}); use an allowed "
+                    "server or widen that layer",
+                )
+            )
+            continue
+        denied = controls.tool_denied(f"mcp:{name}") or controls.tool_denied("mcp")
+        if denied:
+            out.append(
+                (
+                    name,
+                    f"MCP server {name!r} is denied by policy: tools.deny "
+                    f"({sources_text(denied)}); remove the server or widen that layer",
+                )
+            )
+    return tuple(out)
+
+
+def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
+    """``auto_review`` grants the sandbox escalations the access control exists to withhold."""
+    if str(value) == SAFE_APPROVAL_MODE:
+        return ()
+    named = controls.named(("access.max", "network: off"))
+    return (
+        (
+            "",
+            f"{str(value)!r} answers the agent's sandbox escalation requests for "
+            f"it, granting from inside the workflow what {named} withholds; use "
+            f"approval_mode: {SAFE_APPROVAL_MODE} (the default), or drop that restriction",
+        ),
+    )
+
+
+#: ``provider_options`` key paths rayspec has REASONED ABOUT, per provider id and per key path
+#: inside that provider's own block. While any control governs an agent (see
+#: :func:`check_provider_options`) this is an ALLOW-list: a key that is not on it is refused at
+#: load time.
 #:
-#: This is the single table the check is derived from, and it covers BOTH kinds of control: the
-#: ``policy.yaml`` keys :meth:`EffectivePolicy.control_sources` reports, and the workflow's own
-#: security fields (:func:`agent_control_sources`) — those are unprotected by any policy file, so
-#: leaving them out was how ``network: off`` came to be defeatable with no policy at all. A new
-#: control belongs here on the day it is added; a key that restricts something and is missing
-#: from this table is an escape hatch waiting to be found.
-POLICY_CONTROLLED_OPTIONS: Mapping[str, Mapping[str, tuple[tuple[str, ...], ...]]] = {
-    "tools.deny": {
-        "claude": (("tools",), ("allowed_tools",), ("disallowed_tools",), ("permission_mode",)),
-        "codex": (("config", "tools"), ("config", "web_search")),
+#: The default matters more than the entries. ``provider_options`` is a raw pass-through that the
+#: adapters apply *over* the options rayspec computed, so the question every key raises is "could
+#: this widen what the control narrowed?" — and for a key rayspec has never looked at, the honest
+#: answer is "nobody knows". Enumerating the dangerous keys cannot work: ``extra_args`` alone
+#: re-emits ANY Claude CLI flag, after the ones rayspec computed, where last wins; ``settings``
+#: carries a whole permissions document; and the SDK grows fields between releases. Refusing the
+#: unknown and listing the understood inverts that: a new SDK field is covered on the day it
+#: ships, and the list only grows when someone can write down what a key does.
+#:
+#: A control-free agent is untouched — the escape hatch is still an escape hatch when nothing is
+#: being escaped. What turns the allow-list on is a control: a ``policy.yaml`` key
+#: (:meth:`EffectivePolicy.control_sources`) or one the agent imposes on itself
+#: (:func:`agent_control_sources`, ``network: off``).
+ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] = {
+    "claude": {
+        ("env",): AllowedOption(
+            "extra environment variables for the CLI subprocess, merged UNDER the ones rayspec "
+            "computed — an added variable cannot displace one rayspec set"
+        ),
+        ("mcp_servers",): AllowedOption(
+            "extra MCP servers, merged under the agent's own mcp: block",
+            guarded_by=frozenset({"mcp.allow_servers", "tools.deny"}),
+            offenders=_refused_mcp_servers,
+        ),
+        ("max_thinking_tokens",): AllowedOption(
+            "a ceiling on the tokens a turn may think for — it narrows a turn, never widens it"
+        ),
+        ("max_buffer_size",): AllowedOption(
+            "how much CLI stdout the transport buffers before it gives up"
+        ),
+        ("load_timeout_ms",): AllowedOption("how long to wait for the CLI process to come up"),
+        ("user",): AllowedOption("an opaque end-user id forwarded to the API"),
     },
-    "access.max": {
-        "claude": (("permission_mode",),),
-        "codex": (("config", "sandbox_mode"),),
-    },
-    "models.deny": {
-        "claude": (("model",),),
-        "codex": (("model",), ("config", "model")),
-    },
-    # both adapters MERGE provider_options servers into the computed set instead of replacing
-    # them, so an allow-list has to be checked against what is merged in, not only against
-    # `agent.mcp`. `strict_mcp_config: false` is the same hole by another route: it lets the
-    # Claude CLI pick up MCP servers from files rayspec never saw.
-    "mcp.allow_servers": {
-        "claude": (("mcp_servers",), ("strict_mcp_config",)),
-        "codex": (("config", "mcp_servers"),),
-    },
-    # a workflow field, not a policy key: `network: off` is folded into tools.deny and is
-    # therefore undone by exactly the options that undo a denied tool.
-    "network: off": {
-        "claude": (("tools",), ("allowed_tools",), ("disallowed_tools",)),
-        "codex": (("config", "tools"), ("config", "web_search")),
+    "codex": {
+        ("config", "mcp_servers"): AllowedOption(
+            "extra MCP servers, merged under the agent's own mcp: block",
+            guarded_by=frozenset({"mcp.allow_servers", "tools.deny"}),
+            offenders=_refused_mcp_servers,
+        ),
+        ("approval_mode",): AllowedOption(
+            "how a sandbox escalation request is answered: deny_all (the default) refuses every "
+            "one of them, auto_review grants them",
+            guarded_by=frozenset({"access.max", "network: off"}),
+            offenders=_refused_approval_mode,
+        ),
+        ("ephemeral",): AllowedOption(
+            "do not persist the thread — it withholds state, it grants nothing"
+        ),
+        ("usage_baseline",): AllowedOption(
+            "token counters carried over a resumed thread; accounting only"
+        ),
     },
 }
 
@@ -264,18 +407,30 @@ def agent_control_sources(agent: ResolvedAgent) -> dict[str, tuple[PolicySource,
 def check_provider_options(
     resolved: ResolvedWorkflow, effective: EffectivePolicy | None = None
 ) -> PolicyReport:
-    """Refuse every ``provider_options`` key that would undo a control in force.
+    """Read every governed agent's ``provider_options`` block as an ALLOW-list.
 
-    Runs whether or not a policy file exists, because :func:`agent_control_sources` contributes
-    controls the workflow sets on itself. Everything it knows comes from
-    :data:`POLICY_CONTROLLED_OPTIONS`, so protecting a new control is one table entry rather than
-    a new special case.
+    An agent is governed when any control applies to it: a ``policy.yaml`` key
+    (:meth:`EffectivePolicy.control_sources`) or one it imposes on itself
+    (:func:`agent_control_sources`, ``network: off``) — so this runs whether or not a policy file
+    exists, because a control a workflow sets on itself is still a control it must not be able to
+    shed. For such an agent every key of its own provider's block must appear in
+    :data:`ALLOWED_PROVIDER_OPTIONS`, and a key that does not is refused at load time.
+
+    An agent no control applies to is left exactly as it was: the escape hatch is still an escape
+    hatch when nothing is being escaped.
+
+    The block is narrowed with :func:`~rayspec.schema.provider_option_block` — the same function
+    the adapters narrow it with — so this check reads the block the adapter will act on rather
+    than a shape a hand-written path walk assumed.
     """
     report = PolicyReport()
     from_policy = {} if effective is None else effective.control_sources()
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
-        _check_provider_options(agent, {**from_policy, **agent_control_sources(agent)}, report)
+        controls = ControlsInForce(
+            sources={**from_policy, **agent_control_sources(agent)}, effective=effective
+        )
+        _check_provider_options(agent, controls, report)
     return report
 
 
@@ -301,42 +456,86 @@ def _check_workspace(effective: EffectivePolicy, report: PolicyReport) -> None:
     )
 
 
-def _names(options: Mapping[str, object], path: Sequence[str]) -> bool:
-    """Whether ``options`` sets the key path ``path`` (``("config", "tools")``)."""
-    current: object = options
-    for key in path:
-        if not isinstance(current, Mapping) or key not in current:
-            return False
-        current = current[key]
-    return True
+def _spelled(provider: str, path: Sequence[str]) -> str:
+    """``provider_options.codex.config.mcp_servers`` — a key path as a person writes it."""
+    return ".".join(("provider_options", provider, *path))
+
+
+def _permitted_here(provider: str) -> str:
+    """The keys of ``provider``'s allow-list, spelled inside its own block, comma-joined.
+
+    A refusal that does not say what IS allowed leaves switching the control off as the only
+    obvious way forward, so every refusal carries this.
+    """
+    allowed = ALLOWED_PROVIDER_OPTIONS.get(provider, {})
+    return ", ".join(sorted(".".join(path) for path in allowed)) or "(nothing)"
 
 
 def _check_provider_options(
+    agent: ResolvedAgent, controls: ControlsInForce, report: PolicyReport
+) -> None:
+    """Read one governed agent's own ``provider_options`` block against the allow-list."""
+    if not controls.governed:
+        return
+    block = provider_option_block(agent.provider, agent.provider_options.get(agent.provider))
+    if not block:
+        return
+    _walk_options(agent, block, (), controls, report)
+
+
+def _walk_options(
     agent: ResolvedAgent,
-    controls: Mapping[str, tuple[PolicySource, ...]],
+    block: Mapping[str, Any],
+    prefix: tuple[str, ...],
+    controls: ControlsInForce,
     report: PolicyReport,
 ) -> None:
-    """Refuse an agent whose ``provider_options`` would overwrite a field policy controls."""
-    options = agent.provider_options.get(agent.provider)
-    if not options or not controls:
-        return
-    hits: dict[tuple[str, ...], list[str]] = {}
-    for control in sorted(controls):
-        for path in POLICY_CONTROLLED_OPTIONS.get(control, {}).get(agent.provider, ()):
-            if _names(options, path):
-                hits.setdefault(path, []).append(control)
-    for path, defeated in sorted(hits.items()):
-        sources = tuple(source for control in defeated for source in controls[control])
-        spelled = ".".join(("provider_options", agent.provider, *path))
+    """Walk ``block``, refusing every key path the allow-list does not carry.
+
+    A key that is a *prefix* of an allow-listed path (``config`` on codex, which carries
+    ``config.mcp_servers``) is a namespace: the walk descends into it and judges its keys one by
+    one, so allowing one nested key never allows its siblings.
+    """
+    allowed = ALLOWED_PROVIDER_OPTIONS.get(agent.provider, {})
+    for key, value in sorted(block.items(), key=lambda item: str(item[0])):
+        path = (*prefix, str(key))
+        rule = allowed.get(path)
+        if rule is not None:
+            _check_option_value(agent, path, value, rule, controls=controls, report=report)
+            continue
+        nested = any(len(p) > len(path) and p[: len(path)] == path for p in allowed)
+        if nested and isinstance(value, Mapping):
+            _walk_options(agent, value, path, controls, report)
+            continue
         report.errors.append(
             _problem(
                 agent,
                 "provider_options",
-                f"{spelled} would undo {' and '.join(defeated)} — the {agent.provider} adapter "
-                f"applies provider_options over the value rayspec computed "
-                f"({sources_text(sources)}); remove that key, or drop the restriction it undoes",
+                f"{_spelled(agent.provider, path)} is refused while {controls.named()} "
+                f"{'is' if len(controls.sources) == 1 else 'are'} in force: the {agent.provider} "
+                "adapter applies provider_options over the options rayspec computed, and rayspec "
+                "cannot say whether this key widens what that control narrowed — under a control "
+                f"only the keys it has reasoned about pass ({_permitted_here(agent.provider)}). "
+                "Remove the key, or drop the control it could undo",
             )
         )
+
+
+def _check_option_value(
+    agent: ResolvedAgent,
+    path: tuple[str, ...],
+    value: object,
+    rule: AllowedOption,
+    *,
+    controls: ControlsInForce,
+    report: PolicyReport,
+) -> None:
+    """An allow-listed key: permitted outright, or permitted for the values its guard allows."""
+    if rule.offenders is None or not (rule.guarded_by & set(controls.sources)):
+        return
+    for suffix, message in rule.offenders(value, controls):
+        spelled = _spelled(agent.provider, (*path, suffix) if suffix else path)
+        report.errors.append(_problem(agent, "provider_options", f"{spelled}: {message}"))
 
 
 def _check_trust(
@@ -505,9 +704,13 @@ def _entries(sources: Sequence[PolicySource]) -> str:
 
 
 __all__ = [
+    "ALLOWED_PROVIDER_OPTIONS",
     "COMMAND_POLICY_CAPABILITY",
-    "POLICY_CONTROLLED_OPTIONS",
+    "SAFE_APPROVAL_MODE",
     "TOOL_GROUPS",
+    "AllowedOption",
+    "ControlsInForce",
+    "OptionCheck",
     "PolicyProblem",
     "PolicyReport",
     "agent_control_sources",

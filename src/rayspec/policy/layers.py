@@ -217,14 +217,19 @@ class EffectivePolicy:
     # -- what any layer restricts at all ------------------------------------------------------
 
     def control_sources(self) -> dict[str, tuple[PolicySource, ...]]:
-        """Policy key → the layers that restrict it, for every key any layer has an opinion on.
+        """Policy key → the layers that restrict it, for EVERY key any layer has an opinion on.
 
-        Used where the *presence* of a restriction matters rather than the value: an escape hatch
-        that would undo ``tools.deny`` is only worth refusing when some layer actually denies a
-        tool. Keys are spelled the way the file spells them (``tools.deny``, ``access.max``,
-        ``models.deny``, ``mcp.allow_servers``) and are the keys of
-        :data:`~rayspec.policy.enforce.POLICY_CONTROLLED_OPTIONS`: a key that restricts
-        something without appearing here is a control ``provider_options`` can remove.
+        Used where the *presence* of a restriction matters rather than its value: it is what
+        :func:`~rayspec.policy.enforce.check_provider_options` asks to learn whether an agent is
+        governed at all, and therefore whether its ``provider_options`` block is read as an
+        allow-list or waved through.
+
+        Every key a layer can set appears here, including the ones no ``provider_options`` key
+        could plausibly undo. That is deliberate: "is this run governed by a policy" has to be a
+        question about the file rather than about a list of interesting keys, or the answer goes
+        stale the day a key is added. Keys are spelled the way the file spells them
+        (``tools.deny``, ``access.max``, ``models.deny``, ``mcp.allow_servers``,
+        ``providers.allow``, ``trust.require``, ``workspace.*``).
         """
         out: dict[str, list[PolicySource]] = {}
         for layer in self.layers:
@@ -245,6 +250,24 @@ class EffectivePolicy:
                         ", ".join(policy.mcp.allow_servers) or "(nothing)", "mcp", "allow_servers"
                     )
                 )
+            if policy.providers.allow is not None:
+                out.setdefault("providers.allow", []).append(
+                    layer.source(
+                        ", ".join(policy.providers.allow) or "(nothing)", "providers", "allow"
+                    )
+                )
+            if policy.trust.require:
+                out.setdefault("trust.require", []).append(layer.source("true", "trust", "require"))
+            for index, pattern in enumerate(policy.workspace.protected_paths):
+                out.setdefault("workspace.protected_paths", []).append(
+                    layer.source(pattern, "workspace", "protected_paths", index)
+                )
+            for cap in ("max_changed_files", "max_changed_lines"):
+                value = getattr(policy.workspace, cap)
+                if value is not None:
+                    out.setdefault(f"workspace.{cap}", []).append(
+                        layer.source(value, "workspace", cap)
+                    )
         return {key: tuple(sources) for key, sources in out.items()}
 
     # -- mcp ----------------------------------------------------------------------------------
