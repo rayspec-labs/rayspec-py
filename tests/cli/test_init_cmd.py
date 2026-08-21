@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -12,7 +14,14 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.cli.commands import _loader_common as common
-from rayspec.cli.commands.init import SCAFFOLD_FILES, TEMPLATE_KINDS, scaffold
+from rayspec.cli.commands import init as init_mod
+from rayspec.cli.commands.init import (
+    SCAFFOLD_FILES,
+    TEMPLATE_KINDS,
+    example_files,
+    example_names,
+    scaffold,
+)
 from rayspec.loader import load_workflow, validate_workflow
 
 EXPECTED = {
@@ -307,3 +316,308 @@ def test_init_does_not_import_the_skill_command_module() -> None:
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+# --------------------------------------------------------------------------------------------------
+# `rayspec init --from <example>` — scaffold from a shipped example project
+# --------------------------------------------------------------------------------------------------
+
+
+def test_examples_are_reachable_from_the_package() -> None:
+    """The example corpus must be importable data, not a git-checkout-only directory: a
+    `uv tool install rayspec` user has no repository."""
+    names = example_names()
+    assert "hello_review" in names and "pr_review" in names
+    for name in names:
+        rels = [rel for rel, _ in example_files(name)]
+        assert any(rel.startswith(".rayspec/workflows/") for rel in rels), (name, rels)
+
+
+def test_wheel_ships_the_examples_and_no_local_state(tmp_path: Path) -> None:
+    """Build a wheel and look inside it.
+
+    The wheel is the only copy of the corpus a `uv tool install rayspec` user ever has, so it
+    must carry every example — and nothing else. A checkout that has been *used* also holds
+    local state next to the examples (a `.rayspec/.env` with a real token, `.rayspec/runs/`), and
+    a release is normally cut from such a checkout; a published wheel cannot be recalled, so the
+    build has to drop those files rather than trust the maintainer's tree to be clean.
+    """
+    repo = Path(__file__).resolve().parents[2]
+    stage = tmp_path / "repo"
+    stage.mkdir()
+    for rel in ("pyproject.toml", ".gitignore", "README.md", "LICENSE", "NOTICE"):
+        shutil.copy2(repo / rel, stage / rel)
+    shutil.copytree(repo / "src", stage / "src")
+    shutil.copytree(repo / "examples", stage / "examples")
+    example = stage / "examples" / "hello_review"
+    (example / ".env").write_text("GH_TOKEN=ghp_planted_by_the_test\n", encoding="utf-8")
+    (example / ".rayspec" / ".env").write_text(
+        "GH_TOKEN=ghp_planted_by_the_test\n", encoding="utf-8"
+    )
+    run_dir = example / ".rayspec" / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "record.json").write_text('{"run_id": "r1"}\n', encoding="utf-8")
+
+    from hatchling.builders.wheel import WheelBuilder  # the build backend, a dev dependency
+
+    wheels = list(WheelBuilder(str(stage)).build(directory=str(tmp_path / "dist")))
+    assert len(wheels) == 1, wheels
+    names = zipfile.ZipFile(wheels[0]).namelist()
+
+    assert "rayspec/cli/commands/init.py" in names  # the package itself is intact
+    assert "rayspec/examples/hello_review/.rayspec/workflows/hello_review.yaml" in names
+    for name in example_names():
+        assert any(n.startswith(f"rayspec/examples/{name}/.rayspec/") for n in names), name
+    leaked = [n for n in names if n.endswith(".env") or "/runs/" in n]
+    assert leaked == [], leaked
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_init_from_only_prints_validate_as_a_step_that_passes(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rayspec validate` is step one of a stranger's first five minutes, so it must either pass
+    or come with the reason it does not — one example refuses on purpose, and a red wall of
+    capability errors with no explanation reads as a broken install."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    printed = next(
+        line for line in res.output.splitlines() if line.strip().startswith("rayspec validate")
+    )
+    monkeypatch.chdir(target)
+    validated = CliRunner().invoke(app, ["validate"])
+    if validated.exit_code == 0:
+        assert "on purpose" not in printed, printed
+    else:
+        assert "on purpose" in printed, f"{printed}\n{validated.output}"
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_no_example_scenario_renders_a_secret_input(name: str) -> None:
+    """`-i NAME=VALUE` is the documented channel for a `secret: true` input, so a printed dry run
+    that rendered one would put the value on the terminal and in the shell history.
+
+    Every scenario of every example is checked, not just the one that happens to come first in
+    the file — otherwise the safety here is scenario ordering rather than code.
+    """
+    root = init_mod.examples_root()
+    assert root is not None
+    data = yaml.safe_load((root / name / "checks.yaml").read_text(encoding="utf-8"))
+    for case in data.get("checks") or []:
+        command = init_mod._dry_run_command(root, name, case)
+        if command is None:
+            continue
+        secrets = init_mod.secret_inputs(root, name, case.get("workflow"))
+        assert secrets is not None, (name, case.get("id"))
+        for key, value in (case.get("inputs") or {}).items():
+            assert f"-i {key}=" not in command or key not in secrets, (case.get("id"), command)
+            if key in secrets:
+                assert str(value) not in command, (case.get("id"), command)
+
+
+def test_the_webhook_example_still_prints_a_dry_run_without_its_secret() -> None:
+    """The example that has a secret input keeps a printed dry run — the scenario that supplies
+    the secret is skipped, not the whole example."""
+    root = init_mod.examples_root()
+    assert root is not None
+    data = yaml.safe_load((root / "notify_webhook" / "checks.yaml").read_text(encoding="utf-8"))
+    with_secret = next(c for c in data["checks"] if "webhook_url" in (c.get("inputs") or {}))
+    assert init_mod._dry_run_command(root, "notify_webhook", with_secret) is None
+    command = init_mod.example_dry_run("notify_webhook")
+    assert command is not None and "webhook_url" not in command
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_init_from_example_lands_a_working_project(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every shipped example scaffolds into an empty directory, and the dry run `init` printed
+    there runs green from that directory — no network, no credentials."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert (target / ".rayspec").is_dir()
+    assert (target / "README.md").is_file()
+    command = _printed_dry_run(res.output)
+    assert command[:1] == ["rayspec"], res.output
+    monkeypatch.chdir(target)
+    run = CliRunner().invoke(app, command[1:])
+    assert run.exit_code == 0, f"{command}\n{run.output}"
+
+
+def _printed_dry_run(output: str) -> list[str]:
+    """The `rayspec run … --dry-run …` line of the next-steps block, as argv."""
+    import shlex
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("rayspec run ") and "--dry-run" in stripped:
+            return shlex.split(stripped.split("#")[0].strip())
+    raise AssertionError(f"no dry-run next step in:\n{output}")
+
+
+def test_init_from_unknown_example_lists_the_real_ones(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(app, ["init", "--from", "bogus", "--root", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    for name in example_names():
+        assert name in res.output
+    assert not (tmp_path / ".rayspec").exists()
+
+
+def test_init_from_near_miss_suggests_the_right_example(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(app, ["init", "--from", "hello_reviw", "--root", str(tmp_path)])
+    assert res.exit_code == 2, res.output
+    assert "did you mean 'hello_review'?" in res.output
+
+
+def test_init_from_without_a_packaged_corpus_blames_the_build(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial install has no corpus at all. Saying `unknown example 'hello_review'` blames the
+    user's spelling for it; the first line has to name the real problem."""
+    monkeypatch.setattr(init_mod, "examples_root", lambda: None)
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(tmp_path), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert "no examples are packaged with this build" in res.output
+    assert "unknown example" not in res.output
+    assert not (tmp_path / ".rayspec").exists()
+
+
+def test_init_from_and_kind_together_is_a_usage_error(tmp_path: Path, home: Path) -> None:
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--kind", "content", "--root", str(tmp_path)]
+    )
+    assert res.exit_code == 2, res.output
+    assert "--from" in res.output and "--kind" in res.output
+    assert not (tmp_path / ".rayspec").exists()
+
+
+def test_init_from_never_overwrites_without_force(tmp_path: Path, home: Path) -> None:
+    """An edited file of the example is a refusal, not a silent skip: half of an example is not
+    an example, and the next steps `--from` prints are only green for the whole thing."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert (
+        CliRunner()
+        .invoke(app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"])
+        .exit_code
+        == 0
+    )
+    workflow = target / ".rayspec" / "workflows" / "hello_review.yaml"
+    workflow.write_text("edited\n", encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert workflow.read_text(encoding="utf-8") == "edited\n"
+    assert ".rayspec/workflows/hello_review.yaml" in res.output and "--force" in res.output
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill", "--force"]
+    )
+    assert res.exit_code == 0, res.output
+    assert workflow.read_text(encoding="utf-8") != "edited\n"
+
+
+def test_init_from_the_same_example_twice_is_idempotent(tmp_path: Path, home: Path) -> None:
+    """Nothing differs, so nothing is refused: the second run keeps every file and says so."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    args = ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    assert CliRunner().invoke(app, args).exit_code == 0
+    res = CliRunner().invoke(app, args)
+    assert res.exit_code == 0, res.output
+    assert "nothing written" in res.output
+
+
+def test_init_from_refuses_to_land_on_a_generic_scaffold(tmp_path: Path, home: Path) -> None:
+    """`rayspec init` then `rayspec init --from <example>`.
+
+    The scaffold's `config.yaml` would be kept, so the example's model aliases would be missing
+    and both commands the tool then prints (`validate` and the dry run) would fail. Refuse
+    instead of reporting a scaffold that was only half applied.
+    """
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = (target / ".rayspec" / "config.yaml").read_text(encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "Traceback" not in res.output
+    assert ".rayspec/config.yaml" in res.output and "--force" in res.output
+    assert (target / ".rayspec" / "config.yaml").read_text(encoding="utf-8") == config
+    assert not (target / ".rayspec" / "workflows" / "pr_review.yaml").exists()
+    assert not (target / "stubs.yaml").exists()
+
+
+def test_init_from_refuses_to_land_on_another_example(tmp_path: Path, home: Path) -> None:
+    """The stub file of the example already there would be kept, and the printed dry run would
+    then script the wrong workflow."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert (
+        CliRunner()
+        .invoke(app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"])
+        .exit_code
+        == 0
+    )
+    stubs = (target / "stubs.yaml").read_text(encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert "stubs.yaml" in res.output and "--force" in res.output
+    assert (target / "stubs.yaml").read_text(encoding="utf-8") == stubs
+
+
+def test_init_from_with_force_over_a_scaffold_lands_a_working_project(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--force is the documented way through, so it has to produce the working project the
+    refusal promised: the printed dry run and `rayspec validate` both run green."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    res = CliRunner().invoke(
+        app, ["init", "--from", "pr_review", "--root", str(target), "--no-skill", "--force"]
+    )
+    assert res.exit_code == 0, res.output
+    monkeypatch.chdir(target)
+    assert CliRunner().invoke(app, ["validate"]).exit_code == 0
+    command = _printed_dry_run(res.output)
+    run = CliRunner().invoke(app, command[1:])
+    assert run.exit_code == 0, f"{command}\n{run.output}"
+
+
+def test_init_from_keeps_an_existing_readme_and_drops_the_step_that_names_it(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory that already has a README is the common case for trying an example inside an
+    existing repository: the example's own README is documentation, so keep the user's, say so,
+    and do not print a next step that would open the wrong file."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "README.md").write_text("# my project\n", encoding="utf-8")
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 0, res.output
+    assert (target / "README.md").read_text(encoding="utf-8") == "# my project\n"
+    assert "warning:" in res.output and "README.md" in res.output
+    assert "open README.md" not in res.output
+    monkeypatch.chdir(target)
+    command = _printed_dry_run(res.output)
+    assert CliRunner().invoke(app, command[1:]).exit_code == 0

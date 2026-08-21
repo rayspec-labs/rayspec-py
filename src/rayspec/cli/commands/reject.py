@@ -12,7 +12,7 @@ from typing import Annotated
 
 import typer
 
-from rayspec.cli.commands._loader_common import JsonOption, RootOption
+from rayspec.cli.commands._loader_common import JsonOption, OutputOption, RootOption, resolve_output
 from rayspec.cli.commands.approve import decide_and_resume
 from rayspec.cli.commands.resume import SecretInputsOption, StubsOption
 
@@ -25,6 +25,7 @@ def register(app: typer.Typer) -> None:
             str | None, typer.Argument(help="Rejection reason (becomes the gate's output).")
         ] = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
         quiet: Annotated[
             bool, typer.Option("--quiet", help="Only problems and run-level lines.")
         ] = False,
@@ -36,6 +37,7 @@ def register(app: typer.Typer) -> None:
         root: RootOption = None,
     ) -> None:
         """Reject the pending gate of a paused run (on_reject decides: cancel/continue/fail)."""
+        json_ = resolve_output(output, json_)
         decide_and_resume(
             run=run,
             approved=False,

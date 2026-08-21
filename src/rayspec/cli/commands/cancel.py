@@ -23,7 +23,14 @@ import typer
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.events.model import EventType, RunEvent
 from rayspec.schema import RunStatus
 from rayspec.store.file import FileRunStore
@@ -77,9 +84,11 @@ def register(app: typer.Typer) -> None:
             ),
         ] = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Interrupt a live run (SIGINT) or mark a paused run cancelled."""
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         out = console()

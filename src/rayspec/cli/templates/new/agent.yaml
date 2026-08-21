@@ -1,0 +1,6 @@
+# Created by `rayspec new agent __NAME__`. Reference it as `agent: __NAME__` from any workflow
+# in this project, or override it per step with `agent: { extends: __NAME__, model: large }`.
+provider: claude
+model: small                        # a tier (small|medium|large) → .rayspec/config.yaml tiers or the built-in defaults
+access: read-only                   # Read/Glob/Grep only: this agent cannot edit files or run commands
+instructions: You are terse and precise. Report findings, never rewrites.

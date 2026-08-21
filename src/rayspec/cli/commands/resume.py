@@ -22,10 +22,12 @@ from rich.text import Text
 from rayspec.cli import _runs_common as common
 from rayspec.cli.commands._loader_common import (
     JsonOption,
+    OutputOption,
     RootOption,
     err_console,
     error_lines,
     fail,
+    resolve_output,
 )
 from rayspec.cli.commands.run import load_stub_script, refuse_stubs_for_real_agents
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
@@ -175,6 +177,7 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
         quiet: Annotated[
             bool, typer.Option("--quiet", help="Only problems and run-level lines.")
         ] = False,
@@ -188,6 +191,7 @@ def register(app: typer.Typer) -> None:
         Succeeded and cancelled runs are refused (exit 2) unless --force. Secret inputs must be
         supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused.
         """
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         if record.status is RunStatus.SUCCEEDED and not force:

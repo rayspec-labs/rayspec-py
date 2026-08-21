@@ -14,7 +14,14 @@ from typing import Annotated, Any
 import typer
 from rich.table import Table
 
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.config import load_config, rayspec_home
 from rayspec.errors import RayspecError
 from rayspec.workspace.project import Project, discover_project, project_from_root
@@ -99,9 +106,14 @@ def register(app: typer.Typer) -> None:
 
     @worktrees.command("list")
     def list_(
-        *, root: RootOption = None, repo: RepoOption = None, json_: JsonOption = False
+        *,
+        root: RootOption = None,
+        repo: RepoOption = None,
+        json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """List worktrees on rayspec/* branches (age, dirty/merged state)."""
+        json_ = resolve_output(output, json_)
         try:
             project = _project(root, repo)
             infos = list_worktrees(project)
@@ -155,12 +167,14 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--dry-run", help="Report what would be removed.")
         ] = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """Remove rayspec worktrees and their branches (git worktree remove + git branch -D).
 
         Safe by default: only merged, clean, unlocked worktrees go; everything else is listed
         as skipped with the reason (--force overrides).
         """
+        json_ = resolve_output(output, json_)
         try:
             age = parse_age(older_than) if older_than is not None else None
         except ValueError as exc:

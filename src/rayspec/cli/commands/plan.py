@@ -26,12 +26,14 @@ from rayspec.cli.commands import _pricing_common as pricing
 from rayspec.cli.commands._loader_common import (
     AllowUnsupportedOption,
     JsonOption,
+    OutputOption,
     RootOption,
     console,
     error_lines,
     fail,
     make_context,
     report_lines,
+    resolve_output,
 )
 from rayspec.cli.commands.eval import echo_block
 from rayspec.config import Config
@@ -430,8 +432,10 @@ def register(app: typer.Typer) -> None:
         root: RootOption = None,
         allow_unsupported: AllowUnsupportedOption = False,
         json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """Show what a run would do: inputs, resolved agents, step order, capability report."""
+        json_ = resolve_output(output, json_)
         if (step is not None or stubs is not None) and not render:
             fail(
                 "--step and --stubs only apply to --render",

@@ -12,7 +12,13 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from rayspec.cli.commands._loader_common import JsonOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.config import rayspec_home
 from rayspec.errors import RayspecError
 from rayspec.workspace.registry import add_project, list_projects, remove_project
@@ -44,8 +50,9 @@ def register(app: typer.Typer) -> None:
         console().print(f"{verb} project {name} → {source}" + (f" (base {base})" if base else ""))
 
     @projects.command("list")
-    def list_(json_: JsonOption = False) -> None:
+    def list_(json_: JsonOption = False, output: OutputOption = None) -> None:
         """List registered projects."""
+        json_ = resolve_output(output, json_)
         home = rayspec_home()
         try:
             specs = list_projects(home)

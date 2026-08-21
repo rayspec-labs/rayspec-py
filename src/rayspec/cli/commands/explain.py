@@ -30,7 +30,14 @@ from rich.console import Console
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
-from rayspec.cli.commands._loader_common import JsonOption, RootOption, console, fail
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    RootOption,
+    console,
+    fail,
+    resolve_output,
+)
 from rayspec.cli.commands.eval import echo_block, format_value, print_warning
 from rayspec.cli.commands.plan import body_of
 from rayspec.engine import context_rebuild
@@ -439,7 +446,7 @@ def print_explain(out: Console, payload: dict[str, Any], *, full: bool) -> None:
 
 def register(app: typer.Typer) -> None:
     @app.command()
-    def explain(
+    def explain(  # noqa: PLR0917 - Typer options are positional by construction
         run: Annotated[str, typer.Argument(help="Run id or unique prefix.")],
         step: Annotated[str, typer.Argument(help="Step path, e.g. review or build[2]/implement.")],
         full: Annotated[
@@ -447,8 +454,10 @@ def register(app: typer.Typer) -> None:
         ] = False,
         root: RootOption = None,
         json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
         """Explain why one step of a run ran, skipped or failed."""
+        json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
         try:

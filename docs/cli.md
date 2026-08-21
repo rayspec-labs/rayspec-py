@@ -42,6 +42,14 @@ own output. Hints that point at documentation quote a full URL
 (`https://github.com/rayspec-labs/rayspec-py/blob/main/docs/…`) or `rayspec <cmd> --help` —
 never a repo-relative path, which a `uv tool install` user does not have on disk.
 
+Every command that renders a listing or a report takes `--output table|json`: `table` is the human
+rendering (the default), `json` the machine-readable one documented in that command's section.
+`--json` is the older spelling of `--output json` and keeps working everywhere it ever did; the
+two never disagree, because passing both with different values (`--json --output table`) is a
+usage error — `error: --json and --output table disagree`, exit 2 — rather than one of them
+silently winning. (`rayspec runs stubs -o/--output PATH` predates the flag and still means "write
+the script to this file"; that command has no `--json`.)
+
 ## Commands
 
 ### `rayspec run`
@@ -49,7 +57,7 @@ never a repo-relative path, which a `uv tool install` user does not have on disk
 ```
 rayspec run <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
             [--dry-run] [--stubs PATH] [--stubs-from RUN_ID] [--stubs-init PATH] [--exec-shell]
-            [--yes] [--no-interactive] [--json] [--quiet] [--verbose]
+            [--yes] [--no-interactive] [--json | --output FORMAT] [--quiet] [--verbose]
             [--allow-unsupported] [--fail-fast] [--resume RUN_ID] [--force]
             [--worktree | --no-worktree] [--base BRANCH] [--repo SOURCE]
 ```
@@ -124,7 +132,7 @@ Stream records wrap agent events (`text_delta`, `tool_call`, …) and shell outp
 ### `rayspec validate`
 
 ```
-rayspec validate [names...] [--root DIR] [--allow-unsupported] [--json]
+rayspec validate [names...] [--root DIR] [--allow-unsupported] [--json | --output FORMAT]
 ```
 
 Load and validate workflows (schema, graph, references, templates, provider capabilities);
@@ -176,8 +184,8 @@ includes or provider capabilities — `rayspec validate` stays authoritative. Se
 
 ```
 rayspec plan <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
-             [--allow-unsupported] [--json]
-rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json]
+             [--allow-unsupported] [--json | --output FORMAT]
+rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output FORMAT]
 ```
 
 Show what a run would do without executing: the workflow hash and isolation, inputs with their
@@ -240,7 +248,7 @@ the definition path.
 ### `rayspec test`
 
 ```
-rayspec test [<workflow>] [--case ID] [-k PATTERN] [--junit FILE] [--json]
+rayspec test [<workflow>] [--case ID] [-k PATTERN] [--junit FILE] [--json | --output FORMAT]
              [--exec-shell] [--root DIR]
 ```
 
@@ -293,7 +301,7 @@ expect; did you mean 'status'?`).
 ### `rayspec workflows`
 
 ```
-rayspec workflows [--root DIR] [--json]
+rayspec workflows [--root DIR] [--json | --output FORMAT]
 ```
 
 List workflows from `.rayspec/workflows/` and `~/.rayspec/workflows/` (project wins on a name
@@ -306,7 +314,7 @@ description, path, error}]` (`error` set when the file does not parse).
 ### `rayspec agents`
 
 ```
-rayspec agents [--root DIR] [--json]
+rayspec agents [--root DIR] [--json | --output FORMAT]
 ```
 
 List agent files (`.rayspec/agents/*.yaml`, `~/.rayspec/agents/*.yaml`) with the provider, model
@@ -325,7 +333,7 @@ inline under a workflow's `agents:` are shown by `rayspec plan`, not here.
 ### `rayspec providers`
 
 ```
-rayspec providers [--json]
+rayspec providers [--json | --output FORMAT]
 ```
 
 The provider registry (builtins and entry-point plugins) and the capability matrix
@@ -358,7 +366,7 @@ absolute; must exist) or a git URL; `--base` is its default worktree base. Writt
 ### `rayspec projects list`
 
 ```
-rayspec projects list [--json]
+rayspec projects list [--json | --output FORMAT]
 ```
 
 Registered projects. `--json`: `[{name, source, base}]`.
@@ -374,7 +382,7 @@ Unregister a project (its bare clone and worktrees are kept). Exit 2 when the na
 ### `rayspec worktrees list`
 
 ```
-rayspec worktrees list [--root DIR] [--repo SOURCE] [--json]
+rayspec worktrees list [--root DIR] [--repo SOURCE] [--json | --output FORMAT]
 ```
 
 Worktrees on `rayspec/*` branches of the project (branch, age, `dirty`/`merged`/`gone`/`locked`
@@ -386,7 +394,7 @@ prunable, locked}]`.
 
 ```
 rayspec worktrees clean [--root DIR] [--repo SOURCE] [--older-than AGE] [--merged]
-                        [--merged-into REF] [--force] [--dry-run] [--json]
+                        [--merged-into REF] [--force] [--dry-run] [--json | --output FORMAT]
 ```
 
 Remove rayspec worktrees and their branches (`git worktree remove` + `git branch -D`). **Safe by
@@ -415,13 +423,13 @@ Options:
 
 - `--all` / `-a` — List runs of every project under RAYSPEC_HOME.
 - `--limit` / `-n` `<int range>` — [x>=1]  Show at most N runs.
-- `--json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, pid, host, workspace{…}, pause{…}|null}]`.
+- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, pid, host, workspace{…}, pause{…}|null}]`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 These are the options of the **listing**. `--root` is the only one a subcommand honours before the
-subcommand name (`rayspec runs --root X diff a b`); `--all`, `--limit` and `--json` there are a
-usage error (exit 2, `--json belongs to the rayspec runs listing…`) rather than silently dropped —
-put them after the subcommand: `rayspec runs diff a b --json`.
+subcommand name (`rayspec runs --root X diff a b`); `--all`, `--limit`, `--json` and `--output`
+there are a usage error (exit 2, `--json belongs to the rayspec runs listing…`) rather than
+silently dropped — put them after the subcommand: `rayspec runs diff a b --json`.
 
 ### `rayspec runs stubs`
 
@@ -473,7 +481,7 @@ Options:
 ### `rayspec runs diff`
 
 ```
-rayspec runs diff <a> <b> [--json] [--exit-code] [--outputs] [--steps] [--across-projects] [--root DIR]
+rayspec runs diff <a> <b> [--json | --output FORMAT] [--exit-code] [--outputs] [--steps] [--across-projects] [--root DIR]
 ```
 
 Compare two runs **of one workflow** — after changing a prompt, a model or an agent, see what
@@ -507,7 +515,7 @@ between them, so a moved step may be a moved *definition*.
 
 Options:
 
-- `--json` — Machine-readable output: `{workflow, a{run_id, status, reason, created_at, dry_run, workflow_hash, project_slug}, b{…}, workflow_hash_changed, status{a, b, changed}, duration_ms{a, b, delta}, tokens{a, b, delta}, cost_usd{a, b, delta}, steps: [{path, kind, change ("added"|"removed"|"changed"|"same"), reasons, status{a,b}, output{a,b,changed}, fingerprint{a,b,changed}, duration_ms{a,b,delta}, tokens{a,b,delta}, cost_usd{a,b,delta}}], loops: [{path, kind, a, b, changed}], outputs: {name: {a, b, changed}}, changed}`.
+- `--json` / `--output json` — Machine-readable output: `{workflow, a{run_id, status, reason, created_at, dry_run, workflow_hash, project_slug}, b{…}, workflow_hash_changed, status{a, b, changed}, duration_ms{a, b, delta}, tokens{a, b, delta}, cost_usd{a, b, delta}, steps: [{path, kind, change ("added"|"removed"|"changed"|"same"), reasons, status{a,b}, output{a,b,changed}, fingerprint{a,b,changed}, duration_ms{a,b,delta}, tokens{a,b,delta}, cost_usd{a,b,delta}}], loops: [{path, kind, a, b, changed}], outputs: {name: {a, b, changed}}, changed}`.
 - `--exit-code` — Exit 1 when anything differs (a CI gate: `rayspec runs diff base head --exit-code`).
 - `--outputs` — Also print a unified diff of every changed step's stored output. When either run
   was launched with `secret: true` inputs, a stderr note says the stored outputs are printed as
@@ -631,7 +639,7 @@ Options:
 - `--stream` — Interleave every step's stream into the log.
 - `--verbose` — Also show internal/raw SDK records of a step stream.
 - `--raw` — Print stored text unescaped (control characters and escape sequences included) — debugging only.
-- `--json` — Machine-readable output: raw JSONL — events as stored in `events.jsonl`, stream records as `{"type": "stream", "step_path": …, "record": {…}}`.
+- `--json` / `--output json` — Machine-readable output: raw JSONL — events as stored in `events.jsonl`, stream records as `{"type": "stream", "step_path": …, "record": {…}}`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec explain`
@@ -678,7 +686,7 @@ Options:
 
 - `--full` — Print the whole persisted prompt/script instead of the first 20 lines (control
   characters are stripped on the way to the terminal, like everywhere else).
-- `--json` — Machine-readable output: `{run_id, workflow, step, def_path, kind, location,
+- `--json` / `--output json` — Machine-readable output: `{run_id, workflow, step, def_path, kind, location,
   status, skip_reason, tolerated, attempts, error, exit_code, approved, duration_ms, tokens,
   cost_usd, cost_source, usage_unknown, join: {join, needs: [{step, status, counts_as,
   skip_reason, tolerated}], decision, skip_reason}, when: {expression, value, error, operands:
@@ -718,7 +726,7 @@ Options:
   expression is evaluated in the run's root scope.
 - `--shell` — Render `{{ expr }}` the way a `shell:` body would: the substituted
   `${RAYSPEC_V<n>}` reference on the first line, the slot values below it.
-- `--json` — Machine-readable output: `{run_id, step, expr, warnings, value, type}` — or
+- `--json` / `--output json` — Machine-readable output: `{run_id, step, expr, warnings, value, type}` — or
   `{run_id, step, expr, warnings, shell, env}` with `--shell`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
@@ -740,7 +748,7 @@ Options:
 - `--force` — Resume even if the workflow changed, the run already finished, or its pid/host cannot be verified.
 - `--yes` / `-y` — Auto-approve gates.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
-- `--json` — Machine-readable output.
+- `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--verbose` — Also show step starts.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
@@ -757,7 +765,7 @@ Record an approval for the pending gate of a *paused* run and resume it in-proce
 
 Options:
 
-- `--json` — Machine-readable output.
+- `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--force` — Resume even if the workflow changed.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
@@ -774,7 +782,7 @@ Record a rejection for the pending gate of a *paused* run and resume it; the opt
 
 Options:
 
-- `--json` — Machine-readable output.
+- `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--force` — Resume even if the workflow changed.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
@@ -796,13 +804,13 @@ Options:
 - `--yes` / `-y` — Do not ask before interrupting a live run.
 - `--force` — Mark a running record cancelled even if it belongs to another host.
 - `--mark` — Mark the record cancelled without signalling any process (stale record, pid reused by another program); no confirmation prompt.
-- `--json` — Machine-readable output (implies no confirmation prompt): `{run_id, action: "signalled", pid, status}` for a live run, `{run_id, action: "cancelled", pid: null, status, lock_released}` for a paused/dead one, `{run_id, action: "marked", pid: null, status, lock_released}` with `--mark`.
+- `--json` / `--output json` — Machine-readable output (implies no confirmation prompt): `{run_id, action: "signalled", pid, status}` for a live run, `{run_id, action: "cancelled", pid: null, status, lock_released}` for a paused/dead one, `{run_id, action: "marked", pid: null, status, lock_released}` with `--mark`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 ### `rayspec init`
 
 ```
-rayspec init [--kind code|content] [--force] [--no-skill] [--root DIR]
+rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
@@ -843,10 +851,96 @@ blocks) and a `stubs/example.yaml` that makes `rayspec run example --dry-run --s
 .rayspec/stubs/example.yaml` succeed without any login (its header comment links the stub file
 format in [providers.md](providers.md#stub-stub) by URL).
 
+#### Starting from an example
+
+```
+rayspec init --from hello_review
+```
+
+`--from EXAMPLE` copies one of the example projects packaged with rayspec into the target
+directory instead of the generic template: its `.rayspec/` tree, its stub scripts and its
+`README.md`, all verbatim. The examples ship inside the wheel, so this works from a
+`uv tool install rayspec` with no checkout of the repository. `--from` and `--kind` are mutually
+exclusive (an example brings its own workflow), and an unknown name is a usage error (exit 2)
+that lists every example with its description and a `did you mean …?` when the name is close
+(a build with no corpus at all says `error: no examples are packaged with this build` instead):
+
+```
+$ rayspec init --from helo_review
+error: unknown example 'helo_review'; did you mean 'hello_review'?
+hint: available examples (rayspec init --from <name>):
+  fix_issue         Triage a GitHub issue, fix it in a self-healing loop until the tests …
+  hello_review      Review a file or directory with a single prompt step — the smallest …
+  …
+```
+
+An example is applied whole or not at all. When the target directory already holds one of its
+files with *different* content — a `config.yaml` from a plain `rayspec init`, another example's
+`stubs.yaml`, a workflow you edited — `--from` refuses (exit 2, naming those files) instead of
+writing the rest around them: a kept `config.yaml` or stub file belongs to something else, and
+the commands `init` prints next then fail. `--force` replaces them, and an empty directory is the
+other way out; re-running the same example over an untouched copy writes nothing and stays exit 0.
+The example's own `README.md` is the exception — an existing README is kept (a stderr `warning:`
+says so, and the `open README.md` next step is dropped), so trying an example inside a repository
+that already has one still works.
+
+The next steps `--from` prints end with the example's own scripted dry run — the exact command
+(inputs included) that this repository asserts green on every commit, so a fresh directory has a
+working run before any credentials exist. A scenario that supplies a `secret: true` input is
+never rendered: `-i NAME=VALUE` is the channel for a secret, and the printed line would put its
+value on the terminal and in your shell history.
+
+```
+next steps:
+  rayspec validate                        # schema, graph, references, capabilities
+  rayspec run hello_review -i target=src/ -i focus=style --dry-run --stubs stubs.yaml   # scripted agents, no login needed
+  open README.md                          # what this example shows, and a real run
+```
+
+The catalogue is whatever the build ships (`rayspec init --from ''` prints it); today that is
+`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `secret_via_tool`,
+`triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
+
+### `rayspec new workflow`
+
+```
+rayspec new workflow <name> [--agent NAME] [--description TEXT] [--force] [--root DIR]
+```
+
+Add one workflow to a project that already exists — `rayspec init` is for creating the project,
+`new` for growing it. Writes `.rayspec/workflows/<name>.yaml` (one read-only agent step, one
+`target` input, `isolation: none`) and prints `rayspec validate <name>` / `plan` / `run <name>
+--dry-run`; the fresh workflow validates and dry-runs without any login. `<name>` is both the
+`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, not a
+reserved context root such as `run`); anything else is a usage error naming the rule. `--agent
+NAME` references `.rayspec/agents/<NAME>.yaml` (or `~/.rayspec/agents/<NAME>.yaml`) instead of
+writing an inline agent into the workflow; that file has to exist, because a workflow pointing at
+a missing agent fails the `rayspec validate <name>` the command itself prints next — an unknown
+name is exit 2 with a `did you mean …?` and a pointer at `rayspec new agent <name>`.
+`--description TEXT` fills the `description:` (quoted for YAML when it needs to be).
+An existing file is never touched: `error: .rayspec/workflows/<name>.yaml already exists` +
+`hint: pass --force to overwrite it`, exit 2. Without `--root` the project is found the way every
+project command finds it (walk up to the first `.rayspec/`, then `.git`, else the cwd). With
+`--root` that directory **is** the project and is not a place to start walking up from: a
+directory with no `.rayspec/` is exit 2 pointing at `rayspec init`, so a mistyped `--root` is an
+error instead of a file written into the enclosing project.
+
+### `rayspec new agent`
+
+```
+rayspec new agent <name> [--force] [--root DIR]
+```
+
+The same for `.rayspec/agents/<name>.yaml`: a reusable `provider`/`model`/`access`/`instructions`
+agent that any workflow of the project can reference as `agent: <name>` (or extend per step with
+`agent: { extends: <name>, model: large }`). `--force`, `--root`, the name rule and the
+`already exists` refusal behave exactly as for `new workflow`. `rayspec new` without a subcommand
+prints the help and exits 2.
+
 ### `rayspec doctor`
 
 ```
-rayspec doctor [--probe] [--provider ID]... [--json] [--root DIR]
+rayspec doctor [--probe] [--provider ID]... [--json | --output FORMAT] [--root DIR]
 ```
 
 Environment and provider health in one table: Python and rayspec versions, `RAYSPEC_HOME`
@@ -919,7 +1013,7 @@ usage error (exit 2, `--global and --root are mutually exclusive`).
 ### `rayspec skill show`
 
 ```
-rayspec skill show [--root DIR] [--json]
+rayspec skill show [--root DIR] [--json | --output FORMAT]
 ```
 
 Print the packaged skill (its directory, the rayspec version and a 12-hex-digit content digest
@@ -938,6 +1032,37 @@ rayspec skill path
 
 Print the packaged skill directory (the one `install` copies; it holds `SKILL.md` and
 `references/`). Exit 0.
+
+### `rayspec completion`
+
+```
+rayspec completion <bash|zsh|fish>
+rayspec completion --values workflows|runs [--root DIR]
+```
+
+Print a shell-completion script to source, and nothing else — installing it is your decision:
+
+```sh
+rayspec completion zsh  > ~/.zsh/completions/_rayspec     # then: compinit
+rayspec completion bash > ~/.local/share/bash-completion/completions/rayspec
+rayspec completion fish > ~/.config/fish/completions/rayspec.fish
+```
+
+The script completes commands, sub-commands and options, plus the two argument slots that save
+real typing: a **workflow name** after `run`, `plan`, `validate` and `test`, and a **run id**
+after `show`, `logs`, `resume`, `approve`, `reject`, `cancel`, `eval`, `explain`, `runs diff` and
+`runs stubs`. It gets those from `rayspec completion --values workflows|runs`, which prints one
+candidate per line for the project the shell is standing in (run ids: the 50 newest). That
+lookup never fails and never prints a diagnostic — no project, an unreadable `config.yaml` or a
+half-written workflow simply yields nothing, so a broken checkout can never inject an error
+message into the candidate list. `rayspec completion` with no shell, or with a shell that is not
+one of the three, is a usage error (exit 2) naming the supported ones; `--values` together with a
+shell is a usage error too.
+
+There is deliberately no `--install-completion`: Typer's version of it appends a `source` line to
+`~/.bashrc` / `~/.zshrc` as a side effect of a flag, which is not something a workflow runner
+should do to your dotfiles. `rayspec completion <shell>` prints the same script (Typer's, plus
+the workflow/run-id wrapper) and leaves the placement to you.
 
 ### `rayspec version`
 
