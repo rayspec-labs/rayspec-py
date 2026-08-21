@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 from typer.testing import CliRunner
 
@@ -214,7 +216,7 @@ def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
     install_plugin: InstallPlugin,
 ) -> None:
     """Builtins are protected by identity, so moving an entry can not delete one."""
-    from rayspec.cli.plugins import command_names
+    from rayspec.cli.plugins import command_names, loaded_cli_plugins
 
     baseline = command_names(_build())  # before the plugin is on sys.path
     install_plugin(
@@ -222,10 +224,16 @@ def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
         modules={"acme_plugin": REORDERS_THE_TABLE},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app = _build()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # nothing was shadowed, so nothing is reported
+        app = _build()
     assert baseline <= command_names(app)
     assert "acme-first" in command_names(app)
     assert CliRunner().invoke(app, ["workflows", "--help"]).exit_code == 0
+    (plugin,) = loaded_cli_plugins()
+    assert plugin.ok
+    assert plugin.commands == ("acme-first",)
+    assert plugin.refused == ()
 
 
 def test_plugin_that_drops_builtins_is_rolled_back_and_reported(
