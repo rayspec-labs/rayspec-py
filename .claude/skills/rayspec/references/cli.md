@@ -661,7 +661,11 @@ omitted:
   `skip_reason: budget_exceeded` names the *breaker*, and `budget_usd`, `max_tokens` and
   `timeout_total` are one breaker sharing that one reason, so this line says which of them was
   over (`cap  time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)`) — every cap that was
-  over, not just the first;
+  over, not just the first. When the run did not end on the breaker (it was interrupted or
+  paused, or a cap was raised since), the caps are re-checked against the totals and timestamps
+  the run record still holds and the line says so: `cap  budget exceeded (…) (recomputed from
+  the run record)`. A recomputed line answers "which cap is this run over", not "which cap
+  fired"; `--json` carries the same distinction as `cap.source` (`run.reason` | `recomputed`);
 - **join** — every `needs` with its recorded outcome (and what the join table *counts* it as: a
   tolerated failure counts as succeeded) and the decision that followed;
 - **when** — the expression, its value re-evaluated in the step's own scope, and each operand

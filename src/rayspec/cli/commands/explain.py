@@ -23,6 +23,7 @@ no step runs, no provider is created, nothing is written.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Any, cast
 
 import typer
@@ -47,7 +48,6 @@ from rayspec.engine.context import (
     cap_reasons,
     is_cap_reason,
     totals_of,
-    utcnow,
 )
 from rayspec.engine.context_rebuild import RebuiltContext
 from rayspec.engine.graph import classify, join_decision
@@ -94,6 +94,29 @@ def status_section(record: StepRecord | None) -> dict[str, Any]:
     }
 
 
+def last_known_moment(run: RunRecord) -> datetime | None:
+    """The latest moment the RECORD witnessed: the run's end, its pause, or a step's end.
+
+    Deliberately not ``utcnow()``. A record with no ``ended_at`` — a run whose process was
+    killed, or one that is still going — would otherwise accrue elapsed time between the run and
+    whenever somebody types ``explain``, and a wall-clock cap that never fired would be reported
+    as the one that stopped the step.
+    """
+    stamps = [run.ended_at, None if run.pause is None else run.pause.requested_at]
+    stamps += [rec.ended_at for rec in run.steps.values()]
+    known = [stamp for stamp in stamps if stamp is not None]
+    return max(known) if known else None
+
+
+def recomputed_elapsed_s(run: RunRecord) -> float | None:
+    """Wall clock the record can account for, or ``None`` when it cannot say (no end stamp
+    anywhere, or a run that never started)."""
+    end = last_known_moment(run)
+    if run.started_at is None or end is None:
+        return None
+    return max(0.0, (end - run.started_at).total_seconds())
+
+
 def cap_section(
     record: StepRecord | None, run: RunRecord, resolved: ResolvedWorkflow
 ) -> dict[str, Any] | None:
@@ -101,10 +124,17 @@ def cap_section(
 
     ``skip_reason: budget_exceeded`` names the circuit *breaker*: ``defaults.budget_usd``,
     ``defaults.max_tokens`` and ``defaults.timeout_total`` are one breaker and share that one
-    reason, so on its own it points a reader at money for a run that ran out of time. The run's
-    own ``reason`` is the authority when a cap ended the run; otherwise (interrupted, paused, or
-    a cap raised since) the caps are recomputed from what ``run.json`` already stores — the
-    totals of its step records and the wall clock between ``started_at`` and ``ended_at``.
+    reason, so on its own it points a reader at money for a run that ran out of time.
+
+    ``source`` says where the answer comes from, and the text view prints it, because the two are
+    not equally good. ``run.reason`` is the breaker's own message and is the authority when a cap
+    ended the run. ``recomputed`` is the fallback for a run that ended some other way
+    (interrupted, paused) or whose caps were raised since: the caps are re-checked against what
+    ``run.json`` still holds — the totals over EVERY step record (the breaker measured only the
+    ones this run finished or replayed, which the record does not distinguish, so a resumed run's
+    recomputed totals can be higher) and the wall clock up to the last moment the record
+    witnessed (:func:`last_known_moment`). It answers "which cap is this run over", not "which
+    cap fired", so it is labelled rather than stated as fact.
     """
     if record is None or record.skip_reason != BUDGET_SKIP_REASON:
         return None
@@ -116,10 +146,7 @@ def cap_section(
             "source": "run.reason",
         }
     usage, cost_usd, cost_source = totals_of(list(run.steps.values()))
-    elapsed_s: float | None = None
-    if run.started_at is not None:
-        end = run.ended_at or utcnow()
-        elapsed_s = max(0.0, (end - run.started_at).total_seconds())
+    elapsed_s = recomputed_elapsed_s(run)
     breaches = cap_reasons(usage, cost_usd, cost_source, elapsed_s, resolved.workflow.defaults)
     if not breaches:
         return None
@@ -357,7 +384,9 @@ def print_status(out: Console, payload: dict[str, Any]) -> None:
     if status.get("skip_reason"):
         _line(out, "skip reason", status["skip_reason"])
     if payload.get("cap"):
-        _line(out, "cap", payload["cap"]["reason"])
+        cap = payload["cap"]
+        marker = " (recomputed from the run record)" if cap.get("source") == "recomputed" else ""
+        _line(out, "cap", f"{cap['reason']}{marker}")
     if status.get("error"):
         error = status["error"]
         _line(out, "error", f"{error.get('type')}: {error.get('message')}")
