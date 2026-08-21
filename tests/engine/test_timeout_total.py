@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import pytest
 
-from rayspec.engine.context import BUDGET_SKIP_REASON, RunOptions
+from rayspec.engine.context import BUDGET_SKIP_REASON
 from rayspec.events.model import EventType
 from rayspec.providers.stub import StubProvider
 from rayspec.schema import Defaults, RunStatus, SchemaError, parse_workflow
@@ -131,7 +131,7 @@ async def test_resume_measures_from_the_original_start(harness: Harness) -> None
     harness.store.save(record)
 
     harness.sink.clear()
-    expired = await harness.run("t", resume=first.run_id, options=RunOptions(force=True))
+    expired = await harness.run("t", resume=first.run_id)
     assert expired.status is RunStatus.FAILED and expired.exit_code == 1
     assert expired.reason is not None
     assert "> timeout_total 1h 0m)" in expired.reason
