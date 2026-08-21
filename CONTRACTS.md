@@ -1337,7 +1337,8 @@ command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|app
 `run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by
 recorded path, then by name) / `check_workflow_unchanged(run, resolved, force=)` (the engine's
-hash rule as a `ResumeError`, applied before anything is persisted) / `resume_run(...,
+hash rule as a `ResumeError`, applied before anything is persisted) / `record_root(ctx, run)` /
+`record_context(ctx, run)` / `resume_run(...,
 resolved=None)` (builds the `Runner(resume_run_id=)` with the workspace from `run.json`, prints
 the `run` summary, returns the exit code) / `pid_alive` (delegates to the engine's rule) /
 `on_other_host` / `release_workdir_lock`). All commands take `--root` and honour `RAYSPEC_HOME`;
@@ -1345,6 +1346,22 @@ every `<run>` argument accepts a unique prefix. Human output renders everything 
 `run.json`/output files as plain text (never Rich markup). `--json` on `resume/approve/reject`
 prints the JSONL events **and** the final summary object on stdout (Rich progress/errors on
 stderr).
+
+**One run, one project.** `resume` / `approve` / `reject` find a run in ANY project (`find_run`
+walks every store under the home), so the directory the command was typed in says nothing about
+the run. `_runs_common.record_context(ctx, record)` re-resolves the `RunsContext` against
+`record_root(ctx, record)` — the recorded root, else the caller's — and every project-scoped
+input is then read for THAT project: the workflow AND the models its agents resolve to
+(`config.tiers` / `config.aliases`), the lockfile they are checked against, `config.secrets`,
+`config.providers`, `config.pricing`, `config.extensions`, the operator's policy and the spend
+ledger. It is applied once per entry point and again — idempotently, since a re-scoped context
+returns itself — inside `guard_workflow_unchanged` and `resume_run`, so no helper can be reached
+with a context that still speaks for the caller. Splitting it is worse than not doing it: a
+workflow loaded in one project with its models resolved in another makes `--locked` (on by
+default under `CI`) refuse a run that never drifted, naming a model nobody configured. The one
+thing deliberately NOT re-scoped is `<project>/.rayspec/.env`: that file is a credential surface
+controlled by whoever pushed the checkout, so a command typed in project A never sources
+project B's.
 
 - `rayspec runs [--all] [--limit N] [--json]`: newest first by `created_at` then id (run id,
   workflow, status — `(dry)` for dry runs —, started, duration, steps done/total, tokens, cost;
@@ -2470,9 +2487,9 @@ in `LimitsPolicy.warnings`, which the CLI prints before the run — never in sil
 which also owns the shared `LockedOption` + `enforce_lockfile(ctx, resolved, *, locked,
 project_root=None, json_mode=False)` that `run`, `plan`, `validate`, `resume`, `approve` and
 `reject` apply — the last three through `resume.guard_workflow_unchanged(ctx, record, *, force,
-locked=None)`, which passes `_runs_common.record_root(ctx, record)`). `project_root` is the root
-the workflow was LOADED from: with `--repo` that is the prepared checkout, never the caller's
-directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
+locked=None)`, which re-scopes its context with `_runs_common.record_context(ctx, record)` and
+passes that project). `project_root` is the root the workflow was LOADED from: with `--repo`
+that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
 `--locked/--no-locked` defaults to `locked_default(os.environ)` (on under `CI`). An explicit
 `--locked` refuses a MISSING lockfile; the CI default does not — it enforces only a lockfile
 that exists, so setting `CI` cannot break a project that never opted in. `check_locked` also

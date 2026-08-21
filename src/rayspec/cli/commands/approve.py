@@ -73,6 +73,8 @@ def decide_and_resume(
     """
     ctx = common.make_runs_context(root)
     store, record = common.lookup_run(ctx, run)
+    # the run may live in another project; from here on the command speaks for THAT one
+    ctx = common.record_context(ctx, record)
     word = "approve" if approved else "reject"
     if record.status is not RunStatus.PAUSED or record.pause is None:
         fail(
