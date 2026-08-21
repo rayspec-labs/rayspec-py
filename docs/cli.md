@@ -57,7 +57,8 @@ the script to this file"; that command has no `--json`.)
 ```
 rayspec run <workflow> [--input NAME=VALUE]... [--inputs-file PATH] [--root DIR]
             [--dry-run] [--stubs PATH] [--stubs-from RUN_ID] [--stubs-init PATH] [--exec-shell]
-            [--yes] [--no-interactive] [--json | --output FORMAT] [--quiet] [--verbose]
+            [--yes] [--approve-class NAME] [--no-interactive]
+            [--json | --output FORMAT] [--quiet] [--verbose]
             [--allow-unsupported] [--fail-fast] [--resume RUN_ID] [--force]
             [--worktree | --no-worktree] [--base BRANCH] [--repo SOURCE]
 ```
@@ -74,7 +75,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--stubs-from RUN_ID` | replay a stored run's recorded answers instead of a `--stubs` file (run id or unique prefix, resolved in the current project first and then in every project under `RAYSPEC_HOME`) — the in-memory equivalent of `rayspec runs stubs <run> -o f.yaml` followed by `--stubs f.yaml`. Mutually exclusive with `--stubs`; an unknown/ambiguous id or a run with secret inputs is exit 2. The donor run — not a file — is recorded in `run.json` as `stubs_path: "run:<run id>"`, so `resume`/`approve`/`reject` and `run --resume` rebuild the same script from it (a donor that was deleted is exit 2 naming it; an explicit `--stubs`/`--stubs-from` on the resume entry overrides it) |
 | `--stubs-init PATH` | write a stub scaffold (one entry per prompt step) and exit; refuses to overwrite an existing file unless `--force` |
 | `--exec-shell` | run shell/python steps for real inside `--dry-run` (worktree isolation applies again) |
-| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) |
+| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false` |
+| `--approve-class NAME` | pre-approve gates of one [approval class](runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class the policy marks `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
 | `--no-interactive` | never prompt; a gate pauses the run (exit 3) |
 | `--json` | JSONL events on stdout followed by **the final summary object as the last stdout line** (shapes below; `rayspec run … --json \| tail -1 \| jq .exit_code`); warnings and errors go to stderr. `--json` does not imply `--no-interactive`: on a terminal an `approve:` step still prompts (on stderr) — pass `--no-interactive` (pause, exit 3) or `--yes` for unattended pipelines |
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
@@ -744,7 +746,8 @@ Two things are not in `run.json` and come from the command line again — both a
 Options:
 
 - `--force` — Resume even if the workflow changed, the run already finished, or its pid/host cannot be verified.
-- `--yes` / `-y` — Auto-approve gates.
+- `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
+- `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.

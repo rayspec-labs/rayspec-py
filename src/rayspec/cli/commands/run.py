@@ -12,7 +12,7 @@ import contextlib
 import json
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, TextIO, TypeVar
 
@@ -42,6 +42,7 @@ from rayspec.engine.approval import (
     ApprovalRequest,
     ConsoleApprovalPrompt,
 )
+from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, rules_from_policy
 from rayspec.engine.context import RunOptions
 from rayspec.engine.errors import EngineError
 from rayspec.engine.runner import Runner, RunResult, Workspace, fallback_project_slug
@@ -98,6 +99,50 @@ def non_stub_agents(rw: ResolvedWorkflow) -> str:
         return ""
     listed = ", ".join(f"{name!r} ({provider})" for name, provider in seen)
     return f"{'agent' if len(seen) == 1 else 'agents'} {listed}"
+
+
+#: ``--approve-class <name>`` — pre-authorise ONE kind of gate for this invocation. Shared by
+#: ``run`` and ``resume`` so the flag reads the same wherever a gate can be reached.
+ApproveClassOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--approve-class",
+        help="Pre-approve approval gates of this class (repeatable); other gates still ask. "
+        "A class the policy marks allow_yes: false is never pre-approved.",
+        show_default=False,
+    ),
+]
+
+
+def operator_policy(project_root: Path, home: Path | None) -> Any:
+    """The policy in force for this project, or ``None`` when there is none.
+
+    The policy file — its keys, its layering (environment over project over user, most
+    restrictive wins) and its loader — belongs to ``rayspec.policy``. This is the one place
+    ``run``/``resume`` reach for it, so wiring it up is a single line here; until then a run has
+    no policy, which is exactly today's behaviour.
+    """
+    return None
+
+
+def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, ClassRules]:
+    """The approval-class rules of that policy — the only part of it a gate reads."""
+    return rules_from_policy(operator_policy(project_root, home))
+
+
+def approval_classes_for(
+    project_root: Path,
+    home: Path | None,
+    *,
+    pre_approved: Sequence[str] = (),
+    terminal_prompt: bool = True,
+) -> ApprovalClasses:
+    """The approval-class rules and pre-authorisations one invocation runs under."""
+    return ApprovalClasses(
+        rules=policy_class_rules(project_root, home),
+        pre_approved=frozenset(pre_approved),
+        terminal_prompt=terminal_prompt,
+    )
 
 
 #: ``RunRecord.stubs_path`` prefix for a run launched with ``--stubs-from <run>``: there is
@@ -501,6 +546,7 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--exec-shell", help="Run shell/python steps even in --dry-run.")
         ] = False,
         yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-approve gates.")] = False,
+        approve_class: ApproveClassOption = None,
         no_interactive: Annotated[
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
@@ -738,13 +784,10 @@ def register(app: typer.Typer) -> None:
                 redactor=redactor,
                 extensions=ctx.config.extensions,
             )
-            prompt = approval_prompt_for(
-                sinks,
-                interactive=interactive,
-                prompt=configured_approval(
-                    ctx.config.extensions, interactive=interactive, console=out
-                ),
+            configured = configured_approval(
+                ctx.config.extensions, interactive=interactive, console=out
             )
+            prompt = approval_prompt_for(sinks, interactive=interactive, prompt=configured)
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return
@@ -760,6 +803,13 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             provider_settings=ctx.config.providers,
             config_secrets=config_secrets,  # shell/python step env only
+            approval_classes=approval_classes_for(
+                project_root,
+                ctx.home,
+                pre_approved=approve_class or (),
+                # `require_tty` accepts the built-in terminal prompt and no substitute
+                terminal_prompt=configured is None,
+            ),
         )
         try:
             price_table = PriceTable.from_config(ctx.config.pricing)
@@ -1011,7 +1061,9 @@ def _problems_only_sink(out: Console) -> Any:
 
 __all__ = [
     "SUMMARY_KEYS",
+    "ApproveClassOption",
     "SuspendingApprovalPrompt",
+    "approval_classes_for",
     "approval_prompt_for",
     "configured_approval",
     "configured_sinks",
@@ -1019,6 +1071,8 @@ __all__ = [
     "failed_leaf_paths",
     "load_stub_script",
     "non_stub_agents",
+    "operator_policy",
+    "policy_class_rules",
     "prepare_workspace",
     "print_summary",
     "project_slug_for",

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`rayspec resume <run> [--force] [--yes] [--no-interactive] [--json] [--quiet]` — continue a
-run in-process through the engine's resume entry point.
+"""`rayspec resume <run> [--force] [--yes] [--approve-class NAME] [--no-interactive] [--json]
+[--quiet]` — continue a run in-process through the engine's resume entry point.
 
 A paused run re-asks its pending gate on a TTY; without a TTY (or with ``--no-interactive``)
 the command points to ``rayspec approve|reject`` and exits 3 (still paused) unless ``--yes``
@@ -29,7 +29,11 @@ from rayspec.cli.commands._loader_common import (
     fail,
     resolve_output,
 )
-from rayspec.cli.commands.run import load_stub_script, refuse_stubs_for_real_agents
+from rayspec.cli.commands.run import (
+    ApproveClassOption,
+    load_stub_script,
+    refuse_stubs_for_real_agents,
+)
 from rayspec.engine.runtime import EXIT_PAUSED, EXIT_USAGE
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow
@@ -173,6 +177,7 @@ def register(app: typer.Typer) -> None:
             bool, typer.Option("--force", help="Resume even if the workflow changed.")
         ] = False,
         yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-approve gates.")] = False,
+        approve_class: ApproveClassOption = None,
         no_interactive: Annotated[
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
@@ -212,7 +217,16 @@ def register(app: typer.Typer) -> None:
         resolved = guard_workflow_unchanged(ctx, record, force=force)
         interactive = common.stdin_is_tty() and not no_interactive and not yes
         pending = record.pause is not None and record.pause.decision is None
-        if record.status is RunStatus.PAUSED and pending and not interactive and not yes:
+        # --approve-class may be able to answer the pending gate, so the short-circuit below
+        # (which exists so a CI poller does not restart the engine to learn "still paused")
+        # does not apply when it was given
+        if (
+            record.status is RunStatus.PAUSED
+            and pending
+            and not interactive
+            and not yes
+            and not approve_class
+        ):
             assert record.pause is not None
             out = err_console()
             out.print(
@@ -251,6 +265,7 @@ def register(app: typer.Typer) -> None:
             inputs=secrets,
             stub_script=stub_script,
             stubs_path=stubs_path,
+            approve_classes=approve_class or (),
         )
         raise typer.Exit(code=code)
 

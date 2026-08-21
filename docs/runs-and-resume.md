@@ -251,10 +251,13 @@ After Ctrl-C, partial `stream.jsonl` records and any changes in the worktree are
 
 An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
 
-1. `--yes` or `--dry-run` → approved automatically (`decision.by` = `--yes` / `dry-run`).
-2. A stored decision for this exact gate (`pause.decision` with token `<path>#<attempt>`) →
+1. A stored decision for this exact gate (`pause.decision` with token `<path>#<attempt>`) →
    consumed (this is what `rayspec approve <run> [comment]` / `rayspec reject <run> [reason]`
    write, with `by: cli`, before resuming in-process).
+2. An **automatic approval** this gate's [approval class](#approval-classes) permits → approved
+   without asking anybody, with the path that did it recorded as `decision.by`. First match
+   wins: `--yes` → `--dry-run` (`by: dry-run`) → `--approve-class <this gate's class>` →
+   the gate's own `auto_if:` expression evaluating to `true` (`by: auto_if`).
 3. Otherwise the run **quiesces**: no new leaf step starts anywhere and the gate waits until every
    running leaf has finished (several ready gates are handled one at a time). Then:
    - stdin is a terminal and neither `--no-interactive` nor `--yes` was given → a panel with the
@@ -268,6 +271,81 @@ An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
    pending ones skipped (`stopped`), the run ends `cancelled` (exit 4); `continue` → the gate
    succeeds with `approved: false`; `fail` → the gate fails. The approver's comment is the step
    output (`''` when empty).
+
+### Approval classes
+
+A gate can name a **class**, and an operator can say what that class permits:
+
+```yaml
+- id: publish
+  needs: [build]
+  approve:
+    message: "publish {{ inputs.version }} to the registry?"
+    class: release
+```
+
+```yaml
+# the operator's policy file — not the workflow
+classes:
+  release:
+    allow_yes: false
+    require_tty: true
+```
+
+The split is the point. The workflow decides *that* a gate exists; the operator decides *how
+strictly* it is held. A workflow can never relax its own gate, which is what makes it safe to
+leave one running on a schedule that is also allowed to publish a release. A gate that names no
+class, or names one the policy says nothing about, behaves exactly as gates always have.
+
+| Rule | What it forbids | What still works |
+|---|---|---|
+| *(none — the default)* | nothing | everything |
+| `allow_yes: false` | **every** automatic approval: `--yes`, `--dry-run`, `--approve-class`, `auto_if`, and any combination of them | a human answering this one gate: the terminal prompt, or `rayspec approve <run>` / `rayspec reject <run>` |
+| `require_tty: true` | the above, **and** a decision recorded out of band by `rayspec approve`/`rayspec reject` (it can be scripted), **and** a replacement prompt configured through `extensions.approval` | the built-in terminal prompt of the process running the workflow — reach it with `rayspec resume <run>` from a terminal |
+
+`allow_yes: false` cannot be waived. Not by `--yes`, not by `--approve-class`, not by an
+environment variable, not by a configuration key, not by all of them at once: the rule is
+checked where the gate is decided, not where a flag is parsed, so there is no path around it.
+What you get instead of an approval is a warning naming the class and the rule, and a gate that
+goes on to ask a human.
+
+**Rejecting is never constrained by a class.** Refusing to approve is the fail-closed direction,
+and a gate nobody can reject is a gate nobody can get out of.
+
+`--approve-class <name>` pre-approves gates of one class for one invocation — `rayspec run
+release_check --approve-class chore` answers the tidy-up gates and still stops at the release
+one. It is repeatable, and it pre-approves nothing at all for a class whose policy says
+`allow_yes: false`. A name no gate in the workflow uses simply pre-approves nothing: the run
+pauses exactly as it would have.
+
+`rayspec test` is not governed by classes: it is a stub harness that reaches no provider and, by
+default, runs no script, so its gates approve as they always did.
+
+### Approving by condition (`auto_if`)
+
+`auto_if:` approves a gate without asking when its expression is true:
+
+```yaml
+- id: gate
+  needs: [tests]
+  approve:
+    message: "tests passed — merge?"
+    class: merge
+    auto_if: steps.tests.output.failures == 0
+```
+
+It is an expression field like `when:` — a bare Jinja expression (no `{{ }}`), evaluated against
+the same context, checked at load time, and never allowed to name a `secret: true` input. It
+must evaluate to exactly `true` or `false`; anything else **fails** the gate rather than opening
+it.
+
+Precedence, pinned by tests:
+
+- `auto_if` only ever *adds* an automatic approval. It is not a veto: an `auto_if` that is false
+  does not stop `--yes` or `--approve-class` from approving the gate.
+- `auto_if` can never *escalate* one. Under a class that may not be approved automatically the
+  expression is not even evaluated, so no expression — however it is written, and whatever it
+  would evaluate to — can approve a gate the class holds shut.
 
 Continue a paused run with `rayspec resume <run>` (or `rayspec run <wf> --resume <run>`): after
 the workflow-hash check (a changed workflow is exit 2 whatever the flags, see above), on a
