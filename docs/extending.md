@@ -1,8 +1,169 @@
 # Extending rayspec
 
-rayspec is built around a few seams. This page shows the ones that are usable today and names
-the ones that exist as protocols but have no plug-in mechanism yet. The authoritative surface
+rayspec is built around a few seams. Everything on this page is a documented entry point: a
+separate package can add a command, a provider, a run store, an event sink or an approval prompt
+without forking rayspec and without rayspec knowing the package exists. The authoritative surface
 list is `CONTRACTS.md` at the repository root.
+
+| entry-point group | what it adds | how it is selected |
+|---|---|---|
+| `rayspec.cli_plugins` | a CLI command | it appears in `rayspec --help` |
+| `rayspec.providers` | an agent provider | `provider: <id>` on an agent |
+| `rayspec.stores` | a run store | `create_store("<id>", …)` when embedding |
+| `rayspec.sinks` | an event sink | `extensions.sinks: [<id>]` in `config.yaml` |
+| `rayspec.approvals` | an approval prompt | `extensions.approval: <id>` in `config.yaml` |
+
+`rayspec plugins` lists what is installed under each group, which distribution and version it
+came from, and — for anything that was refused — why. It is the first command to run when a
+command, store or sink shows up that you did not write.
+
+The rules are the same for every group: **builtin ids can never be overridden**, entry points are
+visited in name order, a programmatic registration wins over an entry point, and anything that
+fails to load, has the wrong type or collides is skipped with a `RuntimeWarning` instead of
+breaking the CLI. An id is first-come: if two installed distributions publish the same one, the
+first keeps it and the second is refused and listed as `skipped` in `rayspec plugins` — nothing
+is ever silently replaced, so an unexpected implementation always has a row explaining itself.
+
+## A worked example: one command and one sink
+
+A complete package. Three files, nothing rayspec-specific in the build.
+
+```toml
+# pyproject.toml
+[project]
+name = "acme-rayspec"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["rayspec", "typer"]
+
+[project.entry-points."rayspec.cli_plugins"]
+acme = "acme_rayspec.cli:register"          # value = module:callable
+
+[project.entry-points."rayspec.sinks"]
+acme-log = "acme_rayspec.sink:SINK"         # value = module:REGISTRATION
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+```
+
+```python
+# acme_rayspec/cli.py — the same shape as any builtin command module
+import json
+from pathlib import Path
+
+import typer
+
+from rayspec.cli import _runs_common as runs_common
+
+
+def register(app: typer.Typer) -> None:
+    """Called once at startup with rayspec's Typer app."""
+
+    @app.command("acme-runs")
+    def acme_runs(
+        root: Path = typer.Option(None, "--root", help="Project root."),
+        json_: bool = typer.Option(False, "--json", help="Print as JSON."),
+    ) -> None:
+        """List this project's runs the acme way."""
+        ctx = runs_common.make_runs_context(root)
+        rows = [
+            {"run_id": r.run_id, "status": r.status.value, "workflow": r.workflow_name}
+            for r in ctx.store.list_runs(limit=10)
+        ]
+        if json_:
+            typer.echo(json.dumps(rows))
+            return
+        for row in rows:
+            typer.echo(f"{row['run_id']} {row['status']} {row['workflow']}")
+```
+
+```python
+# acme_rayspec/sink.py — an observer of one run
+from pathlib import Path
+
+from rayspec.events.model import RunEvent, StreamRecord
+from rayspec.registry import SinkContext, SinkRegistration
+
+
+class AcmeLogSink:
+    """Appends one line per lifecycle event to a file named in config.yaml."""
+
+    def __init__(self, context: SinkContext) -> None:
+        self.path = Path(context.settings.get("path", "acme.log"))
+
+    async def emit(self, event: RunEvent) -> None:
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{event.ts.isoformat()} {event.type.value} {event.step_path or '-'}\n")
+
+    async def emit_stream(self, step_path: str, record: StreamRecord) -> None:
+        pass  # the per-step transcript; ignore it or write it too
+
+    async def aclose(self) -> None:
+        pass
+
+
+#: The entry point points HERE, not at the class: the id is part of the registration.
+SINK = SinkRegistration(id="acme-log", display_name="Acme log", factory=AcmeLogSink)
+```
+
+Install it (`uv pip install -e .` next to rayspec) and it is live:
+
+```bash
+rayspec plugins                 # acme-rayspec 0.1.0 — ok, adds acme-runs
+rayspec acme-runs --json        # the new command
+```
+
+The sink is opt-in, because a sink observes every run:
+
+```yaml
+# .rayspec/config.yaml (or ~/.rayspec/config.yaml)
+extensions:
+  sinks: [acme-log]             # added NEXT TO the console/--json sink, in this order
+  settings:
+    acme-log: {path: /tmp/acme.log}
+```
+
+The two files merge per key: a project can add `sinks:` without losing the `settings:` block
+declared once in `~/.rayspec/config.yaml`, and a `settings:` entry for one id replaces only that
+id's mapping. A `sinks:` list is replaced as a whole, not appended to.
+
+`settings` is the mapping the factory is handed as `context.settings` — the same idea as
+`providers.<id>` for a provider. An id that names nothing fails the run before it starts, with
+the usual did-you-mean; so does a factory that raises — validate your settings in `__init__` and
+the message you raise is what the user reads (`sink 'acme-log' failed to build: …`, exit 2).
+
+## Adding a command
+
+The entry-point value resolves to a callable `register(app: typer.Typer) -> None` — exactly what
+`rayspec/cli/commands/<name>.py` exposes, so a third-party command module is literally the same
+code as a builtin one, and the same `typer` version is already installed.
+
+What the loader guarantees, so that an installed plugin can never make rayspec unusable:
+
+- builtin commands are registered first and are never shadowed: a plugin command whose name is
+  already taken is removed again and reported with a `RuntimeWarning` naming the plugin and the
+  name it wanted;
+- `register()` is handed rayspec's live command table, and the builtin entries in it are
+  protected by identity: reordering them is harmless, and a plugin that *removes* one is rolled
+  back whole (its own commands go with it) and reported — installing a package can never take a
+  rayspec command away;
+- a plugin that fails to import, is not callable, or raises inside `register()` is skipped —
+  anything it managed to add before raising is rolled back;
+- the root callback belongs to rayspec: a plugin that replaces it (`@app.callback()`) has the
+  replacement dropped, so `--version` and the global help keep working;
+- `rayspec --help` therefore still exits 0 with a broken plugin installed, and `rayspec plugins`
+  shows what happened.
+
+Keep the work in `register()` to registering: it runs on **every** rayspec invocation. Import
+your heavy modules inside the command body, the way the builtin commands do — the scan costs
+about two milliseconds when nothing is installed, and nothing is imported at all when the group
+is empty.
+
+Useful pieces of the CLI layer, all public: `rayspec.cli._runs_common` (project/home/config
+resolution, run lookup with friendly errors, formatting), `rayspec.cli.commands._loader_common`
+(`make_context`, `fail`, `err_console`) and `rayspec.cli._docs.docs_url` for hints that cite a
+page.
 
 ## Adding a provider (entry points)
 
@@ -108,19 +269,105 @@ should one raise anyway (a closed stdout, Rich's `SystemExit` on a broken pipe) 
 its sinks and finishes the run with the store as the only observer. Built in: `QuietConsoleSink`
 (one line per event; subclass and override `format_<event>()` to change a line), `ConsoleSink`
 (the Rich Live tree `rayspec run` shows on a TTY; it degrades to one line per step when stdout is
-not a terminal; `--quiet` swaps it for a problems-only line sink), `JsonStdoutSink` (`--json`), `CollectingSink` (tests), `NullSink`, `MultiSink`
-(fan-out).
-When embedding (`rayspec.engine.runner.Runner(sinks=MultiSink([...]))`) you can add your own; the
-CLI has no flag to load sinks from plugins yet. Persistence is not a sink: the store owns
-`events.jsonl` / `stream.jsonl`.
+not a terminal; `--quiet` swaps it for a problems-only line sink), `JsonStdoutSink` (`--json`),
+`CollectingSink` (tests), `NullSink`, `MultiSink` (fan-out).
+
+Registered ids: `console`, `json`, `quiet`, `null` — plus anything installed under
+`rayspec.sinks`. `extensions.sinks` in `config.yaml` names the ones a run adds — including the
+half of a run that happens after a pause, so `rayspec approve`/`reject`/`resume` deliver the
+remaining events and the final `run.finished` to the same sinks `rayspec run` did; when embedding,
+`rayspec.events.create_sink(id, SinkContext(...))` resolves one and
+`Runner(sinks=MultiSink([...]))` takes whatever you built yourself. Persistence is not a sink:
+the store owns `events.jsonl` / `stream.jsonl`.
+
+`context.stream` is the text stream a stdout-shaped sink may write to, and it is `None` whenever
+the CLI owns stdout itself (`rayspec run --json` puts the JSONL event stream there). A sink that
+was handed no stream must not write to stdout: use `context.console` (stderr), a file, or a
+process. `context.settings` is where its path belongs.
+
+**Redaction is not your problem.** Every sink of a run — builtin or plugin — is wrapped in
+`rayspec.redact.RedactingSink` where the CLI assembles them, so a declared secret is already
+replaced by `[REDACTED:<name>]` in the events and stream records your sink sees. Do not try to
+redact again, and do not read secrets out of the environment to "un-redact" anything.
+
+A sink may run a command; it may not open a socket. Notification sinks are therefore `exec:`-shaped
+— the engine spawns a process and never makes a network call itself (`docs/constitution.md`).
+`examples/notify_webhook` delivers a webhook from a `shell:` step, which is the idiom.
+
+## Approval prompts
+
+`rayspec.engine.approval.ApprovalPrompt` is `async (ApprovalRequest) -> ApprovalAnswer | None`:
+return `ApprovalAnswer(approved=…, comment=…)` to decide, `None` to pause the run (exit 3) so a
+human can `rayspec approve`/`reject` it later. The builtin is the terminal panel
+(`ConsoleApprovalPrompt`, id `console`); `extensions.approval: <id>` in `config.yaml` swaps it
+for an installed one — a policy engine, a prompt that shells out to a paging tool, a queue.
+
+```python
+from rayspec.engine.approval import ApprovalAnswer, ApprovalRequest
+from rayspec.registry import ApprovalContext, ApprovalRegistration
+
+
+class PolicyApproval:
+    def __init__(self, context: ApprovalContext) -> None:
+        self.allow = set(context.settings.get("auto_approve", []))
+
+    async def __call__(self, request: ApprovalRequest) -> ApprovalAnswer | None:
+        if request.step_path in self.allow:
+            return ApprovalAnswer(approved=True, comment="approved by policy")
+        return None                      # pause; a human decides with `rayspec approve`
+
+
+APPROVAL = ApprovalRegistration(id="policy", display_name="Policy", factory=PolicyApproval)
+```
+
+A prompt is only ever asked when the run is interactive (a TTY, no `--yes`/`--no-interactive`);
+otherwise the gate pauses without asking anyone — but the id is resolved either way, so a typo in
+`config.yaml` fails the run with did-you-mean on a machine without a TTY as well. `context.console`
+is the CLI's `rich` console (stderr) when there is one, so a prompt can render a panel without
+building its own.
+
+Keep it fast and cancellable: it runs inside the run's task group.
 
 ## Run stores
 
 `rayspec.store.base.RunStore` is the persistence protocol (`create`, `save`, `load`, `list_runs`,
 `write_output`, `read_output`, `append_event`, `append_stream`, …); `FileRunStore(root)` is the
-only implementation (layout in [runs-and-resume.md](runs-and-resume.md)). `Runner(store=…)`
-accepts any implementation; the CLI always uses the file store under `$RAYSPEC_HOME`. A SQLite
-store is a post-v1 seam.
+builtin (layout in [runs-and-resume.md](runs-and-resume.md)). Register another one under
+`rayspec.stores` with a `StoreRegistration`, whose factory is handed a `StoreContext`
+(`root`, `home`, `project_slug`, `settings`), and resolve it with
+`rayspec.store.create_store(id, context)`; `Runner(store=…)` accepts any implementation.
+
+```python
+from rayspec.registry import StoreContext, StoreRegistration
+
+
+class SqliteRunStore:
+    def __init__(self, context: StoreContext) -> None:
+        self.db = context.root / "runs.sqlite"
+    # ... the RunStore protocol
+
+
+STORE = StoreRegistration(id="sqlite", display_name="SQLite run store", factory=SqliteRunStore)
+```
+
+**Where redaction sits.** A store persists everything a run produces, so this seam is the one
+place a plugin could leak a secret. It cannot: `create_store` never hands a third-party store the
+raw payload. Every store that did not come from the builtin table is returned wrapped in
+`rayspec.store.redacting.RedactingStore`, which applies the run's `Redactor` to the record, the
+outputs, the prompt, the events and the stream records (buffering across chunk boundaries, so a
+secret split over two deltas is caught) *before* the wrapped store sees them. Assign the run's
+redactor to the returned store's `redactor` attribute exactly as the CLI does for the builtin
+one; a store implementation itself never has to redact anything, and cannot un-redact what it was
+given. Members that are not part of that reviewed surface are not forwarded at all — a store
+write added later has to be implemented on the boundary, which is what keeps the rule true over
+time. The builtin `FileRunStore` is the exception, and only because it applies the same
+`Redactor` closer to the bytes (a JSON output is redacted on the parsed value, which the wrapper
+cannot do for a store it does not control).
+
+Today the seam is for **embedding**: the run-management commands (`runs`, `show`, `logs`,
+`resume`, …) read `$RAYSPEC_HOME/projects/<slug>/runs/` directly, so a run written to a different
+backend is not listed by them yet. `config.yaml` therefore has no `store:` key — a store plugin
+is selected in the code that builds the `Runner`.
 
 ## Embedding the engine
 
@@ -140,15 +387,26 @@ print(result.status, result.exit_code, result.outputs)
 
 `Runner` also accepts injected `providers={"claude": StubProvider(...)}`, `sinks`, an
 `approval_prompt` (`async (ApprovalRequest) -> ApprovalAnswer | None`, `None` = pause),
-`workspace`, `RunOptions(dry_run=…, yes=…, fail_fast=…, resume=…)` and `resume_run_id`.
+`workspace`, `RunOptions(dry_run=…, yes=…, fail_fast=…, resume=…)` and `resume_run_id`. All three
+of `store`, `sinks` and `approval_prompt` can be resolved by id instead of constructed by hand —
+`rayspec.store.create_store`, `rayspec.events.create_sink`,
+`rayspec.registry.create_approval` — which is what lets another package drive the same engine
+with its own persistence and observers.
+
+Registering programmatically (no packaging involved) works too, and takes precedence over an
+entry point of the same id:
+
+```python
+from rayspec.registry import SinkRegistration, register_sink
+
+register_sink(SinkRegistration(id="mine", display_name="Mine", factory=MySink))
+```
 
 ## Roadmap
 
-Planned, in rough order: third-party providers via entry points, `rayspec pick`, runtime child
-runs (a `workflow:` step) and run-level `defaults.timeout_total`.
+Planned, in rough order: `rayspec pick`, runtime child runs (a `workflow:` step) and run-level
+`defaults.timeout_total`.
 
-Shipped since this page was written: `secret: true` inputs (1.0.0) and the run-level
-`defaults.budget_usd` / `defaults.max_tokens` circuit breaker.
-
-A sink may run a command; it may not open a socket. Notification sinks are therefore `exec:`-shaped
-— the engine spawns a process and never makes a network call itself (`docs/constitution.md`).
+Shipped since this page was written: `secret: true` inputs, the run-level `defaults.budget_usd` /
+`defaults.max_tokens` circuit breaker, third-party providers, and the command/store/sink/approval
+entry points described above.

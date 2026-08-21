@@ -14,7 +14,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, TextIO, TypeVar
 
 import anyio
 import typer
@@ -33,6 +33,7 @@ from rayspec.cli.commands._loader_common import (
     make_context,
     report_lines,
 )
+from rayspec.config import ExtensionsSpec
 from rayspec.engine.approval import (
     ApprovalAnswer,
     ApprovalPrompt,
@@ -63,6 +64,10 @@ from rayspec.textsafe import safe_text
 if TYPE_CHECKING:
     from rayspec.providers.stub import StubScript
     from rayspec.store.model import RunRecord
+
+
+#: What :func:`_built` returns — the extension object a third-party factory produced.
+T = TypeVar("T")
 
 
 def _err(message: str) -> None:
@@ -719,8 +724,26 @@ def register(app: typer.Typer) -> None:
         )
         store.redactor = redactor
         warn_unredactable_secrets(out, redactor)  # a value too short to redact is named
-        sinks = _sinks(json_, out, verbose=verbose and not quiet, quiet=quiet, redactor=redactor)
-        prompt = approval_prompt_for(sinks, interactive=interactive)
+        try:
+            # an id in `extensions:` that names nothing is a usage error, not a crash mid-run
+            sinks = _sinks(
+                json_,
+                out,
+                verbose=verbose and not quiet,
+                quiet=quiet,
+                redactor=redactor,
+                extensions=ctx.config.extensions,
+            )
+            prompt = approval_prompt_for(
+                sinks,
+                interactive=interactive,
+                prompt=configured_approval(
+                    ctx.config.extensions, interactive=interactive, console=out
+                ),
+            )
+        except RayspecError as exc:
+            fail(str(exc), hint=exc.hint)
+            return
         options = RunOptions(
             dry_run=dry_run,
             exec_shell=exec_shell,
@@ -795,6 +818,7 @@ def _sinks(
     verbose: bool,
     quiet: bool,
     redactor: Redactor = NULL_REDACTOR,
+    extensions: ExtensionsSpec | None = None,
 ) -> Any:
     """The event sinks of one run: JSONL on stdout, problems-only lines, or the console tree.
 
@@ -805,7 +829,9 @@ def _sinks(
     This is the ONE place a sink is built, so it is the one place redaction is wired in.
     Every sink is wrapped in a :class:`~rayspec.redact.RedactingSink` when the run has known
     secret values, which covers the console tree, the quiet lines and ``--json`` alike — and any
-    sink added later, without it having to remember the rule.
+    sink added later, without it having to remember the rule. That includes the sinks
+    ``config.extensions.sinks`` names: a third-party observer is redacted by construction,
+    because it is built here like every other one.
     """
     from rayspec.events.sinks import ConsoleSink, JsonStdoutSink, MultiSink
 
@@ -813,10 +839,115 @@ def _sinks(
         return RedactingSink(sink, redactor) if redactor else sink
 
     if json_mode:
-        return MultiSink([wrap(JsonStdoutSink(sys.stdout))])
-    if quiet:
-        return MultiSink([wrap(_problems_only_sink(out))])
-    return MultiSink([wrap(ConsoleSink(out, verbose=verbose, summary=False))])
+        primary: Any = JsonStdoutSink(sys.stdout)
+    elif quiet:
+        primary = _problems_only_sink(out)
+    else:
+        primary = ConsoleSink(out, verbose=verbose, summary=False)
+    sinks = [wrap(primary)]
+    sinks += [
+        wrap(sink)
+        for sink in configured_sinks(
+            extensions,
+            out,
+            verbose=verbose,
+            quiet=quiet,
+            # under --json stdout carries the JSONL event stream and belongs to the CLI: a
+            # plugin writing to the stream it was handed would corrupt the machine-readable
+            # contract, so it is handed none
+            stream=None if json_mode else sys.stdout,
+        )
+    ]
+    return MultiSink(sinks)
+
+
+def configured_sinks(
+    extensions: ExtensionsSpec | None,
+    out: Console,
+    *,
+    verbose: bool,
+    quiet: bool,
+    stream: TextIO | None = None,
+) -> list[Any]:
+    """The sinks ``config.extensions.sinks`` names, built through :mod:`rayspec.registry`.
+
+    They are ADDITIONAL observers next to the CLI's own sink, in the order they are configured;
+    an id that names nothing raises :class:`~rayspec.registry.UnknownExtensionError` (with
+    did-you-mean) before the run starts. ``stream`` is what a stdout-shaped sink may write to —
+    ``None`` whenever the CLI owns stdout itself.
+    """
+    if extensions is None or not extensions.sinks:
+        return []
+    from rayspec.registry import SinkContext, create_sink
+
+    built: list[Any] = []
+    for sink_id in extensions.sinks:
+        context = SinkContext(
+            console=out,
+            stream=stream,
+            verbose=verbose,
+            quiet=quiet,
+            settings=extensions.settings_for(sink_id),
+        )
+        built.append(
+            _built("sink", sink_id, lambda sid=sink_id, ctx=context: create_sink(sid, ctx))
+        )
+    return built
+
+
+def _built(kind: str, extension_id: str, build: Callable[[], T]) -> T:
+    """``build()``, with anything a third-party factory raises turned into a usage error.
+
+    A factory is code rayspec did not write: letting a ``ValueError`` out of it would end the
+    command with a traceback and exit 1 — the code that means "the workflow failed", for a run
+    that was never created. Naming the extension makes it what it is, a configuration or
+    packaging problem, the way an unknown id already is.
+    """
+    try:
+        return build()
+    except RayspecError:
+        raise  # an unknown id already says exactly what is wrong
+    except Exception as exc:
+        raise RayspecError(
+            f"{kind} {extension_id!r} failed to build: {type(exc).__name__}: {exc}",
+            hint=f"this comes from the package providing the {kind}, not from rayspec — check "
+            f"`extensions.settings.{extension_id}` in config.yaml, or remove the id from "
+            "`extensions:` to run without it",
+        ) from exc
+
+
+def configured_approval(
+    extensions: ExtensionsSpec | None, *, interactive: bool, console: Console | None = None
+) -> ApprovalPrompt | None:
+    """The approval prompt ``config.extensions.approval`` names, built through the registry.
+
+    ``None`` — which :func:`approval_prompt_for` reads as "use the builtin
+    :class:`~rayspec.engine.approval.ConsoleApprovalPrompt`" — when nothing is configured or the
+    run cannot ask anyway. The builtin prompt is registered under the id ``console`` and can be
+    named explicitly; it is not resolved through the registry by default so that the default
+    path stays exactly what it was.
+
+    A configured id is RESOLVED even when the run can never ask: a typo in ``config.yaml`` is a
+    usage error on a machine without a TTY exactly as it is on one — which is where a policy or
+    queue prompt is installed in the first place. Only the prompt's construction is skipped, so
+    a factory never runs (and never opens anything) for a run that will not use it.
+    """
+    approval_id = extensions.approval if extensions else None
+    if not approval_id:
+        return None
+    from rayspec.registry import ApprovalContext, create_approval, get_approval
+
+    get_approval(approval_id)  # unknown id: exit 2 with did-you-mean, TTY or not
+    if not interactive:
+        return None
+    settings = extensions.settings_for(approval_id) if extensions else {}
+    return _built(
+        "approval",
+        approval_id,
+        lambda: create_approval(
+            approval_id, ApprovalContext(console=console, interactive=True, settings=settings)
+        ),
+    )
 
 
 class SuspendingApprovalPrompt:
@@ -878,6 +1009,8 @@ __all__ = [
     "SUMMARY_KEYS",
     "SuspendingApprovalPrompt",
     "approval_prompt_for",
+    "configured_approval",
+    "configured_sinks",
     "cost_label",
     "failed_leaf_paths",
     "load_stub_script",

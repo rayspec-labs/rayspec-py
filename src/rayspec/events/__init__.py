@@ -4,6 +4,11 @@
 Exports only — see :mod:`rayspec.events.model`, :mod:`rayspec.events.base` and
 :mod:`rayspec.events.sinks`. The sinks are imported lazily (module ``__getattr__``) so that
 importing the models (e.g. via ``rayspec.store.model``) does not load ``rich``.
+
+The discovery helpers of :mod:`rayspec.registry` — where sinks are registered (the builtins plus
+whatever is installed under the ``rayspec.sinks`` entry-point group) — are re-exported the same
+lazy way: ``create_sink``, ``list_sinks``, ``register_sink``, ``SinkContext``,
+``SinkRegistration``.
 """
 
 from __future__ import annotations
@@ -22,6 +27,18 @@ if TYPE_CHECKING:
         NullSink,
         QuietConsoleSink,
     )
+    from rayspec.registry import (
+        SinkContext,
+        SinkRegistration,
+        create_sink,
+        list_sinks,
+        register_sink,
+    )
+
+#: Resolved from :mod:`rayspec.registry` on first use (it must not be imported eagerly either).
+_REGISTRY = frozenset(
+    {"SinkContext", "SinkRegistration", "create_sink", "list_sinks", "register_sink"}
+)
 
 _SINKS = frozenset(
     {
@@ -41,6 +58,10 @@ def __getattr__(name: str) -> object:
         from rayspec.events import sinks
 
         return getattr(sinks, name)
+    if name in _REGISTRY:
+        from rayspec import registry
+
+        return getattr(registry, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -54,5 +75,10 @@ __all__ = [
     "NullSink",
     "QuietConsoleSink",
     "RunEvent",
+    "SinkContext",
+    "SinkRegistration",
     "StreamRecord",
+    "create_sink",
+    "list_sinks",
+    "register_sink",
 ]

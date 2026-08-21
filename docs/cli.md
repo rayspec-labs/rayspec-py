@@ -331,6 +331,20 @@ rayspec providers [--json]
 The provider registry (builtins and entry-point plugins) and the capability matrix
 ([providers.md](providers.md)). `--json`: `[{id, display_name, builtin, capabilities: {...}}]`.
 
+### `rayspec plugins`
+
+```
+rayspec plugins [--json]
+```
+
+Every installed rayspec plugin: the commands, run stores, event sinks, approval prompts and
+providers other packages publish through entry points, with the distribution and version each
+comes from and whether it was loaded or skipped (and why). Use it when a command, store or sink
+appears that you did not write. The second table lists the ids that are registered right now —
+what `extensions:` in `config.yaml` may name. `--json`: `{plugins: [{group, name, value,
+distribution, version, status, detail}], registered: {stores, sinks, approvals}}`. Writing one:
+[extending.md](extending.md).
+
 ### `rayspec projects add`
 
 ```

@@ -1,0 +1,286 @@
+"""``extensions:`` in ``config.yaml``: a run picks up an installed sink and approval prompt.
+
+These are end-to-end: a fake distribution publishes the entry point, ``config.yaml`` names the
+id, and ``rayspec run`` is what proves the wiring — the engine is handed the plugin's objects
+without knowing anything about plugins.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from .conftest import InstallPlugin
+
+WORKFLOW = """
+rayspec: 1
+name: demo
+isolation: none
+steps:
+  - {id: hello, shell: echo hi}
+"""
+
+APPROVE_WORKFLOW = """
+rayspec: 1
+name: gated
+isolation: none
+steps:
+  - {id: hello, shell: echo hi}
+  - {id: gate, needs: [hello], approve: {message: "ship it?"}}
+"""
+
+SINK_MODULE = '''
+from pathlib import Path
+
+from rayspec.registry import SinkRegistration
+
+
+class FileSink:
+    """Appends one line per event to the file named in the plugin's settings."""
+
+    def __init__(self, context):
+        self.path = Path(context.settings["path"])
+
+    async def emit(self, event):
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{event.type.value}\\n")
+
+    async def emit_stream(self, step_path, record):
+        pass
+
+    async def aclose(self):
+        pass
+
+
+SINK = SinkRegistration("recorder", "Recording sink", FileSink)
+'''
+
+APPROVAL_MODULE = '''
+from pathlib import Path
+
+from rayspec.engine.approval import ApprovalAnswer
+from rayspec.registry import ApprovalRegistration
+
+
+class PolicyApproval:
+    """Approves every gate and writes down what it was asked."""
+
+    def __init__(self, context):
+        self.path = Path(context.settings["path"])
+        self.console = context.console
+
+    async def __call__(self, request):
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{request.step_path}: {request.message}\\n")
+            fh.write(f"console: {type(self.console).__name__}\\n")
+        return ApprovalAnswer(approved=True, comment="policy says yes")
+
+
+APPROVAL = ApprovalRegistration("policy", "Policy approval", PolicyApproval)
+'''
+
+
+def _project(tmp_path: Path, workflow: str, config: str) -> Path:
+    root = tmp_path / "proj"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "demo.yaml").write_text(workflow, encoding="utf-8")
+    (root / ".rayspec" / "config.yaml").write_text(config, encoding="utf-8")
+    return root
+
+
+def _run(args: list[str]):
+    from rayspec.cli.app import build_app
+
+    return CliRunner().invoke(build_app(), args)
+
+
+def test_a_configured_sink_observes_the_run(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    events = tmp_path / "events.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    project = _project(
+        tmp_path,
+        WORKFLOW,
+        f"extensions:\n  sinks: [recorder]\n  settings:\n    recorder: {{path: {events}}}\n",
+    )
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    lines = events.read_text(encoding="utf-8").splitlines()
+    assert "run.started" in lines
+    assert "run.finished" in lines
+
+
+def test_a_configured_approval_prompt_answers_the_gate(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = tmp_path / "asked.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_approval": APPROVAL_MODULE},
+        entry_points={"rayspec.approvals": {"policy": "acme_approval:APPROVAL"}},
+    )
+    project = _project(
+        tmp_path,
+        APPROVE_WORKFLOW,
+        f"extensions:\n  approval: policy\n  settings:\n    policy: {{path: {asked}}}\n",
+    )
+    monkeypatch.setattr("rayspec.cli._runs_common.stdin_is_tty", lambda: True)
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    written = asked.read_text(encoding="utf-8")
+    assert written.startswith("gate: ship it?")
+    assert "console: Console" in written  # the CLI's console, not one the plugin has to build
+
+
+def test_an_unknown_id_fails_with_did_you_mean(tmp_path: Path, home: Path) -> None:
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  sinks: [consle]\n")
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 2
+    assert "unknown sink 'consle'" in result.output
+    assert "did you mean 'console'?" in result.output
+
+
+def test_an_unknown_approval_id_fails_even_without_a_tty(tmp_path: Path, home: Path) -> None:
+    """A non-interactive run never asks — but a misspelled id is still a usage error."""
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  approval: nope\n")
+    result = _run(["run", "demo", "--root", str(project), "--no-interactive"])
+    assert result.exit_code == 2, result.output
+    assert "unknown approval 'nope'" in result.output
+    assert "available approvals: console" in result.output
+
+
+def test_a_configured_sink_observes_the_rest_of_a_paused_run(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """`approve` resumes the run in-process, so the configured sinks apply there too."""
+    events = tmp_path / "events.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    project = _project(
+        tmp_path,
+        APPROVE_WORKFLOW,
+        f"extensions:\n  sinks: [recorder]\n  settings:\n    recorder: {{path: {events}}}\n",
+    )
+    paused = _run(["run", "demo", "--root", str(project), "--no-interactive"])
+    assert paused.exit_code == 3, paused.output
+    first = events.read_text(encoding="utf-8").splitlines()
+    assert "run.paused" in first
+    match = re.search(r"\d{8}-\d{6}-[a-z0-9]+", paused.output)
+    assert match, paused.output
+
+    approved = _run(["approve", match.group(0), "--root", str(project)])
+    assert approved.exit_code == 0, approved.output
+    rest = events.read_text(encoding="utf-8").splitlines()[len(first) :]
+    assert "run.resumed" in rest  # the resumed half of the run reaches the sink too
+    assert "run.finished" in rest
+
+
+EXPLODING_SINK_MODULE = '''
+from rayspec.registry import SinkRegistration
+
+
+class Exploding:
+    """A factory that rejects its settings the way a third-party package would."""
+
+    def __init__(self, context):
+        raise ValueError("acme: settings.path is required")
+
+
+SINK = SinkRegistration("recorder", "Recording sink", Exploding)
+'''
+
+
+def test_a_factory_that_raises_is_a_usage_error_naming_the_extension(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """A packaging/configuration problem is exit 2, not the exit code of a failed run."""
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": EXPLODING_SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  sinks: [recorder]\n")
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 2, result.output
+    assert "sink 'recorder' failed to build" in result.output
+    assert "settings.path is required" in result.output
+
+
+STREAM_SINK_MODULE = '''
+from pathlib import Path
+
+from rayspec.registry import SinkRegistration
+
+
+class StreamReporter:
+    """Writes down what it was handed as `context.stream` and nothing else."""
+
+    def __init__(self, context):
+        Path(context.settings["path"]).write_text(
+            f"stream: {type(context.stream).__name__}\\n", encoding="utf-8"
+        )
+
+    async def emit(self, event):
+        pass
+
+    async def emit_stream(self, step_path, record):
+        pass
+
+    async def aclose(self):
+        pass
+
+
+SINK = SinkRegistration("reporter", "Stream reporter", StreamReporter)
+'''
+
+
+def test_a_sink_is_not_handed_stdout_when_the_cli_owns_it(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """Under --json the JSONL stream is the contract: a plugin must not be invited into it."""
+    seen = tmp_path / "seen.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_stream": STREAM_SINK_MODULE},
+        entry_points={"rayspec.sinks": {"reporter": "acme_stream:SINK"}},
+    )
+    project = _project(
+        tmp_path,
+        WORKFLOW,
+        f"extensions:\n  sinks: [reporter]\n  settings:\n    reporter: {{path: {seen}}}\n",
+    )
+    assert _run(["run", "demo", "--root", str(project), "--json"]).exit_code == 0
+    assert seen.read_text(encoding="utf-8") == "stream: NoneType\n"
+
+    assert _run(["run", "demo", "--root", str(project)]).exit_code == 0
+    assert seen.read_text(encoding="utf-8") != "stream: NoneType\n"
+
+
+def test_a_project_block_merges_with_the_user_level_one(
+    install_plugin: InstallPlugin, tmp_path: Path, home: Path
+) -> None:
+    """`settings:` declared once in ~/.rayspec/config.yaml survives a project `sinks:` line."""
+    events = tmp_path / "events.log"
+    install_plugin(
+        "acme-rayspec",
+        modules={"acme_sink": SINK_MODULE},
+        entry_points={"rayspec.sinks": {"recorder": "acme_sink:SINK"}},
+    )
+    (home / "config.yaml").write_text(
+        f"extensions:\n  settings:\n    recorder: {{path: {events}}}\n", encoding="utf-8"
+    )
+    project = _project(tmp_path, WORKFLOW, "extensions:\n  sinks: [recorder]\n")
+    result = _run(["run", "demo", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "run.finished" in events.read_text(encoding="utf-8").splitlines()

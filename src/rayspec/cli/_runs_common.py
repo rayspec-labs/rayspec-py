@@ -759,6 +759,7 @@ def resume_run(
     from rayspec.cli.commands.run import (
         _sinks,
         approval_prompt_for,
+        configured_approval,
         print_summary,
         warn_unredactable_secrets,
         workspace_from_record,
@@ -794,8 +795,28 @@ def resume_run(
     redactor = build_redactor(ctx.config, {**config_secrets, **dict(inputs or {})})
     store.redactor = redactor
     warn_unredactable_secrets(out, redactor)  # a value too short to redact is named
-    sinks = _sinks(json_mode, out, verbose=verbose and not quiet, quiet=quiet, redactor=redactor)
-    prompt = approval_prompt_for(sinks, interactive=interactive)  # console tree paused while asking
+    # `config.extensions` applies to the second half of a run exactly as it did to the first:
+    # an audit sink that observed the steps before the gate observes the ones after it, and
+    # `run.finished` reaches it however the run was resumed. An id that names nothing is a
+    # usage error here too, not a crash mid-resume.
+    try:
+        sinks = _sinks(
+            json_mode,
+            out,
+            verbose=verbose and not quiet,
+            quiet=quiet,
+            redactor=redactor,
+            extensions=ctx.config.extensions,
+        )
+        # console tree paused while asking
+        prompt = approval_prompt_for(
+            sinks,
+            interactive=interactive,
+            prompt=configured_approval(ctx.config.extensions, interactive=interactive, console=out),
+        )
+    except RayspecError as exc:
+        fail(str(exc), hint=exc.hint)
+        return EXIT_USAGE
     options = RunOptions(
         dry_run=run.dry_run,
         yes=yes,
