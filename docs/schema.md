@@ -43,8 +43,9 @@ outputs: {}               # name → template (deep-rendered when the run succee
 | `timeout_total` | `null` | Run-level **wall-clock cap**: a [duration](#durations) > 0 (`30m`, `2h`). Measured from the run's *original* start, so a resume keeps counting — `2h` is two hours of run, not two hours per attempt. Same breaker semantics as `budget_usd`; not to be confused with `timeout` above, which is per attempt of one step. |
 
 When a cap is exceeded no new step starts (pending steps are skipped with `skip_reason:
-budget_exceeded`; `join: always` steps and resume replays still run), running steps finish
-(drain), and the run ends `failed` with reason
+budget_exceeded`; `join: always` steps and resume replays still run) — a step that is already
+waiting for a `max_parallel` slot is asked again when it gets one, so a backlog does not outlive
+the cap — running steps finish (drain), and the run ends `failed` with reason
 `budget exceeded (tokens 12,000 > max_tokens 10,000)` — or
 `time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` for `timeout_total` (exit 1). The
 three caps are one breaker: whichever trips first ends the run the same way. Raise the cap and resume

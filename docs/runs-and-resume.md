@@ -317,14 +317,16 @@ defaults:
   max_tokens: 2M         # or 2000000 / "500k"
 ```
 
-- After every leaf step finishes (and between retry attempts) the engine sums the tokens
+- After every leaf step finishes, between retry attempts, and again when a leaf takes its
+  `max_parallel` slot, the engine sums the tokens
   (input + output) and the cost of every step of this run — provider-reported cost, else the
   pricing-table estimate (`~$`); a step without any known cost counts 0 towards `budget_usd`
   (tokens are always known).
 - The first time a cap is exceeded a `warning` event is emitted and the breaker **trips**: no new
   step starts anywhere (pending steps — leaves, composites, gates — are recorded `skipped` with
-  `skip_reason: budget_exceeded`; a loop starts no further iteration; a failed attempt is not
-  retried), **running steps finish** (drain, no cancellation), and the run ends `failed` with
+  `skip_reason: budget_exceeded`; a leaf that was already queued for a `max_parallel` slot is
+  re-checked when it gets one and skips too; a loop starts no further iteration; a failed attempt
+  is not retried), **running steps finish** (drain, no cancellation), and the run ends `failed` with
   `reason: budget exceeded (cost ~$5.120 > budget_usd $5.000)` / `(tokens 2,104,331 >
   max_tokens 2,000,000)` — exit **1**. Composites whose body hit the cap fail with a `budget` /
   `body` error naming it. As in every drain, `join: always` steps still run (whatever their kind:
@@ -351,10 +353,13 @@ defaults:
   means two hours of *run*, not two hours per attempt — including the time a run spent waiting
   at an approval gate. Resuming a run that has already used its budget of time starts nothing
   and ends `failed` right away; finished steps are still replayed.
-- The cap is checked when a step finishes, so it never cancels anything: a step that is running
-  when the clock runs out is allowed to finish, and only the steps that had not started yet are
-  skipped (`skip_reason: budget_exceeded`, the same drain as above). It is a *circuit breaker*,
-  not a kill switch — use `timeout:` (per attempt, per step) or `stop:` if you need one.
+- The cap is checked when a step finishes **and when a step takes its `max_parallel` slot**, so
+  it never cancels anything: a step that is running when the clock runs out is allowed to finish,
+  and every step that had not started yet is skipped (`skip_reason: budget_exceeded`, the same
+  drain as above) — including one that was already queued behind `max_parallel`, which is why a
+  fan-out cannot keep launching work for hours after a `2h` cap ran out. It is a *circuit
+  breaker*, not a kill switch — use `timeout:` (per attempt, per step) or `stop:` if you need
+  one.
 - The run ends `failed` with
   `reason: time limit exceeded (elapsed 2h 4m > timeout_total 2h 0m)` — exit **1**. Raise the
   cap and resume with `--force` (the workflow hash changed) to continue where it stopped.

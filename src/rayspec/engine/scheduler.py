@@ -326,12 +326,21 @@ async def run_leaf(
         rec.cost_usd = cost_total
         rec.cost_source = source_total
 
+    last: StepOutcome | None = None
     while True:
         timeout = ctx.timeout_for(step, scope)
         async with ctx.runtime.leaf_permit():
             # Only once the permit is held does the attempt exist: a leaf cancelled while it
             # queues for a ``max_parallel`` slot / the launch gate keeps the totals its record
             # carries (earlier attempts, the previous run) and is not counted as an attempt.
+            if step.join != "always" and await ctx.check_budget(pending=record) is not None:
+                # The run-level cap may have tripped while this attempt waited for a slot. The
+                # ready-set gate cannot see a step that is already queued, and a queued step has
+                # not started — so the breaker is ASKED again here (not just read: the clock can
+                # run out with no step finishing), or a wall-clock cap would keep launching the
+                # backlog long after it ran out. A retry keeps the failure it already has; a
+                # first attempt is recorded like any other step the cap skipped.
+                return last if last is not None else _skipped(record, BUDGET_SKIP_REASON)
             record.attempts += 1
             attempts_this_run += 1
             attempt = record.attempts
@@ -360,6 +369,7 @@ async def run_leaf(
             except Exception as exc:
                 outcome = _failed(record, error_info(exc, type_="engine"))
         accumulate(outcome.record)
+        last = outcome
         rec = outcome.record
         if rec.status is StepStatus.FAILED and await ctx.check_budget(pending=rec) is not None:
             return outcome  # a retry is a new start — not once the cap tripped

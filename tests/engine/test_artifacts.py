@@ -48,6 +48,9 @@ def test_artifacts_default_to_nothing_and_accept_relative_paths() -> None:
         ("build/../../outside.txt", "'..'"),
         ("", "empty"),
         ("build/", "must name a file"),
+        ("out/{{ item }}.txt", "not templated"),
+        ("out/{% if x %}a{% endif %}.txt", "not templated"),
+        ("we\nird.txt", "control character"),
     ],
 )
 def test_escaping_artifact_paths_are_refused_at_load_time(
@@ -65,6 +68,13 @@ def test_escaping_artifact_paths_are_refused_at_load_time(
     assert ".rayspec/workflows/t.yaml:5" in message  # file:line of the offending step
     assert "artifacts" in message and needle in message
     assert "build/report.md" in message  # the fix hint shows a good path
+
+
+def test_a_declared_path_is_normalised() -> None:
+    """``./a.txt`` and ``a.txt`` name the same file: the stored path must not disagree with the
+    ref the store computes from it."""
+    step = parse_step({"id": "a", "shell": "true", "artifacts": ["./build/report.md", "b//c.txt"]})
+    assert step.artifacts == ["build/report.md", "b/c.txt"]
 
 
 def test_artifacts_are_declarable_on_every_kind() -> None:

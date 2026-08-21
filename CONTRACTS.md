@@ -1179,6 +1179,13 @@ Semantics fixed here (tests in `tests/engine/`):
   names the knob that tripped. `scheduler.finish` asks the breaker after EVERY step when
   `ctx.time_capped` (a shell-only run reports no usage), and `Runner.run` asks it once before
   the graph starts so a resumed run whose clock already expired starts nothing.
+- The breaker is asked at TWO points, and both are load-bearing: when a step becomes ready
+  (`run_graph`) and again inside `run_leaf` once the leaf holds its `max_parallel` permit
+  (`join: always` exempt). The second one is what makes "no new step starts" true for a step
+  that was ready before the cap tripped and then queued for a slot; it ASKS `check_budget`
+  rather than reading `ctx.budget_exceeded`, because the wall clock can run out while nothing
+  finishes. A first attempt is recorded `skipped`/`budget_exceeded` (`attempts` stays 0); a
+  retry that loses the permit race keeps the failed outcome it already has.
 
 ### CLI `run` — `rayspec run <workflow> [--input k=v]* [--inputs-file f] [--root]
 [--dry-run] [--stubs f] [--stubs-init f] [--exec-shell] [--yes] [--no-interactive] [--json] [--quiet]

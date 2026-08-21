@@ -139,3 +139,32 @@ async def test_resume_measures_from_the_original_start(harness: Harness) -> None
     # finished steps are still replayed (a replay is free) — nothing new starts
     assert expired.reused == ["a", "b"]
     assert harness.statuses(first.run_id) == {"a": "succeeded", "b": "succeeded"}
+
+
+async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Harness) -> None:
+    """The gate is asked again once the permit is held: a queued step is a step that has not
+    started, and a wall-clock cap that keeps launching queued work is not a cap."""
+    harness.workflow(
+        "t",
+        wf(
+            "  timeout_total: 0.05\n  max_parallel: 1",
+            """
+  - {id: a, prompt: "one"}
+  - {id: b, prompt: "two"}
+  - {id: c, prompt: "three"}
+  - {id: cleanup, join: always, shell: "echo cleaned"}
+""",
+        ),
+    )
+    provider = StubProvider(script={"steps": {"a": {"latency_ms": 120}}})
+    result = await harness.run("t", providers={"claude": provider})
+    assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
+    statuses = harness.statuses(result.run_id)
+    assert statuses["a"] == "succeeded"
+    # b and c were ready before the clock ran out and then waited for the single slot
+    assert statuses["b"] == "skipped" and statuses["c"] == "skipped"
+    run = harness.record(result.run_id)
+    assert run.steps["b"].skip_reason == BUDGET_SKIP_REASON
+    assert run.steps["b"].attempts == 0  # queued, never attempted
+    assert statuses["cleanup"] == "succeeded"  # join: always still drains
+
