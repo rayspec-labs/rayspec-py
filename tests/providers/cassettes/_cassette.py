@@ -7,11 +7,14 @@ is handed to the real ``ClaudeProvider`` / ``CodexProvider`` through the same se
 use (a fake ``query`` / a fake ``AsyncCodex``), so what is asserted is the adapter's own fold.
 
 The fake Codex client is deliberately minimal — the SDK's threading and cancellation hazards are
-covered by ``tests/providers/test_codex.py``; a cassette is about message shapes.
+covered by ``tests/providers/test_codex.py``; a cassette is about message shapes. Both doubles do
+bind every call they receive against the real SDK signature (:func:`bound`), so the seam is pinned
+in both directions: what the SDK sends back, and what the adapter sends it.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
@@ -24,6 +27,17 @@ CASSETTE_DIR = Path(__file__).resolve().parent
 
 #: The provenance values a cassette may declare (see the package docstring).
 CAPTURES = ("recorded", "authored")
+
+
+def bound(target: Any, *args: Any, **kwargs: Any) -> inspect.BoundArguments:
+    """The arguments of one recorded call, bound against the SDK's own signature.
+
+    A cassette pins the messages an SDK sends *back*; this pins what the adapter sends *it*. A
+    double that accepts anything would answer a call the SDK no longer accepts — a renamed or
+    removed parameter would then surface in production instead of here. ``TypeError`` is what the
+    real object would raise, so it is what the double raises.
+    """
+    return inspect.signature(target).bind(*args, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -163,8 +177,10 @@ class _FakeQuery:
         self.messages = messages
         self.options: Any = None
 
-    def __call__(self, *, prompt: Any, options: Any = None, transport: Any = None) -> Any:
-        self.options = options
+    def __call__(self, **kwargs: Any) -> Any:
+        from claude_agent_sdk import query
+
+        self.options = bound(query, **kwargs).arguments.get("options")
         return self._gen()
 
     async def _gen(self) -> AsyncIterator[Any]:
@@ -230,12 +246,17 @@ class _FakeTurn:
 
 
 class _FakeThread:
+    """Stands in for ``AsyncThread``: every call is bound against the SDK's signature first."""
+
     def __init__(self, client: _FakeCodex, thread_id: str) -> None:
         self.client = client
         self.id = thread_id
 
-    async def turn(self, input: Any, **kwargs: Any) -> _FakeTurn:
-        self.client.turn_inputs.append(input)
+    async def turn(self, *args: Any, **kwargs: Any) -> _FakeTurn:
+        from openai_codex import AsyncThread
+
+        call = bound(AsyncThread.turn, self, *args, **kwargs)
+        self.client.turn_inputs.append(call.arguments["input"])
         return _FakeTurn(self.client.notifications, self.client.turn_id)
 
 
@@ -249,11 +270,17 @@ class _FakeCodex:
         self.turn_inputs: list[Any] = []
         self.closed = False
 
-    async def thread_start(self, **kwargs: Any) -> _FakeThread:
+    async def thread_start(self, *args: Any, **kwargs: Any) -> _FakeThread:
+        from openai_codex import AsyncCodex
+
+        bound(AsyncCodex.thread_start, self, *args, **kwargs)
         return _FakeThread(self, self.thread_id)
 
-    async def thread_resume(self, thread_id: str, **kwargs: Any) -> _FakeThread:
-        return _FakeThread(self, thread_id)
+    async def thread_resume(self, *args: Any, **kwargs: Any) -> _FakeThread:
+        from openai_codex import AsyncCodex
+
+        call = bound(AsyncCodex.thread_resume, self, *args, **kwargs)
+        return _FakeThread(self, str(call.arguments["thread_id"]))
 
     async def close(self) -> None:
         self.closed = True

@@ -6,7 +6,9 @@ in the SDK's own wire shapes, plus the :class:`~rayspec.providers.base.AgentEven
 :class:`~rayspec.providers.base.AgentResult` rayspec must fold them into. Replaying it exercises
 the adapter end to end — the SDKs' own parsers turn the wire messages back into SDK objects, so a
 provider that renames a field, drops a message type or stops recognising a notification fails a
-test here instead of a production run.
+test here instead of a production run. The request side is pinned the same way: the doubles the
+adapter talks to bind every call against the real SDK signature, so a parameter the SDK renamed or
+removed raises here instead of on the first real turn.
 
 Cassettes never touch the network and carry no credentials: the transcripts are replayed from
 disk. They are scrubbed like the golden corpus — no path, host name, account or request

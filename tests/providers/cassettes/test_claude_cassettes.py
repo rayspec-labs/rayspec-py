@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from ._cassette import Cassette, event_rows, load_cassettes, replay_claude, result_row
+from ._cassette import (
+    Cassette,
+    _FakeQuery,
+    event_rows,
+    load_cassettes,
+    replay_claude,
+    result_row,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -90,10 +97,26 @@ async def test_a_refused_tool_call_reaches_the_result(
 async def test_usage_counts_cache_reads_and_writes_as_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``Usage.input`` includes cached and cache-write tokens — pricing depends on it."""
-    result, _ = await replay_claude(
+    """``Usage.input`` includes cached and cache-write tokens — pricing depends on it.
+
+    Both halves are asserted where each is visible: the turn's first message is the one that
+    writes to the cache, the final one only reads from it. Pinning the result alone would leave
+    the cache-WRITE half of the claim untested.
+    """
+    result, collector = await replay_claude(
         cassette("tool_use_turn"), cwd=str(tmp_path), monkeypatch=monkeypatch
     )
+    written = next(e for e in collector.events if e.kind == "usage").data["usage"]
+    assert written["input"] == 11 + 9_500 + 480
+    assert (written["cached_input"], written["cache_write"]) == (9_500, 480)
     assert result.usage.input == 14 + 9_980
     assert (result.usage.cached_input, result.usage.cache_write) == (9_980, 0)
-    assert (result.cost_usd, result.cost_source) == (0.0412, "provider")
+    assert (result.cost_usd, result.cost_source) == (0.0416, "provider")
+
+
+async def test_the_double_refuses_a_call_the_sdk_itself_would_refuse() -> None:
+    """The request side of the seam is pinned too: the call is bound against the real signature."""
+    fake = _FakeQuery([])
+    with pytest.raises(TypeError):
+        fake(prompt="hi", no_such_option=1)
+    assert [message async for message in fake(prompt="hi", options=None)] == []

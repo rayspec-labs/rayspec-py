@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from ._cassette import Cassette, event_rows, load_cassettes, replay_codex, result_row
+from ._cassette import (
+    Cassette,
+    _FakeCodex,
+    event_rows,
+    load_cassettes,
+    replay_codex,
+    result_row,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -98,3 +105,21 @@ async def test_the_turn_reports_the_delta_of_the_thread_total(
     assert result.usage.input == 1_200
     assert (result.usage.output, result.usage.reasoning) == (260, 128)
     assert result.session_ref == "thr-cassette-2"
+
+
+async def test_the_double_refuses_a_call_the_sdk_itself_would_refuse() -> None:
+    """A cassette pins what the SDK sends back; the double pins what the adapter sends it.
+
+    A parameter the SDK renamed or removed is invisible to a stand-in that accepts anything, so
+    every recorded call is bound against the real signature before it is answered.
+    """
+    fake = _FakeCodex([], "thr-x", "turn-x")
+    with pytest.raises(TypeError):
+        await fake.thread_start(no_such_option=1)
+    with pytest.raises(TypeError):
+        await fake.thread_resume("thr-x", no_such_option=1)
+    thread = await fake.thread_start(cwd="/workspace")
+    with pytest.raises(TypeError):
+        await thread.turn("hi", no_such_option=1)
+    handle = await thread.turn("hi", model="gpt-5.4", effort="medium", output_schema=None)
+    assert handle.id == "turn-x"

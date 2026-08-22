@@ -193,7 +193,7 @@
         "verdict": "approve",
         "summary": "All three tests pass."
       },
-      "total_cost_usd": 0.0412,
+      "total_cost_usd": 0.0416,
       "usage": {
         "input_tokens": 14,
         "cache_creation_input_tokens": 0,
@@ -330,7 +330,7 @@
       "text": "All three tests pass.",
       "session_ref": "sess-cassette-tools",
       "model": "claude-sonnet-4-5",
-      "cost_usd": 0.0412,
+      "cost_usd": 0.0416,
       "cost_source": "provider",
       "num_turns": 3,
       "usage": {
