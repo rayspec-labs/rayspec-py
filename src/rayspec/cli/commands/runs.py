@@ -85,7 +85,7 @@ def runs_table(
     if show_project:
         table.add_column("project")
     table.add_column("status")
-    table.add_column("started (UTC)")
+    table.add_column("started")
     table.add_column("duration", justify="right")
     table.add_column("steps", justify="right")
     table.add_column("tokens", justify="right")
@@ -104,7 +104,7 @@ def runs_table(
         cells.extend(
             [
                 status,
-                common.fmt_when_stamp(run.started_at or run.created_at),
+                common.fmt_when(run.started_at or run.created_at),
                 common.fmt_duration(common.run_duration_ms(run)),
                 f"{done}/{total}",
                 common.fmt_tokens(usage.total) if usage.total else "-",

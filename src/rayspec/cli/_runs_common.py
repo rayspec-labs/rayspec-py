@@ -237,25 +237,6 @@ def fmt_when(moment: datetime | None, *, now: datetime | None = None) -> str:
     return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
 
 
-def fmt_when_stamp(moment: datetime | None, *, now: datetime | None = None) -> str:
-    """:func:`fmt_when` plus the UTC clock time it stands for: ``3h ago (09:00:00)``; ``-``.
-
-    The age answers "is this still going", the clock time answers "which run is this" — and a
-    listing is read at least as often the day after it was printed, redirected into a log or
-    pasted into an issue, where an age alone no longer says anything. Beyond a month
-    :func:`fmt_when` is already an absolute date and is returned unchanged. The clock is UTC,
-    the same one run ids are minted from, so the column is labelled ``started (UTC)``.
-    """
-    if moment is None:
-        return "-"
-    relative = fmt_when(moment, now=now)
-    if not relative.endswith(" ago"):
-        return relative
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return f"{relative} ({moment.astimezone(UTC).strftime('%H:%M:%S')})"
-
-
 def fmt_stamp(moment: datetime | None) -> str:
     """``2026-08-20 10:00:00 UTC`` or ``-``."""
     if moment is None:
@@ -1161,7 +1142,6 @@ __all__ = [
     "fmt_stamp",
     "fmt_tokens",
     "fmt_when",
-    "fmt_when_stamp",
     "interrupt_pid",
     "iter_project_stores",
     "load_resolved_for",

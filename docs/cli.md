@@ -548,9 +548,7 @@ reason (`unmerged commits (use --force)`, `dirty (use --force)`, `locked (use --
 rayspec runs [OPTIONS]
 ```
 
-List runs newest first (by `created_at`, then id) — by default those of the current project (the slug of `--root`/cwd), or every project under `RAYSPEC_HOME` with `--all` (every store under `projects/`, however deep the slug) — with status (`succeeded (dry)` marks a `--dry-run`), workflow, start time, duration, steps, tokens and cost.
-
-The **started (UTC)** column carries both readings of the same moment: how long ago it was and the clock time it was — `2d ago (10:00:00)`. An age alone is only true while you are looking at it, and a listing is read again tomorrow, in a log or in an issue; the clock is UTC, the same one run ids are minted from, so the id and the column agree. Beyond a month the age gives way to the date (`2026-07-11 12:00`). Run ids may be abbreviated to a unique prefix everywhere below.
+List runs newest first (by `created_at`, then id) — by default those of the current project (the slug of `--root`/cwd), or every project under `RAYSPEC_HOME` with `--all` (every store under `projects/`, however deep the slug) — with status (`succeeded (dry)` marks a `--dry-run`), workflow, start time, duration, steps, tokens and cost. Run ids may be abbreviated to a unique prefix everywhere below.
 
 The **steps** column is `done/total`: *done* = steps the engine resolved — succeeded, failed with `allow_failure`, or skipped (`when:` false, upstream failed/skipped) — so a finished run reads `n/n`; *total* = the recorded steps plus, for every run that may still continue or be resumed (running/paused/interrupted/failed/cancelled — everything but succeeded), the workflow's planned steps (root steps and `include:` bodies; loop/each iterations are counted as they happen), so a run paused at the gate of a 3-step workflow reads `1/3` instead of `1/2` and a 3-step workflow that failed at step 2 reads `1/3`. When the workflow cannot be loaded any more (old record, file gone) the total falls back to the recorded steps. `rayspec show` adds the breakdown `(n ok · m skipped)`.
 
