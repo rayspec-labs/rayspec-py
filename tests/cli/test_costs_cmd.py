@@ -677,6 +677,71 @@ def test_an_unreadable_record_inside_the_window_is_reported(cli: CliRunner, ledg
     assert payload["runs_unreadable_ids"] == [lost]
 
 
+def test_the_unreadable_notice_points_at_something_that_is_still_there(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The notice used to end `(rayspec show <id>)`, and `rayspec show` cannot show that run
+    either: it exits 2 and sends the reader on to `rayspec runs`, which does not list it either
+    — this command's own docstring rejects `rayspec runs` for exactly that reason. What is left
+    of a run whose record is gone is its directory."""
+    lost = _run_id(DEPLOY_NEW, "cccc")
+    _lose_the_record(ledger, lost)
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    assert "rayspec show" not in result.output
+    # rich folds a long path over several lines; the notice names one that is really there
+    flat = "".join(result.output.split())
+    assert str(ledger.store.run_dir(lost)) in flat
+    assert ledger.store.run_dir(lost).is_dir()
+    shown = cli.invoke(app, ["show", lost, "--root", str(ledger.project)])
+    assert shown.exit_code == 2  # what the notice used to send the reader to
+
+
+def test_the_unreadable_notice_names_the_run_directory_of_a_single_run(tmp_path: Path) -> None:
+    from rayspec.cli.commands.costs import unreadable_notice
+
+    runs = tmp_path / "runs"
+    line = unreadable_notice(["20260101-000000-aaaa"], runs=runs)
+    assert line is not None and str(runs / "20260101-000000-aaaa") in line
+    several = unreadable_notice(["20260101-000000-aaaa", "20260101-000000-bbbb"], runs=runs)
+    assert several is not None and str(runs) in several
+
+
+def _staging_file(store: FileRunStore, run_id: str) -> Path:
+    """The skeleton `FileRunStore.save()` leaves behind while it is writing `run.json`."""
+    run_dir = store.run_dir(run_id)
+    (run_dir / "steps").mkdir(parents=True)
+    (run_dir / "artifacts").mkdir()
+    (run_dir / "tmp").mkdir()
+    staging = run_dir / f"run.json.{os.getpid()}.0.tmp"
+    staging.write_text('{"run_id": "half', encoding="utf-8")
+    return staging
+
+
+def test_a_record_that_is_being_written_is_not_reported_as_lost(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """`save()` creates the run directory, then writes `run.json` into it — a dump, a redaction
+    pass and an fsync later. A `costs` running in another terminal during that window would
+    otherwise name a healthy run that started a moment ago, and mark the total `≥` for it."""
+    _staging_file(ledger.store, _run_id(NOW, "ffff"))
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable"] == 0 and payload["runs_unreadable_ids"] == []
+
+
+def test_a_staging_file_left_behind_does_not_hide_a_lost_record(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The other side of it: a process killed mid-write leaves that file for good, and a run
+    directory silenced for good is the failure this notice exists to prevent."""
+    lost = _run_id(NOW, "ffff")
+    staging = _staging_file(ledger.store, lost)
+    stale = datetime.now(tz=UTC).timestamp() - 3600
+    os.utime(staging, (stale, stale))
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable_ids"] == [lost]
+
+
 def test_an_unreadable_record_is_reported_even_with_no_runs_left_in_scope(
     cli: CliRunner, ledger: Ledger
 ) -> None:

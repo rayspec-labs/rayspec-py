@@ -1597,13 +1597,19 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `since` drops the ids whose own timestamp (`run_id_created_at`, the `YYYYMMDD-HHMMSS` prefix
   `new_run_id` mints) is outside the window; an id of another shape has no timestamp and is kept.
   There is no `workflow` counterpart — which workflow a lost run belonged to is only in the
-  record that could not be read.
+  record that could not be read. A directory with no `run.json` is only counted once nobody is
+  writing one into it: `save_in_flight(run_dir)` (a `run.json.<pid>.<n>.tmp` younger than
+  `SAVE_GRACE_S = 30`) is the store's own evidence of a save in progress, because `save()`
+  creates the directory and writes the record after it. The grace is finite on purpose: a
+  staging file left behind by a killed process must not silence its run for good.
 - Presentation: `costs_table(report)` (workflow · runs · tokens · cost · cost source, total row
   last; the tokens cell is `≥…` when `tokens_partial`, `unknown` when nothing was reported at
-  all and `-` only for a genuine zero), `scope_line`, `empty_notice`, `unreadable_notice(ids)`
+  all and `-` only for a genuine zero), `scope_line`, `empty_notice`,
+  `unreadable_notice(ids, *, runs)`
   (names up to `NAMED_UNREADABLE` ids and counts the rest — a record that cannot be read is
-  missing from `rayspec runs` too, so the id is the only handle it still has),
-  `partial_notices(report) -> list[str]` (one line per counter above, then the marker line — and
+  missing from `rayspec runs` too, so the id is the only handle it still has — and ends at the
+  run directory under `runs`, never at `rayspec show <id>`, which cannot show that run either),
+  `partial_notices(report, *, runs) -> list[str]` (one line per counter above, then the marker line — and
   the marker line is only printed for a marker that is on screen: `no cost is known for any run
   in scope` when `total.cost_usd is None`, `totals marked ≥ are a lower bound` when the total
   renders with `≥`, nothing otherwise), `group_payload` / `costs_payload`.

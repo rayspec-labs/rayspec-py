@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -54,7 +55,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.providers.base import Usage
 from rayspec.providers.pricing import COST_SOURCES, combine_cost_sources, cost_marker
 from rayspec.schema import RunStatus
-from rayspec.store.file import FileRunStore
+from rayspec.store.file import RUN_JSON, FileRunStore
 from rayspec.store.model import RunRecord
 from rayspec.textsafe import safe_text
 
@@ -136,6 +137,33 @@ def run_id_created_at(run_id: str) -> datetime | None:
         return None
 
 
+#: How long a ``run.json.<pid>.<n>.tmp`` beside a missing record still reads as a save in
+#: flight. Generous — an fsync on a busy disk is not instant — but finite, because a staging
+#: file left behind by a killed process must not silence its run for good.
+SAVE_GRACE_S = 30.0
+
+
+def save_in_flight(run_dir: Path, *, now: float | None = None) -> bool:
+    """Whether a ``run.json`` is being written into ``run_dir`` at this moment.
+
+    ``FileRunStore.save()`` creates the run directory (and ``steps/``, ``artifacts/``, ``tmp/``)
+    and only then writes the record — a model dump, a redaction pass, a write and an fsync
+    later. In that window the directory exists with no ``run.json`` in it and is indistinguishable
+    from a run that lost its record, so a ``costs`` in another terminal would name a healthy run
+    that started a moment ago and mark the total ``≥`` for it. The store's own staging file is
+    the positive evidence that somebody is writing; :data:`SAVE_GRACE_S` bounds how long that
+    evidence counts.
+    """
+    moment = time.time() if now is None else now
+    try:
+        return any(
+            moment - path.stat().st_mtime < SAVE_GRACE_S
+            for path in run_dir.glob(f"{RUN_JSON}.*.tmp")
+        )
+    except OSError:  # a directory that vanished under us is not one to report either
+        return True
+
+
 def unreadable_run_ids(
     store: FileRunStore, loaded: Sequence[RunRecord], *, since: datetime | None = None
 ) -> list[str]:
@@ -153,9 +181,8 @@ def unreadable_run_ids(
     record that could not be read, so a ``--workflow`` roll-up keeps counting it.
     """
     have = {run.run_id for run in loaded}
-    # `create()` writes the record with the directory, so a run that has only just started is
-    # not seen here as a lost one; a directory left without a record really has lost it
-    candidates = set(store.list_run_ids())  # a run.json that is there but does not parse
+    listed = set(store.list_run_ids())  # a run.json that is there but does not parse
+    candidates = set(listed)
     try:
         entries = list(os.scandir(store.runs_root))
     except OSError:  # no store yet, or one this user may not read
@@ -165,7 +192,13 @@ def unreadable_run_ids(
         for entry in entries
         if entry.is_dir() and run_id_created_at(entry.name) is not None
     }
-    lost = [run_id for run_id in candidates if run_id not in have]
+    # a directory with no record is only lost once nobody is writing one into it: `save()`
+    # creates the directory first and the record after (:func:`save_in_flight`)
+    lost = [
+        run_id
+        for run_id in candidates
+        if run_id not in have and (run_id in listed or not save_in_flight(store.run_dir(run_id)))
+    ]
     if since is not None:
         lost = [
             run_id
@@ -447,12 +480,17 @@ def _runs(count: int) -> str:
 NAMED_UNREADABLE = 3
 
 
-def unreadable_notice(ids: Sequence[str]) -> str | None:
+def unreadable_notice(ids: Sequence[str], *, runs: Path) -> str | None:
     """The line for run records the store could not read, or ``None`` when there are none.
 
     The ids are NAMED, not just counted: a record that cannot be read is missing from
     ``rayspec runs`` as well, so "run `rayspec runs` to see which" would send the reader after
     rows that are not there either. The id is the only handle the run still has.
+
+    For the same reason the line ends at the run DIRECTORY under ``runs`` and not at a command:
+    ``rayspec show <id>`` cannot show that run either — it exits 2 and points at the listing
+    this notice just refused to point at. The directory is what is left of the run, and what
+    somebody looking into it has to open.
     """
     if not ids:
         return None
@@ -462,13 +500,14 @@ def unreadable_notice(ids: Sequence[str]) -> str | None:
     named = ", ".join(ids[:NAMED_UNREADABLE])
     if count > NAMED_UNREADABLE:
         named += f", … ({count - NAMED_UNREADABLE} more)"
+    where = runs / ids[0] if count == 1 else runs
     return (
         f"{count} run {noun} could not be read and {verb} not in these totals: {named} "
-        f"— {subject} missing or unparseable (`rayspec show <id>`)"
+        f"— {subject} missing or unparseable ({where})"
     )
 
 
-def partial_notices(report: CostReport) -> list[str]:
+def partial_notices(report: CostReport, *, runs: Path) -> list[str]:
     """The lines below the table that keep an incomplete sum honest — empty when nothing is
     missing.
 
@@ -505,7 +544,7 @@ def partial_notices(report: CostReport) -> list[str]:
             f"{_runs(total.runs_in_flight)} {verb} still running or paused — those figures "
             f"are not final"
         )
-    unreadable = unreadable_notice(report.unreadable)
+    unreadable = unreadable_notice(report.unreadable, runs=runs)
     if unreadable is not None:
         lines.append(unreadable)
     if not lines:
@@ -601,7 +640,7 @@ def register(app: typer.Typer) -> None:
                 markup=False,
                 highlight=False,
             )
-            unreadable = unreadable_notice(report.unreadable)
+            unreadable = unreadable_notice(report.unreadable, runs=ctx.store.runs_root)
             if unreadable is not None:
                 out.print(unreadable, style="dim", markup=False, highlight=False)
             return
@@ -612,7 +651,7 @@ def register(app: typer.Typer) -> None:
             highlight=False,
         )
         out.print(costs_table(report))
-        for note in partial_notices(report):
+        for note in partial_notices(report, runs=ctx.store.runs_root):
             out.print(note, style="dim", markup=False, highlight=False)
 
 
@@ -635,6 +674,7 @@ __all__ = [
     "partial_notices",
     "register",
     "run_id_created_at",
+    "save_in_flight",
     "scope_line",
     "select_runs",
     "unreadable_notice",
