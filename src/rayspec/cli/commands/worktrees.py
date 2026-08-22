@@ -16,6 +16,7 @@ from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
     RootOption,
+    checked_root,
     console,
     fail,
     new_table,
@@ -72,6 +73,10 @@ def worktree_to_dict(info: WorktreeInfo) -> dict[str, Any]:
 
 
 def _project(root: Path | None, repo: str | None) -> Project:
+    # a --root that is not a directory is the same usage error here as everywhere else; without
+    # this it surfaced as "<path> is not a git repository", which sends the reader looking for a
+    # checkout instead of at the typo they made
+    checked_root(root)
     home = rayspec_home()
     if repo is not None:
         config = load_config(root, home=home)

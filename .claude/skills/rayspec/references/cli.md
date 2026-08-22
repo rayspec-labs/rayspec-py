@@ -7,7 +7,12 @@
 `rayspec` is a Typer app. Every command accepts `--help`; `rayspec --version` / `-V` prints the
 version (so does `rayspec version`). Commands that read a project take `--root <dir>` (the
 directory containing `.rayspec/`; default: walk up from the cwd to the first `.rayspec/`, then
-`.git`, else the cwd; a `--root` that is not a directory is a usage error). `RAYSPEC_HOME`
+`.git`, else the cwd). **A `--root` that is not an existing directory is a usage error — exit 2,
+`error: --root '<path>' is not a directory` — on every command that takes the option**, the ones
+that *write* a root (`init`, `skill install`) included: a mistyped path is never created and
+never scaffolded into. The one exception is `rayspec completion`, whose `--root`
+feeds the candidate list a shell asks for and which is silent by contract (an error line there
+would be offered as a completion candidate) — the whole command, not only `--values`. `RAYSPEC_HOME`
 (default `~/.rayspec`) holds user-level workflows/agents, `config.yaml`, `.env` and every
 project's runs and worktrees. The commands that read a project (`run`, `validate`, `plan`,
 `workflows`, `agents`, `doctor`) and the run-management commands (`runs`, `costs`, `show`, `logs`,
@@ -44,9 +49,20 @@ the failed `config` check instead).
 
 Errors go to stderr as `error: <message>` plus an optional `hint:` line — including input and
 validation errors of `run`/`plan` (one `error:` line each; with `--json` they become one object
-`{"error": "input errors" | "validation errors", "errors": [...]}` on stdout). `rayspec run`
-prints its `warnings:` block on stderr in both text and `--json` mode, so stdout stays the run's
-own output. Hints that point at documentation quote a full URL
+`{"error": "input errors" | "validation errors", "errors": [...]}` on stdout).
+
+**No rayspec command ends in a traceback.** Anything a command does not handle itself — a store,
+workspace or lockfile error, or a plain filesystem failure underneath one — is caught at the CLI
+boundary and reported as `error: <message>` on stderr with exit 2, whatever the command and
+whichever of its paths hit it: a `--dry-run` rehearsal answers exactly like the real run of the
+same workflow, and `--json` refuses the same way rather than exiting 1 with an empty stdout. When
+the failing path is under `RAYSPEC_HOME` the line says so — `error: cannot use the rayspec home
+<dir>: Permission denied`, `hint: every run is recorded under it — check that <dir> exists and is
+writable (RAYSPEC_HOME names it)` — because that is the directory to fix. A broken pipe
+(`rayspec runs | head -1`) is not an error and prints nothing.
+
+`rayspec run` prints its `warnings:` block on stderr in both text and `--json` mode, so stdout
+stays the run's own output. Hints that point at documentation quote a full URL
 (`https://github.com/rayspec-labs/rayspec-py/blob/main/docs/…`) or `rayspec <cmd> --help` —
 never a repo-relative path, which a `uv tool install` user does not have on disk.
 
@@ -894,6 +910,8 @@ rayspec audit [OPTIONS] {run}    # --output table|json (--json is the older spel
 
 Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (created, started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. An approval row names both halves — `approved by alice@example.com (cli)` — because `by` says which door the decision came through (`cli` for `rayspec approve`/`reject`, `tty` for the run's own prompt, `--yes`, `dry-run`) and the actor says whose hand it was. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch; a `--dry-run` rehearsal is marked `dry run — nothing was executed`, because it called no provider and ran no shell body. Where a `.env` file tried to supply a `RAYSPEC_ACTOR`, both the header and the approval row say so — `approved by you (cli) — a .env declared 'security-team@corp.invalid', which is not an identity` — because that value was refused (a workflow step can write those files: see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#which-sources-are-allowed-and-why)). Two honest limits: the header's actor is read straight out of `run.json`, while the approval row is re-resolved from the decision, so on a record somebody edited after the fact the two can disagree — and the decision row's guarantee is about the moment it was *recorded*, not about the file afterwards.
 
+A step a resume **replayed** from the reuse cache is marked as one: `succeeded (reused from the previous attempt — not re-executed)`. Its shell body did not run and no provider was called, so its row sits next to the row of the attempt that really did the work and must not read like a second execution of it (`--json` carries the same fact as `data.reused`). See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#resume).
+
 The rows are derived from the run's own `run.json` (its creation, which is where the actor is recorded), `events.jsonl` and per-step `stream.jsonl` — the same derivation an enabled `audit.jsonl` stores (see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#the-local-audit-log)), so a rendered ledger and a stored one always agree. A step whose stream cannot be read is a `warning` row saying so, never a silently empty step. Reading only: the command never writes to the run directory, never re-runs anything and never contacts a network service. It is a report over the files of **one** run on **this** machine — it proves nothing about them (anybody who can read a run directory can also edit it) and knows nothing about other runs, projects or people. Every cell is untrusted text, printed with control characters and terminal escape sequences removed.
 
 Options:
@@ -1105,7 +1123,8 @@ out), then print the next steps (`doctor`, `validate`, `plan example`, `run exam
 --stubs .rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here —
 the skill loads automatically"). `--root DIR` is the directory that receives `.rayspec/` and
 `.claude/skills/rayspec/` (default: the cwd — `init` does **not** walk up to an enclosing
-project). Files that already exist — scaffold and skill alike — are kept and listed as
+project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
+that is not there is exit 2 and nothing is written. Files that already exist — scaffold and skill alike — are kept and listed as
 `exists … (skipped; use --force to overwrite)`; `--force` overwrites them — keeping the mode of
 the file it replaces (a `config.yaml` you chmodded to `0600` stays `0600`) and refusing a target
 that is a *symbolic link*, which is an error like a directory in the way: a scaffold writes files
@@ -1253,7 +1272,11 @@ binary is not on `PATH`), or set `OPENAI_API_KEY`. `~/.rayspec/.env` is loaded f
 there count; the project `.rayspec/.env` is **not** loaded (it is a credential surface of the
 checkout — only `run`/`resume`/`approve`/`reject` apply it) and shows up as an `info` row
 `project .env: <path> (N vars, applied only by run/resume/approve/reject)` when the file
-exists. A provider that reports no USD cost (Codex) gets a
+exists. Either file being **there and unreadable** (a mode nobody can read, a directory in its
+place, bytes that are not UTF-8) is a required `fail` row naming the file and what refuses because
+of it — `home .env: <path> cannot be read: Permission denied — every rayspec command refuses with
+exit 2 until it can be`. That state stops every other command dead, so the one command whose job
+is to find it must not report it as `0 vars`. A provider that reports no USD cost (Codex) gets a
 `<id> pricing` row: `info` with the nudge `tokens only — add pricing.<model> for estimates` when no
 [pricing](providers.md#pricing) table exists, `warn` when a table exists but misses one of the
 provider's tier/alias models (or is malformed), `ok` when every configured model is priced;
@@ -1271,7 +1294,8 @@ the auth row asked for: a `warn`/`info` `<id> auth` row turns `ok` (`probe OK`) 
 disappears.
 
 Exit code: `0` when every *required* check passes (Python ≥ 3.11, `RAYSPEC_HOME`, config, `git`,
-each provider's SDK import and CLI binary), `1` otherwise. A failed probe is a required failure
+each provider's SDK import and CLI binary, and either `.env` file when it exists and cannot be
+read), `1` otherwise. A failed probe is a required failure
 only for a provider that is *configured* on this machine — requested explicitly with
 `--provider <id>`, or its auth row found credentials (`ok`/`info`; providers without an auth row,
 like `stub`, always count). A provider with no credentials at all that was merely probed by
@@ -1292,7 +1316,8 @@ rayspec skill install [--global] [--force] [--root DIR]
 
 Write the packaged rayspec skill for coding agents ([agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md):
 `SKILL.md` + `references/{concepts,schema,templating,cli,providers,examples}.md`) to
-`<project>/.claude/skills/rayspec/` — `--root DIR` names the project; default: the nearest
+`<project>/.claude/skills/rayspec/` — `--root DIR` names an existing project directory (a
+`--root` that is not there is exit 2, not a new directory tree); default: the nearest
 directory with `.rayspec/`, then `.git`, else the cwd — or, with `--global`, to
 `~/.claude/skills/rayspec/` for every project of this user. Same idempotence as `init`: one line
 per file (`created` / `overwrote` / `exists … (skipped; use --force to overwrite)`), a summary

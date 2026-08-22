@@ -4,6 +4,11 @@
 Commands live in :mod:`rayspec.cli.commands` (auto-discovered) and, for installed third-party
 packages, in the ``rayspec.cli_plugins`` entry-point group (see :mod:`rayspec.cli.plugins`).
 Builtins are registered first and always win a name collision.
+
+The root group is
+:class:`~rayspec.cli.commands._loader_common.ErrorBoundaryGroup`: click invokes every command
+from inside it, so that is where a :class:`~rayspec.errors.RayspecError` or an :class:`OSError`
+no command expected becomes ``error: …`` on stderr with exit 2 instead of a traceback.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import pkgutil
 import typer
 
 from rayspec.cli import commands as _commands_pkg
+from rayspec.cli.commands._loader_common import ErrorBoundaryGroup
 from rayspec.cli.plugins import register_cli_plugins
 
 
@@ -38,6 +44,7 @@ def build_app() -> typer.Typer:
         no_args_is_help=True,
         add_completion=False,
         rich_markup_mode="rich",
+        cls=ErrorBoundaryGroup,
     )
 
     @app.callback()

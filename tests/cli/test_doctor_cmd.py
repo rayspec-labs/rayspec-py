@@ -770,3 +770,62 @@ def test_doctor_probe_hint_of_an_unused_provider_omits_verify_and_the_stub(
     assert "--provider claude" in hint
     assert "--provider stub" not in hint
     assert "verify with --probe" not in hint
+
+
+# --------------------------------------------------------------------------------------------------
+# a `.env` that cannot be read: every other command refuses with exit 2, so `doctor` must say so
+# --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file")
+def test_doctor_fails_on_an_unreadable_home_env(sdks: FakeSdks, project: Path) -> None:
+    """``~/.rayspec/.env`` with no readable mode: every command refuses (exit 2) — including this
+    one's report, which used to count it as zero variables and print ``info``."""
+    home = Path(os.environ["RAYSPEC_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    env = home / ".env"
+    env.write_text("OPENAI_API_KEY=x\n")
+    env.chmod(0o000)
+    try:
+        other = CliRunner().invoke(app, ["workflows", "--root", str(project)])
+        assert other.exit_code == 2, other.output  # the state doctor has to be able to see
+        code, report = _doctor_json("--root", str(project))
+        row = _check(report, "home.env")
+        assert row["status"] == "fail" and row["required"] is True
+        assert "cannot be read" in row["detail"] and str(env) in row["detail"]
+        assert code == 1 and report["ok"] is False
+    finally:
+        env.chmod(0o600)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a 0o000 file")
+def test_doctor_fails_on_an_unreadable_project_env(sdks: FakeSdks, project: Path) -> None:
+    env = project / ".rayspec" / ".env"
+    env.write_text("A=b\n")
+    env.chmod(0o000)
+    try:
+        code, report = _doctor_json("--root", str(project))
+        row = _check(report, "project.env")
+        assert row["status"] == "fail" and row["required"] is True
+        assert "run/resume/approve/reject" in row["detail"]
+        assert code == 1
+    finally:
+        env.chmod(0o600)
+
+
+def test_doctor_fails_on_a_directory_where_the_env_file_goes(sdks: FakeSdks, project: Path) -> None:
+    """The same refusal, without depending on a file mode — a directory at ``.rayspec/.env``."""
+    (project / ".rayspec" / ".env").mkdir()
+    code, report = _doctor_json("--root", str(project))
+    row = _check(report, "project.env")
+    assert row["status"] == "fail" and "not a regular file" in row["detail"]
+    assert code == 1
+
+
+def test_doctor_keeps_reporting_a_readable_env_as_info(sdks: FakeSdks, project: Path) -> None:
+    """The healthy rows are unchanged: still ``info``, still not required."""
+    (project / ".rayspec" / ".env").write_text("A=b\nC=d\n")
+    _, report = _doctor_json("--root", str(project))
+    row = _check(report, "project.env")
+    assert row["status"] == "info" and row["required"] is False
+    assert "2 vars" in row["detail"]
