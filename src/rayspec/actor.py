@@ -13,7 +13,11 @@ system. Four rules hold here and nowhere else has to repeat them:
 
   - the process environment **as the operator set it** — :func:`rayspec.procenv.operator_env`,
     which is ``os.environ`` minus every variable rayspec itself copied out of a ``.env`` file;
-  - the operating-system user (:func:`os_user`).
+  - the operating-system user (:func:`os_user`): the account database first
+    (:func:`account_database_user`), and — where a uid has no entry in one, which a container
+    makes ordinary — the ``USER``/``LOGNAME``/… the *operator* exported
+    (:func:`environment_user`), which is the bullet above rather than a third source. Never
+    :func:`getpass.getuser`: it reads those same variables straight out of ``os.environ``.
 
   Refused, and why: any **git configuration**, in any scope — a run's ``shell:`` steps and its
   agents execute with the user's own ``$HOME`` and inside the repository the worktree came from,
@@ -31,10 +35,19 @@ what makes it worth recording. Setting it in a ``.env`` instead does not fail si
 value is refused as the identity and kept as :attr:`ActorInfo.declared_id` — a claim a file on
 this machine made — so the ledger shows what was asked for and what was recorded instead.
 
-What this does NOT do: the run store is user-owned by design, so nothing here survives somebody
-editing ``run.json`` afterwards, and ``rayspec audit`` says as much. The guarantee is narrower
-and worth stating exactly — *at the moment a decision is recorded, the identity on it came from
-the operator, not from the run.*
+What this does NOT do, stated exactly because a guarantee described wider than it is built is
+worse than none. The guarantee is **per process**: *at the moment a decision is recorded, the
+identity on it came from this process's environment or from the operating system, not from the
+run.* Two things sit outside it and neither is fixable here:
+
+* the run store is user-owned by design, so nothing here survives somebody editing ``run.json``
+  afterwards — which is also why a decision read back out of a record is treated as an answer
+  and never as an identity (:mod:`rayspec.engine.executors.approve` re-attributes it);
+* a run's steps execute as the operator, so a step can append ``export RAYSPEC_ACTOR=…`` to a
+  shell startup file. The operator's *next* shell then exports it, and from that point the value
+  is genuinely in the operator's environment — indistinguishable, by construction, from the
+  operator having typed it. Nothing this module can read tells the two apart. What holds is that
+  no *running* process is poisoned by it: the file is read by a shell at startup, not by rayspec.
 
 The record shape (:class:`~rayspec.store.model.ActorInfo`) lives with the rest of ``run.json``;
 this module only fills it in.
@@ -42,7 +55,6 @@ this module only fills it in.
 
 from __future__ import annotations
 
-import getpass
 import os
 from collections.abc import Mapping
 
@@ -75,8 +87,10 @@ PROVIDER_ACCOUNT_ENV: Mapping[str, tuple[str, ...]] = {
     "codex": ("OPENAI_ORG_ID", "OPENAI_ORGANIZATION"),
 }
 
-#: Environment variables consulted for the OS user when :func:`getpass.getuser` cannot answer.
-_USER_ENV = ("USER", "LOGNAME", "USERNAME")
+#: Environment variables consulted for the OS user when the account database cannot answer.
+#: Read from :func:`rayspec.procenv.operator_env`, never from ``os.environ`` — which is exactly
+#: what :func:`getpass.getuser` does, and why it is not used here.
+_USER_ENV = ("USER", "LOGNAME", "LNAME", "USERNAME")
 
 #: Values that mean "no" in an environment flag.
 _FALSY = frozenset({"", "0", "false", "no", "off"})
@@ -133,39 +147,54 @@ def provider_accounts(env: Mapping[str, str] | None = None) -> dict[str, str]:
     return out
 
 
-def os_user(env: Mapping[str, str] | None = None) -> str | None:
-    """The operating-system user: the account database first, the usual variables after.
+def account_database_user() -> str | None:
+    """This process's uid as the operating system's own account database names it, or ``None``.
 
-    :func:`getpass.getuser` consults ``LOGNAME``/``USER``/… *before* the account database, so it
-    answers with whatever the caller's environment says. That is fine as a fallback and wrong as
-    a first choice: ``source: "os"`` should mean the operating system said so. The user database
-    is asked first where it exists (POSIX), and only a platform without it — or a uid with no
-    entry, as in a container run under a random uid — falls through to the environment.
+    POSIX ``pwd`` only, and only for ``os.getuid()``: nothing a caller passes in reaches it, so
+    this is the one identity source in rayspec that no environment can influence at all. It
+    answers ``None`` on a platform without an account database (Windows) and on a uid that has
+    no entry in one — a container started with ``--user 1000:1000`` against an image whose
+    ``/etc/passwd`` never heard of 1000, which is the ordinary case rather than the exotic one.
 
     Never raises: every lookup that can fail is a lookup that may return ``None``.
-
-    ``env`` defaults to :func:`rayspec.procenv.operator_env` so the ``USER``/``LOGNAME`` fallback
-    cannot be answered by a ``.env`` a run wrote either.
     """
-    env = operator_env() if env is None else env
     try:
         import pwd  # POSIX only, and needed nowhere else
 
-        name = clean_identity(pwd.getpwuid(os.getuid()).pw_name)
+        return clean_identity(pwd.getpwuid(os.getuid()).pw_name)
     except (ImportError, AttributeError, KeyError, OSError):  # no pwd (Windows), no entry
-        name = None
-    if name is None:
-        try:
-            name = clean_identity(getpass.getuser())
-        except (KeyError, OSError):
-            name = None
-    if name is not None:
-        return name
+        return None
+
+
+def environment_user(env: Mapping[str, str] | None = None) -> str | None:
+    """``USER``/``LOGNAME``/``LNAME``/``USERNAME`` **as the operator exported them**, or ``None``.
+
+    The fallback for a host whose account database cannot answer. It is a weaker source than
+    :func:`account_database_user` — a variable, not a fact about the uid — but it is still one
+    the audited run cannot write, which is the rule that decides what may be recorded here:
+    ``env`` defaults to :func:`rayspec.procenv.operator_env`, the process environment minus
+    every variable rayspec itself copied out of a ``.env`` file.
+
+    This is why :func:`getpass.getuser` is not used anywhere in this module. It reads the same
+    four variables — but straight out of ``os.environ``, ahead of the account database and
+    without the subtraction, so on exactly the hosts where the fallback matters it would hand
+    back whatever ``$RAYSPEC_HOME/.env`` last said. One bypass of the seam is one too many.
+    """
+    env = operator_env() if env is None else env
     for variable in _USER_ENV:
         name = clean_identity(env.get(variable))
         if name is not None:
             return name
     return None
+
+
+def os_user(env: Mapping[str, str] | None = None) -> str | None:
+    """The operating-system user: the account database first, the operator's variables after.
+
+    :func:`account_database_user`, else :func:`environment_user`. Never raises, and never reads
+    a value rayspec put into the environment itself.
+    """
+    return account_database_user() or environment_user(env)
 
 
 def resolve_actor(*, env: Mapping[str, str] | None = None) -> ActorInfo:
@@ -213,8 +242,10 @@ __all__ = [
     "CI_ENV_MARKERS",
     "MAX_ACTOR_LEN",
     "PROVIDER_ACCOUNT_ENV",
+    "account_database_user",
     "clean_identity",
     "detect_ci",
+    "environment_user",
     "os_user",
     "provider_accounts",
     "resolve_actor",

@@ -136,7 +136,7 @@ start, and never rewritten — a resume by somebody else leaves it naming whoeve
 | field | what it is |
 |---|---|
 | `id` | the identity itself |
-| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user), `unknown` |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user — see the row below for what that means exactly), `unknown` when nothing answered |
 | `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
 | `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
 | `declared_id` | a `RAYSPEC_ACTOR` a `.env` file asked for and did **not** get, kept as a claim; `null` normally |
@@ -155,10 +155,12 @@ the answer is not obvious for any of these:
 | source | trusted for an identity? | why |
 |---|---|---|
 | the process environment **as the operator exported it** | yes | it lives in the process that launches the run or answers the gate; a step is a child of that process and cannot write it |
-| the operating-system user | yes | read from the account database (POSIX `pwd`), not from `$USER` |
+| the operating-system user | yes | the account database (POSIX `pwd`) for this process's uid — a fact about the process that no environment can influence |
+| `$USER` / `$LOGNAME` / `$LNAME` / `$USERNAME`, **as the operator exported them** | yes, but only as a fallback | asked when the account database has no entry for the uid (a container started with `--user 1000:1000`), and read through the same subtraction as everything else — never with `getpass.getuser`, which reads them straight out of the live environment and ahead of the account database |
 | a `RAYSPEC_ACTOR` rayspec loaded from `$RAYSPEC_HOME/.env` | **no** | `$RAYSPEC_HOME` is exported into every step: `printf 'RAYSPEC_ACTOR=…' > "$RAYSPEC_HOME/.env"` is one line, and the file is applied by *every* later command |
 | a `RAYSPEC_ACTOR` rayspec loaded from `<project>/.rayspec/.env` | **no** | it is a file in the tree the run works in, applied by `run`/`resume`/`approve`/`reject` |
 | `git config user.email`, any scope | **no** | a run's steps execute as you, with your `$HOME` and inside the repository the worktree came from, so `git config [--global] user.email …` is one command in one step |
+| a `RAYSPEC_ACTOR` your **shell startup file** exports | yes — and this is the one gap, see [What this does not give you](#what-this-does-not-give-you) | by the time rayspec sees it, it is in the environment the operator handed over, and nothing can tell it from one the operator typed |
 
 A run's `shell:` steps and its agents execute as you (`workspace-write` is a permission mode of
 the agent, not an operating-system sandbox). So every "no" above is one line in one step away
@@ -211,6 +213,20 @@ none:
   later commands (a proxy URL, say). That is the same trust boundary the file always had — it is
   a file on your machine — but the identity rule does not fix it, and this build does not either.
   Keep an eye on it the way you would on `~/.bashrc`; `rayspec doctor` lists both files.
+- **The defence is per process, and a shell startup file is outside it.** A step runs as you, so
+  it can append `export RAYSPEC_ACTOR=someone-else` to `~/.zshrc`, `~/.bashrc` or `~/.profile`.
+  Nothing happens to the run that did it, or to any process already running: rayspec never reads
+  those files, and a variable that is not in a process cannot be read out of it. But your **next
+  shell** exports it, and from that moment the value really is in the environment you handed over
+  — indistinguishable, by construction, from you having typed it, and it will be recorded as
+  `source: env` on everything you run from that shell.
+
+  This is not a hole the identity rule can close, and pretending otherwise would be the third
+  guarantee this area described wider than it was built. Close it where it actually lives: run
+  workflows in a container or a sandbox that has no write access to your dotfiles, or review those
+  files the way you would review anything else that decides what your shell does. A quick check
+  after an unfamiliar workflow: `grep RAYSPEC_ACTOR ~/.zshrc ~/.bashrc ~/.profile`, and `rayspec
+  audit <run> --commands` shows what the run executed.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from
@@ -220,13 +236,28 @@ Every decision carries its own actor too, next to `by`:
 
 - `by` says which door the decision came through: `cli` (`rayspec approve`/`reject`), `tty` (the
   terminal prompt of the run itself), `--yes`, `dry-run`;
-- `actor` says whose hand it was. For a decision recorded by `rayspec approve`/`reject` it is
-  whoever ran that command — often not the person who launched the run. For a gate answered in the
-  run's own terminal it is the run's actor.
+- `actor` says whose hand it was. It is resolved **in the process that answers the gate, at the
+  moment it answers** — never copied from `run.json`. So it is whoever ran `rayspec approve`, or
+  whoever answered the terminal prompt, or whoever ran the `rayspec resume --yes` that waived it.
 
-`pause.decision` holds it while the run is paused, and the `run.decision` event in `events.jsonl`
-keeps it afterwards (the pause slot is cleared the moment the gate consumes the decision, the event
-log is not).
+That last one is why `actor` is not simply `run.actor`. The run's actor is resolved once, at the
+run's first start, and a resume never rewrites it — so a gate answered two days later by a second
+operator would otherwise be recorded as a decision by the person who launched the run.
+
+`pause.decision` holds the decision while the run is paused, and the `run.decision` event in
+`events.jsonl` keeps it afterwards (the pause slot is cleared the moment the gate consumes the
+decision, the event log is not). The `actor` inside `pause.decision` is **not** what the gate
+stamps on the decision: the run directory is yours, so any step running as you can write a
+decision into a paused run's `run.json` and put any name on it. A stored decision supplies the
+*answer*; the identity is asked for again in the process that consumes it. In the ordinary case
+those are the same process (`rayspec approve` records the decision and resumes in-process) and the
+two agree. When they do not, the ledger says so:
+
+```console
+warning: the decision found in the record for ok names 'ceo@corp.invalid'; a decision read back
+from run.json is an answer, not evidence of whose hand it was — anything running as you can write
+that file — so this gate is recorded as decided by 'you'
+```
 
 ### The local audit log
 
