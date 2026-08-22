@@ -3,8 +3,8 @@
 
 Boundary: the pytest half of the marker convention that lives in ``scripts/check_examples.py``
 (``find_doc_blocks`` / ``doc_block_problems`` / ``check_doc_block``) — the same entry point CI
-runs as ``check_examples.py --docs``. A block whose fence says ``rayspec:validate`` is loaded and
-validated like ``rayspec validate`` does; ``rayspec:run`` additionally drives it through
+runs as ``check_examples.py --docs``. A block carrying ``rayspec:validate`` on the line above it
+is loaded and validated like ``rayspec validate`` does; ``rayspec:run`` additionally drives it through
 ``rayspec run --dry-run``; a block with neither marker must carry a one-line
 ``<!-- rayspec:skip … -->`` reason, so "nobody checks this snippet" is always a decision somebody
 wrote down rather than an oversight.
@@ -28,7 +28,14 @@ SCRIPT = REPO_ROOT / "scripts" / "check_examples.py"
 
 
 def _load_script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("check_examples", SCRIPT)
+    """Load ``check_examples.py`` under a key of this module's own.
+
+    ``tests/examples`` loads the same file, and a dataclass resolves its string annotations
+    through ``sys.modules[__name__]`` — so two loaders sharing one key would leave whichever ran
+    second owning it, and the other copy's ``DocBlock``/``Case`` annotations resolving against a
+    different module object depending on collection order.
+    """
+    spec = importlib.util.spec_from_file_location("check_examples_docs", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # dataclasses resolve string annotations via sys.modules
@@ -40,6 +47,15 @@ check_examples = _load_script()
 
 BLOCKS: list[Any] = check_examples.find_doc_blocks(REPO_ROOT)
 CHECKED: list[Any] = [b for b in BLOCKS if b.marker is not None]
+
+
+def test_the_loaded_script_owns_its_module_key() -> None:
+    """Two suites load this script; each must keep its own ``sys.modules`` entry.
+
+    ``DocBlock`` resolves its string annotations through ``sys.modules[DocBlock.__module__]``, so
+    a key shared with ``tests/examples`` would make the answer depend on collection order.
+    """
+    assert sys.modules[check_examples.__name__] is check_examples
 
 
 def test_the_docs_have_yaml_blocks_to_check() -> None:
@@ -98,3 +114,44 @@ def test_a_snippet_that_validates_but_cannot_run_fails(tmp_path: Path) -> None:
         == []
     ), "the corrupted block must still VALIDATE — otherwise this proves nothing"
     assert check_examples.check_doc_block(broken, home=tmp_path)
+
+
+def _page(tmp_path: Path, body: str) -> Path:
+    """A throwaway repo root whose only documentation page is ``README.md``."""
+    (tmp_path / "README.md").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_a_tilde_fence_is_a_fenced_yaml_block_too(tmp_path: Path) -> None:
+    """``~~~yaml`` is the same block to every markdown renderer, so it is to the gate."""
+    root = _page(tmp_path, "~~~yaml\nsteps: []\n~~~\n")
+    blocks = check_examples.find_doc_blocks(root)
+    assert [b.line for b in blocks] == [1], blocks
+    assert check_examples.doc_block_problems(blocks)
+
+
+def test_the_fence_language_is_matched_case_insensitively(tmp_path: Path) -> None:
+    """`````YAML`` renders as YAML; a gate that only knows lower case is off by a keystroke."""
+    root = _page(tmp_path, "```YAML\nsteps: []\n```\n")
+    blocks = check_examples.find_doc_blocks(root)
+    assert [b.line for b in blocks] == [1], blocks
+    assert check_examples.doc_block_problems(blocks)
+
+
+def test_a_block_inside_a_longer_fence_is_not_a_block_of_its_own(tmp_path: Path) -> None:
+    """A four-backtick wrapper quotes its contents — the inner fence is prose, not a snippet."""
+    root = _page(
+        tmp_path,
+        "````markdown\n<!-- rayspec:run -->\n```yaml\nsteps: []\n```\n````\n",
+    )
+    assert check_examples.find_doc_blocks(root) == []
+    assert check_examples.stray_doc_markers(root) == []
+
+
+def test_a_marker_separated_from_its_fence_is_stranded(tmp_path: Path) -> None:
+    """The rule is "the line above"; a blank line in between means the marker binds to nothing."""
+    root = _page(tmp_path, "<!-- rayspec:run -->\n\n```yaml\nsteps: []\n```\n")
+    assert check_examples.stray_doc_markers(root) == [
+        "README.md:1: rayspec marker is not above a fenced block"
+    ]
+    assert check_examples.doc_block_problems(check_examples.find_doc_blocks(root))

@@ -12,8 +12,8 @@ themselves, their format and their execution live in :mod:`rayspec.testing` — 
   never touches ``rayspec run``'s own plumbing, so one case of every suite is additionally driven
   through the Typer app with ``--json`` and its stdout checked against the JSONL contract;
 * the **docs-as-tests marker convention** (``--docs``): a fenced YAML block of ``README.md`` or
-  ``docs/*.md`` whose fence carries ``rayspec:validate`` / ``rayspec:run`` is extracted and really
-  checked, and a block that carries neither must explain itself in a one-line
+  ``docs/*.md`` carrying ``rayspec:validate`` / ``rayspec:run`` on the line above it is extracted
+  and really checked, and a block that carries neither must explain itself in a one-line
   ``<!-- rayspec:skip … -->`` comment (see :func:`find_doc_blocks`).
 
 The case format is documented in ``docs/testing.md``; a ``checks.yaml`` next to each example (and
@@ -54,7 +54,6 @@ from rayspec.testing.spec import discover_suites as _discover_suites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
-DOCS_DIR = REPO_ROOT / "docs"
 DOGFOOD_CHECKS = REPO_ROOT / ".rayspec" / "dryrun" / "checks.yaml"
 EXIT_USAGE = 2
 
@@ -426,14 +425,25 @@ def unbacked_claims(rows: Mapping[str, list[str]], suites: list[Suite]) -> list[
 #: * ``<!-- rayspec:skip <why> -->`` — deliberately illustrative, with the one-line reason.
 #:
 #: The marker is an HTML comment rather than a fence token so that it stays invisible in the
-#: rendered page and the fence keeps saying plain ``yaml`` to every other reader of the docs.
+#: rendered page and the fence keeps saying plain ``yaml`` to every other reader of the docs. It
+#: must sit on the line IMMEDIATELY above the opening fence: a marker with anything between it and
+#: the fence — a blank line included — is reported as stranded rather than bound to the next block.
+#:
+#: A fenced block is a run of three or more backticks or tildes, and the language word is compared
+#: case-insensitively, so ``~~~YAML`` is as much a block as ```` ```yaml ````. A longer fence
+#: quotes shorter ones inside it, which is how a page shows this convention itself.
 DOC_MARKERS: tuple[str, ...] = ("rayspec:validate", "rayspec:run", "rayspec:skip")
 
 #: Terminal statuses a ``rayspec:run`` block may reach: ``cancelled`` is a ``stop:`` step doing its
 #: job, ``failed`` is the drift this convention exists to catch.
 DOC_RUN_STATUSES: frozenset[str] = frozenset({"succeeded", "cancelled"})
 
-_DOC_FENCE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^`]*)$")
+#: A fenced block opens with at least three backticks or tildes and closes on a run of the same
+#: character at least as long, so a longer fence quotes shorter ones inside it (the way a
+#: markdown page shows a markdown snippet). Both halves are recognised here, because a fence
+#: variant the scanner does not know is a block nobody checks and nobody is told about.
+_DOC_FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_DOC_CLOSE = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})[ \t]*$")
 _DOC_MARKER = re.compile(
     r"^\s*<!--\s*rayspec:(?P<kind>validate|run|skip)(?P<rest>\s[^\n]*?)?\s*-->\s*$"
 )
@@ -493,6 +503,18 @@ def _parse_marker(match: re.Match[str]) -> dict[str, Any]:
     return {"marker": kind, "reason": None, "inputs": tuple(inputs), "unknown": tuple(unknown)}
 
 
+def _closes(line: str, fence: str) -> bool:
+    """Does ``line`` close a block opened with ``fence``?
+
+    A closing fence is the same character repeated at least as often as the opening one and
+    nothing else on the line — so a ```` ```yaml ```` inside a four-backtick wrapper is quoted
+    text, not a snippet of its own.
+    """
+    match = _DOC_CLOSE.match(line)
+    run = "" if match is None else match.group("fence")
+    return bool(run) and run[0] == fence[0] and len(run) >= len(fence)
+
+
 def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
     """``(blocks, stray markers)`` of one markdown page.
 
@@ -505,18 +527,19 @@ def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
     pending: dict[str, Any] | None = None
     pending_line = 0
     indent: str | None = None
+    fence_run = ""
     start, lang = 0, ""
     body: list[str] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if indent is not None:
-            if line.strip() == "```":
+            if _closes(line, fence_run):
                 if lang in _DOC_LANGS:
                     text = textwrap.dedent("\n".join(body)).rstrip()
                     fields = pending or {"marker": None}
                     blocks.append(DocBlock(source, start, text=text + "\n", **fields))
                 elif pending is not None:
                     strays.append(
-                        f"{source}:{pending_line}: rayspec marker above a ```{lang} block"
+                        f"{source}:{pending_line}: rayspec marker above a {fence_run}{lang} block"
                     )
                 indent, pending = None, None
                 continue
@@ -526,7 +549,8 @@ def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
         if fence is not None:
             words = fence.group("info").split()
             indent, start, body = fence.group("indent"), number, []
-            lang = words[0] if words else ""
+            fence_run = fence.group("fence")
+            lang = words[0].lower() if words else ""
             if lang in _DOC_LANGS and any("rayspec:" in word for word in words[1:]):
                 strays.append(f"{source}:{number}: a rayspec marker belongs ABOVE the fence")
             continue
@@ -535,7 +559,7 @@ def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
             if pending is not None:
                 strays.append(f"{source}:{pending_line}: two rayspec markers above one block")
             pending, pending_line = _parse_marker(marker), number
-        elif line.strip() and pending is not None:
+        elif pending is not None:
             strays.append(f"{source}:{pending_line}: rayspec marker is not above a fenced block")
             pending = None
     if pending is not None:
