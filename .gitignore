@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# the built docs site (mkdocs build)
+site/
 .venv/
 .pytest_cache/
 .ruff_cache/
