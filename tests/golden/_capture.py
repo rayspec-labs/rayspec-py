@@ -29,7 +29,7 @@ import re
 import socket
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from rayspec.testing.spec import Case, Suite
 
@@ -133,35 +133,49 @@ def mask(value: Any, subs: list[tuple[re.Pattern[str], str]]) -> Any:
     return value
 
 
+#: Sort keys for run-level events at the head and tail of the stream; no step path can equal
+#: them (a path segment is ``[a-z][a-z0-9_]*`` with optional ``[n]``).
+FIRST: Final = ""
+LAST: Final = "\uffff"
+
+
 def canonical_order(events: list[Any]) -> list[Any]:
     """Group each step's events together, so concurrent steps cannot reorder the corpus.
 
     The stream is captured from a real run, and steps that run in parallel interleave: whichever
-    of two concurrent prompt steps finishes first emits its ``step.finished`` first. The corpus
-    asserted a *total* order over that, which is not a property of the run — it is a property of
-    which coroutine the event loop happened to resume, and it made the suite fail roughly two runs
-    in five once the engine grew a little more work on the step-start path.
+    of two concurrent steps the event loop wakes first emits first. The corpus asserted a *total*
+    order over that, which is not a property of the run — it is a property of which coroutine got
+    resumed, and it made the suite fail about two runs in five once the engine grew a little more
+    work on the step-start path.
 
-    Canonicalising keeps everything the corpus is actually for. Within one step the order is
-    untouched, so a changed sequence of stream records still fails. Steps keep the order they
-    *started* in, so a reordered graph still fails. Run-level events (``run.started``,
-    ``run.finished`` and the warnings between them) keep their position relative to the steps that
-    surround them. What is discarded is only the interleaving between steps that were running at
+    Steps are grouped in the order their paths sort, not the order they appeared: an ``each:``
+    fans its items out concurrently, so even which of them emits FIRST is a race, and ordering by
+    first appearance would only have moved the flake earlier in the stream. Sorting is total and
+    costs the reader nothing the record does not already say — ``run.json`` holds each step's
+    place in the graph, and the engine's own tests pin execution order.
+
+    What is still compared, which is what the corpus is for: every event of one step, in the order
+    that step emitted it; every step that ran; and the run-level events (``run.started``,
+    ``run.finished``, the warnings between them), which keep their position relative to the steps
+    around them. What is discarded is only the interleaving *between* steps that were running at
     the same time — which no committed file could pin down without being flaky.
     """
-    order: dict[str, int] = {}
-    for event in events:
+
+    def step_of(event: Any) -> str | None:
         path = event.get("step_path")
-        if isinstance(path, str) and path not in order:
-            order[path] = len(order)
-    # A run-level event sorts with the step that precedes it, so it stays where it was written
-    # relative to the surrounding steps rather than migrating to one end.
-    keys: list[tuple[int, int]] = []
-    current = -1
+        return path if isinstance(path, str) else None
+
+    last_step = max((i for i, e in enumerate(events) if step_of(e)), default=-1)
+    keys: list[tuple[str, int]] = []
+    current = FIRST  # sorts before every step path, so run.started stays first
     for index, event in enumerate(events):
-        path = event.get("step_path")
-        if isinstance(path, str):
-            current = order[path]
+        path = step_of(event)
+        if path is not None:
+            current = path
+        elif index > last_step:
+            # a run-level event after the last step belongs at the end, whichever step happened
+            # to finish last — that is exactly the race being canonicalised away
+            current = LAST
         keys.append((current, index))
     return [event for _, event in sorted(zip(keys, events, strict=True), key=lambda pair: pair[0])]
 

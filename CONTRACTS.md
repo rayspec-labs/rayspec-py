@@ -32,6 +32,12 @@ src/rayspec/
   cli/commands/{init,doctor}.py + cli/templates/<kind>/**
   cli/commands/{new,completion}.py + cli/templates/new/** + the packaged examples corpus
   cli/_docs.py  DOCS_BASE + docs_url(rel) — the only way a hint cites a doc
+  fmt.py        format_duration / humanize_duration — the ONE rendering of a duration, for the
+               listings, the console tree, the approval panel and the cap reasons alike (a leaf
+               module: no rayspec imports). Tokens and costs render through providers/pricing.py
+  resources.py  walk_files(node, *, keep_dir=, keep_file=) — the ONE recursive listing of a
+               packaged data tree (the skill, the init scaffolds, the example corpus); a leaf
+               module over importlib.resources, no rayspec imports
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
   loader/secrets.py  where a `secret: true` input may appear (the placement rules)
@@ -725,9 +731,12 @@ from rayspec.events import (  # models + protocol + sinks (no JsonlSink: the sto
     #                  emit_stream() for the Live tree
 )
 from rayspec.events.sinks.console import fmt_duration, fmt_tokens, fmt_cost, usage_total, error_text
+# fmt_duration IS rayspec.fmt.format_duration and fmt_tokens IS providers.pricing.format_tokens
+# (names for this sink, not second implementations).
 # fmt_cost(usd, *, approx=False, source=None) -> "$0.12" | "~$0.12" (approx / source "table":
 # price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price); the
-# marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
+# marker is providers.pricing.cost_marker (usd is a cost, never a usage: no input of this
+# helper renders as tokens). The quiet sink reads the OPTIONAL step.finished /
 # run.finished data key cost_source; when run.finished carries none the run line derives it from
 # the step.finished events seen (QuietConsoleSink.derived_cost_source()).
 # format_stream_warning(step, text) -> "⚠ <step>: <warning>": printed by QuietConsoleSink.
@@ -1424,10 +1433,17 @@ from rayspec.engine.context import (
     #   none = no record has a cost; partial = some record has tokens but no cost (the sum is a
     #   lower bound, rendered "≥$"); table = an estimate is in the sum and nothing is unknown
     #   ("~$"); provider = every record with tokens reported a provider cost ("$"). Records
-    #   without tokens and cost (shell/python/skipped) do not count.
+    #   without tokens and cost (shell/python/skipped) do not count. Folds through
+    #   providers.pricing.combine_cost_sources (the one fold); a record that has a cost but
+    #   names no source counts as "provider". `cli._runs_common.run_cost_source` calls it.
     totals_of,  # (records) -> (Usage, cost_usd | None, cost_source); RunContext.run_totals()
     #   applies it to every record of the run (run.json cost_source, run.finished, RunResult),
     #   RunContext.budget_totals() to the accounted ones
+    mark_failed,  # (record, error) -> record  stamps status=failed + ok=False + error, the ONE
+    #   place those three are set together
+    failed_outcome,  # (record, error, *, output=None) -> StepOutcome  mark_failed + the outcome
+    #   (output carried as text when the step produced one before failing); every executor and
+    #   the scheduler fail a step through it
 )
 from rayspec.engine.approval import (
     ApprovalPrompt,  # Protocol: async __call__(ApprovalRequest) -> ApprovalAnswer | None (None = pause)
@@ -1447,6 +1463,9 @@ from rayspec.engine.approval import (
     #   line via format_totals ("steps: 3 · tokens: 12.3k tok · cost: —"; the executor passes
     #   totals {steps, tokens, cost_usd, cost_source}) — never a raw None or raw seconds
     clean_answer, enable_readline, humanize_duration, fmt_cost, format_totals,
+    #   humanize_duration is re-exported from rayspec.fmt (which also owns the compact
+    #   format_duration the listings and the console tree print) — one duration rendering per
+    #   shape, in one module, so a third shape is never added by accident
     git_summary, git_diff,  # (workdir) -> str, best effort, capped; used by the console prompt
 )
 from rayspec.engine.runtime import (
@@ -1558,7 +1577,13 @@ Semantics fixed here (tests in `tests/engine/`):
   pid that last ran). `run.pause` is cleared when the
   gate that owns it reaches a decision by any path (stored decision, `--yes`, dry run, TTY), so
   `RunResult.pause` is only non-None for a run that is `paused`. `RunRecord.dry_run` (additive)
-  records `--dry-run`.
+  records `--dry-run`, `RunRecord.fail_fast` (additive) `--fail-fast`: a resume continues with
+  the blast radius the run was started with. `RunContext.fail_fast` is `options.fail_fast or
+  run.fail_fast` and is what `fail_fast_for` / `keep_going_for` read; `Runner._prepare_record`
+  OR-s the flag of a resume entry into the record and saves it. A failure policy only ever
+  TIGHTENS, so no entry point can clear a recorded one. The workflow's own
+  `defaults.on_step_failure` is NOT recorded — it is part of the workflow, and the hash guard
+  refuses a resume of a changed one.
 - Declared `artifacts:`: `executors.artifacts.collect_artifacts(step, scope, ctx, outcome)` runs
   in `scheduler._execute` after the executor (`_dispatch`) and before `finish`, for EVERY kind.
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
@@ -1636,7 +1661,7 @@ Semantics fixed here (tests in `tests/engine/`):
   `RunContext.elapsed_s()` is `utcnow() - RunRecord.started_at` (the ORIGINAL start — a resume
   entry keeps it, so the cap measures the run, not the attempt, waiting at an approval gate
   included); `context.time_reason(elapsed_s, defaults)` renders `time limit exceeded (elapsed
-  2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
+  2h 4m > timeout_total 2h 0m)` (`rayspec.fmt.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
   the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
@@ -1709,8 +1734,12 @@ interactive=, prompt=None)` returns `None` (pause at gates) or a `SuspendingAppr
 runs the `ConsoleApprovalPrompt` inside `async with sink.suspended():` for every sink exposing
 `suspended()`; `rayspec run` and `_runs_common.resume_run` (`resume`/`approve`/`reject`;
 additive kwargs `inputs=` (re-supplied secrets), `stub_script: StubScript | None =`,
-`stubs_path=`; the resumed run inherits `dry_run` from the record) both use
-it. `print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
+`stubs_path=`, `fail_fast=` (`resume --fail-fast`, OR-ed into `RunRecord.fail_fast`); the resumed
+run inherits `dry_run` and `fail_fast` from the record) both use
+it. `resume --fail-fast` records the tightening even when the pending-gate short-circuit ends the
+command (exit 3, one extra line naming the flag): a failure policy only ever tightens, so it is
+safe to persist for whoever continues the run, and the flag must not be accepted and dropped.
+`print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
 (never markup: `[stub] think` stays literal) and through
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
@@ -1724,7 +1753,9 @@ treats every directory with a `runs/` child as a store and never descends into i
 `source.git/` or `locks/`; `find_run(ctx, ref)` → `(store, RunRecord)` resolving full ids and unique prefixes in the current
 project first, then every project under the home (`UnknownRunIdError` / `AmbiguousRunIdError`
 with candidates newest first; `lookup_run` prints them with exit 2); `fmt_duration/fmt_tokens/
-fmt_cost` (`providers.pricing.format_cost`: `$0.12`, `~$0.12` for table prices, `-` when no cost
+fmt_cost` (`fmt_duration` IS `rayspec.fmt.format_duration` and `fmt_tokens` IS
+`providers.pricing.format_tokens`; `fmt_cost` renders through `providers.pricing.format_cost`:
+`$0.12`, `~$0.12` for table prices, `-` when no cost
 is known — tokens are never shown in a cost slot; listings have a `tokens` column) / `fmt_when` (relative within 30 days) / `run_duration_ms` /
 `steps_progress(run, *, planned=None)` (done = succeeded, tolerated or skipped; total =
 recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_step_paths(ctx, run, *, cache=None)`
@@ -1732,9 +1763,11 @@ recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_
 resumed: running/paused/interrupted/failed/cancelled; `None` for succeeded runs or when the
 workflow no longer loads — any loader exception is swallowed, a listing never fails on a broken
 workflow; `cache` memoises per (project root, workflow) for one listing) / `unpriced_steps` / `run_cost_source`
-(`provider|table|partial|none` via `combine_cost_sources`) / `pid_command_line(pid)` (`ps -o
+(`provider|table|partial|none` — the engine's `engine.context.cost_source_of` applied to a stored
+record, so a listing prints what the engine wrote into `RunRecord.cost_source`) / `pid_command_line(pid)` (`ps -o
 command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|approve|reject` as whole tokens + run id / workflow name / file as a whole token) /
-`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
+`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`, `fail_fast` — the
+recorded failure policy, next to `dry_run`; `rayspec show` marks both on the run header) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by
 recorded path, then by name) / `check_workflow_unchanged(run, resolved, force=)` (the engine's
 hash rule as a `ResumeError`, applied before anything is persisted) / `record_root(ctx, run)` /
@@ -1984,28 +2017,44 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `runs_usage_unknown`, a run whose own source is `partial`, **or** `incomplete=True`;
   `runs_in_flight` is reported but does not move the marker. `CostGroup.partial` = the cost is a
   lower bound, `CostGroup.tokens_partial` = the token count is.
-- `build_report(records, *, unreadable=0) -> CostReport(groups, total, runs_unreadable)` — grouped
+- `build_report(records, *, unreadable=()) -> CostReport(groups, total, unreadable)` — grouped
   by workflow, most expensive first then by name; the sort key is tri-state
   (`(cost_usd is None, -cost, label)`) so an unpriced group sorts after a real `$0.00` one.
-  Groups are never dropped: `sum(g.runs) == total.runs`. `unreadable` is passed as
-  `incomplete=` to the total's fold, so a store the command could not read completely can never
-  present an exact-looking sum. The command computes it as
-  `len(store.list_run_ids()) - len(store.list_runs())` (`list_runs` swallows an unparseable
-  `run.json` into a log warning; `list_run_ids` only lists dirs that have one).
+  Groups are never dropped: `sum(g.runs) == total.runs`. `unreadable` are the **ids** of the runs
+  that produced no record (`CostReport.runs_unreadable` is their count); a non-empty tuple is
+  passed as `incomplete=` to the total's fold, so a store the command could not read completely
+  can never present an exact-looking sum. The command computes it with
+  `unreadable_run_ids(store, loaded, since=)`: the ids `store.list_run_ids()` reports that no
+  record came back for (an unparseable `run.json`, swallowed into a log warning by `list_runs`)
+  **plus** the run directories the listing cannot see at all because their `run.json` is missing.
+  `since` drops the ids whose own timestamp (`run_id_created_at`, the `YYYYMMDD-HHMMSS` prefix
+  `new_run_id` mints) is outside the window; an id of another shape has no timestamp and is kept.
+  There is no `workflow` counterpart — which workflow a lost run belonged to is only in the
+  record that could not be read. A directory with no `run.json` is only counted once nobody is
+  writing one into it: `save_in_flight(run_dir)` (a `run.json.<pid>.<n>.tmp` younger than
+  `SAVE_GRACE_S = 30`) is the store's own evidence of a save in progress, because `save()`
+  creates the directory and writes the record after it. The grace is finite on purpose: a
+  staging file left behind by a killed process must not silence its run for good.
 - Presentation: `costs_table(report)` (workflow · runs · tokens · cost · cost source, total row
   last; the tokens cell is `≥…` when `tokens_partial`, `unknown` when nothing was reported at
-  all and `-` only for a genuine zero), `scope_line`, `empty_notice`, `unreadable_notice(count)`,
-  `partial_notices(report) -> list[str]` (one line per counter above, then the marker line — and
+  all and `-` only for a genuine zero), `scope_line`, `empty_notice`,
+  `unreadable_notice(ids, *, runs)`
+  (names up to `NAMED_UNREADABLE` ids and counts the rest — a record that cannot be read is
+  missing from `rayspec runs` too, so the id is the only handle it still has — and ends at the
+  run directory under `runs`, never at `rayspec show <id>`, which cannot show that run either),
+  `partial_notices(report, *, runs) -> list[str]` (one line per counter above, then the marker line — and
   the marker line is only printed for a marker that is on screen: `no cost is known for any run
   in scope` when `total.cost_usd is None`, `totals marked ≥ are a lower bound` when the total
   renders with `≥`, nothing otherwise), `group_payload` / `costs_payload`.
 - `--json`: one object `{project, since, workflow, runs, runs_unknown_cost, runs_partial_cost,
-  runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{…}, cost_usd, cost_source,
-  cost_sources{…}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost,
+  runs_usage_unknown, runs_in_flight, runs_unreadable, runs_unreadable_ids, tokens, usage{…},
+  cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at,
+  workflows: [{workflow, runs, runs_unknown_cost,
   runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source,
   cost_sources{…}, first_run_at, last_run_at}]}`. The top level is the total over exactly the runs
   in `workflows`; `cost_sources` counts every run once (zero buckets omitted); `runs_unreadable`
-  is top level only (an unreadable record cannot be attributed to a workflow) and `project` is
+  and `runs_unreadable_ids` are top level only (an unreadable record cannot be attributed to a
+  workflow) and `project` is
   `null` outside a rayspec project — no slug is claimed there, on disk or in the output. Exit 0
   with `runs: 0` when nothing is in scope (an unknown `--workflow` is a filter that matched
   nothing, not an error) · exit 2 on a bad `--since`.
@@ -2039,7 +2088,8 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `content` kind has `isolation: none` and no shell/python steps. Python surface:
   `TEMPLATE_KINDS`, `SCAFFOLD_FILES: {kind: (".rayspec/…", …)}`, `scaffold(root, *, kind="code",
   force=False) -> list[ScaffoldFile(relative, path, action ∈ created|overwritten|skipped)]`
-  (raises `NotADirectoryError`/`IsADirectoryError`/`OSError`), `template_files(kind)`,
+  (raises `NotADirectoryError`/`IsADirectoryError`/`OSError`, the last also for a symlinked
+  target under `--force`), `template_files(kind)`,
   `detect_kind(root) -> kind | None`, `orphan_files(old_kind, new_kind)`, `next_steps(kind, *,
   skill=True)` (additive keyword);
   `in_git_checkout(path) -> bool` (a `.git` dir *or* file at or above `path`),
@@ -2047,15 +2097,31 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   scaffold outside a git checkout prints that stderr `warning:` (names `git init` and
   `rayspec init --kind content`), exit stays 0; `content` is silent.
 - `rayspec init --from <example>` scaffolds one of the packaged **example projects** instead of a
-  `--kind` template: every file of `examples/<name>/` except `checks.yaml` (repository test data),
-  copied verbatim to the same relative path — `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml` and
-  `README.md` land at the root. Same `ScaffoldFile` actions, same `--force`/`--no-skill`/`--root`
+  `--kind` template: every file of `examples/<name>/`, copied verbatim to the same relative path —
+  `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml`, `checks.yaml` and `README.md` land at the root.
+  `checks.yaml` goes with it because the scaffold is a *project*: `rayspec test` discovers a root
+  `checks.yaml` (suite `checks`), so the cases the README describes run where they landed, and the
+  README's tree diagram is true of the directory the user is looking at. Same `ScaffoldFile`
+  actions, same `--force`/`--no-skill`/`--root`
   behaviour and the same `error: cannot write the scaffold: …` mapping as `scaffold()`; the
   kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
   `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars);
   with no corpus at all the error is `no examples are packaged with this build` instead.
-- An example is applied **whole or not at all**. Before anything is written,
+- A scaffold is applied **whole or not at all**, on both paths. `_place()` reads every source
+  first, writes each file to a temporary name beside its target and only then moves them into
+  place; a failure before that last step removes the temporaries and every directory the call
+  created (deepest first, only while empty), so an `OSError` — a directory where a file goes, a
+  full disk, a read-only tree — leaves the target exactly as it was, `.rayspec/` included. A
+  half-written scaffold would otherwise also be a rayspec *project* that did not exist before.
+  The rename makes the target a new inode, so `_place()` decides two things the umask would
+  otherwise decide for it: the mode of an overwritten file is copied onto the temporary before
+  the replace (`--force` changes a file's content, never who may read it), and a target that is
+  a SYMLINK is refused with an `OSError` naming it — before anything is written, like a directory
+  in the way — because `os.replace` would swap the link for a regular file and writing through
+  it would change a file outside the project being scaffolded. Without `--force` a symlinked
+  target is `skipped` as before: nothing is written over it, so there is nothing to refuse.
+- For `--from` the refusal is the other half of the same rule. Before anything is written,
   `example_conflicts(root, name)` lists the files the target already holds with *different*
   content; a non-empty list without `--force` is exit 2 naming them, because writing the rest
   around a kept `config.yaml` or stub file leaves a project whose own printed next steps fail.
@@ -2073,7 +2139,7 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   names those two paths under `examples/` as well, because `.gitignore` anchors them at the
   repository root only. `tests/cli/test_init_cmd.py` builds a wheel from a staged copy with that
   local state planted and asserts the corpus is in and the state is out.
-- Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`, `EXAMPLE_OPTIONAL`, `examples_root() ->
+- Python surface: `EXAMPLES_DIR`, `EXAMPLE_OPTIONAL`, `examples_root() ->
   Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with a `.rayspec/`),
   `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
   `example_conflicts(root, name) -> list[str]`, `scaffold_example(root, name, *, force=False) ->
@@ -2595,11 +2661,23 @@ from rayspec.registry import (
 ```
 `rayspec.cli.app`: `build_app()` builds a fresh app (builtins by pkgutil, then plugins); the
 module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
-`PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app)`,
-`loaded_cli_plugins()`, `reset_cli_plugins()`, `command_names(app)`, `installed_plugins()`
-(`InstalledPlugin(group, name, value, distribution, version, status, detail)` — what
-`rayspec plugins [--json]` prints). A CLI plugin may not shadow a builtin command name (the
-command is removed again and reported; a plugin that had only part of what it registered
+`PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app, *,
+argv=None)`,
+`loaded_cli_plugins()`, `cli_plugin_problems()`, `reset_cli_plugins()`, `command_names(app)`,
+`installed_plugins()` (`InstalledPlugin(group, name, value, distribution, version, status,
+detail)` — what
+`rayspec plugins [--json]` prints) and the reporting trio `plugin_notice(problems)` /
+`notice_wanted(argv=None, env=None)` / `NOTICE_LIMIT` + `HELP_FLAGS` + `READING_FLAGS` +
+`COMPLETE_VAR`: a CLI
+plugin problem is **one rayspec line on stderr** (never a `RuntimeWarning`, whose rendering names
+rayspec's own source file for somebody else's bug), and it is not printed for an invocation that
+only reads the CLI (no arguments, any `--help`/`--version`, `rayspec completion`,
+`_RAYSPEC_COMPLETE` set). Which invocation that is comes from `register_cli_plugins(argv=)`,
+resolved from `sys.argv[1:]` there and nowhere deeper, so what rayspec prints is an argument of
+the scan rather than ambient state. A plugin's exception message reaches both the notice and the
+`rayspec plugins` detail cell through `textsafe.safe_text`.
+The extension groups keep warning where they are resolved (`rayspec.registry`).
+A CLI plugin may not shadow a builtin command name (the command is removed again and reported; a plugin that had only part of what it registered
 refused is still `ok` and `rayspec plugins` names what was dropped), may not replace the root
 callback (the replacement is dropped), and anything it registered before raising is rolled back
 — `rayspec --help` exits 0 with a broken plugin installed. `register()` is handed the live
@@ -3183,6 +3261,8 @@ recorded — never the tool input.
   stamps now. `StreamRecord.kind` for shell steps: `stdout`, `stderr`, `exit`. A `usage`
   AgentEvent carries `data["usage"]` (this report's delta) and `data["turn_total"]` (cumulative
   usage of the attempt so far) as `{input, cached_input, cache_write, output, reasoning}` dicts
+  (`providers.base.usage_dict(usage)`, additive — the ONE spelling of that mapping, used by the
+  adapters, the scheduler's event data and the CLI's `--json` rows alike)
   — the engine records `turn_total` for an attempt cut off before its result.
 - **RunEvent.data** keys: `step.started {kind, attempt}`, `step.retry {attempt, delay_s, error}`,
   `step.finished {status, duration_ms, usage, cost_usd, error, skip_reason, tolerated}`,
@@ -3252,7 +3332,15 @@ store; nothing depends on it.
   those assertions are never evaluated, so the case would report `ok` whatever it claims.
   `discover_suites(root)` returns `Suite(name, root, checks_path, checks, locations, checks_label)`
   for
-  `examples/<name>/checks.yaml` (rooted at the example), `.rayspec/dryrun/checks.yaml` (`dogfood`,
+  `examples/<name>/checks.yaml` (rooted at the example), `<root>/checks.yaml` (`checks`, rooted at
+  the project — the same file at the place it lands when the project *is* the example, i.e. after
+  `rayspec init --from <name>`; read only when `is_suite_document()` recognises it positively as a
+  mapping whose `checks:`/`cases:` key holds a NON-EMPTY LIST OF MAPPINGS, each naming at least
+  one case key, because the project root is shared ground and a `checks.yaml` of another tool —
+  `checks: {lint: true}`, `checks: [{name: lint, cmd: ruff}]` — must be passed over rather than
+  reported as broken; one case key is enough, so a suite of the project's own with a typo in it
+  is still read and the typo still located),
+  `.rayspec/dryrun/checks.yaml` (`dogfood`,
   rooted at the project) and `.rayspec/tests/<workflow>/<case>.yaml` (`tests/<workflow>`, rooted at
   the project; the directory names the workflow, the file stem the case). Discovery of a
   greenfield directory skips a document that `is_case_document()` recognises as *something else* —
@@ -3304,9 +3392,15 @@ included, because `workspace.branch` is null on a detached-HEAD checkout) and by
 over every string. `USAGE_KEYS` (`input`/`output`/`cached_input`/`cache_write`/`reasoning`) are
 masked to `0` wherever a `usage:` mapping appears: the stub derives its default counts from the
 prompt (`len(req.prompt) // 4`) and a prompt may embed `{{ run.workdir }}`, so an unmasked count
-is a function of the checkout path's length. **The corpus must capture byte-identically from two
-differently-named checkouts, detached HEAD included** — that is the acceptance test for a change
-to the masking. A case with no committed corpus *skips*; a
+is a function of the checkout path's length. `events.jsonl` is written in
+`_capture.canonical_order`: grouped by `step_path`, run-level events keeping the envelope
+(`run.started` first, `run.finished` last). The order WITHIN a step is the engine's and is
+compared; the order BETWEEN steps that ran at the same time is the scheduler's and is not —
+sibling prompt steps under `max_parallel:` interleave differently from one run to the next on one
+machine, so pinning that makes the corpus red at random. **The corpus must capture
+byte-identically from two differently-named checkouts, detached HEAD included, and from two runs
+that scheduled the same concurrent steps differently** — that is the acceptance test for a change
+to the masking or to the ordering. A case with no committed corpus *skips*; a
 deleted one is red (`MINIMUM_COVERED`), and a malformed case file anywhere in the repo is one
 failing test, never a collection error.
 `RAYSPEC_UPDATE_GOLDEN=1 uv run pytest tests/golden` regenerates. **A change to the `--json` event

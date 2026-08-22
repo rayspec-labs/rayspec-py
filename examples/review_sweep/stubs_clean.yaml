@@ -1,0 +1,6 @@
+# Every angle answers: the run succeeds and all three reports are written.
+defaults: { latency_ms: 0, usage: { input: 900, output: 120 } }
+match:
+  - { prompt_regex: "Angle:", text: "- Nothing worth reporting." }
+steps:
+  digest: { text: "All three angles answered; nothing worth reporting." }

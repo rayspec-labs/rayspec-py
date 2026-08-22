@@ -44,6 +44,7 @@ from rayspec.cli.commands.eval import echo_block
 from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.config import Config
 from rayspec.engine import context_rebuild
+from rayspec.engine.approval import humanize_duration
 from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, unheld_classes
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
@@ -96,13 +97,21 @@ def _step_detail(step: StepModel, rw: ResolvedWorkflow, path: str) -> str:
 
 
 def _caps_line(rw: ResolvedWorkflow) -> str:
-    """``  budget_usd $1.50  max_tokens 500,000`` for the run-level caps that are set."""
+    """``  budget_usd $1.50  max_tokens 500,000  timeout_total 2h 0m`` for the caps that are set.
+
+    All three run-level caps or none: they are one circuit breaker, so a line that named the
+    cost and token caps and left the wall-clock one out would read as "this run has no time
+    limit". The duration is rendered the way the breach itself is (``time limit exceeded
+    (elapsed 2h 4m > timeout_total 2h 0m)``), so the plan and the reason agree.
+    """
     defaults = rw.workflow.defaults
     parts: list[str] = []
     if defaults.budget_usd is not None:
         parts.append(f"budget_usd ${defaults.budget_usd:.2f}")
     if defaults.max_tokens is not None:
         parts.append(f"max_tokens {defaults.max_tokens:,}")
+    if defaults.timeout_total is not None:
+        parts.append(f"timeout_total {humanize_duration(defaults.timeout_total * 1000)}")
     return "".join(f"  {part}" for part in parts)
 
 
@@ -595,6 +604,9 @@ def register(app: typer.Typer) -> None:
                 "isolation": rw.workflow.isolation,
                 "budget_usd": rw.workflow.defaults.budget_usd,
                 "max_tokens": rw.workflow.defaults.max_tokens,
+                # seconds, like every other duration this API reports; the three run-level caps
+                # are one breaker, so all three keys are always present (``null`` = no cap)
+                "timeout_total": rw.workflow.defaults.timeout_total,
                 "description": rw.workflow.description,
                 "inputs": {row["name"]: row for row in input_rows},
                 "input_errors": input_errors,

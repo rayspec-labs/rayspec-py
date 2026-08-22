@@ -29,11 +29,13 @@ from typing import TYPE_CHECKING, Any
 from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.cli.commands._loader_common import Context, fail, make_context
 from rayspec.config import Config
+from rayspec.engine.context import cost_source_of
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
+from rayspec.fmt import format_duration
 from rayspec.loader import ResolvedWorkflow
-from rayspec.providers.base import Usage
-from rayspec.providers.pricing import combine_cost_sources, format_cost, format_tokens
+from rayspec.providers.base import Usage, usage_dict
+from rayspec.providers.pricing import format_cost, format_tokens
 from rayspec.schema import RunStatus, StepStatus
 from rayspec.store.file import (
     AmbiguousRunIdError,
@@ -183,25 +185,11 @@ def lookup_run(ctx: RunsContext, ref: str) -> tuple[FileRunStore, RunRecord]:
 # --------------------------------------------------------------------------------------------------
 
 
-def fmt_duration(ms: float | None) -> str:
-    """``850ms`` · ``12.3s`` · ``1m35s`` · ``1h02m``; ``-`` when unknown."""
-    if ms is None:
-        return "-"
-    if ms < 1000:
-        return f"{int(ms)}ms"
-    seconds = ms / 1000
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, sec = divmod(round(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m{sec:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
+#: ``850ms`` · ``12.3s`` · ``1m35s`` · ``1h02m``; ``-`` when unknown (:mod:`rayspec.fmt`).
+fmt_duration = format_duration
 
-
-def fmt_tokens(total: int) -> str:
-    """``850 tok`` / ``12.3k tok`` / ``1.5M tok`` (see ``providers.pricing.format_tokens``)."""
-    return format_tokens(total)
+#: ``850 tok`` / ``12.3k tok`` / ``1.5M tok`` (``providers.pricing.format_tokens``).
+fmt_tokens = format_tokens
 
 
 def fmt_cost(cost_usd: float | None, cost_source: str, usage: Usage) -> str:
@@ -338,9 +326,14 @@ def unpriced_steps(run: RunRecord) -> int:
 
 def run_cost_source(run: RunRecord) -> str:
     """Run-level cost source: ``provider`` · ``table`` (any estimate) · ``partial`` (some
-    steps have tokens but no cost) · ``none`` — see ``providers.pricing.combine_cost_sources``."""
-    sources = [rec.cost_source for rec in run.steps.values() if rec.cost_usd is not None]
-    return combine_cost_sources(sources, unpriced=unpriced_steps(run) > 0)
+    steps have tokens but no cost) · ``none``.
+
+    The engine's rule (:func:`~rayspec.engine.context.cost_source_of`), applied to a stored
+    record: what a listing prints for a run must be what the engine wrote into
+    ``RunRecord.cost_source`` for it, and a second copy of the rule is a second answer waiting
+    to happen.
+    """
+    return cost_source_of(run.steps.values())
 
 
 def status_style(status: str) -> str:
@@ -353,17 +346,6 @@ def status_style(status: str) -> str:
         "skipped": "dim",
         "pending": "dim",
     }.get(status, "red")
-
-
-def usage_dict(usage: Usage) -> dict[str, int]:
-    """The ``--json`` shape of a :class:`Usage`."""
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 def run_row(
@@ -393,6 +375,7 @@ def run_row(
         "cost_source": run_cost_source(run),
         "resume_count": run.resume_count,
         "dry_run": run.dry_run,
+        "fail_fast": run.fail_fast,
         "pid": run.pid,
         "host": run.host,
         "workspace": run.workspace.model_dump(mode="json"),
@@ -779,6 +762,7 @@ def resume_run(
     *,
     force: bool = False,
     yes: bool = False,
+    fail_fast: bool = False,
     interactive: bool = False,
     json_mode: bool = False,
     quiet: bool = False,
@@ -790,7 +774,6 @@ def resume_run(
     secret_provider: SecretProvider | None = None,
     wait_slot: str | None = None,
     approve_classes: Sequence[str] = (),
-    fail_fast: bool = False,
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
 
@@ -809,6 +792,10 @@ def resume_run(
     same instance :func:`~rayspec.cli.commands.resume.resume_secret_inputs` already used, so a
     ``cmd:`` helper runs at most once per command; one is built here only when the caller has
     none.
+
+    ``fail_fast`` is ``--fail-fast`` for this entry point. It is OR-ed with the policy the run
+    was started with (``RunRecord.fail_fast``) — a resume may tighten the blast radius, never
+    widen it — and the tightened value is recorded, so the next resume keeps it too.
 
     ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
     does, because it starts the same agents.
@@ -901,9 +888,9 @@ def resume_run(
         dry_run=run.dry_run,
         yes=yes,
         interactive=interactive,
+        fail_fast=fail_fast,
         force=force,
         resume=True,
-        fail_fast=fail_fast,  # the engine ORs in the run's recorded override
         stub_script=stub_script,
         stubs_path=stubs_path,
         provider_settings=ctx.config.providers,

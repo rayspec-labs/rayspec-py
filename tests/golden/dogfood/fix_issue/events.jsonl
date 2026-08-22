@@ -1,6 +1,4 @@
 {"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "fix_issue"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
-{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "fetch", "ts": "<ts>", "type": "step.started"}
-{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "fetch", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "assess", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:assess:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:assess:1", "ts": "<ts>"}, "step_path": "assess", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "{\n  ", "ts": "<ts>"}, "step_path": "assess", "type": "stream"}
@@ -19,6 +17,8 @@
 {"data": {"max": 4, "n": 1}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "loop.iteration"}
 {"data": {"max": 4, "n": 2}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "loop.iteration"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "build[1]/gate", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[1]/gate", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[1]/implement", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[1]/implement:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[1]/implement:1", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Added ", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
@@ -29,8 +29,6 @@
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "committed.", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "Added tests/loader/test_issue_1.py (red), fixed loader; committed.", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[1]/implement", "ts": "<ts>", "type": "step.finished"}
-{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "build[1]/gate", "ts": "<ts>", "type": "step.started"}
-{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[1]/gate", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[1]/review", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[1]/review:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[1]/review:1", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
@@ -45,6 +43,8 @@
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "hint.", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- The new test does not assert the error hint.", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[1]/review", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "build[2]/gate", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[2]/gate", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[2]/implement", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[2]/implement:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[2]/implement:1", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Added ", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
@@ -55,8 +55,6 @@
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "committed.", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "Added tests/loader/test_issue_1.py (red), fixed loader; committed.", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[2]/implement", "ts": "<ts>", "type": "step.finished"}
-{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "build[2]/gate", "ts": "<ts>", "type": "step.started"}
-{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[2]/gate", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[2]/review", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[2]/review:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[2]/review:1", "ts": "<ts>"}, "step_path": "build[2]/review", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "LGTM", "ts": "<ts>"}, "step_path": "build[2]/review", "type": "stream"}
@@ -65,6 +63,8 @@
 {"data": {"attempt": 1, "kind": "approve"}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "step.started"}
 {"data": {"actor": {"ci": null, "id": "<actor>", "provider_accounts": {}, "source": "<source>"}, "approved": true, "by": "dry-run", "comment": ""}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "run.decision"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "fetch", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "fetch", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "pr", "ts": "<ts>", "type": "step.started"}
 {"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "pr", "ts": "<ts>", "type": "step.finished"}
 {"data": {"cost_usd": null, "outputs": {"iterations": 2, "pr_url": "", "verdict": "fix"}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

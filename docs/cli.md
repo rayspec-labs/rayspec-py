@@ -87,8 +87,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
 | `--verbose` | also print `step.started` lines |
 | `--allow-unsupported` | downgrade provider-capability mismatches to warnings |
-| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain) |
-| `--resume RUN_ID` | resume a run (unique prefix accepted) of **this** workflow in the current project's store; inputs come from `run.json` (`--inputs-file` is refused; `--input` only re-supplies secret inputs — exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN` when one is missing); the other flags are **yours**, not the record's — a `--dry-run --stubs` record of a workflow with a non-stub agent needs `--dry-run` again (else exit 2 `run <id> was launched with --dry-run --stubs <path>; its recorded stubs file requires --dry-run …`, hint `pass --dry-run …`; `rayspec resume` inherits the dry run instead); refused when the run belongs to another workflow (always), the workflow hash changed (unless `--force`), the run still has a live pid or is recorded as running on another host (unless `--force`); cannot be combined with `--repo` — use [`rayspec resume`](#rayspec-resume), which finds the run in any project |
+| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain); recorded on the run, so every resume of it keeps the same blast radius |
+| `--resume RUN_ID` | resume a run (unique prefix accepted) of **this** workflow in the current project's store; inputs come from `run.json` (`--inputs-file` is refused; `--input` only re-supplies secret inputs — exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN` when one is missing); the other flags are **yours**, not the record's (except `--fail-fast`, which is recorded on the run and may only be tightened, never dropped) — a `--dry-run --stubs` record of a workflow with a non-stub agent needs `--dry-run` again (else exit 2 `run <id> was launched with --dry-run --stubs <path>; its recorded stubs file requires --dry-run …`, hint `pass --dry-run …`; `rayspec resume` inherits the dry run instead); refused when the run belongs to another workflow (always), the workflow hash changed (unless `--force`), the run still has a live pid or is recorded as running on another host (unless `--force`); cannot be combined with `--repo` — use [`rayspec resume`](#rayspec-resume), which finds the run in any project |
 | `--force` | resume despite a changed workflow (steps whose fingerprint changed re-run) or a recorded live pid; overwrite an existing `--stubs-init` file |
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
@@ -257,7 +257,9 @@ rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output
 rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
 
-Show what a run would do without executing: the workflow hash and isolation, the policy layers in
+Show what a run would do without executing: the workflow hash and isolation, the run-level caps the
+workflow set (`budget_usd $1.50  max_tokens 500,000  timeout_total 2h 0m` — all three or none: they
+are one circuit breaker, and naming two of them reads as "there is no third"), the policy layers in
 force (`policy: …`, exactly as `rayspec validate` prints it), inputs with their
 resolved values — each input on its own line: the value, `missing (required)`, `undefined`
 (optional without a default) or `'<raw>' (invalid: <why>)`; one problem per input (a required
@@ -275,12 +277,14 @@ without a nudge). Exit 2 on validation or input errors, and on a `policy.yaml` t
 cannot read — the report is not printed at all in that case, because a plan measured
 against guardrails nobody could read would be a report about restrictions that may or may
 not be in force.
-`--json`: `{workflow, path, hash, isolation, description, inputs: {name: {name, type, value,
-state: ok|missing|invalid|undefined, problem, secret}}, input_errors, agents: [{name, provider, model,
+`--json`: `{workflow, path, hash, isolation, budget_usd, max_tokens, timeout_total, description,
+inputs: {name: {name, type, value, state: ok|missing|invalid|undefined, problem, secret}},
+input_errors, agents: [{name, provider, model,
 effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
 providers: {id: {structured_output, cost_reporting, cost: provider|table|none, priced_models,
 unpriced_models, disabled_models, pricing_error?}}, policy: {layers, searched}, errors, warnings,
-unsupported}` (a secret input's `value` is `"<secret>"`, `secret: true`).
+unsupported}` (a secret input's `value` is `"<secret>"`, `secret: true`; the three cap keys are
+always present, `null` when the cap is unset, and `timeout_total` is in seconds).
 
 #### `--render`: see what the agent will receive
 
@@ -393,14 +397,19 @@ Run the project's declarative workflow cases: every case is a **dry run against 
 provider**, so a suite needs no network and no worktree, starts no subprocess and is given no
 credentials — the project's `.rayspec/.env` is deliberately *not* loaded for this command. It is
 the edit → check loop after changing a prompt, a `when:` or a stub, and it is safe to run against
-a checkout you have not read. Cases are discovered from two layouts (see [testing.md](testing.md)
+a checkout you have not read. Cases are discovered from the layouts below (see [testing.md](testing.md)
 for the file format):
 
 - `.rayspec/tests/<workflow>/<case>.yaml` — one case per file; the directory names the workflow
   and the file stem names the case. Suite name: `tests/<workflow>`.
-- `<project>/checks.yaml` next to an example (`examples/<name>/checks.yaml`, each example being a
-  self-contained project) and `.rayspec/dryrun/checks.yaml` for the project's own workflows —
-  a mapping with a `checks:` list. Suite names: the example directory / `dogfood`.
+- `checks.yaml` at the **project root** — the project's own suite, and where the file lands when
+  the project is a scaffolded example (`rayspec init --from <name>` writes it). Suite name:
+  `checks`. It is read only when it is a mapping whose `checks:` key holds a list of case
+  mappings, so a `checks.yaml` that belongs to another tool — `checks: {lint: true}`,
+  `checks: [{name: lint, cmd: ruff}]` — is passed over instead of reported as broken.
+- `examples/<name>/checks.yaml` (each example being a self-contained project) and
+  `.rayspec/dryrun/checks.yaml` for the project's own workflows — a mapping with a `checks:`
+  list. Suite names: the example directory / `dogfood`.
 
 One line per case is printed while it runs (`ok tests/build:happy (0.04s)`), then the four-line
 block of every unmet expectation and a `24 passed, 1 failed in 2.2s` summary:
@@ -606,7 +615,7 @@ Options:
 
 - `--all` / `-a` — List runs of every project under RAYSPEC_HOME.
 - `--limit` / `-n` `<int range>` — [x>=1]  Show at most N runs.
-- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, pid, host, workspace{…}, pause{…}|null}]`.
+- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, fail_fast, pid, host, workspace{…}, pause{…}|null}]`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 These are the options of the **listing**. `--root` is the only one a subcommand honours before the
@@ -755,8 +764,29 @@ zero**. That is the one property this command is built around: the run counts of
 add up to the `total` row, a group in which nothing is priced prints its run count next to an empty
 cost, and a total that is missing anything is marked `≥` and explained in the lines below the
 table. A total that quietly omits runs would be worse than no total at all — which is why a run
-record the store cannot parse (a truncated or hand-edited `run.json`) is not simply skipped: it is
-counted, the total is marked `≥`, and a line says how many records could not be read.
+record the store cannot read is not simply skipped: it is counted, the total is marked `≥`, and a
+line below the table **names** the runs it is missing. Two ways a record goes unread and they are
+one fact for a sum: a `run.json` that does not parse (truncated, hand-edited) and one that is not
+there at all — the second is the quieter of the two, because a run directory without a `run.json`
+is invisible to `rayspec runs` as well, which is why the ids are named here rather than pointed
+at another listing — and why the line ends at the run directory rather than at `rayspec show
+<id>`, which cannot show that run either:
+
+```
+1 run record could not be read and is not in these totals: 20260818-100000-cccc — its run.json is
+missing or unparseable (~/.rayspec/projects/<slug>/runs/20260818-100000-cccc)
+```
+
+A run directory that has no `run.json` *yet* is not one of these: the store creates the directory
+and writes the record into it a moment later, so a `costs` that lands in that window finds the
+store's own staging file there and leaves the run alone (for half a minute — a staging file left
+behind by a killed process must not silence its run for good).
+
+With `--since`, only the lost runs whose own id places them **inside** the window are reported: a
+rayspec run id starts with its UTC timestamp, so a record that cannot be read can still be dated.
+Nothing else about it can — its workflow is only in the record — so `--workflow` keeps counting
+it: a roll-up that quietly dropped a run that might have been one of this workflow's is exactly
+the failure above.
 
 Runs that are still `running` or `paused` are summed like any other — their cost so far is real
 money — but a line below the table says how many, because those figures are not final: an approval
@@ -787,7 +817,7 @@ Options:
 
 - `--since` `<when>` — Only runs created at or after this point: a window (`7d`, `24h`, `90m`) or a date (`2026-08-01`). Inclusive at the cutoff.
 - `--workflow` `<name>` — Only runs of this workflow (exact recorded name).
-- `--json` — Machine-readable output: one object `{project (the slug, or null outside a project), since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds. The four `runs_*` counters are why a figure may be a lower bound: runs with no cost at all, priced runs holding a step with tokens but no price, runs whose usage was cut off, and runs still running or paused. `runs_unreadable` (top level only — an unreadable record cannot be attributed to a workflow) counts `run.json` files the store could not parse; anything above zero means the totals are missing runs.
+- `--json` — Machine-readable output: one object `{project (the slug, or null outside a project), since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, runs_unreadable, runs_unreadable_ids, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds. The four `runs_*` counters are why a figure may be a lower bound: runs with no cost at all, priced runs holding a step with tokens but no price, runs whose usage was cut off, and runs still running or paused. `runs_unreadable` and `runs_unreadable_ids` (top level only — an unreadable record cannot be attributed to a workflow) count and name the runs the store could not read (a `run.json` that does not parse, or one that is missing entirely); anything above zero means the totals are missing runs. With `--since` only the ids the window contains are listed (a run id carries its UTC timestamp); `--workflow` cannot filter them, because a record that cannot be read does not say which workflow it belonged to.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 This command is per-project and per-user by design. Roll-ups across projects, teams, repositories
@@ -956,6 +986,7 @@ Resume a paused, failed or interrupted run: the run is re-executed from the top 
 Two things are not in `run.json` and come from the command line again — both are checked **before** anything is written, after the workflow-hash guard and after the pending-gate pointer (a run paused at a gate, non-TTY without `--yes`, exits 3 pointing at `approve`/`reject` first — that is what such a run needs):
 
 - **Secret inputs** (`secret: true`, [schema.md](schema.md#secret-inputs)) are never persisted: every secret that was given at launch must be supplied again with `--input NAME=VALUE` (accepted on resume for secret inputs only — any other name is `inputs are fixed per run`, exit 2) or through `RAYSPEC_INPUT_<NAME>` in the environment; otherwise exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN`. An optional secret that was not given at launch is not required (but may be supplied now — it is then recorded as `<secret>` and exported like the others).
+- **The failure policy**, on the other hand, *is* in `run.json`: `--fail-fast` is recorded on the run, so a resume continues it with the blast radius it started with rather than draining what the first half would have cancelled. The workflow's own `defaults.on_step_failure` needs no recording — it is part of the workflow, and the hash guard above already refuses a resume of a changed one.
 - **The stub script**: a run launched with `--stubs` recorded the file's absolute path (`stubs_path`); `resume` loads it again (a missing/unreadable file is exit 2 with the hint `pass --stubs <path>`), `--stubs PATH` overrides it (and becomes the recorded path). A run launched with `--stubs-from <run>` recorded that donor run instead (`stubs_path: "run:<run id>"`) and rebuilds its answers from the store — a replay that pauses at an approval gate finishes with the recorded answers, never with the stub provider's default. A `--dry-run` record resumes as a dry run (stub providers, shell/python skipped), so its stubs keep applying; the rule holds as on `run` (a non-stub agent may only be scripted in a dry run).
 
 Options:
@@ -964,6 +995,7 @@ Options:
 - `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
 - `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
+- `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again. A run paused at a gate records it on the way out too (`--fail-fast recorded on the run: …`, still exit 3), so the blast radius can be narrowed *before* the gate is decided with `approve`/`reject`. `rayspec runs --json`, `rayspec show` and `rayspec show --json` report the recorded policy (`fail_fast`).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--verbose` — Also show step starts.
@@ -1045,14 +1077,19 @@ out), then print the next steps (`doctor`, `validate`, `plan example`, `run exam
 the skill loads automatically"). `--root DIR` is the directory that receives `.rayspec/` and
 `.claude/skills/rayspec/` (default: the cwd — `init` does **not** walk up to an enclosing
 project). Files that already exist — scaffold and skill alike — are kept and listed as
-`exists … (skipped; use --force to overwrite)`; `--force` overwrites them. When every file
+`exists … (skipped; use --force to overwrite)`; `--force` overwrites them — keeping the mode of
+the file it replaces (a `config.yaml` you chmodded to `0600` stays `0600`) and refusing a target
+that is a *symbolic link*, which is an error like a directory in the way: a scaffold writes files
+inside the project it scaffolds, and replacing a link (or writing through it) would do neither.
+When every file
 already exists (nothing written) a `warning: nothing written …` line goes to stderr, but the
 exit code stays 0. The default `code` scaffold's `files` step runs
 `git ls-files`, so when the target is not inside a git checkout (no `.git` at or above it) `init`
 prints `warning: <dir> is not a git repository — … run \`git init\` here or use \`rayspec init
 --kind content\`` on stderr and still exits 0; `--kind content` needs no git and stays silent. Exit 2 (`error: cannot write the scaffold: …` on
 stderr, no traceback) for an unknown `--kind`, a `--root` that is not a directory, a *directory*
-where a template file goes (e.g. `.rayspec/config.yaml/`), or any other filesystem error
+where a template file goes (e.g. `.rayspec/config.yaml/`), a symlink where `--force` would
+write, or any other filesystem error
 (`error: cannot write the skill: … (the .rayspec/ scaffold was written; re-run with --no-skill
 to skip the skill)` for the skill files — the scaffold is complete at that point). Nothing is
 written outside `.rayspec/` and `.claude/skills/rayspec/`; runs live under `RAYSPEC_HOME`.
@@ -1097,7 +1134,11 @@ hint: available examples (rayspec init --from <name>):
   …
 ```
 
-An example is applied whole or not at all. When the target directory already holds one of its
+An example is applied whole or not at all — and so is the generic scaffold. Every file is written
+to a temporary name beside its target first and moved into place only once all of them are ready,
+so a write that fails (a directory where a file goes, a full disk, a read-only tree) leaves the
+directory exactly as it was: no half-written project, and no `.rayspec/` that would make a
+directory look like a rayspec project. When the target directory already holds one of its
 files with *different* content — a `config.yaml` from a plain `rayspec init`, another example's
 `stubs.yaml`, a workflow you edited — `--from` refuses (exit 2, naming those files) instead of
 writing the rest around them: a kept `config.yaml` or stub file belongs to something else, and
@@ -1121,8 +1162,8 @@ next steps:
 ```
 
 The catalogue is whatever the build ships (`rayspec init --from ''` prints it); today that is
-`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `secret_via_tool`,
-`triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
+`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `review_sweep`,
+`secret_via_tool`, `triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
 
 ### `rayspec new workflow`
 

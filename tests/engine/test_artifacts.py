@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -475,3 +477,39 @@ def test_the_run_dir_layout_keeps_artifacts_next_to_the_steps(tmp_path: Path) ->
     assert os.path.commonpath([run_dir, (run_dir / "artifacts" / "r" / "a.txt").resolve()]) == str(
         run_dir
     )
+
+
+# -- the documented idiom ------------------------------------------------------------------------
+
+#: The page that documents ``artifacts:``; its snippets are run here, not just read.
+DOCS_PAGE = Path(__file__).resolve().parents[2] / "docs" / "runs-and-resume.md"
+
+_FENCE_RE = re.compile(r"^[ \t]*```yaml\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
+
+
+def documented_steps(needle: str) -> str:
+    """The one fenced ``yaml`` block of :data:`DOCS_PAGE` containing ``needle``, as step YAML."""
+    blocks = [b for b in _FENCE_RE.findall(DOCS_PAGE.read_text(encoding="utf-8")) if needle in b]
+    assert len(blocks) == 1, f"{len(blocks)} blocks contain {needle!r} in {DOCS_PAGE}"
+    return textwrap.indent(textwrap.dedent(blocks[0]), "  ")
+
+
+async def test_the_documented_fan_out_snippet_runs(harness: Harness) -> None:
+    """The `each:` + `cwd:` + `artifacts:` example from the docs, verbatim.
+
+    It used to be unrunnable: ``cwd:`` is resolved before the body executes, so the directory the
+    body was meant to create did not exist yet — and pre-creating it did not help either, because
+    the body then wrote its report one level below the working directory it declared the artifact
+    against. The snippet is read out of the page so it cannot drift back.
+    """
+    harness.workflow("t", wf(documented_steps("artifacts: [report.md]")))
+    result = await harness.run("t")
+    assert result.status is RunStatus.SUCCEEDED, result.reason
+    record = harness.record(result.run_id)
+    for index, name in enumerate(("api", "web")):
+        step = record.steps[f"fan[{index}]/build"]
+        (artifact,) = step.artifacts
+        assert artifact.path == "report.md"
+        assert artifact.ref == f"artifacts/fan[{index}]/build/report.md"
+        copy = harness.store.run_dir(result.run_id) / str(artifact.ref)
+        assert copy.read_text() == f"built {name}\n"

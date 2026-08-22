@@ -252,7 +252,8 @@ def register(app: typer.Typer) -> None:
 
         Succeeded and cancelled runs are refused (exit 2) unless --force. Secret inputs must be
         supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused,
-        and so is a --fail-fast given at launch (--fail-fast here can only tighten it further).
+        and so is the failure policy it started with (--fail-fast here can only tighten it
+        further).
         """
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
@@ -297,6 +298,14 @@ def register(app: typer.Typer) -> None:
         ):
             assert record.pause is not None
             out = err_console()
+            # --fail-fast is recorded even though this resume stops here: a failure policy only
+            # ever tightens, so writing it is safe whatever happens next, and the operator who
+            # narrows the blast radius before deciding the gate must not have it silently
+            # dropped. Whoever continues the run (approve/reject/resume) then reads it back.
+            tightened = fail_fast and not record.fail_fast
+            if tightened:
+                record.fail_fast = True
+                store.save(record)
             out.print(
                 Text.assemble(
                     (f"run {record.run_id} is paused", "yellow"),
@@ -304,6 +313,13 @@ def register(app: typer.Typer) -> None:
                 ),
                 highlight=False,
             )
+            if tightened:
+                out.print(
+                    "  --fail-fast recorded on the run: whatever continues it cancels running "
+                    "siblings on failure",
+                    markup=False,
+                    highlight=False,
+                )
             # the hint names only what this gate's approval class accepts: recommending a
             # command the class refuses is how a control teaches people to work around it
             classes = approval_classes_for(ctx.project_root, ctx.home)  # the RUN's policy
@@ -335,6 +351,7 @@ def register(app: typer.Typer) -> None:
             record,
             force=force,
             yes=yes,
+            fail_fast=fail_fast,
             interactive=interactive,
             json_mode=json_,
             quiet=quiet,
@@ -346,7 +363,6 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             wait_slot=wait_slot,
             approve_classes=approve_class or (),
-            fail_fast=fail_fast,
         )
         raise typer.Exit(code=code)
 

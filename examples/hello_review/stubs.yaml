@@ -1,5 +1,6 @@
 # Scripted answers for `rayspec run hello_review --dry-run --stubs stubs.yaml`.
-# Keys are step paths (or globs); see examples/README.md for the full stub file shape.
+# Keys are step paths (or globs);
+# stub file format: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md#stub-stub
 steps:
   review:
     text: |

@@ -233,6 +233,68 @@ def test_runs_and_show_mark_table_and_partial_costs(cli: CliRunner, seeded: Seed
     assert "cost: ≥$0.26 (1 step unpriced)" in shown, shown
 
 
+def _priced(**steps: StepRecord) -> RunRecord:
+    run = RunRecord(
+        run_id="20260820-100000-cccc",
+        workflow_name="w",
+        workflow_path="w.yaml",
+        workflow_hash="x" * 64,
+        project_slug="s",
+        project_root="/p",
+        status=RunStatus.SUCCEEDED,
+    )
+    run.steps.update(steps)
+    return run
+
+
+def test_a_cost_without_a_named_source_is_a_provider_cost() -> None:
+    """A step that reported a cost but no source is `provider`, never `none`.
+
+    A cost that came back from the provider is not an estimate, and the listing must say so:
+    the alternative is a run that spent money showing no cost source at all.
+    """
+    run = _priced(
+        a=StepRecord(
+            path="a",
+            id="a",
+            kind="prompt",
+            status=StepStatus.SUCCEEDED,
+            usage=Usage(input=100, output=10),
+            cost_usd=0.5,
+            cost_source="none",
+        )
+    )
+    assert common.run_cost_source(run) == "provider"
+    run.steps["a"].cost_source = ""  # an older record that never wrote the field
+    assert common.run_cost_source(run) == "provider"
+    run.steps["a"].cost_usd = 0.0  # a free step is still a reported cost
+    assert common.run_cost_source(run) == "provider"
+
+
+def test_an_unpriced_step_beside_it_makes_the_run_partial() -> None:
+    run = _priced(
+        a=StepRecord(
+            path="a",
+            id="a",
+            kind="prompt",
+            status=StepStatus.SUCCEEDED,
+            usage=Usage(input=100, output=10),
+            cost_usd=0.5,
+            cost_source="none",
+        ),
+        b=StepRecord(
+            path="b",
+            id="b",
+            kind="prompt",
+            status=StepStatus.SUCCEEDED,
+            usage=Usage(input=50_000, output=200),
+            cost_usd=None,
+            cost_source="none",
+        ),
+    )
+    assert common.run_cost_source(run) == "partial"
+
+
 # -- warnings block ---------------------------------------------------------------------
 
 

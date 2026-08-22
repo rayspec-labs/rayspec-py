@@ -431,6 +431,7 @@ def test_json_shape_is_stable(cli: CliRunner, ledger: Ledger) -> None:
         "runs_usage_unknown",
         "runs_in_flight",
         "runs_unreadable",
+        "runs_unreadable_ids",
         "tokens",
         "usage",
         "cost_usd",
@@ -602,14 +603,16 @@ def _corrupt(ledger: Ledger, run_id: str) -> None:
 
 
 def test_an_unreadable_record_is_named_not_silently_dropped(cli: CliRunner, ledger: Ledger) -> None:
-    _corrupt(ledger, _run_id(DEPLOY_NEW, "cccc"))
+    corrupt = _run_id(DEPLOY_NEW, "cccc")
+    _corrupt(ledger, corrupt)
     result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
     assert result.exit_code == 0, result.output
     total = next(line for line in result.output.splitlines() if line.startswith("total"))
     assert total.split()[1] == "4"  # the four runs that could be read
     assert "≥" in total  # the sum can no longer claim to be complete
     assert "1 run record could not be read" in result.output
-    assert "rayspec runs" in result.output
+    # the id, not `rayspec runs`: that listing skips the record too, so it can show nothing
+    assert corrupt in result.output
 
 
 def test_an_unreadable_record_is_visible_in_json(cli: CliRunner, ledger: Ledger) -> None:
@@ -622,6 +625,132 @@ def test_an_unreadable_record_is_visible_in_json(cli: CliRunner, ledger: Ledger)
 
 def test_a_readable_store_reports_no_unreadable_records(cli: CliRunner, ledger: Ledger) -> None:
     assert _payload(cli, ledger)["runs_unreadable"] == 0
+    assert _payload(cli, ledger)["runs_unreadable_ids"] == []
+
+
+def _lose_the_record(ledger: Ledger, run_id: str) -> None:
+    """Delete a run's ``run.json`` and leave the run directory where it was."""
+    (ledger.store.run_dir(run_id) / "run.json").unlink()
+
+
+def test_a_missing_record_is_counted_like_an_unparseable_one(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The store's own listing only sees runs that HAVE a ``run.json``, so a missing one used to
+    take its run out of the totals without leaving a trace: 5 runs became 4 with nothing said."""
+    lost = _run_id(DEPLOY_NEW, "cccc")
+    _lose_the_record(ledger, lost)
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    total = next(line for line in result.output.splitlines() if line.startswith("total"))
+    assert total.split()[1] == "4"  # the four runs that could be read
+    assert "≥" in total  # the sum can no longer claim to be complete
+    assert "1 run record could not be read" in result.output
+    assert lost in result.output  # named, so it can be looked at
+
+
+def test_a_missing_record_is_visible_in_json(cli: CliRunner, ledger: Ledger) -> None:
+    lost = _run_id(DEPLOY_NEW, "cccc")
+    _lose_the_record(ledger, lost)
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable"] == 1
+    assert payload["runs_unreadable_ids"] == [lost]
+    assert payload["runs"] == 4
+    assert payload["cost_source"] == "partial"
+
+
+def test_an_unreadable_record_outside_the_window_is_not_reported(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The window is knowable without the record: a run id carries its own UTC timestamp."""
+    _corrupt(ledger, _run_id(AUDIT, "eeee"))
+    payload = _payload(cli, ledger, "--since", "2026-08-10")
+    assert payload["runs_unreadable"] == 0 and payload["runs_unreadable_ids"] == []
+    payload = _payload(cli, ledger, "--since", "2030-01-01")
+    assert payload["runs_unreadable"] == 0
+
+
+def test_an_unreadable_record_inside_the_window_is_reported(cli: CliRunner, ledger: Ledger) -> None:
+    lost = _run_id(AUDIT, "eeee")
+    _lose_the_record(ledger, lost)
+    payload = _payload(cli, ledger, "--since", "2026-07-01")
+    assert payload["runs_unreadable_ids"] == [lost]
+
+
+def test_the_unreadable_notice_points_at_something_that_is_still_there(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The notice used to end `(rayspec show <id>)`, and `rayspec show` cannot show that run
+    either: it exits 2 and sends the reader on to `rayspec runs`, which does not list it either
+    — this command's own docstring rejects `rayspec runs` for exactly that reason. What is left
+    of a run whose record is gone is its directory."""
+    lost = _run_id(DEPLOY_NEW, "cccc")
+    _lose_the_record(ledger, lost)
+    result = cli.invoke(app, ["costs", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    assert "rayspec show" not in result.output
+    # rich folds a long path over several lines; the notice names one that is really there
+    flat = "".join(result.output.split())
+    assert str(ledger.store.run_dir(lost)) in flat
+    assert ledger.store.run_dir(lost).is_dir()
+    shown = cli.invoke(app, ["show", lost, "--root", str(ledger.project)])
+    assert shown.exit_code == 2  # what the notice used to send the reader to
+
+
+def test_the_unreadable_notice_names_the_run_directory_of_a_single_run(tmp_path: Path) -> None:
+    from rayspec.cli.commands.costs import unreadable_notice
+
+    runs = tmp_path / "runs"
+    line = unreadable_notice(["20260101-000000-aaaa"], runs=runs)
+    assert line is not None and str(runs / "20260101-000000-aaaa") in line
+    several = unreadable_notice(["20260101-000000-aaaa", "20260101-000000-bbbb"], runs=runs)
+    assert several is not None and str(runs) in several
+
+
+def _staging_file(store: FileRunStore, run_id: str) -> Path:
+    """The skeleton `FileRunStore.save()` leaves behind while it is writing `run.json`."""
+    run_dir = store.run_dir(run_id)
+    (run_dir / "steps").mkdir(parents=True)
+    (run_dir / "artifacts").mkdir()
+    (run_dir / "tmp").mkdir()
+    staging = run_dir / f"run.json.{os.getpid()}.0.tmp"
+    staging.write_text('{"run_id": "half', encoding="utf-8")
+    return staging
+
+
+def test_a_record_that_is_being_written_is_not_reported_as_lost(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """`save()` creates the run directory, then writes `run.json` into it — a dump, a redaction
+    pass and an fsync later. A `costs` running in another terminal during that window would
+    otherwise name a healthy run that started a moment ago, and mark the total `≥` for it."""
+    _staging_file(ledger.store, _run_id(NOW, "ffff"))
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable"] == 0 and payload["runs_unreadable_ids"] == []
+
+
+def test_a_staging_file_left_behind_does_not_hide_a_lost_record(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """The other side of it: a process killed mid-write leaves that file for good, and a run
+    directory silenced for good is the failure this notice exists to prevent."""
+    lost = _run_id(NOW, "ffff")
+    staging = _staging_file(ledger.store, lost)
+    stale = datetime.now(tz=UTC).timestamp() - 3600
+    os.utime(staging, (stale, stale))
+    payload = _payload(cli, ledger)
+    assert payload["runs_unreadable_ids"] == [lost]
+
+
+def test_an_unreadable_record_is_reported_even_with_no_runs_left_in_scope(
+    cli: CliRunner, ledger: Ledger
+) -> None:
+    """An empty scope is the one place a lost record is the whole answer."""
+    lost = _run_id(AUDIT, "eeee")
+    _lose_the_record(ledger, lost)
+    result = cli.invoke(app, ["costs", "--workflow", "nope", "--root", str(ledger.project)])
+    assert result.exit_code == 0, result.output
+    assert "no runs" in result.output and lost in result.output
 
 
 def test_running_and_paused_runs_are_flagged_as_not_final(cli: CliRunner, ledger: Ledger) -> None:

@@ -235,6 +235,23 @@ class Usage:
         )
 
 
+def usage_dict(usage: Usage) -> dict[str, int]:
+    """The wire shape of a :class:`Usage` — the ``{input, cached_input, cache_write, output,
+    reasoning}`` mapping that goes into ``step.finished``/``run.finished`` event data, a
+    ``usage`` agent event and ``AgentResult.raw``.
+
+    Additive, and deliberately the only spelling of it: four copies of these five keys is four
+    chances for one surface to report a different field set than another.
+    """
+    return {
+        "input": usage.input,
+        "cached_input": usage.cached_input,
+        "cache_write": usage.cache_write,
+        "output": usage.output,
+        "reasoning": usage.reasoning,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class Denial:
     """One tool call the provider's permission or sandbox layer refused.
@@ -387,4 +404,5 @@ __all__ = [
     "StructuredMode",
     "ToolPolicy",
     "Usage",
+    "usage_dict",
 ]
