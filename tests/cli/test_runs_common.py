@@ -37,6 +37,24 @@ def test_fmt_when_relative_and_absolute() -> None:
     assert common.fmt_when(now - timedelta(days=40), now=now) == "2026-07-11 12:00"
 
 
+def test_fmt_when_stamp_pairs_the_age_with_a_clock_time() -> None:
+    """The age answers "is it still running", the clock time answers "which run is this" —
+    a listing kept in a log or pasted into an issue needs the second one too."""
+    now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+    assert common.fmt_when_stamp(None, now=now) == "-"
+    assert common.fmt_when_stamp(now - timedelta(seconds=30), now=now) == "30s ago (11:59:30)"
+    assert common.fmt_when_stamp(now - timedelta(hours=3), now=now) == "3h ago (09:00:00)"
+    assert common.fmt_when_stamp(now - timedelta(days=2), now=now) == "2d ago (12:00:00)"
+    # beyond a month the relative form is already an absolute date: nothing to add
+    assert common.fmt_when_stamp(now - timedelta(days=40), now=now) == "2026-07-11 12:00"
+
+
+def test_fmt_when_stamp_reads_a_naive_timestamp_as_utc() -> None:
+    now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+    naive = datetime(2026, 8, 20, 9, 0, 0)
+    assert common.fmt_when_stamp(naive, now=now) == "3h ago (09:00:00)"
+
+
 def test_run_duration_and_progress(seeded: Seeded) -> None:
     run = seeded.store.load(SUCCEEDED_ID)
     assert common.run_duration_ms(run) == 95_000

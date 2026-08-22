@@ -9,6 +9,7 @@ plain ``@app.command``.
 from __future__ import annotations
 
 import json
+import re
 
 import typer.core
 import typer.main
@@ -31,8 +32,18 @@ def test_bare_runs_table_is_unchanged(cli: CliRunner, seeded: Seeded) -> None:
     assert result.exit_code == 0, result.output
     lines = [line for line in result.output.splitlines() if "2026" in line]
     assert [line.split()[0] for line in lines] == [PAUSED_ID, FAILED_ID, SUCCEEDED_ID]
-    header = result.output.splitlines()[0].split()
-    assert header == ["run", "workflow", "status", "started", "duration", "steps", "tokens", "cost"]
+    # columns are separated by the table's padding, so a header cell may contain a space
+    header = re.split(r"\s{2,}", result.output.splitlines()[0].strip())
+    assert header == [
+        "run",
+        "workflow",
+        "status",
+        "started (UTC)",
+        "duration",
+        "steps",
+        "tokens",
+        "cost",
+    ]
     assert "1m35s" in lines[2] and "5/5" in lines[2] and "~$0.26" in lines[2]
     assert OTHER_ID not in result.output
 

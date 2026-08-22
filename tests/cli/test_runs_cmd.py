@@ -24,6 +24,15 @@ def test_runs_table_newest_first_current_project(cli: CliRunner, seeded: Seeded)
     assert "failed" in lines[1]
 
 
+def test_runs_table_shows_the_clock_time_next_to_the_age(cli: CliRunner, seeded: Seeded) -> None:
+    """A listing that is read tomorrow — in a log, in an issue — needs more than "2d ago"."""
+    result = cli.invoke(app, ["runs", "--root", str(seeded.project)])
+    assert result.exit_code == 0, result.output
+    line = next(ln for ln in result.output.splitlines() if ln.startswith(SUCCEEDED_ID))
+    assert "(10:00:00)" in line  # the run started at 10:00:00 UTC
+    assert "started (UTC)" in result.output  # and the column says which clock that is
+
+
 def test_runs_all_and_limit(cli: CliRunner, seeded: Seeded) -> None:
     result = cli.invoke(app, ["runs", "--all", "--root", str(seeded.project)])
     assert result.exit_code == 0, result.output

@@ -1367,7 +1367,9 @@ controlled by whoever pushed the checkout, so a command typed in project A never
 project B's.
 
 - `rayspec runs [--all] [--limit N] [--json]`: newest first by `created_at` then id (run id,
-  workflow, status — `(dry)` for dry runs —, started, duration, steps done/total, tokens, cost;
+  workflow, status — `(dry)` for dry runs —, `started (UTC)` as the age *and* the clock time it
+  stands for (`2d ago (10:00:00)`, `_runs_common.fmt_when_stamp`; beyond a month the absolute
+  date `fmt_when` already returns), duration, steps done/total, tokens, cost;
   `--all` adds the project column and lists every project). JSON: list of `{run_id, workflow,
   status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done,
   steps_total, steps_ok, steps_skipped, tokens, usage{…}, cost_usd, cost_source, resume_count,
