@@ -163,6 +163,48 @@ All notable changes to rayspec are documented here. The format follows
   as a neutral agent field.
 - **Push the run branch on pause or finish** — opt-in, and failing soft: a push failure is a warning
   on a finished run, never a change to its status.
+- **A release pipeline.** A `v*` tag builds the sdist and the wheel, refuses a tag that disagrees
+  with the packaged version, checks the metadata, installs the wheel somewhere clean and runs it,
+  and publishes to PyPI through **Trusted Publishing** — an OIDC exchange in a protected
+  environment, with no token stored anywhere. Both artefacts are signed with **Sigstore**, a
+  **CycloneDX bill of materials** is generated from the locked runtime environment, and all of it
+  is attached to the GitHub release. `workflow_dispatch` runs the same build as a rehearsal,
+  stopping short of publishing. Release notes come from this file: a tag whose version has no
+  section here exits 2 and stops the release, so a build nobody described is never announced.
+- **A reusable GitHub Actions workflow** any repository with a rayspec project can call. It
+  installs rayspec from PyPI, dry-runs one workflow — no provider credential, no token, no cost,
+  every agent replaced by the scripted stub — and reports the step table and outputs as a
+  pull-request comment edited in place on every push, and into the job summary. A workflow that
+  does not load is reported with the loader's errors, so a red check always says why. A pull
+  request from a fork gets a read-only token, so the comment is skipped with a warning rather than
+  failing the check.
+- **A documentation site** (MkDocs + Material) built from the same `docs/*.md` GitHub renders, with
+  the README as its front page and this changelog as a page. Every internal link resolves in both
+  renderings, and `docs/ci.md` explains rayspec in CI: what a dry run checks, the reusable
+  workflow, `--locked` under `CI`, and how rayspec itself is released.
+- **Documentation snippets are tests.** Every fenced YAML block in `README.md` and `docs/*.md`
+  carries a marker: `rayspec:validate` loads and validates it, `rayspec:run` also drives it through
+  a dry run, and `rayspec:skip <why>` records in one line why a snippet is only illustrative. A
+  block with neither fails the suite, so a documented workflow that stopped working can no longer
+  sit there — one already had.
+- **SDK drift cassettes** — committed Claude and Codex transcripts in the SDKs' own wire shapes,
+  replayed through their parsers and the real adapters, so a provider changing its message shapes
+  fails a test instead of a production run.
+- **Generative tests** over the templating round trip and the scheduler, with a seeded driver
+  rather than a new dependency: every case comes from a printed seed and the first failure is
+  shrunk to a minimal counter-example. The templating properties found two real defects, both
+  shipped as strict expected-failures so the suite turns red the day they are fixed. The scheduler
+  properties check the join table, drain versus fail-fast, `stop:` bubbling and the wind-down at
+  every nesting depth, and hold on every generated case.
+- **A mutation-testing harness** for the join table, the scheduler's teardown path, the redactor,
+  the approval gate and the two policy enforcement modules. It edits one expression at a time in a
+  temporary copy, never the working tree, and reports the survivors — the lines the tests do not
+  really check.
+- **`rayspec resume --fail-fast`**, and `run.json` records the failure policy a run started with,
+  so a resume continues with the blast radius the first half had rather than draining siblings the
+  first half would have cancelled. Like the flag, the recorded policy only ever tightens — a run
+  waiting at an approval gate records the tightening on its way out, so the blast radius can be
+  narrowed before the gate is decided.
 
 ### Changed
 - **Upgrade note — `defaults.on_step_failure: fail_fast` now takes effect.** In 1.0.0 the field was
@@ -193,6 +235,15 @@ All notable changes to rayspec are documented here. The format follows
   every scope at once and may only ever tighten.
 - The run-level circuit breaker **names every cap that is over**, not just the first: a run that blew
   its cost cap and then ran out of time reported only the money, so the wrong knob got raised.
+- **One implementation of each shared helper.** Durations, token counts, costs, the `usage`
+  mapping, "this step failed" and the project root each had two to five copies; they have one now.
+  Two renderings converge as a result: a token count just below a million reads `1.0M tok` rather
+  than `1000.0k tok`, and a run listing reads a step that has a cost but names no source as
+  `provider`, which is what the engine already recorded for it.
+- **One JSON rule and one table style** across every command: compact when piped, indented on a
+  terminal, and a redirected listing that is stable and diffable.
+- CI pins every action to a commit sha, starts from read-only permissions, installs from the
+  lockfile, and lints the workflow files.
 
 ### Fixed
 - Unresolved merge-conflict markers were committed in the CLI reference and copied by the skill
@@ -246,6 +297,17 @@ All notable changes to rayspec are documented here. The format follows
   store that will not accept one makes the workflow refuse to start rather than write anything.
 - **`rayspec explain` names the cap that actually fired** for a step skipped by the wall-clock cap,
   instead of reporting the budget.
+- **`rayspec schema` prints the same bytes as the file it publishes.** It re-serialised the parsed
+  document, and the serialiser escapes non-ASCII by default, so every em dash in a description
+  printed as `\u2014` while the checked-in file held the character. The documented promise was
+  simply false.
+- **The golden corpus no longer depends on which concurrent step finishes first.** Steps that run
+  in parallel interleave, so the committed file pinned whichever coroutine the event loop happened
+  to resume — and disagreed with itself about two runs in five. Each step's events are grouped and
+  ordered by path now; within a step the order is untouched, so a changed sequence still fails.
+  The same fix went into a README comparison that failed the same way under load.
+- **An example ships whole**, `checks.yaml` included, so a scaffolded project can run the cases its
+  own README describes.
 
 ## [1.0.0] — 2026-08-20
 
