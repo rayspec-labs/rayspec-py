@@ -153,6 +153,8 @@ def unreadable_run_ids(
     record that could not be read, so a ``--workflow`` roll-up keeps counting it.
     """
     have = {run.run_id for run in loaded}
+    # `create()` writes the record with the directory, so a run that has only just started is
+    # not seen here as a lost one; a directory left without a record really has lost it
     candidates = set(store.list_run_ids())  # a run.json that is there but does not parse
     try:
         entries = list(os.scandir(store.runs_root))
@@ -454,16 +456,15 @@ def unreadable_notice(ids: Sequence[str]) -> str | None:
     """
     if not ids:
         return None
-    noun, verb = ("record", "is") if len(ids) == 1 else ("records", "are")
+    count = len(ids)
+    noun, verb = ("record", "is") if count == 1 else ("records", "are")
+    subject = "its run.json is" if count == 1 else "their run.json files are"
     named = ", ".join(ids[:NAMED_UNREADABLE])
-    if len(ids) > NAMED_UNREADABLE:
-        named += f", … ({len(ids) - NAMED_UNREADABLE} more)"
+    if count > NAMED_UNREADABLE:
+        named += f", … ({count - NAMED_UNREADABLE} more)"
     return (
-        f"{len(ids)} run {noun} could not be read and {verb} not in these totals: {named} "
-        f"— its run.json is missing or unparseable (`rayspec show <id>`)"
-        if len(ids) == 1
-        else f"{len(ids)} run {noun} could not be read and {verb} not in these totals: {named} "
-        f"— their run.json files are missing or unparseable (`rayspec show <id>`)"
+        f"{count} run {noun} could not be read and {verb} not in these totals: {named} "
+        f"— {subject} missing or unparseable (`rayspec show <id>`)"
     )
 
 

@@ -396,7 +396,8 @@ def discover_suites(root: Path) -> list[Suite]:
 
 
 def is_suite_document(path: Path) -> bool:
-    """Whether ``path`` is positively a rayspec **suite** file — a mapping with ``checks:``.
+    """Whether ``path`` is positively a rayspec **suite** file: a mapping with a
+    ``checks:`` (or ``cases:``) list.
 
     The recognition is positive, unlike :func:`is_case_document`'s, and that asymmetry is the
     point. ``.rayspec/tests/`` is rayspec's own directory, so anything in it is read as a case and

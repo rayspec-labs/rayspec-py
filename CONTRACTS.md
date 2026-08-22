@@ -1609,8 +1609,8 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   renders with `≥`, nothing otherwise), `group_payload` / `costs_payload`.
 - `--json`: one object `{project, since, workflow, runs, runs_unknown_cost, runs_partial_cost,
   runs_usage_unknown, runs_in_flight, runs_unreadable, runs_unreadable_ids, tokens, usage{…},
-  cost_usd, cost_source,
-  cost_sources{…}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost,
+  cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at,
+  workflows: [{workflow, runs, runs_unknown_cost,
   runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source,
   cost_sources{…}, first_run_at, last_run_at}]}`. The top level is the total over exactly the runs
   in `workflows`; `cost_sources` counts every run once (zero buckets omitted); `runs_unreadable`
@@ -1661,7 +1661,8 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml`, `checks.yaml` and `README.md` land at the root.
   `checks.yaml` goes with it because the scaffold is a *project*: `rayspec test` discovers a root
   `checks.yaml` (suite `checks`), so the cases the README describes run where they landed, and the
-  README's tree diagram is true of the directory the user is looking at. Same `ScaffoldFile` actions, same `--force`/`--no-skill`/`--root`
+  README's tree diagram is true of the directory the user is looking at. Same `ScaffoldFile`
+  actions, same `--force`/`--no-skill`/`--root`
   behaviour and the same `error: cannot write the scaffold: …` mapping as `scaffold()`; the
   kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
@@ -2194,16 +2195,15 @@ from rayspec.registry import (
 module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
 `PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app)`,
 `loaded_cli_plugins()`, `cli_plugin_problems()`, `reset_cli_plugins()`, `command_names(app)`,
-`installed_plugins()`
-(`InstalledPlugin(group, name, value, distribution, version, status, detail)` — what
+`installed_plugins()` (`InstalledPlugin(group, name, value, distribution, version, status,
+detail)` — what
 `rayspec plugins [--json]` prints) and the reporting trio `plugin_notice(problems)` /
 `notice_wanted(argv=None, env=None)` / `NOTICE_LIMIT` + `HELP_FLAGS` + `COMPLETE_VAR`: a CLI
 plugin problem is **one rayspec line on stderr** (never a `RuntimeWarning`, whose rendering names
 rayspec's own source file for somebody else's bug), and it is not printed for an invocation that
 only reads the CLI (no arguments, any `--help`, `rayspec completion`, `_RAYSPEC_COMPLETE` set).
 The extension groups keep warning where they are resolved (`rayspec.registry`).
-A CLI plugin may not shadow a builtin command name (the
-command is removed again and reported; a plugin that had only part of what it registered
+A CLI plugin may not shadow a builtin command name (the command is removed again and reported; a plugin that had only part of what it registered
 refused is still `ok` and `rayspec plugins` names what was dropped), may not replace the root
 callback (the replacement is dropped), and anything it registered before raising is rolled back
 — `rayspec --help` exits 0 with a broken plugin installed. `register()` is handed the live

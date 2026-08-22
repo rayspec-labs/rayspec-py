@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
@@ -139,7 +139,7 @@ def plugin_notice(problems: Sequence[str]) -> str | None:
     return f"{head} — run `rayspec plugins` for the detail"
 
 
-def notice_wanted(argv: Sequence[str] | None = None, env: Any = None) -> bool:
+def notice_wanted(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> bool:
     """Whether this invocation should be told about a plugin problem.
 
     Quiet for the invocations that are only *reading* the CLI — no arguments (Typer prints the
