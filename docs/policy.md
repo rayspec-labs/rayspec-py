@@ -147,10 +147,9 @@ re-emits *any* CLI flag, appended after the ones rayspec computed, where the las
 bypassPermissions`. `settings` carries a whole permissions document. `hooks`, `sandbox`, `plugins`,
 `add_dirs`, `can_use_tool` each have their own route, and the SDKs grow fields between releases.
 
-So while **any** control governs an agent — a `policy.yaml` key, or one the agent imposes on
-itself with `network: off` — every key of its own provider's block has to be one rayspec has
-written down the effect of. Anything else is a load-time error that names the key, the control, the
-file and line that imposed it, and the keys that *are* permitted:
+So while **any** control governs an agent, every key of its own provider's block has to be one
+rayspec has written down the effect of. Anything else is a load-time error that names the key, the
+control, the file and line that imposed it, and the keys that *are* permitted:
 
 ```
 steps.review.agent.provider_options: provider_options.claude.extra_args is refused while
@@ -161,21 +160,55 @@ max_buffer_size, max_thinking_tokens, mcp_servers, user). Remove the key, or dro
 could undo
 ```
 
-An agent that **no** control applies to is untouched: the escape hatch is still an escape hatch
-when nothing is being escaped. `network: off` is a *workflow* control rather than a policy key, so
-an agent that sets it is governed with no policy file at all — the common case, and the case where
-an unprotected control does the most damage.
+#### What counts as a control
+
+"Any control" is meant literally, and it is the half that is easy to get wrong: a trigger that
+lists two controls is defeated by writing a third. A control is anything that constrains the run,
+from any of three sources.
+
+**Fields the agent sets on itself.** These come with no policy file at all — the common case, and
+the case where an unprotected control does the most damage.
+
+| Field | What it withholds |
+| --- | --- |
+| `access` | the sandbox level; anything below `full` withholds power the provider would otherwise grant |
+| `tools` | which tools may run — `deny` and a non-empty `allow` alike |
+| `network: off` | the provider's web tools, by folding `web` into `tools.deny` |
+| `commands` | which shell commands may run |
+| `mcp` | the servers the run may reach (declaring any makes the set strict) |
+| `max_turns`, `budget_usd` | hard ceilings on turns and money |
+| `on_denial: fail` | makes a refused tool call stop the step — the teeth of every denial |
+
+**Every key any policy layer sets**, whatever it is — see [The keys](#the-keys).
+
+**Controls imposed from outside the workflow file:**
+
+| Artefact | Why it constrains the run |
+| --- | --- |
+| `.rayspec/rayspec.lock` | the model lockfile pins what every agent resolves to, and `--locked` (on by default under CI) refuses a run that resolves to anything else |
+| `config.yaml` `providers:` | the machine owner's adapter settings; `provider_options` is applied *over* them (Codex `config`), so a value the owner set there could otherwise be replaced from inside the workflow |
+
+An agent that **no** control applies to is untouched: `access: full`, no tool list, no cap, no
+`mcp:`, no `commands:`, no policy file, no lockfile and no machine settings. It has nothing to
+bypass, so the escape hatch is still an escape hatch.
+
+None of those three lists is where the rule lives. Every field of the agent schema is classified
+in `rayspec.policy.controls` as security-shaped (a control) or not (with the one line saying why),
+and a test parametrised over the real schema fails when a field is neither — so a field added
+later has to be classified rather than defaulting to "not a control". The same holds for the
+policy document and for the artefacts rayspec reads from disk.
 
 The keys that pass, and why:
 
 | Provider | Key | Why it is safe |
 | --- | --- | --- |
-| claude | `env` | extra environment variables, merged **under** rayspec's own — an added variable cannot displace one rayspec set |
+| claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs |
 | claude | `mcp_servers` | extra MCP servers, merged under the agent's `mcp:` block; checked server by server (below) |
 | claude | `max_thinking_tokens` | a ceiling on thinking — it narrows a turn, never widens it |
 | claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI |
 | claude | `user` | an opaque end-user id forwarded to the API |
 | codex | `config.mcp_servers` | as above, checked server by server |
+| codex | `config.model_reasoning_summary` | how much of the model's reasoning is summarised into the stream: transcript verbosity |
 | codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; see below |
 | codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
 | codex | `usage_baseline` | token counters carried over a resumed thread; accounting only |
@@ -194,8 +227,11 @@ provider_options:
 ```
 
 Codex's `approval_mode` is guarded the same way. `deny_all` passes anywhere; `auto_review` answers
-the agent's sandbox escalation requests *for* it, so it is refused under `access.max` or
-`network: off` — the two controls it would grant from inside.
+the agent's sandbox escalation requests *for* it, so it is refused under any control that withholds
+sandbox power or network access — `access.max` in a policy file, the agent's own `access:`,
+`network: off`, a `tools.deny` that names `web`. A guard matches on the KIND of control, not on
+its spelling: `access.max` and `access: read-only` withhold the same thing, and a guard that knew
+only the first is how a bypass gets written.
 
 **Everything else the adapter already refused, it still refuses.** Every field an adapter derives
 from an agent's neutral fields — `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`,
@@ -212,9 +248,9 @@ is a real spelling the adapter honours, and it is checked as the same block.
 
 A provider from a [plugin](extending.md) has no allow-list yet, so under a control its
 `provider_options` block is refused whole. That is the same fail-closed default applied to a
-provider rayspec knows nothing about; run such an agent without a policy, or keep the knob in
-`config.yaml` under `providers.<id>`, which belongs to the machine owner rather than to the
-workflow.
+provider rayspec knows nothing about. The way through is `config.yaml` under `providers.<id>`,
+which belongs to the machine owner rather than to the workflow — and which is *why* it is safe:
+that is a setting a workflow cannot edit.
 
 ## The worktree change guard
 
@@ -296,7 +332,11 @@ Without that key the trust list is still useful on its own: `rayspec trust check
 The file belongs in the repository next to `policy.yaml`. It carries a path and a digest and
 nothing else — never workflow content, never an input, never a secret.
 
-## Per-agent controls: `network:` and `commands:`
+## Per-agent controls
+
+Two of the agent's own controls have a shape of their own and are documented here; the full list
+of the fields that count as a control is
+[above](#what-counts-as-a-control).
 
 Two things you want to say about an agent before leaving it alone overnight live on the agent, not
 in the policy file, because they are part of what the workflow *is*:
@@ -332,7 +372,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env`, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `approval_mode`, `ephemeral`, `usage_baseline` |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env`, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `config.model_reasoning_summary`, `approval_mode`, `ephemeral`, `usage_baseline` |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the
@@ -365,6 +405,7 @@ This is the part that matters more than the feature list.
 ## Where the code lives
 
 `rayspec.policy` owns the document (`policy/model.py`), the layering and provenance
-(`policy/layers.py`), the checks (`policy/enforce.py`) and the trust list (`policy/trust.py`).
-`rayspec.loader.validate` calls it from exactly one place. The change guard is
-`rayspec.workspace.guard`. See `CONTRACTS.md` for the public surface.
+(`policy/layers.py`), what counts as a control (`policy/controls.py`), the checks
+(`policy/enforce.py`) and the trust list (`policy/trust.py`). `rayspec.loader.validate` calls it
+from exactly one place. The change guard is `rayspec.workspace.guard`. See `CONTRACTS.md` for the
+public surface.

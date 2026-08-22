@@ -838,13 +838,31 @@ from rayspec.policy import (
     #   that is not on it is refused at load time; a key that is a PREFIX of a listed path is a
     #   namespace the walk descends into (`config` on codex carries `config.mcp_servers`)
     AllowedOption,  # summary (what the key does — the reasoning, kept next to the entry),
-    #   guarded_by: {control key, ...}, offenders: OptionCheck | None — a guard checks the VALUE
-    #   against the control instead of refusing the key, so `mcp_servers` still adds the server
-    #   `mcp.allow_servers` allows
-    ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .effective, .any, .named(keys)
+    #   guarded_by: frozenset[control TAG] (empty = under every control), offenders: OptionCheck |
+    #   None — a guard checks the VALUE against the control instead of refusing the key, so
+    #   `mcp_servers` still adds the server `mcp.allow_servers` allows
+    ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .effective,
+    #   .tags {control key: frozenset[tag]}, .governed, .kinds, .covering(tags), .named(keys);
+    #   .of(controls, effective=) folds a list of Control into one view
     OptionCheck,  # (value, ControlsInForce) -> ((key path suffix, message), ...); empty = permitted
     SAFE_APPROVAL_MODE,  # "deny_all" — the codex approval_mode that grants nothing
     ACCESS_ORDER, access_rank,
+    # policy/controls.py — WHAT COUNTS AS A CONTROL, classified rather than listed:
+    CONTROL_TAGS,  # frozenset: access commands mcp model network provider settings spend tools
+    #   trust workspace — the KIND of restriction a control is; guards match on these
+    Control,  # key (how it is spelled), tags, sources: (PolicySource, ...)
+    AGENT_CONTROLS,  # {agent field: AgentControl(why, tags, imposed)} — every SECURITY-SHAPED
+    #   field of the agent schema: access, tools, network, commands, mcp, max_turns, budget_usd,
+    #   on_denial. `.imposed(agent)` -> ((spelled key, value, tags), ...), empty when the field is
+    #   set to a value that restricts nothing (`access: full`, an empty `tools:`)
+    AGENT_NON_CONTROLS,  # {agent field: one-line reason it restricts nothing} — the other half
+    AgentControl, agent_controls,  # agent_controls(agent) -> (Control, ...)
+    policy_controls,  # EffectivePolicy -> (Control, ...) (control_sources + POLICY_CONTROL_TAGS)
+    EXTERNAL_CONTROLS,  # {artefact file name: ExternalControl(control: bool, why)} — every
+    #   project/user file rayspec's own source names. control=True: rayspec.lock, config.yaml
+    ExternalControl, ExternalControls,  # .of(provider) -> (Control, ...)
+    discover_external_controls,  # (project_root, home=) -> ExternalControls (the only IO here)
+    short_path,  # (path, project_root, home) -> project-relative | ~/.rayspec/… | absolute
 )
 ```
 **Layering is most-restrictive-wins and no layer can widen another.** Order (highest precedence
@@ -900,12 +918,40 @@ the keys that ARE permitted. `settings`, `hooks`, `sandbox`, `plugins`, `add_dir
 `permission_prompt_tool_name`, `fallback_model` and every field a future SDK adds are covered by
 that default rather than by a list. An agent NO control applies to is untouched: the escape hatch is
 still an escape hatch when nothing is being escaped. `check_provider_options` runs on EVERY
-`apply_policy`, including when no policy file exists, because `agent_control_sources` contributes
-the workflow's own controls (`network: off`) — a control the workflow sets on itself is still a
-control it must not be able to shed.
+`apply_policy`, including when no policy file exists.
+
+**The TRIGGER is classified, not enumerated.** "A control is in force" used to name two things —
+`network: off` and the policy file — and six blocks reached the SDK with `errors: []` by leaning on
+a restriction that was real but unlisted: the agent's own `access: read-only`, its
+`tools.deny: [shell, web]`, its `max_turns`/`budget_usd`, or the committed model lockfile. An
+enumeration in the trigger is worth exactly as much as an enumeration in the allow-list, so a
+control is now anything that constrains the run, from three sources: every security-shaped field of
+the agent schema (`AGENT_CONTROLS`), every key any policy layer sets
+(`EffectivePolicy.control_sources`), and every external control (`EXTERNAL_CONTROLS` — the model
+lockfile, which `--locked` enforces by default under CI, and the machine owner's `providers:` block
+in `config.yaml`, which `provider_options` is applied over). `discover_external_controls` performs
+the two file checks; `check_provider_options` stays a pure check and takes them as `external=`.
+
+Completeness is a TEST, not a longer list. `AGENT_CONTROLS ⊎ AGENT_NON_CONTROLS` must partition the
+fields of `AgentDef` **and** of `ResolvedAgent` exactly — every field is either security-shaped, so
+it is a control, or carries the one line saying why it restricts nothing — and
+`tests/policy/test_control_trigger.py` parametrises over the real schema and fails when a field is
+in neither, when a classified control does not actually turn the allow-list on, and when a control
+blocks an allow-listed key. The same shape covers the policy document (parametrised over
+`Policy.model_fields`) and the artefacts (`EXTERNAL_CONTROLS` is checked against a scan of
+rayspec's own source for project file names, so the table cannot be total by construction). A field
+added later has to be classified; it cannot default to "not a control", which is how the six arose.
+
+Guards match on the KIND of control (`CONTROL_TAGS`), never on a spelling: `access.max` in a policy
+file and `access: read-only` on the agent withhold the same thing, so codex `approval_mode:
+auto_review` is refused under either. A control key missing from `POLICY_CONTROL_TAGS` gets EVERY
+tag rather than none — an unclassified control must engage every guard, not slip past all of them.
 
 The allow-list keeps the two extension points working, by checking the VALUE rather than refusing
-the key: `env` (merged under rayspec's own) is inert under every control, and `mcp_servers` /
+the key: `env` is merged UNDER both the variables rayspec computes and the machine owner's
+`providers.claude.env`, so a workflow can add a variable but never displace one of theirs (the
+adapter builds `env` in that order — it used to build it the other way round, which made the
+allow-list's own reason for admitting the key false); and `mcp_servers` /
 `config.mcp_servers` (merged under the agent's own servers) is checked server by server against
 `mcp.allow_servers` and `tools.deny`, so the server the policy ALLOWS may still be added there. A
 control that blocks the permitted case is its own defect — it teaches people to switch the control
@@ -1159,7 +1205,8 @@ disallowed_tools permission_mode model system_prompt setting_sources strict_mcp_
 max_budget_usd output_format resume fork_session cwd cli_path stderr include_partial_messages`, so a raw option can
 never replace a value rayspec derived from a neutral field (a test reads the constructor call and asserts the
 partition holds); `MERGED_OPTIONS` (`env`, `mcp_servers`) are merged UNDER the computed mapping (env
-precedence: CLIENT_APP < settings.env < provider_options.env < open(env) < req.env; `req.mcp_servers` win on name
+precedence: **provider_options.env < CLIENT_APP < settings.env < open(env) < req.env** — the workflow's block is
+the bottom layer, so it adds variables and displaces none; `req.mcp_servers` win on name
 collision); every other `ClaudeAgentOptions` field is applied verbatim (unknown keys → warning event) — and
 "verbatim" is the reason `rayspec.policy` reads the block as an ALLOW-list the moment any control governs the
 agent: `extra_args` alone re-emits ANY CLI flag AFTER the ones rayspec computed, where last wins, so no
