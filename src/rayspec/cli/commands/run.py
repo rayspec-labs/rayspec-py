@@ -62,6 +62,7 @@ from rayspec.limits import (
 )
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import secret_input_names
+from rayspec.policy import EffectivePolicy, load_policy
 from rayspec.providers.pricing import PriceTable, cost_marker
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, RedactingSink, Redactor
 from rayspec.schema import ApproveStep, PromptStep, RunStatus
@@ -158,20 +159,32 @@ ApproveClassOption = Annotated[
 ]
 
 
-def operator_policy(project_root: Path, home: Path | None) -> Any:
-    """The policy in force for this project, or ``None`` when there is none.
+def operator_policy(project_root: Path, home: Path | None) -> EffectivePolicy | None:
+    """The policy in force for this project, or ``None`` when no layer is.
 
     The policy file — its keys, its layering (environment over project over user, most
-    restrictive wins) and its loader — belongs to ``rayspec.policy``. This is the one place
-    ``run``/``resume`` reach for it, so wiring it up is a single line here; until then a run has
-    no policy, which is exactly today's behaviour.
+    restrictive wins) and its loader — belongs to :mod:`rayspec.policy`. This is the one place
+    ``run``/``resume`` reach for it, and it reaches for the SAME loader every other consumer
+    uses (``rayspec.limits``, the load-time checks), so an operator cannot end up with a file
+    that caps their spending and is invisible to their gates.
+
+    A file that exists but cannot be read raises :class:`~rayspec.policy.PolicyError` from the
+    loader rather than returning ``None``: a guardrail that silently disappears is the one
+    failure mode this seam may not have, and the CLI boundary turns that into exit 2 like any
+    other load error.
     """
-    return None
+    effective = load_policy(project_root, home=home)
+    return None if effective.is_empty else effective
 
 
 def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, ClassRules]:
-    """The approval-class rules of that policy — the only part of it a gate reads."""
-    return rules_from_policy(operator_policy(project_root, home))
+    """The approval-class rules of that policy — the only part of it a gate reads.
+
+    ``rules_from_policy`` reads ``.classes`` off what it is handed, so it is handed the merged
+    ``approvals:`` block rather than the whole document.
+    """
+    policy = operator_policy(project_root, home)
+    return rules_from_policy(None if policy is None else policy.approvals)
 
 
 def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
@@ -190,11 +203,19 @@ def approval_classes_for(
     pre_approved: Sequence[str] = (),
     terminal_prompt: bool = True,
 ) -> ApprovalClasses:
-    """The approval-class rules and pre-authorisations one invocation runs under."""
+    """The approval-class rules and pre-authorisations one invocation runs under.
+
+    ``policy_loaded`` is asked separately from the rules because it is a separate question:
+    "there is no operator policy" and "the policy in force says nothing about this class" have
+    different fixes, and a run that printed the path of its policy file must not then report
+    that it has none. It is not derived from the rules — a file holding only ``budget:`` is in
+    force and defines no class.
+    """
     return ApprovalClasses(
         rules=policy_class_rules(project_root, home),
         pre_approved=frozenset(pre_approved),
         terminal_prompt=terminal_prompt,
+        policy_loaded=operator_policy(project_root, home) is not None,
     )
 
 

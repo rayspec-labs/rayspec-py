@@ -263,8 +263,10 @@ def test_every_classified_control_really_turns_the_allow_list_on(tree: Tree, nam
 @pytest.mark.parametrize("name", sorted(CONTROL_SAMPLES))
 def test_a_control_never_blocks_the_keys_rayspec_has_reasoned_about(tree: Tree, name: str) -> None:
     """A control that blocks the permitted case is its own defect."""
+    # `user: null` rather than a name: the key selects the OS account the CLI subprocess is
+    # started under, so its permitted case under a control is "carry nothing"
     _, report = validated(
-        tree, claude_wf("max_thinking_tokens: 2048\nuser: someone\n", fields=CONTROL_SAMPLES[name])
+        tree, claude_wf("max_thinking_tokens: 2048\nuser: null\n", fields=CONTROL_SAMPLES[name])
     )
     assert report.ok, report.errors
 
@@ -274,6 +276,7 @@ def test_a_control_never_blocks_the_keys_rayspec_has_reasoned_about(tree: Tree, 
 
 POLICY_SAMPLES: dict[str, str] = {
     "access": "access:\n  max: read-only\n",
+    "approvals": "approvals:\n  classes:\n    release: {allow_yes: false}\n",
     "budget": "budget:\n  per_day: 20.0\n",
     "max_concurrent_runs": "max_concurrent_runs:\n  claude: 1\n",
     "max_consecutive_failures": "max_consecutive_failures: 3\n",

@@ -9,7 +9,8 @@ Boundary: file discovery + merge + provenance. Three layers are read, highest pr
 
 "Precedence" only decides the order restrictions are *reported* in. It never decides which value
 wins, because no layer can loosen another: allow-lists intersect, deny-lists unite, numeric caps
-take the minimum and booleans take the OR. A workflow has to satisfy every layer that is present.
+take the minimum and a boolean takes its restrictive side (an OR for a flag that forbids, an AND
+for one that permits). A workflow has to satisfy every layer that is present.
 
 Everything here is local. There is deliberately no key, flag or environment variable that fetches
 a policy from a server, names an organisation or joins a shared registry: a rayspec process reads
@@ -29,7 +30,13 @@ from typing import Any
 
 from rayspec.config.paths import rayspec_home
 from rayspec.errors import LoaderError
-from rayspec.policy.model import BudgetPolicy, Policy, access_rank
+from rayspec.policy.model import (
+    ApprovalClassPolicy,
+    ApprovalsPolicy,
+    BudgetPolicy,
+    Policy,
+    access_rank,
+)
 from rayspec.schema import SchemaError
 
 #: Environment variable naming an extra policy file, applied ahead of the project and user files.
@@ -96,6 +103,29 @@ class PolicyLayer:
         return PolicySource(
             layer=self.name, label=self.label, line=self.line_of(*keys), value=str(value)
         )
+
+
+def _held_classes(layer: PolicyLayer) -> tuple[PolicySource, ...]:
+    """Every line of ONE layer that holds an approval class, with its own location.
+
+    A class an operator merely named — ``allow_yes: true``, ``require_tty: false`` — takes
+    nothing away and is not reported, for the same reason ``trust.require: false`` is not: a key
+    that forbids nothing must not read as a restriction. The two rules are reported separately
+    because they are separate lines a person would have to edit.
+    """
+    out: list[PolicySource] = []
+    for name, entry in layer.policy.approvals.classes.items():
+        if not entry.allow_yes:
+            out.append(
+                layer.source(f"{name}: allow_yes: false", "approvals", "classes", name, "allow_yes")
+            )
+        if entry.require_tty:
+            out.append(
+                layer.source(
+                    f"{name}: require_tty: true", "approvals", "classes", name, "require_tty"
+                )
+            )
+    return tuple(out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,8 +259,8 @@ class EffectivePolicy:
         question about the file rather than about a list of interesting keys, or the answer goes
         stale the day a key is added. Keys are spelled the way the file spells them
         (``tools.deny``, ``access.max``, ``models.deny``, ``mcp.allow_servers``,
-        ``providers.allow``, ``trust.require``, ``workspace.*``, ``budget.*``,
-        ``max_consecutive_failures``, ``max_concurrent_runs``).
+        ``providers.allow``, ``trust.require``, ``approvals.classes``, ``workspace.*``,
+        ``budget.*``, ``max_consecutive_failures``, ``max_concurrent_runs``).
         """
         out: dict[str, list[PolicySource]] = {}
         for layer in self.layers:
@@ -259,6 +289,8 @@ class EffectivePolicy:
                 )
             if policy.trust.require:
                 out.setdefault("trust.require", []).append(layer.source("true", "trust", "require"))
+            for source in _held_classes(layer):
+                out.setdefault("approvals.classes", []).append(source)
             for index, pattern in enumerate(policy.workspace.protected_paths):
                 out.setdefault("workspace.protected_paths", []).append(
                     layer.source(pattern, "workspace", "protected_paths", index)
@@ -320,6 +352,35 @@ class EffectivePolicy:
             if cap is not None:
                 sources.extend(cap[1])
         return tuple(sources)
+
+    # -- approvals ----------------------------------------------------------------------------
+
+    @property
+    def approvals(self) -> ApprovalsPolicy:
+        """``approvals:`` as the layers agreed on it — most restrictive wins, names unite.
+
+        The accessor carries the document key's own name for the same reason :attr:`budget` does:
+        this is the object handed to
+        :func:`~rayspec.engine.approval_classes.rules_from_policy`, and a consumer that reaches
+        for ``.classes`` and silently gets nothing is a gate that is written down and not held.
+
+        ``allow_yes: false`` wins over ``true`` and ``require_tty: true`` over ``false`` — a
+        layer may only ever narrow what can approve a gate — and the set of class NAMES is the
+        union, so a class only the user file defines is still defined.
+        """
+        merged: dict[str, ApprovalClassPolicy] = {}
+        for layer in self.layers:
+            for name, entry in layer.policy.approvals.classes.items():
+                current = merged.get(name)
+                merged[name] = ApprovalClassPolicy(
+                    allow_yes=entry.allow_yes and (current is None or current.allow_yes),
+                    require_tty=entry.require_tty or (current is not None and current.require_tty),
+                )
+        return ApprovalsPolicy(classes=merged)
+
+    def approval_class_sources(self) -> tuple[PolicySource, ...]:
+        """Every layer line that HOLDS an approval class (empty when no layer holds one)."""
+        return tuple(source for layer in self.layers for source in _held_classes(layer))
 
     # -- the operational limits (read by rayspec.limits) ----------------------------------------
 

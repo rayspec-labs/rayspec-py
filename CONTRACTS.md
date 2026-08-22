@@ -802,7 +802,9 @@ from rayspec.policy import (
     #   access{max: read-only|workspace-write|full|None}, tools{deny: list}, mcp{allow_servers:
     #   list|None}, workspace{protected_paths, max_changed_files, max_changed_lines} (ADVISORY —
     #   parsed and merged, but nothing runs the change guard in this build; validate warns),
-    #   trust{require: bool}, budget{per_run, per_day, per_month, max_consecutive_failures},
+    #   trust{require: bool}, approvals{classes: {name: {allow_yes: bool = True, require_tty:
+    #   bool = False}}} (what may approve an approval gate of that class),
+    #   budget{per_run, per_day, per_month, max_consecutive_failures},
     #   max_consecutive_failures: int|None, max_concurrent_runs: int|{provider: int}|None.
     #   Every block is RESTRICTIVE ONLY — there is no key that grants. The last three belong to
     #   `rayspec.limits`, which reads them off EffectivePolicy; the model is the union of every
@@ -810,6 +812,8 @@ from rayspec.policy import (
     #   rejects a documented key turns that page into a hard load failure
     #   (tests/policy/test_policy_document.py holds both directions)
     BudgetPolicy,  # per_run/per_day/per_month: float|None, max_consecutive_failures: int|None
+    ApprovalsPolicy, ApprovalClassPolicy,  # classes: {name: ApprovalClassPolicy(allow_yes,
+    #   require_tty)} — the block `rayspec.engine.approval_classes` is handed
     apply_policy,  # (resolved, *, capabilities_for=None, policy=None) -> PolicyReport — the ONE
     #   entry point: discovers the layers, runs the checks, folds the denials into the agents.
     #   Anything about to RUN a resolved workflow calls it, validating or not; idempotent.
@@ -820,7 +824,11 @@ from rayspec.policy import (
     EffectivePolicy,  # .layers, .is_empty, .layer(name) + the ACCESSORS consumers code against,
     #   including .budget -> BudgetPolicy, .max_consecutive_failures, .max_concurrent_runs
     #   ({provider: limit}, "*" = every provider) — the operational ceilings, merged
-    #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them
+    #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them;
+    #   .approvals -> ApprovalsPolicy (ADDITIVE) is the same shape for the gate rules — the union
+    #   of the class NAMES, with allow_yes AND-ed and require_tty OR-ed per class, under the
+    #   document key's own name so `rules_from_policy` finds them; .approval_class_sources() ->
+    #   (PolicySource, ...) is the provenance of every class that HOLDS something
     PolicyLayer,  # name ("RAYSPEC_POLICY"|"project"|"user"), label, path, policy, lines
     PolicySource,  # layer, label, line, value; .location -> "<label>:<line>"
     PolicyError,  # LoaderError: unreadable/unparsable/invalid policy or trust file
@@ -867,8 +875,9 @@ from rayspec.policy import (
     SAFE_APPROVAL_MODE,  # "deny_all" — the codex approval_mode that grants nothing
     ACCESS_ORDER, access_rank,
     # policy/controls.py — WHAT COUNTS AS A CONTROL, classified rather than listed:
-    CONTROL_TAGS,  # frozenset: access commands mcp model network provider secrets settings spend
-    #   tools trust workspace — the KIND of restriction a control is; guards match on these
+    CONTROL_TAGS,  # frozenset: access approvals commands mcp model network provider secrets
+    #   settings spend tools trust workspace — the KIND of restriction a control is; guards
+    #   match on these
     Control,  # key (how it is spelled), tags, sources: (PolicySource, ...)
     Restriction,  # (why, tags, imposed) — one field of one schema that CONSTRAINS the run;
     #   `.imposed(subject)` -> (Imposed(key, value, tags, servers=None), ...), empty when the
@@ -1038,7 +1047,10 @@ answers the agent's sandbox escalation requests for it is refused under any cont
 zero) and the turn's cost is derived from that same figure, so a baseline the thread never reaches
 reports no spend at all — in `spend.json`, `run.json` and `rayspec costs` as much as against
 `defaults.budget_usd`; it is guarded under EVERY control, not only a `spend` one, and only zero
-counters pass. None is needed: the adapter carries them.
+counters pass. None is needed: the adapter carries them. Claude `user` is NOT a vendor label: the
+SDK hands it to `open_process(user=...)`, i.e. `subprocess.Popen(user=…)`, which resolves it with
+`getpwnam` and calls `setuid` in the child before `exec`, so it re-decides the OS identity every
+control in force was reasoned about against; under any control only `null` passes.
 
 **A guard is held to what it claims.** `guarded_by` may narrow a guard to KINDS of control, and
 every entry that ships leaves it empty (= under every control). `tests/policy/test_guard_completeness.py`
@@ -1054,7 +1066,10 @@ the number every ceiling is measured against. `AllowedOption.offenders` therefor
 it is a guard or an explicit `INERT_BECAUSE("…")` — and every inert entry is paired in
 `tests/policy/test_provider_options.py` with the test that holds its reason to the code: the key,
 set to an extreme value, has to leave every option the adapter computes byte-identical. An unpaired
-entry fails. A justification the tests do not read is not allowed to exist.
+entry fails. A justification the tests do not read is not allowed to exist — and it has to be the
+RIGHT question: `user` passed that proof while selecting the OS account the CLI runs as, because
+the proof asks whether a key moves the *other* options the adapter computes and this key's own
+value was the whole effect.
 
 Enforcement reads the block the ADAPTER will act on, never a hand-written path: both adapters and
 this check narrow `provider_options` with `schema.provider_option_block`, because a check that walks
@@ -2798,13 +2813,16 @@ from rayspec.engine.approval_classes import (
     ClassRules,          # frozen: allow_yes: bool = True, require_tty: bool = False; .named
     DEFAULT_RULES,       # ClassRules() — an unnamed class, or one the rules do not mention
     ApprovalClasses,     # frozen: rules: Mapping[str, ClassRules], pre_approved: frozenset[str],
-                         #   terminal_prompt: bool = True (this process's prompt is the built-in one)
-                         # .policy_in_force (any class defined at all) .rules_for(name)
+                         #   terminal_prompt: bool = True (this process's prompt is the built-in one),
+                         #   policy_loaded: bool = False (ADDITIVE — a policy file is in force,
+                         #   whether or not it defines any class)
+                         # .policy_in_force (policy_loaded or any class defined) .rules_for(name)
                          # .unheld(name)  → the gate names a class nothing in force defines
                          # .may_approve_automatically(name) .may_decide_out_of_band(name)
                          # .may_prompt(name, *, at_a_terminal=True)
     automatic_by,        # (classes, name, *, yes, dry_run) -> "--yes"|"dry-run"|"--approve-class"|None
-    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`
+    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`; it is
+                         #   handed `EffectivePolicy.approvals`, never the whole document
     unheld_classes,      # ([(step path, class|None)], classes) -> [warning]
     waiver_refused, out_of_band_refused, prompt_not_a_terminal,   # the warning messages
     class_not_held, gate_held, no_terminal,
@@ -2846,11 +2864,16 @@ caller can route around them):
   fails — which is what `--exec-shell` demands, since the gated body really runs.
 
 CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
-`run.ApproveClassOption`). `run.operator_policy(project_root, home)` is the ONE seam that reads
-the operator's policy (it returns `None` until `rayspec.policy` exists) and
-`run.policy_class_rules` turns it into `{name: ClassRules}` via `rules_from_policy`;
+`run.ApproveClassOption`). `run.operator_policy(project_root, home) -> EffectivePolicy | None` is
+the ONE seam that reads the operator's policy — `rayspec.policy.load_policy` over the same three
+layers every other consumer reads, `None` only when no layer is in force (a file that exists and
+cannot be read raises `PolicyError`, never `None`) — and `run.policy_class_rules` turns
+`.approvals` into `{name: ClassRules}` via `rules_from_policy`;
 `run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
-the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass;
+the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass, and
+sets `policy_loaded` from that same seam so a warning cannot claim there is no policy while the
+command has just printed its path (`plan` builds the same pair through `plan.policy_class_rules`
+/ `plan.policy_in_force`);
 `terminal_prompt` comes from `run.terminal_prompt_id(extensions, configured)` — true when nothing
 was configured **or** when `extensions.approval` names the builtin (`TERMINAL_PROMPT_ID ==
 "console"`), so naming the terminal prompt explicitly does not read as replacing it.
