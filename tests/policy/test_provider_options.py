@@ -547,3 +547,316 @@ def test_an_allow_listed_claude_option_really_reaches_the_sdk(tmp_path) -> None:
         else:
             assert got == values[name]
     assert not [w for w in translation.warnings if "provider_options" in w], translation.warnings
+
+
+# -- an allow-listed key with no guard is inert under every control -------------------------------
+
+SPEND_WF = """rayspec: 1
+name: wf
+isolation: none
+defaults:
+  budget_usd: 0.05
+  max_tokens: 1000
+steps:
+  - id: one
+    agent:
+      provider: codex
+      model: gpt-5.6
+      access: read-only
+      provider_options:
+        codex:
+{options}
+    prompt: hello
+"""
+
+
+def spend_wf(options: str) -> str:
+    """The reported reproduction: a run-level spend ceiling and a control in force."""
+    return SPEND_WF.format(options="\n".join(f"          {line}" for line in options.splitlines()))
+
+
+def test_an_inflated_usage_baseline_is_refused_under_a_spend_ceiling(tree: Tree) -> None:
+    """``usage_baseline`` sets the number every spend ceiling is measured against.
+
+    The adapter reports a turn's usage as the DELTA of the thread's cumulative total against the
+    baseline, clamped at zero. A baseline above anything the thread will reach therefore reports
+    zero tokens for every turn on it — and the cost derived from that figure is zero too, so a
+    resumed step can report zero spend forever. ``defaults.budget_usd``, ``defaults.max_tokens``
+    and an operator's spend envelope are all measured against the number this key sets.
+    """
+    _, report = validated(tree, spend_wf("usage_baseline: {input: 999999999, output: 999999999}\n"))
+    joined = "\n".join(report.errors)
+    assert "provider_options.codex.usage_baseline" in joined, report.errors
+    assert "defaults.budget_usd" in joined
+
+
+def test_a_zero_usage_baseline_stays_permitted_under_a_spend_ceiling(tree: Tree) -> None:
+    """A baseline of zero subtracts nothing: the permitted case survives the guard."""
+    _, report = validated(tree, spend_wf("usage_baseline: {input: 0, output: 0}\n"))
+    assert report.ok, report.errors
+
+
+def test_a_vendor_configuration_variable_is_refused_under_a_control(tree: Tree) -> None:
+    """``env`` adds a variable for the agent's WORK; it is not a way to reconfigure the CLI.
+
+    ``ANTHROPIC_MODEL`` is read inside a process rayspec only starts, and which of the options
+    rayspec computed a vendor variable overrides is exactly what rayspec cannot say — the same
+    "nobody knows" the allow-list exists for. So under a control a variable in the vendor's own
+    namespace is refused, and the way out is the machine owner's file, not dropping the control.
+    """
+    tree.policy("models:\n  deny: ['*opus*']\n")
+    _, report = validated(tree, wf("env:\n  ANTHROPIC_MODEL: claude-opus-4-1\n"))
+    joined = "\n".join(report.errors)
+    assert "provider_options.claude.env.ANTHROPIC_MODEL" in joined, report.errors
+    assert "providers.claude.env in config.yaml" in joined
+
+
+def test_only_the_vendor_variable_is_refused(tree: Tree) -> None:
+    """The permitted case survives: adding a variable is what the escape hatch is for."""
+    tree.policy("access:\n  max: read-only\n")
+    _, report = validated(
+        tree, wf("env:\n  GITHUB_TOKEN: ${GH}\n  CLAUDE_CODE_ENABLE_TELEMETRY: '1'\n")
+    )
+    (message,) = report.errors
+    assert "CLAUDE_CODE_ENABLE_TELEMETRY" in message
+    assert "GITHUB_TOKEN" not in message
+
+
+# -- an allow-listed key with no guard says so out loud, and the reason is checked ------------------
+
+
+def _inert_keys() -> list[tuple[str, tuple[str, ...]]]:
+    from rayspec.policy import ALLOWED_PROVIDER_OPTIONS
+    from rayspec.policy.enforce import Inert
+
+    return sorted(
+        (provider, path)
+        for provider, block in ALLOWED_PROVIDER_OPTIONS.items()
+        for path, rule in block.items()
+        if isinstance(rule.offenders, Inert)
+    )
+
+
+#: Every inert entry of the allow-list → the test in THIS module that holds its reason to the
+#: code. "Accounting only" was neither true nor checkable and it sat next to the key it justified,
+#: so a reason that no test reads is not allowed to exist: an unpaired entry fails below.
+INERT_PROOFS: dict[tuple[str, tuple[str, ...]], str] = {
+    ("claude", ("max_thinking_tokens",)): "test_an_inert_claude_key_computes_the_same_options",
+    ("claude", ("max_buffer_size",)): "test_an_inert_claude_key_computes_the_same_options",
+    ("claude", ("load_timeout_ms",)): "test_an_inert_claude_key_computes_the_same_options",
+    ("claude", ("user",)): "test_an_inert_claude_key_computes_the_same_options",
+    (
+        "codex",
+        ("config", "model_reasoning_summary"),
+    ): "test_an_inert_codex_key_computes_the_same_thread",
+    ("codex", ("ephemeral",)): "test_an_inert_codex_key_computes_the_same_thread",
+}
+
+
+def test_every_inert_key_names_the_test_that_checks_its_reason() -> None:
+    """A justification the tests do not read is the shape "accounting only" had."""
+    import sys
+
+    assert _inert_keys() == sorted(INERT_PROOFS), "pair every inert key with its proof"
+    module = sys.modules[__name__]
+    for key, proof in sorted(INERT_PROOFS.items()):
+        assert hasattr(module, proof), f"{key}: no test named {proof}"
+
+
+def test_an_allow_listed_key_cannot_become_unguarded_by_omission() -> None:
+    """``offenders`` has no default: "no guard" has to be said out loud, as INERT_BECAUSE."""
+    from rayspec.policy import AllowedOption
+
+    with pytest.raises(TypeError):
+        AllowedOption("a key nobody reasoned about")  # type: ignore[call-arg]
+
+
+def test_an_inert_reason_may_not_be_empty() -> None:
+    from rayspec.policy import INERT_BECAUSE, AllowedOption
+
+    with pytest.raises(ValueError, match="one line"):
+        AllowedOption("x", INERT_BECAUSE("  "))
+
+
+INERT_CLAUDE_VALUES: dict[str, object] = {
+    "max_thinking_tokens": 200_000,
+    "max_buffer_size": 1,
+    "load_timeout_ms": 86_400_000,
+    "user": "someone-else",
+}
+
+
+@pytest.mark.parametrize("name", sorted(INERT_CLAUDE_VALUES))
+def test_an_inert_claude_key_computes_the_same_options(tmp_path, name: str) -> None:
+    """The property that earns a key its INERT_BECAUSE: it moves nothing the adapter derived.
+
+    Every field ``build_options`` computes from the agent's own neutral fields — the tool lists,
+    the permission mode, the model, the limits, the environment, the servers — has to come out
+    byte-identical with the key set to an extreme value and without it. What is left is the key
+    itself, applied verbatim, which is what the allow-list says it is.
+    """
+    from dataclasses import fields
+
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    from rayspec.providers.base import AgentRequest, ToolPolicy
+    from rayspec.providers.claude import ClaudeProvider, build_options
+
+    def sink(_line: str) -> None:  # the same object both times: it is passed in, not computed
+        return None
+
+    def built(options: dict[str, object]) -> ClaudeAgentOptions:
+        built_options, _ = build_options(
+            ClaudeProvider({}),
+            AgentRequest(
+                step_path="s",
+                prompt="hi",
+                cwd=str(tmp_path),
+                tools=ToolPolicy(allow=(), deny=("web",)),
+                provider_options={"claude": options},
+            ),
+            stderr=sink,
+        )
+        return built_options
+
+    plain = built({})
+    with_key = built({name: INERT_CLAUDE_VALUES[name]})
+    moved = [
+        f.name
+        for f in fields(ClaudeAgentOptions)
+        if f.name != name and getattr(plain, f.name) != getattr(with_key, f.name)
+    ]
+    assert not moved, f"{name} moved: {moved}"
+    assert getattr(with_key, name) == INERT_CLAUDE_VALUES[name]
+
+
+INERT_CODEX_VALUES: dict[str, dict[str, object]] = {
+    "config.model_reasoning_summary": {"config": {"model_reasoning_summary": "detailed"}},
+    "ephemeral": {"ephemeral": True},
+}
+
+
+@pytest.mark.parametrize("name", sorted(INERT_CODEX_VALUES))
+def test_an_inert_codex_key_computes_the_same_thread(tmp_path, name: str) -> None:
+    """The same property on codex: the thread the adapter opens is the same thread.
+
+    ``ephemeral`` never reaches the thread's kwargs at all (it only asks the vendor not to keep
+    the thread), and ``config.model_reasoning_summary`` adds itself to the config and moves
+    nothing else — not the sandbox, not the approval policy, not the model, not the tools.
+    """
+    from rayspec.providers.base import AgentRequest, ToolPolicy
+    from rayspec.providers.codex import CodexProvider
+
+    provider = CodexProvider({})
+    request = AgentRequest(
+        step_path="s",
+        prompt="hi",
+        cwd=str(tmp_path),
+        tools=ToolPolicy(allow=(), deny=("web",)),
+    )
+    warnings: list[str] = []
+    plain = provider._thread_kwargs(request, {}, warnings)
+    with_key = provider._thread_kwargs(request, INERT_CODEX_VALUES[name], warnings)
+    assert not warnings, warnings
+    added = INERT_CODEX_VALUES[name].get("config", {})
+    expected = {**plain, "config": {**plain["config"], **added}}  # type: ignore[dict-item]
+    assert with_key == expected
+
+
+# -- every control at once, and every permitted key still works -----------------------------------
+
+EVERYTHING = """rayspec: 1
+name: wf
+inputs:
+  token: {type: string, secret: true}
+defaults:
+  budget_usd: 5.0
+  max_tokens: 100000
+  timeout_total: 30m
+  timeout: 5m
+steps:
+  - id: think
+    timeout: 2m
+    agent:
+      provider: claude
+      model: claude-sonnet-4-5
+      access: read-only
+      max_turns: 3
+      budget_usd: 1.0
+      on_denial: fail
+      tools: {deny: [shell]}
+      commands: {deny: ['^rm ']}
+      mcp:
+        github: {command: github-mcp-server}
+      provider_options:
+        claude:
+          env: {GITHUB_TOKEN: x}
+          mcp_servers:
+            github: {type: stdio, command: github-mcp-server}
+          max_thinking_tokens: 4096
+          max_buffer_size: 1024
+          load_timeout_ms: 5000
+          user: someone
+    prompt: hello
+"""
+
+EVERYTHING_CODEX = """rayspec: 1
+name: wf
+inputs:
+  token: {type: string, secret: true}
+defaults:
+  budget_usd: 5.0
+  max_tokens: 100000
+  timeout_total: 30m
+  timeout: 5m
+steps:
+  - id: think
+    timeout: 2m
+    agent:
+      provider: codex
+      model: gpt-5.6
+      access: read-only
+      tools: {deny: [web]}
+      commands: {deny: ['^rm ']}
+      mcp:
+        github: {command: github-mcp-server}
+      provider_options:
+        codex:
+          approval_mode: deny_all
+          ephemeral: true
+          usage_baseline: {input: 0, output: 0}
+          config:
+            model_reasoning_summary: detailed
+            mcp_servers:
+              github: {command: github-mcp-server}
+    prompt: hello
+"""
+
+
+@pytest.mark.parametrize("document", [EVERYTHING, EVERYTHING_CODEX], ids=["claude", "codex"])
+def test_every_permitted_key_still_works_with_every_control_in_force(
+    tree: Tree, document: str
+) -> None:
+    """The other half of the promise, and the one that decides whether people keep the controls.
+
+    Every kind of control at once — a policy file, the workflow's own isolation, its four caps, a
+    secret input, a step timeout, the agent's access/tools/commands/mcp/caps/on_denial, the model
+    lockfile and the machine owner's settings — and every key the allow-list permits, set to a
+    real value. A control that blocks the permitted case teaches people to switch the control
+    off, so this has to stay green as guards are added.
+    """
+    tree.policy(
+        "access:\n  max: read-only\n"
+        "tools:\n  deny: [shell]\n"
+        "models:\n  deny: ['*opus*']\n"
+        "mcp:\n  allow_servers: [github]\n"
+        "workspace:\n  max_changed_files: 20\n"
+    )
+    tree.write(
+        "rayspec.lock",
+        "version: 1\nworkflows:\n  wf:\n    agents:\n      inline:think:\n"
+        "        provider: claude\n        model: claude-sonnet-4-5\n",
+    )
+    tree.write("config.yaml", "providers:\n  claude: {setting_sources: [project]}\n")
+    _, report = validated(tree, document)
+    assert report.ok, report.errors

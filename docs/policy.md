@@ -230,16 +230,23 @@ The keys that pass, and why:
 
 | Provider | Key | Why it is safe |
 | --- | --- | --- |
-| claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs |
+| claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs. Checked by name: a variable in the vendor's own namespace (`ANTHROPIC_*`, `CLAUDE_*`) configures the CLI rather than the agent's work, and is refused under a control (below) |
 | claude | `mcp_servers` | extra MCP servers, merged under the agent's `mcp:` block; checked server by server (below) |
-| claude | `max_thinking_tokens` | a ceiling on thinking — it narrows a turn, never widens it |
-| claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI |
+| claude | `max_thinking_tokens` | how many tokens a turn may think for. It moves what a turn costs, never what a cost is measured against — the thinking tokens are reported as usage like any other |
+| claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI to come up (the step's own deadline is enforced by the engine around the whole call) |
 | claude | `user` | an opaque end-user id forwarded to the API |
 | codex | `config.mcp_servers` | as above, checked server by server |
 | codex | `config.model_reasoning_summary` | how much of the model's reasoning is summarised into the stream: transcript verbosity |
 | codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; see below |
 | codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
-| codex | `usage_baseline` | token counters carried over a resumed thread; accounting only |
+| codex | `usage_baseline` | usage counters **subtracted** from a resumed thread's totals — the number every spend ceiling is then measured against. Checked by value: under a spend ceiling only a baseline that subtracts nothing passes (below) |
+
+Each of the four unguarded keys says out loud why it needs no guard (`INERT_BECAUSE` in
+`rayspec.policy.enforce`), and each reason is paired with the test that holds it to the code: a
+key set to an extreme value has to leave every option the adapter computes byte-identical. An
+allow-listed key with no guard is inert under every control, which is a second unsafe default
+hiding inside a safe design — `usage_baseline` sat there as "accounting only" while setting the
+number every ceiling is compared against — so "no guard" cannot be reached by leaving a field out.
 
 **A control that blocks the permitted case is its own defect** — it teaches people to switch the
 control off. So the two merged keys are checked by *value*, not refused wholesale: under
@@ -400,7 +407,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env`, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `config.model_reasoning_summary`, `approval_mode`, `ephemeral`, `usage_baseline` |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env` — vendor variables refused —, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `config.model_reasoning_summary`, `approval_mode`, `ephemeral`, `usage_baseline` (zero counters only under a spend ceiling) |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the

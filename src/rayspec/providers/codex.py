@@ -30,7 +30,10 @@ Design (plan §3.1):
   turn is the delta of ``total`` against the last total seen for that thread (never a sum of
   ``last``). ``AgentResult.raw["usage_total"]`` reports the last cumulative total so the engine
   can pass it back as ``provider_options.codex.usage_baseline`` when resuming the thread in a
-  later run. Without a baseline, a thread first seen mid-history uses the **inference**
+  later run. A baseline is SUBTRACTED from the totals, so it sets the number every spend ceiling
+  is measured against rather than noting anything down: an inflated one reports no usage and no
+  cost at all, which is why :mod:`rayspec.policy` refuses a non-zero one under a spend ceiling.
+  Without a baseline, a thread first seen mid-history uses the **inference**
   ``total - last`` of its first update. **Settled 2026-08-21** by a live run against
   ``codex-cli`` 0.147.0 (``tests/providers/test_codex_live.py::
   test_live_codex_resume_usage_inference_matches_server_totals``, ``RAYSPEC_LIVE=1``): a fresh
@@ -46,7 +49,8 @@ thread), ``codex_bin`` (override the bundled runtime), ``pricing`` (model → pr
 :mod:`rayspec.providers.pricing`), ``drain_s`` (seconds to wait for an interrupted turn to
 finish, default 10). Per-request ``provider_options`` (``codex:`` block, or already narrowed)
 accept ``approval_mode``, ``config`` (merged over the settings config), ``ephemeral`` and
-``usage_baseline`` (cumulative usage counters of the resumed thread, see above).
+``usage_baseline`` (cumulative usage counters SUBTRACTED from the resumed thread's totals, see
+above).
 """
 
 from __future__ import annotations

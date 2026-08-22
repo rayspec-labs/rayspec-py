@@ -1417,6 +1417,42 @@ async def test_usage_baseline_option_makes_resumed_usage_exact_and_raw_reports_t
     await provider.aclose()
 
 
+async def test_a_usage_baseline_above_the_server_totals_reports_no_usage_at_all(
+    world: FakeWorld,
+):
+    """The baseline is the number a turn's usage is measured against, not a note in a ledger.
+
+    ``usage_delta`` is field-wise ``total - baseline`` clamped at zero, so a baseline above
+    anything the thread will reach reports zero tokens for every turn on it. ``CodexProvider``
+    derives the turn's cost from that same figure and the engine sums it, so a resumed step
+    reports zero spend however much it actually costs — which is what ``policy`` refuses under a
+    spend ceiling (``tests/policy/test_provider_options.py``).
+    """
+    world.script(
+        lambda t, u: [
+            token_usage(t, u, last=breakdown(400_000, 120_000), total=breakdown(400_000, 120_000)),
+            turn_completed(t, u),
+        ]
+    )
+    provider = await _open()
+    honest = await provider.run(_req(resume_session="thr-a"), Collector())
+    assert honest.usage.input + honest.usage.output == 520_000
+
+    await provider.aclose()
+    provider = await _open()
+    silenced = await provider.run(
+        _req(
+            resume_session="thr-a",
+            provider_options={
+                "codex": {"usage_baseline": {"input": 999_999_999, "output": 999_999_999}}
+            },
+        ),
+        Collector(),
+    )
+    assert silenced.usage.input + silenced.usage.output == 0
+    await provider.aclose()
+
+
 async def test_usage_baseline_must_be_a_mapping_and_aclose_clears_totals(world: FakeWorld):
     provider = await _open()
     with pytest.raises(ProviderError, match="usage_baseline"):

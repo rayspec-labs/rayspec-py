@@ -129,17 +129,38 @@ OptionCheck = Callable[[object, ControlsInForce], tuple[tuple[str, str], ...]]
 
 
 @dataclass(frozen=True, slots=True)
+class Inert:
+    """A NAMED statement that one allow-listed key needs no value guard, and why.
+
+    An allow-listed key with no guard passes unread under every control, which is a second unsafe
+    default hiding inside a safe design — ``usage_baseline`` sat there as "accounting only" while
+    setting the number every spend ceiling is measured against. So "no guard" cannot be reached by
+    omission: :attr:`AllowedOption.offenders` has no default, and an entry that wants none has to
+    say :data:`INERT_BECAUSE` out loud. ``because`` has to be CHECKABLE — every entry here is
+    paired with the test that holds the claim to the code
+    (``tests/policy/test_provider_options.py::INERT_PROOFS``), and an unpaired one fails.
+    """
+
+    because: str
+
+
+#: How :class:`Inert` is spelled at the call site: ``offenders=INERT_BECAUSE("…")``.
+INERT_BECAUSE = Inert
+
+
+@dataclass(frozen=True, slots=True)
 class AllowedOption:
     """One ``provider_options`` key path rayspec can state the effect of.
 
     ``summary`` is that statement, in one line — the reasoning that earned the key its place on
     the allow-list, kept next to the entry so the next reader can check it rather than trust it.
-    ``offenders`` inspects the requested VALUE and reports the parts a control refuses;
-    ``guarded_by`` narrows when that runs to the KINDS of control it is about
-    (:data:`~rayspec.policy.controls.CONTROL_TAGS`), empty meaning "under every control". Tags
-    rather than spellings: ``access.max`` in a policy file and ``access: read-only`` on the agent
-    withhold the same thing, and a guard that knew only the first is how a bypass gets written.
-    A key with no ``offenders`` is inert under every control.
+    ``offenders`` is either a guard that inspects the requested VALUE and reports the parts a
+    control refuses, or an :class:`Inert` saying in one line why no guard is needed; it has no
+    default, so an entry cannot become unguarded by omission. ``guarded_by`` narrows when a guard
+    runs to the KINDS of control it is about (:data:`~rayspec.policy.controls.CONTROL_TAGS`),
+    empty meaning "under every control". Tags rather than spellings: ``access.max`` in a policy
+    file and ``access: read-only`` on the agent withhold the same thing, and a guard that knew
+    only the first is how a bypass gets written.
 
     A guard exists so the check can refuse the *value* a control refuses instead of the key:
     refusing ``mcp_servers`` outright would block the server ``mcp.allow_servers`` allows, and a
@@ -147,13 +168,17 @@ class AllowedOption:
     """
 
     summary: str
+    offenders: OptionCheck | Inert
     guarded_by: frozenset[str] = frozenset()
-    offenders: OptionCheck | None = None
 
     def __post_init__(self) -> None:
         unknown = self.guarded_by - CONTROL_TAGS
         if unknown:  # pragma: no cover - a typo here would silently disable the guard
             raise ValueError(f"unknown control tags: {sorted(unknown)}")
+        if isinstance(self.offenders, Inert) and not self.offenders.because.strip():
+            raise ValueError("INERT_BECAUSE needs the one line saying why no guard is needed")
+        if isinstance(self.offenders, Inert) and self.guarded_by:
+            raise ValueError("an inert key has no guard to narrow with guarded_by")
 
 
 def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
@@ -193,6 +218,98 @@ def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tupl
                     f"({sources_text(denied)}); remove the server or widen that layer",
                 )
             )
+    return tuple(out)
+
+
+#: Prefixes of the environment variables a vendor CLI reads as its OWN configuration — the model
+#: it answers with, the endpoint it talks to, the credentials it uses. rayspec cannot know which
+#: of the options it computed a given vendor variable overrides (the list is the vendor's, it
+#: grows between releases, and it is read inside a process rayspec only starts), so under a
+#: control a variable in that namespace is a SETTING rather than a value for the agent's work.
+#: The way out is the machine owner's ``providers.<id>.env`` in ``config.yaml``, which is merged
+#: OVER this block — not dropping the control.
+VENDOR_ENV_PREFIXES: Mapping[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_", "CLAUDE_")}
+
+
+def _vendor_env_guard(provider: str) -> OptionCheck:
+    """Refuse the variables that configure ``provider``'s own CLI; add any other, as before."""
+    prefixes = VENDOR_ENV_PREFIXES[provider]
+
+    def offenders(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
+        if not isinstance(value, Mapping):
+            return (
+                (
+                    "",
+                    "must be a mapping of NAME -> value; policy cannot tell which variables this "
+                    "would set",
+                ),
+            )
+        out: list[tuple[str, str]] = []
+        for name in sorted(str(key) for key in value):
+            if not name.upper().startswith(prefixes):
+                continue  # adding a variable for the agent's own work is what the hatch is for
+            out.append(
+                (
+                    name,
+                    f"{name} configures the {provider} CLI itself rather than adding a value for "
+                    f"the agent's work ({', '.join(prefixes)}…), and rayspec cannot say which of "
+                    f"the options it computed a vendor variable overrides while {controls.named()} "
+                    f"{'is' if len(controls.sources) == 1 else 'are'} in force; set it in "
+                    f"providers.{provider}.env in config.yaml, which belongs to the machine owner "
+                    "and is merged over this block",
+                )
+            )
+        return tuple(out)
+
+    return offenders
+
+
+#: Counter names of ``usage_baseline``; anything else in the block is a counter rayspec does not
+#: know, which is refused for the same reason a positive one is.
+USAGE_COUNTERS: frozenset[str] = frozenset(
+    {"input", "cached_input", "cache_write", "output", "reasoning"}
+)
+
+
+def _refused_usage_baseline(
+    value: object, controls: ControlsInForce
+) -> tuple[tuple[str, str], ...]:
+    """``usage_baseline`` sets the number every spend ceiling is measured against.
+
+    The codex adapter reports a turn's usage as the thread's cumulative total MINUS this
+    baseline, clamped at zero; the cost is derived from that same figure and the run's totals sum
+    it. A baseline above what the thread will reach therefore reports zero tokens and zero cost
+    for every turn on it — so under a spend ceiling only a baseline that subtracts nothing
+    passes. Nothing is lost: the adapter carries the counters over a resumed thread itself.
+    """
+    if not isinstance(value, Mapping):
+        return (
+            (
+                "",
+                "must be a mapping of usage counters; policy cannot tell how much reported spend "
+                "this would subtract",
+            ),
+        )
+    named = controls.named(controls.covering(("spend",)))
+    out: list[tuple[str, str]] = []
+    for name, raw in sorted(value.items(), key=lambda item: str(item[0])):
+        key = str(name)
+        try:
+            counted = int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            counted = -1  # a counter policy cannot read is a counter it cannot clear
+        if key in USAGE_COUNTERS and counted == 0:
+            continue  # a baseline of zero subtracts nothing: the permitted case
+        out.append(
+            (
+                key,
+                f"{raw!r} is subtracted from the usage {named} is measured against: a turn on a "
+                "resumed thread reports its cumulative total minus this, clamped at zero, and its "
+                "cost is derived from that same figure — so a baseline the thread never reaches "
+                "reports no spend at all. Remove it; the adapter carries a resumed thread's "
+                "counters itself",
+            )
+        )
     return tuple(out)
 
 
@@ -243,43 +360,78 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
         ("env",): AllowedOption(
             "extra environment variables for the CLI subprocess, merged UNDER both the variables "
             "rayspec computes and the machine owner's providers.claude.env, so a workflow can "
-            "add one but never displace one of theirs (build_options builds env in that order)"
+            "add one but never displace one of theirs (build_options builds env in that order); "
+            "a variable in the vendor's own configuration namespace is refused instead of added",
+            _vendor_env_guard("claude"),
         ),
         ("mcp_servers",): AllowedOption(
             "extra MCP servers, merged under the agent's own mcp: block",
+            _refused_mcp_servers,
             guarded_by=frozenset({"mcp", "tools"}),
-            offenders=_refused_mcp_servers,
         ),
         ("max_thinking_tokens",): AllowedOption(
-            "a ceiling on the tokens a turn may think for — it narrows a turn, never widens it"
+            "how many tokens a turn may think for. It moves what a turn costs, never what a cost "
+            "is measured against: the thinking tokens are reported as usage like any other and "
+            "counted by the same ceilings",
+            INERT_BECAUSE(
+                "it changes no option build_options computes and no number a ceiling is compared "
+                "against — a turn that thinks more is measured for thinking more"
+            ),
         ),
         ("max_buffer_size",): AllowedOption(
-            "how much CLI stdout the transport buffers before it gives up"
+            "how much CLI stdout the transport buffers before it gives up",
+            INERT_BECAUSE(
+                "a buffer size the transport applies to bytes it has already received; it "
+                "changes no option build_options computes and reaches no vendor process"
+            ),
         ),
-        ("load_timeout_ms",): AllowedOption("how long to wait for the CLI process to come up"),
-        ("user",): AllowedOption("an opaque end-user id forwarded to the API"),
+        ("load_timeout_ms",): AllowedOption(
+            "how long to wait for the CLI process to come up",
+            INERT_BECAUSE(
+                "how long the transport waits for a process to start before failing; the step's "
+                "own deadline is enforced by the engine around the whole call, so a longer wait "
+                "cannot outlast it"
+            ),
+        ),
+        ("user",): AllowedOption(
+            "an opaque end-user id forwarded to the API",
+            INERT_BECAUSE("a label carried to the vendor; it selects nothing and grants nothing"),
+        ),
     },
     "codex": {
         ("config", "mcp_servers"): AllowedOption(
             "extra MCP servers, merged under the agent's own mcp: block",
+            _refused_mcp_servers,
             guarded_by=frozenset({"mcp", "tools"}),
-            offenders=_refused_mcp_servers,
         ),
         ("config", "model_reasoning_summary"): AllowedOption(
             "how much of the model's reasoning is summarised into the stream: transcript "
-            "verbosity, which grants no capability and withholds none"
+            "verbosity, which grants no capability and withholds none",
+            INERT_BECAUSE(
+                "it decides how much of the reasoning is written into the transcript; the run "
+                "does the same work either way"
+            ),
         ),
         ("approval_mode",): AllowedOption(
             "how a sandbox escalation request is answered: deny_all (the default) refuses every "
             "one of them, auto_review grants them",
+            _refused_approval_mode,
             guarded_by=frozenset({"access", "network"}),
-            offenders=_refused_approval_mode,
         ),
         ("ephemeral",): AllowedOption(
-            "do not persist the thread — it withholds state, it grants nothing"
+            "do not persist the thread — it withholds state, it grants nothing",
+            INERT_BECAUSE(
+                "it only asks the vendor not to keep the thread; rayspec's own run record, "
+                "events and audit log are written by rayspec and are not affected"
+            ),
         ),
         ("usage_baseline",): AllowedOption(
-            "token counters carried over a resumed thread; accounting only"
+            "usage counters SUBTRACTED from a resumed thread's totals — the number every spend "
+            "ceiling is then measured against, not a note in a ledger: a turn reports its "
+            "cumulative total minus this, clamped at zero, and its cost is derived from that "
+            "same figure",
+            _refused_usage_baseline,
+            guarded_by=frozenset({"spend"}),
         ),
     },
 }
@@ -615,7 +767,7 @@ def _check_option_value(
     report: PolicyReport,
 ) -> None:
     """An allow-listed key: permitted outright, or permitted for the values its guard allows."""
-    if rule.offenders is None:
+    if isinstance(rule.offenders, Inert):
         return
     if rule.guarded_by and not (rule.guarded_by & controls.kinds):
         return
@@ -792,10 +944,14 @@ def _entries(sources: Sequence[PolicySource]) -> str:
 __all__ = [
     "ALLOWED_PROVIDER_OPTIONS",
     "COMMAND_POLICY_CAPABILITY",
+    "INERT_BECAUSE",
     "SAFE_APPROVAL_MODE",
     "TOOL_GROUPS",
+    "USAGE_COUNTERS",
+    "VENDOR_ENV_PREFIXES",
     "AllowedOption",
     "ControlsInForce",
+    "Inert",
     "OptionCheck",
     "PolicyProblem",
     "PolicyReport",

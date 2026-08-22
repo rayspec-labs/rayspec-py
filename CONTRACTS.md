@@ -838,9 +838,13 @@ from rayspec.policy import (
     #   that is not on it is refused at load time; a key that is a PREFIX of a listed path is a
     #   namespace the walk descends into (`config` on codex carries `config.mcp_servers`)
     AllowedOption,  # summary (what the key does — the reasoning, kept next to the entry),
-    #   guarded_by: frozenset[control TAG] (empty = under every control), offenders: OptionCheck |
-    #   None — a guard checks the VALUE against the control instead of refusing the key, so
-    #   `mcp_servers` still adds the server `mcp.allow_servers` allows
+    #   offenders: OptionCheck | Inert (NO default — "no guard" cannot be reached by omission),
+    #   guarded_by: frozenset[control TAG] (empty = under every control) — a guard checks the
+    #   VALUE against the control instead of refusing the key, so `mcp_servers` still adds the
+    #   server `mcp.allow_servers` allows
+    Inert, INERT_BECAUSE,  # the named "this key needs no guard, and here is why"; every one is
+    #   paired with the test that holds the reason to the code (test_provider_options.py)
+    VENDOR_ENV_PREFIXES, USAGE_COUNTERS,  # what the two value guards added here match on
     ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .effective,
     #   .tags {control key: frozenset[tag]}, .governed, .kinds, .covering(tags), .named(keys);
     #   .of(controls, effective=) folds a list of Control into one view
@@ -982,16 +986,32 @@ file and `access: read-only` on the agent withhold the same thing, so codex `app
 auto_review` is refused under either. A control key missing from `POLICY_CONTROL_TAGS` gets EVERY
 tag rather than none — an unclassified control must engage every guard, not slip past all of them.
 
-The allow-list keeps the two extension points working, by checking the VALUE rather than refusing
-the key: `env` is merged UNDER both the variables rayspec computes and the machine owner's
+The allow-list keeps the extension points working, by checking the VALUE rather than refusing the
+key: `env` is merged UNDER both the variables rayspec computes and the machine owner's
 `providers.claude.env`, so a workflow can add a variable but never displace one of theirs (the
 adapter builds `env` in that order — it used to build it the other way round, which made the
-allow-list's own reason for admitting the key false); and `mcp_servers` /
-`config.mcp_servers` (merged under the agent's own servers) is checked server by server against
-`mcp.allow_servers` and `tools.deny`, so the server the policy ALLOWS may still be added there. A
-control that blocks the permitted case is its own defect — it teaches people to switch the control
-off. Codex `approval_mode` is guarded the same way: `deny_all` passes, anything that answers the
-agent's sandbox escalation requests for it is refused under `access.max` or `network: off`.
+allow-list's own reason for admitting the key false), and it is checked NAME by name — a variable
+in the vendor's own configuration namespace (`VENDOR_ENV_PREFIXES`) configures the CLI rayspec is
+constraining inside a process rayspec only starts, which is the same "nobody knows" the allow-list
+exists for, and the way out is `providers.claude.env` in `config.yaml` rather than dropping the
+control; and `mcp_servers` / `config.mcp_servers` (merged under the agent's own servers) is checked
+server by server against `mcp.allow_servers` and `tools.deny`, so the server the policy ALLOWS may
+still be added there. A control that blocks the permitted case is its own defect — it teaches
+people to switch the control off. Codex `approval_mode` is guarded the same way: `deny_all` passes,
+anything that answers the agent's sandbox escalation requests for it is refused under `access.max`
+or `network: off`. Codex `usage_baseline` is guarded on `spend`: it is SUBTRACTED from a resumed
+thread's cumulative totals (`usage_delta` clamps at zero) and the turn's cost is derived from that
+same figure, so a baseline the thread never reaches reports no spend at all and defeats
+`defaults.budget_usd`, `defaults.max_tokens` and a policy envelope alike; under a spend ceiling
+only a baseline whose counters are zero passes, and none is needed — the adapter carries them.
+
+An allow-listed key with NO guard is inert under every control, which is a second unsafe default
+hiding inside a safe design: `usage_baseline` sat on the list as "accounting only" while setting
+the number every ceiling is measured against. `AllowedOption.offenders` therefore has no default —
+it is a guard or an explicit `INERT_BECAUSE("…")` — and every inert entry is paired in
+`tests/policy/test_provider_options.py` with the test that holds its reason to the code: the key,
+set to an extreme value, has to leave every option the adapter computes byte-identical. An unpaired
+entry fails. A justification the tests do not read is not allowed to exist.
 
 Enforcement reads the block the ADAPTER will act on, never a hand-written path: both adapters and
 this check narrow `provider_options` with `schema.provider_option_block`, because a check that walks
