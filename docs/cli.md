@@ -56,7 +56,10 @@ the script to this file"; that command has no `--json`.)
 
 The JSON itself is rendered the same way whatever printed it: **indented by two spaces when
 stdout is a terminal, compact — no spaces at all — when it is redirected or piped**, non-ASCII
-written as itself (`ä`, not `\u00e4`) and keys in the payload's own order. `rayspec <cmd> --json |
+written as itself (`ä`) and keys in the payload's own order. When stdout cannot encode those
+characters — `PYTHONIOENCODING=ascii`, a C/POSIX locale, a legacy Windows code page — the whole
+document falls back to `\uXXXX` escapes, which parse to the same payload, rather than failing to
+print at all. `rayspec <cmd> --json |
 jq` therefore behaves identically whichever command produced the stream, and `rayspec <cmd> --json
 > file` writes a file that diffs against the next one. The two **line-delimited** outputs are the
 exception that keeps the promise of their format: `rayspec run|resume|approve|reject --json` and

@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +81,57 @@ def test_json_line_stays_compact_on_a_terminal(monkeypatch: pytest.MonkeyPatch) 
     --json | tail -1 | jq` would read a fragment."""
     monkeypatch.setattr(common, "stdout_is_tty", lambda: True)
     assert common.json_line({"a": 1, "b": None}) == '{"a":1,"b":null}'
+
+
+#: A workflow description that only a UTF-8 stdout can write as itself.
+NON_ASCII_DESCRIPTION = "Prüfung fürs Änderungsprotokoll"
+
+
+def _cli(args: list[str], *, home: Path, encoding: str) -> subprocess.CompletedProcess[str]:
+    """Run the real CLI in a child process whose stdout can only encode ``encoding``."""
+    env = {
+        **os.environ,
+        "RAYSPEC_HOME": str(home),
+        "PYTHONIOENCODING": encoding,
+        "NO_COLOR": "1",
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "rayspec.cli.app", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_json_prints_on_a_stdout_that_cannot_encode_it(project: Path, home: Path) -> None:
+    """A stdout that cannot encode the payload gets ``\\uXXXX`` escapes, not a traceback.
+
+    ``PYTHONIOENCODING``, a C/POSIX locale and the legacy Windows code pages all produce a
+    stdout that is not UTF-8. Writing ``ä`` into one raises ``UnicodeEncodeError`` from inside
+    the write, which would take the command down after it has already done its work — so the
+    renderer asks stdout what it can encode and falls back to escapes when the answer is no.
+    """
+    workflow = project / ".rayspec" / "workflows" / "example.yaml"
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    described = [
+        f"description: {NON_ASCII_DESCRIPTION}" if ln.startswith("description:") else ln
+        for ln in lines
+    ]
+    assert described != lines, "the scaffolded workflow no longer carries a description"
+    workflow.write_text("\n".join(described) + "\n", encoding="utf-8")
+    argv = ["workflows", "--json", "--root", str(project)]
+
+    ascii_ = _cli(argv, home=home, encoding="ascii")
+    assert ascii_.returncode == 0, ascii_.stderr
+    assert ascii_.stdout.isascii(), ascii_.stdout
+    descriptions = [w["description"] for w in json.loads(ascii_.stdout)]
+    assert NON_ASCII_DESCRIPTION in descriptions
+
+    utf8 = _cli(argv, home=home, encoding="utf-8")
+    assert utf8.returncode == 0, utf8.stderr
+    assert NON_ASCII_DESCRIPTION in utf8.stdout, "a UTF-8 stdout still gets the characters"
+    assert json.loads(utf8.stdout) == json.loads(ascii_.stdout), "same document either way"
 
 
 def _table_calls(path: Path) -> list[int]:

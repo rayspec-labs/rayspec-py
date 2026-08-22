@@ -447,22 +447,53 @@ def err_console() -> Console:
 _COMPACT: tuple[str, str] = (",", ":")
 
 
+def stdout_can_encode(text: str) -> bool:
+    """Whether stdout's codec can write ``text`` as it stands — the second probe, like
+    :func:`stdout_is_tty`.
+
+    ``PYTHONIOENCODING=ascii``, a C/POSIX locale and the legacy Windows code pages all hand a
+    process a stdout that is not UTF-8, and writing ``ä`` into one raises ``UnicodeEncodeError``
+    from inside the write. A stream that will not name its codec is taken to be UTF-8, and an
+    unknown codec name counts as "no": the escaped rendering is always readable.
+    """
+    if text.isascii():
+        return True
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _dumps(payload: Any, **kwargs: Any) -> str:
+    """``json.dumps`` in the house style, escaped only when stdout cannot take the characters."""
+    text = json.dumps(payload, ensure_ascii=False, default=str, **kwargs)
+    if stdout_can_encode(text):
+        return text
+    return json.dumps(payload, ensure_ascii=True, default=str, **kwargs)
+
+
 def json_text(payload: Any) -> str:
     """Render one ``--json`` / ``--output json`` **document** — the single rule, for every command.
 
     Indented by two spaces when stdout is a terminal (a person is reading it), compact when it is
-    redirected or piped (a program is). Nothing else varies: non-ASCII is written as itself
-    (``ä``, not ``\\u00e4``), key order is the payload's, and a value the payload builder left
-    unserialisable is rendered as its ``str()`` rather than taking the command down after it has
-    already done its work.
+    redirected or piped (a program is). Nothing else varies: key order is the payload's, and a
+    value the payload builder left unserialisable is rendered as its ``str()`` rather than taking
+    the command down after it has already done its work.
+
+    Non-ASCII is written as itself (``ä``) — unless stdout cannot encode it
+    (:func:`stdout_can_encode`), in which case the whole document falls back to ``\\uXXXX``
+    escapes. Both spellings parse to the same payload, and a document nobody can print is worth
+    less than an escaped one.
 
     The rule is deliberately not per command: ``rayspec workflows --json | jq`` and ``rayspec
     runs --json | jq`` used to disagree about whether they emit one line or twenty, which makes
     every shell pipeline around them a command-specific special case.
     """
     if stdout_is_tty():
-        return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
-    return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
+        return _dumps(payload, indent=2)
+    return _dumps(payload, separators=_COMPACT)
 
 
 def print_json(payload: Any) -> None:
@@ -480,9 +511,10 @@ def json_line(payload: Any) -> str:
 
     Always compact, terminal or not: the format's promise is one object per line, and
     ``rayspec run … --json | tail -1 | jq .exit_code`` reads a fragment as soon as a record is
-    allowed to wrap. Otherwise identical to :func:`json_text`.
+    allowed to wrap. Otherwise identical to :func:`json_text`, escapes on a stdout that cannot
+    encode the characters included.
     """
-    return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
+    return _dumps(payload, separators=_COMPACT)
 
 
 def new_table(*, title: str | None = None, show_header: bool = True) -> Table:
@@ -586,6 +618,7 @@ __all__ = [
     "report_lines",
     "resolve_output",
     "short_path",
+    "stdout_can_encode",
     "stdout_is_tty",
     "template_checker",
     "workflow_label",

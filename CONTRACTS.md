@@ -1815,7 +1815,9 @@ byte-identical per command.
 
 **One rendering, one place.** `_loader_common` also owns how the JSON looks: `stdout_is_tty()` is
 the single probe, `json_text(payload)` renders a **document** (`indent=2` on a terminal, compact
-`separators=(",", ":")` when redirected; `ensure_ascii=False`, `default=str`, payload key order),
+`separators=(",", ":")` when redirected; `default=str`, payload key order, and `ensure_ascii=False`
+unless `stdout_can_encode()` says stdout's codec cannot write the characters — a non-UTF-8 stdout
+gets `\uXXXX` escapes instead of a `UnicodeEncodeError` out of the write),
 `print_json(payload)` prints one on stdout (soft-wrapped — Rich folding a compact line would break
 it inside a string) and `json_line(payload)` renders one record of a **line-delimited** stream
 (`run|resume|approve|reject --json`'s summary line, `logs --json`), which stays compact on a
