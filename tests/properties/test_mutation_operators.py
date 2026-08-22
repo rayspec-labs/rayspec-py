@@ -40,11 +40,19 @@ from .mutation.mutate import (
 SAMPLE = '''
 """A module docstring — never a mutation site."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 __all__ = ["decide"]
 
 Mode = Literal["fast", "slow"]
+
+
+@dataclass(frozen=True, slots=True)
+class Rules:
+    """A docstring — never a mutation site."""
+
+    strict: bool = True
 
 
 def decide(mode: Mode, flags: list[str]) -> bool:
@@ -67,6 +75,18 @@ def test_docstrings_annotations_and_dunder_all_are_not_sites() -> None:
     """Mutating them could never be killed — they would bury the survivors that matter."""
     mutated = {site.before for site in sites(SAMPLE) if site.operator == "str"}
     assert mutated == {"'fast'", "'x'", "'y'"}, mutated
+
+
+def test_decorator_flags_are_not_sites() -> None:
+    """``@dataclass(frozen=True, slots=True)`` is hygiene, not a decision.
+
+    Before this exclusion every frozen dataclass in a target contributed two survivors that
+    said nothing, which is how a mutation score stops being read.
+    """
+    lines = {site.line for site in sites(SAMPLE) if site.operator == "bool"}
+    decorator = SAMPLE.splitlines().index("@dataclass(frozen=True, slots=True)") + 1
+    assert decorator not in lines, lines
+    assert lines, "the field default is still a site"
 
 
 def test_the_numbering_is_stable() -> None:

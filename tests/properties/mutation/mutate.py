@@ -201,13 +201,15 @@ def _parents(tree: ast.AST) -> Iterator[tuple[ast.AST, ast.AST, str, int | None]
                 yield value, parent, name, None
 
 
-def _inert_string_ids(tree: ast.AST) -> set[int]:
-    """String constants whose value cannot change behaviour.
+def _inert_ids(tree: ast.AST) -> set[int]:
+    """Constants whose value cannot change a decision.
 
-    Docstrings, ``__all__``, annotations and the arguments of a ``Literal[...]``. With
+    Docstrings, ``__all__``, annotations and the arguments of a ``Literal[...]``: with
     ``from __future__ import annotations`` an annotation is never evaluated, and a ``Literal``
-    alias only ever narrows a type, so mutating either produces a mutant nothing could kill —
-    noise that would bury the survivors that matter.
+    alias only ever narrows a type. Also the keyword arguments of a **decorator** —
+    ``@dataclass(frozen=True, slots=True)`` is implementation hygiene, not a branch, and
+    flipping it produces a survivor that says nothing. Both classes are noise that would bury
+    the survivors that matter.
     """
     inert: set[int] = set()
 
@@ -238,6 +240,11 @@ def _inert_string_ids(tree: ast.AST) -> set[int]:
             mark(node.value)
         if isinstance(node, ast.Subscript) and _name_of(node.value) == "Literal":
             mark(node.slice)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            for decorator in node.decorator_list:
+                if isinstance(decorator, ast.Call):
+                    for keyword in decorator.keywords:
+                        mark(keyword.value)
     return inert
 
 
@@ -257,7 +264,7 @@ def sites(source: str, operators: frozenset[str] | None = None) -> list[Site]:
     but its indexes mean nothing to a run that used a different subset.
     """
     tree = ast.parse(source)
-    inert = _inert_string_ids(tree)
+    inert = _inert_ids(tree)
     found: list[Site] = []
     for node, _parent, _field, _position in _parents(tree):
         entry = _site_for(node, inert, operators)
@@ -296,6 +303,8 @@ def _classify(node: ast.AST, inert: set[int]) -> tuple[str, str, str] | None:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
         return "not", "not X", "X"
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        if id(node) in inert:
+            return None
         return "bool", repr(node.value), repr(not node.value)
     if (
         isinstance(node, ast.Constant)
@@ -339,7 +348,7 @@ def mutate(source: str, index: int, operators: frozenset[str] | None = None) -> 
     ``operators`` must match the set :func:`sites` was called with.
     """
     tree = ast.parse(source)
-    inert = _inert_string_ids(tree)
+    inert = _inert_ids(tree)
     seen = -1
     for node, parent, field_name, position in _parents(tree):
         if _site_for(node, inert, operators) is None:
@@ -631,9 +640,15 @@ def run_target(
 # --------------------------------------------------------------------------------------------------
 
 
-def report(results: Sequence[Result]) -> str:
-    """The human report: a score per target and every confirmed survivor with ``file:line``."""
+def report(results: Sequence[Result], *, confirmed: bool = True) -> str:
+    """The human report: a score per target and every survivor with ``file:line``.
+
+    ``confirmed`` is False when phase 2 was skipped, and the survivors are then labelled
+    ``UNCONFIRMED``: they survived the module's OWN tests, which is a weaker claim than the one
+    the report otherwise makes.
+    """
     lines = ["", "=" * 96, "MUTATION REPORT", "=" * 96]
+    label = "SURVIVOR" if confirmed else "UNCONFIRMED"
     for name, target in TARGETS.items():
         mine = [r for r in results if r.target == name]
         if not mine:
@@ -648,9 +663,10 @@ def report(results: Sequence[Result]) -> str:
             f"{len(survivors)} survived  ({score:.0f}% killed)"
         )
         for result in sorted(survivors, key=lambda r: r.site.line):
-            lines.append(f"  SURVIVOR {result.site.describe(target)}")
+            lines.append(f"  {label} {result.site.describe(target)}")
     total = [r for r in results if r.status == "survived"]
-    lines += ["", f"{len(total)} confirmed survivor(s) across {len(results)} mutant(s)", ""]
+    what = "confirmed survivor(s)" if confirmed else "unconfirmed survivor(s)"
+    lines += ["", f"{len(total)} {what} across {len(results)} mutant(s)", ""]
     return "\n".join(lines)
 
 
@@ -743,7 +759,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 operators=operators,
                 indexes=args.index,
             )
-    text = report(results)
+    text = report(results, confirmed=not args.no_confirm)
     print(text)
     if args.json is not None:
         args.json.write_text(
