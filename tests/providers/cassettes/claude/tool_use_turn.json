@@ -1,0 +1,357 @@
+{
+  "cassette": 1,
+  "provider": "claude",
+  "about": "a successful turn: streamed text, one Bash tool call and its result, per-message usage, a refused Write, structured output and a priced result",
+  "source": {
+    "capture": "authored",
+    "from": "written against claude-agent-sdk's CLI message shapes; every message below is parsed by the SDK's own parser on replay, so the cassette fails when a shape changes",
+    "scrubbed": [
+      "no machine ever saw these ids, paths or timestamps"
+    ]
+  },
+  "request": {
+    "prompt": "Run the tests and report.",
+    "model": "claude-sonnet-4-5",
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict",
+        "summary"
+      ]
+    }
+  },
+  "transcript": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "cwd": "<workspace>",
+      "session_id": "sess-cassette-tools",
+      "tools": [
+        "Bash",
+        "Edit",
+        "Read",
+        "Write"
+      ],
+      "mcp_servers": [],
+      "model": "claude-sonnet-4-5",
+      "permissionMode": "default",
+      "slash_commands": [],
+      "apiKeySource": "none",
+      "claude_code_version": "<version>",
+      "output_style": "default",
+      "uuid": "uuid-1"
+    },
+    {
+      "type": "stream_event",
+      "uuid": "uuid-2",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_cassette_1",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-sonnet-4-5",
+          "content": [],
+          "usage": {
+            "input_tokens": 11,
+            "output_tokens": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "uuid": "uuid-3",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "Running "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "uuid": "uuid-4",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "text_delta",
+          "text": "the tests."
+        }
+      }
+    },
+    {
+      "type": "assistant",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "uuid": "uuid-5",
+      "message": {
+        "id": "msg_cassette_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-5",
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 11,
+          "cache_creation_input_tokens": 480,
+          "cache_read_input_tokens": 9500,
+          "output_tokens": 26
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "Running the tests."
+          },
+          {
+            "type": "tool_use",
+            "id": "toolu_cassette_1",
+            "name": "Bash",
+            "input": {
+              "command": "pytest -q",
+              "description": "run the tests"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "user",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "uuid": "uuid-6",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_cassette_1",
+            "is_error": false,
+            "content": [
+              {
+                "type": "text",
+                "text": "3 passed in 0.10s"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "assistant",
+      "session_id": "sess-cassette-tools",
+      "parent_tool_use_id": null,
+      "uuid": "uuid-7",
+      "message": {
+        "id": "msg_cassette_2",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-5",
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 14,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 9980,
+          "output_tokens": 61
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "All three tests pass."
+          }
+        ]
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "is_error": false,
+      "duration_ms": 7412,
+      "duration_api_ms": 6010,
+      "num_turns": 3,
+      "session_id": "sess-cassette-tools",
+      "result": "All three tests pass.",
+      "structured_output": {
+        "verdict": "approve",
+        "summary": "All three tests pass."
+      },
+      "total_cost_usd": 0.0412,
+      "usage": {
+        "input_tokens": 14,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 9980,
+        "output_tokens": 61
+      },
+      "modelUsage": {
+        "claude-sonnet-4-5": {
+          "inputTokens": 25,
+          "outputTokens": 87,
+          "costUSD": 0.0412
+        },
+        "claude-haiku-4-5": {
+          "inputTokens": 900,
+          "outputTokens": 12,
+          "costUSD": 0.0004
+        }
+      },
+      "permission_denials": [
+        {
+          "tool_name": "Write",
+          "tool_use_id": "toolu_cassette_2",
+          "tool_input": {
+            "file_path": "<workspace>/app.py"
+          }
+        }
+      ],
+      "terminal_reason": "completed",
+      "uuid": "uuid-8"
+    }
+  ],
+  "expect": {
+    "events": [
+      {
+        "kind": "session",
+        "text": "sess-cassette-tools",
+        "data": {
+          "session_id": "sess-cassette-tools",
+          "model": "claude-sonnet-4-5",
+          "tools": [
+            "Bash",
+            "Edit",
+            "Read",
+            "Write"
+          ],
+          "cwd": "<workspace>",
+          "permission_mode": null
+        }
+      },
+      {
+        "kind": "text_delta",
+        "text": "Running "
+      },
+      {
+        "kind": "text_delta",
+        "text": "the tests."
+      },
+      {
+        "kind": "usage",
+        "data": {
+          "usage": {
+            "input": 9991,
+            "cached_input": 9500,
+            "cache_write": 480,
+            "output": 26,
+            "reasoning": 0
+          },
+          "turn_total": {
+            "input": 9991,
+            "cached_input": 9500,
+            "cache_write": 480,
+            "output": 26,
+            "reasoning": 0
+          },
+          "message_id": "msg_cassette_1"
+        }
+      },
+      {
+        "kind": "tool_call",
+        "name": "Bash",
+        "call_id": "toolu_cassette_1",
+        "data": {
+          "command": "pytest -q",
+          "description": "run the tests"
+        }
+      },
+      {
+        "kind": "tool_result",
+        "text": "3 passed in 0.10s",
+        "name": "Bash",
+        "call_id": "toolu_cassette_1",
+        "data": {
+          "is_error": false
+        }
+      },
+      {
+        "kind": "usage",
+        "data": {
+          "usage": {
+            "input": 9994,
+            "cached_input": 9980,
+            "cache_write": 0,
+            "output": 61,
+            "reasoning": 0
+          },
+          "turn_total": {
+            "input": 19985,
+            "cached_input": 19480,
+            "cache_write": 480,
+            "output": 87,
+            "reasoning": 0
+          },
+          "message_id": "msg_cassette_2"
+        }
+      },
+      {
+        "kind": "text",
+        "text": "All three tests pass."
+      },
+      {
+        "kind": "warning",
+        "text": "permission denied: Write",
+        "name": "Write",
+        "call_id": "toolu_cassette_2",
+        "data": {
+          "input": {
+            "file_path": "<workspace>/app.py"
+          }
+        }
+      }
+    ],
+    "result": {
+      "status": "success",
+      "text": "All three tests pass.",
+      "session_ref": "sess-cassette-tools",
+      "model": "claude-sonnet-4-5",
+      "cost_usd": 0.0412,
+      "cost_source": "provider",
+      "num_turns": 3,
+      "usage": {
+        "input": 9994,
+        "cached_input": 9980,
+        "cache_write": 0,
+        "output": 61,
+        "reasoning": 0
+      },
+      "structured": {
+        "verdict": "approve",
+        "summary": "All three tests pass."
+      },
+      "denials": [
+        {
+          "tool": "Write",
+          "reason": "permission denied",
+          "call_id": "toolu_cassette_2"
+        }
+      ],
+      "error": null
+    }
+  }
+}

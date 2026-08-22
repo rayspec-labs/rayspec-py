@@ -1,0 +1,359 @@
+{
+  "cassette": 1,
+  "provider": "codex",
+  "about": "a turn that runs one command and answers: the user message, a commandExecution item with its output delta, a reasoning summary, the streamed final answer and one usage update",
+  "source": {
+    "capture": "authored",
+    "from": "written against openai-codex's generated notification models; every payload below is the model's own serialisation, so the SDK rejects it as soon as a shape changes",
+    "scrubbed": [
+      "no machine ever saw these ids, paths or timestamps"
+    ]
+  },
+  "request": {
+    "prompt": "Run the tests and report.",
+    "model": "gpt-5.4"
+  },
+  "transcript": [
+    {
+      "method": "turn/started",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turn": {
+          "id": "turn-cassette-2",
+          "items": [],
+          "status": "inProgress",
+          "startedAt": 1000
+        }
+      }
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "startedAtMs": 1000000,
+        "item": {
+          "type": "userMessage",
+          "id": "item-1",
+          "content": [
+            {
+              "type": "text",
+              "text": "Run the tests and report."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "completedAtMs": 1000000,
+        "item": {
+          "type": "userMessage",
+          "id": "item-1",
+          "content": [
+            {
+              "type": "text",
+              "text": "Run the tests and report."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "startedAtMs": 1000100,
+        "item": {
+          "type": "commandExecution",
+          "id": "item-2",
+          "command": "pytest -q",
+          "commandActions": [
+            {
+              "type": "unknown",
+              "command": "pytest -q"
+            }
+          ],
+          "cwd": "<workspace>",
+          "status": "inProgress"
+        }
+      }
+    },
+    {
+      "method": "item/commandExecution/outputDelta",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "itemId": "item-2",
+        "delta": "3 passed in 0.10s\n"
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "completedAtMs": 1001300,
+        "item": {
+          "type": "commandExecution",
+          "id": "item-2",
+          "command": "pytest -q",
+          "commandActions": [
+            {
+              "type": "unknown",
+              "command": "pytest -q"
+            }
+          ],
+          "cwd": "<workspace>",
+          "status": "completed",
+          "exitCode": 0,
+          "durationMs": 1200,
+          "aggregatedOutput": "3 passed in 0.10s"
+        }
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "completedAtMs": 1001400,
+        "item": {
+          "type": "reasoning",
+          "id": "item-3",
+          "summary": [
+            "Run the tests, then report."
+          ]
+        }
+      }
+    },
+    {
+      "method": "item/agentMessage/delta",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "itemId": "item-4",
+        "delta": "All three "
+      }
+    },
+    {
+      "method": "item/agentMessage/delta",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "itemId": "item-4",
+        "delta": "tests pass."
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "completedAtMs": 1001500,
+        "item": {
+          "type": "agentMessage",
+          "id": "item-4",
+          "text": "All three tests pass.",
+          "phase": "final_answer"
+        }
+      }
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turnId": "turn-cassette-2",
+        "tokenUsage": {
+          "last": {
+            "inputTokens": 1200,
+            "cachedInputTokens": 900,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 260,
+            "reasoningOutputTokens": 128,
+            "totalTokens": 1460
+          },
+          "total": {
+            "inputTokens": 1200,
+            "cachedInputTokens": 900,
+            "cacheWriteInputTokens": 0,
+            "outputTokens": 260,
+            "reasoningOutputTokens": 128,
+            "totalTokens": 1460
+          }
+        }
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "thr-cassette-2",
+        "turn": {
+          "id": "turn-cassette-2",
+          "items": [],
+          "status": "completed",
+          "startedAt": 1000,
+          "completedAt": 1002,
+          "durationMs": 1500
+        }
+      }
+    }
+  ],
+  "expect": {
+    "events": [
+      {
+        "kind": "session",
+        "text": "thr-cassette-2",
+        "data": {
+          "thread_id": "thr-cassette-2",
+          "turn_id": "turn-cassette-2"
+        }
+      },
+      {
+        "kind": "raw",
+        "name": "userMessage",
+        "data": {
+          "completed": false,
+          "item": {
+            "clientId": null,
+            "content": [
+              {
+                "text": "Run the tests and report.",
+                "text_elements": [],
+                "type": "text"
+              }
+            ],
+            "id": "item-1",
+            "type": "userMessage"
+          }
+        }
+      },
+      {
+        "kind": "raw",
+        "name": "userMessage",
+        "data": {
+          "completed": true,
+          "item": {
+            "clientId": null,
+            "content": [
+              {
+                "text": "Run the tests and report.",
+                "text_elements": [],
+                "type": "text"
+              }
+            ],
+            "id": "item-1",
+            "type": "userMessage"
+          }
+        }
+      },
+      {
+        "kind": "command_start",
+        "text": "pytest -q",
+        "name": "pytest -q",
+        "call_id": "item-2",
+        "data": {
+          "command": "pytest -q",
+          "cwd": "<workspace>"
+        }
+      },
+      {
+        "kind": "command_output",
+        "text": "3 passed in 0.10s\n",
+        "call_id": "item-2"
+      },
+      {
+        "kind": "command_end",
+        "text": "3 passed in 0.10s",
+        "name": "pytest -q",
+        "call_id": "item-2",
+        "data": {
+          "command": "pytest -q",
+          "cwd": "<workspace>",
+          "exit_code": 0,
+          "status": "completed",
+          "duration_ms": 1200
+        }
+      },
+      {
+        "kind": "reasoning",
+        "text": "Run the tests, then report.",
+        "data": {
+          "item_id": "item-3"
+        }
+      },
+      {
+        "kind": "text_delta",
+        "text": "All three ",
+        "data": {
+          "item_id": "item-4"
+        }
+      },
+      {
+        "kind": "text_delta",
+        "text": "tests pass.",
+        "data": {
+          "item_id": "item-4"
+        }
+      },
+      {
+        "kind": "text",
+        "text": "All three tests pass.",
+        "data": {
+          "item_id": "item-4",
+          "phase": "final_answer"
+        }
+      },
+      {
+        "kind": "usage",
+        "data": {
+          "usage": {
+            "input": 1200,
+            "cached_input": 900,
+            "cache_write": 0,
+            "output": 260,
+            "reasoning": 128
+          },
+          "total": {
+            "input": 1200,
+            "cached_input": 900,
+            "cache_write": 0,
+            "output": 260,
+            "reasoning": 128
+          },
+          "turn_total": {
+            "input": 1200,
+            "cached_input": 900,
+            "cache_write": 0,
+            "output": 260,
+            "reasoning": 128
+          },
+          "model_context_window": null
+        }
+      }
+    ],
+    "result": {
+      "status": "success",
+      "text": "All three tests pass.",
+      "session_ref": "thr-cassette-2",
+      "model": "gpt-5.4",
+      "cost_usd": null,
+      "cost_source": "none",
+      "num_turns": 1,
+      "usage": {
+        "input": 1200,
+        "cached_input": 900,
+        "cache_write": 0,
+        "output": 260,
+        "reasoning": 128
+      },
+      "structured": null,
+      "denials": [],
+      "error": null
+    }
+  }
+}
