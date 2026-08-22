@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -462,18 +465,33 @@ def test_the_recipe_edits_its_own_comment_instead_of_adding_one_per_push() -> No
 
 
 def _post_comment(
-    tmp_path: Path, comment_tag: str
+    tmp_path: Path,
+    comment_tag: str,
+    *,
+    gh_exit: int = 0,
+    gh_said: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Run the comment step's script with ``gh`` replaced by a stub that records its arguments."""
-    script = tmp_path / "comment.sh"
+    """Run the comment step's script with ``gh`` replaced by a stub that records its arguments.
+
+    ``gh_exit``/``gh_said`` are how the failure branch is reached: what ``gh`` writes to stderr is
+    the only evidence the step has about why it could not comment.
+    """
+    work = Path(tempfile.mkdtemp(dir=tmp_path))
+    script = work / "comment.sh"
     script.write_text(step_with_id(load(RECIPE), "comment")["run"], encoding="utf-8")
-    bin_dir = tmp_path / "bin"
+    bin_dir = work / "bin"
     bin_dir.mkdir(exist_ok=True)
-    calls = tmp_path / "gh-calls.txt"
+    calls = work / "gh-calls.txt"
     stub = bin_dir / "gh"
-    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {calls}\n', encoding="utf-8")
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(calls))}\n'
+        f"printf %s {shlex.quote(gh_said)} >&2\n"
+        f"exit {gh_exit}\n",
+        encoding="utf-8",
+    )
     stub.chmod(0o755)
-    body = tmp_path / "comment.md"
+    body = work / "comment.md"
     body.write_text("hello\n", encoding="utf-8")
     env = {
         **os.environ,
@@ -485,7 +503,7 @@ def _post_comment(
         "MARKER": f"<!-- rayspec-dry-run: {comment_tag} -->",
     }
     done = subprocess.run(
-        ["bash", str(script)], env=env, capture_output=True, text=True, cwd=tmp_path
+        ["bash", "-e", str(script)], env=env, capture_output=True, text=True, cwd=work
     )
     return done, calls
 
@@ -506,6 +524,7 @@ def test_an_ordinary_comment_tag_posts(tmp_path: Path) -> None:
     done, calls = _post_comment(tmp_path, "dry-run.1")
     assert done.returncode == 0, done.stdout + done.stderr
     assert "issues/7/comments" in calls.read_text(encoding="utf-8")
+    assert "::warning::" not in done.stdout, "a comment that posted still warned about something"
 
 
 def test_only_one_comment_id_survives_pagination() -> None:
@@ -518,11 +537,46 @@ def test_only_one_comment_id_survives_pagination() -> None:
     assert "--paginate" not in run or "tail -n1" in run
 
 
-def test_the_warning_about_a_missing_permission_is_a_single_annotation() -> None:
+def test_the_warning_is_a_single_annotation_that_says_where_the_report_is() -> None:
     """GitHub reads one line as the annotation; a second line is an ordinary log line."""
     run = step_with_id(load(RECIPE), "comment")["run"]
     [line] = [item for item in run.splitlines() if "::warning::" in item]
-    assert "pull-requests" in line, "the half that says what to do is not in the annotation"
+    assert "job summary" in line, "the half that says where to look is not in the annotation"
+
+
+@pytest.mark.parametrize(
+    ("gh_said", "expected"),
+    [
+        pytest.param(
+            "gh: Resource not accessible by integration (HTTP 403)",
+            "pull-requests: write",
+            id="403",
+        ),
+        pytest.param("gh: Not Found (HTTP 404)", "o/r#7", id="404"),
+        pytest.param("dial tcp: lookup api.github.com: no such host", "no such host", id="network"),
+        pytest.param("", "network problem", id="silent"),
+    ],
+)
+def test_the_warning_names_what_actually_went_wrong(
+    tmp_path: Path, gh_said: str, expected: str
+) -> None:
+    """One diagnosis for every failure sends the reader after a fix that is not the problem.
+
+    A missing grant is a 403 and the caller can fix it; a 404 is a pull request this token cannot
+    see, and a network blip is neither. Blaming ``pull-requests: write`` for all three is how a
+    green repository spends an afternoon on its permissions block.
+    """
+    done, _calls = _post_comment(tmp_path, "default", gh_exit=1, gh_said=gh_said)
+    assert done.returncode == 0, done.stdout + done.stderr
+    [line] = [item for item in done.stdout.splitlines() if item.startswith("::warning::")]
+    assert expected in line, line
+    assert "job summary" in line, line
+
+
+def test_a_comment_that_could_not_be_posted_does_not_fail_the_step(tmp_path: Path) -> None:
+    """The report is in the job summary either way; a missing comment is not a failed check."""
+    done, _calls = _post_comment(tmp_path, "default", gh_exit=1, gh_said="whatever")
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 def test_the_recipe_always_writes_the_job_summary() -> None:
@@ -692,6 +746,421 @@ def test_the_comment_shows_the_outputs_of_the_run(tmp_path: Path, home: Path) ->
         [line for line in events.read_text(encoding="utf-8").splitlines() if line.strip()][-1]
     )
     assert summary["run_id"] in comment
+
+
+# ------------------------------------------- rayspec-dry-run.yml: the step that reports
+
+#: Every exit code the ``status`` output and ``docs/ci.md`` promise a name for.
+DOCUMENTED_OUTCOMES: list[tuple[int, str]] = [
+    (0, "succeeded"),
+    (1, "failed"),
+    (2, "not started (usage error)"),
+    (3, "paused"),
+    (4, "cancelled"),
+]
+
+
+def _run_step(
+    tmp_path: Path,
+    exit_code: int,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    stubs: str = "",
+    inputs_file: str = "",
+    installed: bool = True,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], Path]:
+    """The *Dry-run the workflow* step, started the way the runner starts it.
+
+    A ``run:`` block runs as ``bash -e {0}``: errexit is on before the script's own ``set`` line
+    is read, and no ``set`` inside it turns that off. That is not a detail a test may paper over
+    — it is what made every line of this step's error path unreachable — so the script is lifted
+    out of the YAML and started exactly that way, with ``rayspec`` replaced by a stub that exits
+    on command. ``PATH`` holds the stub and the system tools only, so nothing else answers.
+    """
+    work = Path(tempfile.mkdtemp(dir=tmp_path))
+    script = work / "run.sh"
+    script.write_text(step_with_id(load(RECIPE), "run")["run"], encoding="utf-8")
+
+    bin_dir = work / "bin"
+    bin_dir.mkdir()
+    if installed:
+        stub = bin_dir / "rayspec"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$*" >> {shlex.quote(str(work / "rayspec-argv.txt"))}\n'
+            'if [ "$1" = "version" ]; then echo "rayspec 1.0.0"; exit 0; fi\n'
+            f"printf %s {shlex.quote(stdout)}\n"
+            f"printf %s {shlex.quote(stderr)} >&2\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+    runner_temp = work / "runner-temp"
+    runner_temp.mkdir()
+    outputs = work / "github-output.txt"
+    outputs.write_text("", encoding="utf-8")
+    env = {
+        "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]),
+        "WORKFLOW": "review",
+        "STUBS": stubs,
+        "INPUTS_FILE": inputs_file,
+        "RUNNER_TEMP": str(runner_temp),
+        "GITHUB_OUTPUT": str(outputs),
+    }
+    done = subprocess.run(
+        ["bash", "-e", str(script)], env=env, capture_output=True, text=True, cwd=work
+    )
+    written: dict[str, str] = {}
+    for line in outputs.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            written[key] = value
+    return done, written, work
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    DOCUMENTED_OUTCOMES,
+    ids=[status for _code, status in DOCUMENTED_OUTCOMES],
+)
+def test_every_documented_outcome_sets_both_documented_outputs(
+    tmp_path: Path, code: int, status: str
+) -> None:
+    """The two outputs are the contract a caller reads instead of the check's colour.
+
+    They existed only for a run that succeeded: any other exit code ended the step at the
+    ``rayspec run`` line, before the mapping below it or either ``$GITHUB_OUTPUT`` write.
+    """
+    done, outputs, _work = _run_step(tmp_path, code)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert outputs.get("exit-code") == str(code), outputs
+    assert outputs.get("status") == status, outputs
+
+
+def test_the_step_reports_through_an_errexit_shell_instead_of_dying_in_it(tmp_path: Path) -> None:
+    """The regression, named: ``set -uo pipefail`` does not disable the ``-e`` in ``bash -e {0}``.
+
+    Everything below the invocation — the exit-code-to-status mapping, both ``$GITHUB_OUTPUT``
+    writes and the tail that puts a failed run in the log — was unreachable for every outcome
+    except success, which is every outcome this check exists to report.
+    """
+    script = step_with_id(load(RECIPE), "run")["run"]
+    _before, sep, after = script.partition("rayspec run ")
+    assert sep, "the step no longer invokes rayspec"
+    invocation, sep, _rest = after.partition("\ncase ")
+    assert sep, "the exit code is no longer mapped to a status right after the run"
+    assert "|| code=$?" in invocation, "a non-zero exit is trusted to fall through an errexit shell"
+
+    done, outputs, _work = _run_step(tmp_path, 1)
+    assert outputs, "the step recorded nothing: $GITHUB_OUTPUT is empty for a run that failed"
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_an_exit_code_nobody_documented_is_still_reported(tmp_path: Path) -> None:
+    """An unknown code is a fact about the run, not a reason to report nothing about it."""
+    done, outputs, _work = _run_step(tmp_path, 9)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert outputs == {"exit-code": "9", "status": "exit 9"}
+
+
+def test_a_rayspec_that_never_installed_is_an_outcome_like_any_other(tmp_path: Path) -> None:
+    """``rayspec version`` must not be the line that decides whether the step reports at all."""
+    done, outputs, _work = _run_step(tmp_path, 0, installed=False)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert outputs == {"exit-code": "127", "status": "exit 127"}
+
+
+def test_a_failed_dry_run_puts_both_streams_in_the_job_log(tmp_path: Path) -> None:
+    """stdout is redirected into a file, so a red check leaves an empty log without the tails."""
+    done, _outputs, _work = _run_step(
+        tmp_path,
+        1,
+        stdout='{"type": "run.finished", "exit_code": 1}\n',
+        stderr="boom: the reason it failed\n",
+    )
+    assert "boom: the reason it failed" in done.stdout
+    assert "--- the end of the event stream" in done.stdout
+    assert "run.finished" in done.stdout
+
+
+def test_a_dry_run_that_succeeded_does_not_dump_its_event_stream_into_the_log(
+    tmp_path: Path,
+) -> None:
+    done, _outputs, _work = _run_step(tmp_path, 0, stdout='{"type": "run.finished"}\n')
+    assert "--- the end of the event stream" not in done.stdout
+
+
+def test_the_step_leaves_the_two_files_the_report_reads(tmp_path: Path) -> None:
+    _done, _outputs, work = _run_step(tmp_path, 1, stdout="events\n", stderr="errors\n")
+    temp = work / "runner-temp"
+    assert (temp / "rayspec-events.jsonl").read_text(encoding="utf-8") == "events\n"
+    assert (temp / "rayspec-errors.txt").read_text(encoding="utf-8") == "errors\n"
+
+
+def test_the_optional_inputs_reach_the_command_line_only_when_they_are_set(
+    tmp_path: Path,
+) -> None:
+    _done, _outputs, work = _run_step(tmp_path, 0)
+    _version, run = (work / "rayspec-argv.txt").read_text(encoding="utf-8").splitlines()
+    assert run == "run review --dry-run --no-interactive --json"
+
+    _done, _outputs, work = _run_step(tmp_path, 0, stubs="s.yaml", inputs_file="i.yaml")
+    _version, run = (work / "rayspec-argv.txt").read_text(encoding="utf-8").splitlines()
+    assert run.endswith("--stubs s.yaml --inputs-file i.yaml"), run
+
+
+def test_only_the_last_step_decides_whether_the_check_fails(tmp_path: Path) -> None:
+    """``fail-on-error: false`` can only hand the verdict over if nothing else took it first.
+
+    A run step that reports a failure *by failing* fails the job before the input is ever read,
+    which is exactly what the caller asked it not to do.
+    """
+    [gate] = [
+        step for _job, step in steps_of(load(RECIPE)) if "fail-on-error" in str(step.get("if", ""))
+    ]
+    assert "steps.run.outputs.status != 'succeeded'" in str(gate["if"])
+    assert "exit 1" in str(gate["run"])
+    for code, _status in DOCUMENTED_OUTCOMES:
+        done, _outputs, _work = _run_step(tmp_path, code)
+        assert done.returncode == 0, f"exit {code} failed the step before fail-on-error was read"
+
+
+def test_the_job_and_the_workflow_hand_the_run_steps_outputs_straight_through() -> None:
+    """A misspelled ``steps.<id>.outputs`` is valid YAML and reaches the caller as an empty string."""
+    recipe = load(RECIPE)
+    job = recipe["jobs"]["dry-run"]
+    assert job["outputs"] == {
+        "status": "${{ steps.run.outputs.status }}",
+        "exit-code": "${{ steps.run.outputs.exit-code }}",
+    }
+    declared = _on(recipe)["workflow_call"]["outputs"]
+    assert declared["status"]["value"] == "${{ jobs.dry-run.outputs.status }}"
+    assert declared["exit-code"]["value"] == "${{ jobs.dry-run.outputs.exit-code }}"
+
+
+def test_the_status_output_is_described_by_every_name_it_can_carry() -> None:
+    described = str(_on(load(RECIPE))["workflow_call"]["outputs"]["status"]["description"])
+    for _code, status in DOCUMENTED_OUTCOMES:
+        assert status in described, f"the status output never mentions {status!r}"
+
+
+def test_a_run_that_did_not_load_reaches_the_report_with_its_exit_code(
+    tmp_path: Path, home: Path
+) -> None:
+    """End to end: a real failing CLI run, through the step, into the report it feeds.
+
+    With the step dying at ``rayspec run`` the exit code never reached the renderer, and the job
+    summary of a red check ended in ``exit code `?``` with no status and no reason.
+    """
+    events, exit_code = _dry_run(tmp_path, home, DOES_NOT_LOAD)
+    assert exit_code == 2, events.read_text(encoding="utf-8")
+
+    done, outputs, work = _run_step(tmp_path, exit_code, stdout=events.read_text(encoding="utf-8"))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert outputs == {"exit-code": "2", "status": "not started (usage error)"}
+
+    comment = _render(tmp_path, work / "runner-temp" / "rayspec-events.jsonl", outputs["exit-code"])
+    assert "exit code `2`" in comment, comment
+    assert "unknown step 'gone'" in comment, comment
+
+
+def test_the_reason_a_workflow_did_not_load_is_only_ever_on_stdout(
+    tmp_path: Path, home: Path
+) -> None:
+    """The renderer parses stdout for it because stderr never carries it — but stderr is not empty.
+
+    The comment next to that parsing said "nothing on stderr", and a justification that is half
+    false next to the code it justifies is how the other half stops being checked.
+    """
+    events, exit_code = _dry_run(tmp_path, home, DOES_NOT_LOAD)
+    assert exit_code == 2
+    stdout = events.read_text(encoding="utf-8")
+    stderr = (tmp_path / "errors.txt").read_text(encoding="utf-8")
+    assert "unknown step 'gone'" in stdout
+    assert "unknown step 'gone'" not in stderr
+    assert stderr.strip(), "stderr is not empty: every run writes the policy note to it"
+
+    render = heredoc(step_with_id(load(RECIPE), "render")["run"], "PY")
+    assert "nothing on stderr" not in render, "the justification claims something that is false"
+
+
+# --------------------------------------- rayspec-dry-run.yml: what it installs, and from where
+
+
+def _install_step(
+    tmp_path: Path, version: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """The *Install rayspec* step with ``uv`` replaced by a stub that records its arguments."""
+    work = Path(tempfile.mkdtemp(dir=tmp_path))
+    script = work / "install.sh"
+    [step] = [s for _job, s in steps_of(load(RECIPE)) if s.get("name") == "Install rayspec"]
+    script.write_text(str(step["run"]), encoding="utf-8")
+
+    bin_dir = work / "bin"
+    bin_dir.mkdir()
+    calls = work / "uv-calls.txt"
+    stub = bin_dir / "uv"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(calls))}\n'
+        'if [ "$1" = "tool" ] && [ "$2" = "dir" ]; then echo /opt/uv/bin; fi\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    env = {
+        "PATH": os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]),
+        "VERSION": version,
+        "GITHUB_PATH": str(work / "github-path.txt"),
+    }
+    done = subprocess.run(
+        ["bash", "-e", str(script)], env=env, capture_output=True, text=True, cwd=work
+    )
+    recorded = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    return done, recorded
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        pytest.param("1.0.0", "tool install rayspec==1.0.0", id="bare"),
+        pytest.param("1.1.0rc1", "tool install rayspec==1.1.0rc1", id="prerelease"),
+        pytest.param("v1.0.0", "tool install rayspec==1.0.0", id="tag-shaped"),
+        pytest.param(">=1.0.0,<2", "tool install rayspec>=1.0.0,<2", id="range"),
+        pytest.param("==1.0.0", "tool install rayspec==1.0.0", id="operator"),
+    ],
+)
+def test_the_version_input_becomes_the_specifier_it_reads_as(
+    tmp_path: Path, version: str, expected: str
+) -> None:
+    done, calls = _install_step(tmp_path, version)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert expected in calls, calls
+
+
+def test_an_empty_version_is_refused_instead_of_resolving_to_whatever_is_newest(
+    tmp_path: Path,
+) -> None:
+    """The ``rayspec`` name was parked on PyPI with a 0.0.1 placeholder before the first release.
+
+    *Latest* therefore had a wrong answer available, and an empty input is how a consumer
+    following the documentation installed it — as a passing check that ran a stub.
+    """
+    done, calls = _install_step(tmp_path, "")
+    assert done.returncode != 0, done.stdout
+    assert "rayspec-version" in done.stdout + done.stderr
+    assert not calls, "PyPI was reached before the input was looked at"
+
+
+def test_the_default_version_is_the_line_the_v1_ref_follows() -> None:
+    """A default meaning "whatever is newest" is not a default; this one names a line."""
+    default = str(_on(load(RECIPE))["workflow_call"]["inputs"]["rayspec-version"]["default"])
+    assert default == ">=1.0.0,<2", default
+
+
+def test_the_default_version_installs_without_the_caller_passing_anything(tmp_path: Path) -> None:
+    default = str(_on(load(RECIPE))["workflow_call"]["inputs"]["rayspec-version"]["default"])
+    done, calls = _install_step(tmp_path, default)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "tool install rayspec>=1.0.0,<2" in calls, calls
+
+
+def test_the_uv_every_workflow_installs_is_pinned_to_one_exact_version() -> None:
+    """Pinning the action pins the action, not the tool it downloads.
+
+    ``uv build`` in ``release.yml`` produces the files that are signed and uploaded, and the
+    reusable workflow resolves and installs rayspec with the same tool — neither may be whatever
+    was released this morning, and the two may not quietly drift apart either.
+    """
+    unpinned = []
+    versions = set()
+    for path in workflow_files():
+        for job, step in steps_of(load(path)):
+            if "astral-sh/setup-uv" not in str(step.get("uses", "")):
+                continue
+            pinned = str((step.get("with") or {}).get("version", "")).strip()
+            if pinned:
+                versions.add(pinned)
+            else:
+                unpinned.append(f"{path.name}: {job} installs whatever uv is newest")
+    assert not unpinned, "\n".join(unpinned)
+    assert versions, "no workflow sets up uv"
+    assert len(versions) == 1, f"the workflows install different uv versions: {sorted(versions)}"
+    [only] = versions
+    assert re.fullmatch(r"\d+\.\d+\.\d+", only), f"{only!r} is a range, not a pin"
+
+
+# ------------------------------------------------ rayspec-dry-run.yml: and what the page says
+
+
+def _ci_page() -> str:
+    return (REPO_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+
+
+def _input_table() -> dict[str, str]:
+    """The ``| input | default | meaning |`` table on the page, as ``{input: default}``."""
+    rows = {}
+    for line in _ci_page().splitlines():
+        if line.startswith("| `") and line.count("|") == 4:
+            cells = [cell.strip() for cell in line.split("|")[1:-1]]
+            rows[cells[0].strip("`")] = cells[1]
+    return rows
+
+
+def test_the_page_lists_every_input_the_recipe_takes_with_the_default_it_has() -> None:
+    """The table is what a stranger reads instead of the file; a default that drifts from it lies."""
+    rows = _input_table()
+    for name, spec in _on(load(RECIPE))["workflow_call"]["inputs"].items():
+        assert name in rows, f"docs/ci.md does not list the `{name}` input"
+        raw = spec.get("default", "")
+        default = str(raw).lower() if isinstance(raw, bool) else str(raw)
+        if default:
+            assert f"`{default}`" in rows[name], (name, default, rows[name])
+
+
+def test_the_page_names_every_status_the_check_can_report() -> None:
+    """``status`` is documented as a promise; the page has to say what it can hold."""
+    page = _ci_page()
+    for _code, status in DOCUMENTED_OUTCOMES:
+        assert status in page, f"docs/ci.md never mentions the `{status}` status"
+
+
+def test_the_page_says_the_outputs_are_set_whatever_happened() -> None:
+    """They were empty for every outcome except success while the page promised otherwise."""
+    page = _ci_page()
+    [paragraph] = [block for block in page.split("\n\n") if "**Outputs.**" in block]
+    assert "`status`" in paragraph and "`exit-code`" in paragraph
+    assert "fail-on-error" in paragraph, "the page does not say who decides when they are set"
+
+
+def test_the_copy_paste_example_points_at_files_rayspec_init_writes(
+    tmp_path: Path, home: Path
+) -> None:
+    """A stranger's first move is ``rayspec init``; the example has to work in what it wrote.
+
+    An example naming a path the scaffold never creates is a copy-paste that fails on their first
+    pull request, in the one file that is supposed to be the easy part.
+    """
+    root = tmp_path / "consumer"
+    result = CliRunner().invoke(app, ["init", "--root", str(root), "--no-skill"])
+    assert result.exit_code == 0, result.stdout
+
+    header = RECIPE.read_text(encoding="utf-8").split("name: rayspec dry run")[0]
+    text = header + _ci_page()
+
+    # Anchored to the start of a line (a `#` comment counts): prose elsewhere in the file says
+    # "workflow: dry-run a rayspec workflow", which is a sentence and not an example.
+    stubs = set(re.findall(r"(?m)^[#\s]*stubs:[ ]+(\S+)", text))
+    assert stubs, "no example names a stub file"
+    for path in sorted(stubs):
+        assert (root / path).is_file(), f"`rayspec init` never writes {path}"
+
+    named = set(re.findall(r"(?m)^[#\s]*workflow:[ ]+(\S+)", text))
+    assert named, "no example names a workflow"
+    for name in sorted(named):
+        found = root / ".rayspec" / "workflows" / f"{name}.yaml"
+        assert found.is_file(), f"`rayspec init` never writes a workflow called {name}"
 
 
 # ------------------------------------------------------------------------------ docs.yml

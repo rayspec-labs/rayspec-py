@@ -41,8 +41,8 @@ jobs:
       pull-requests: write
     uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
     with:
-      workflow: review_pr
-      stubs: .rayspec/dryrun/review_pr.stubs.yaml
+      workflow: example                    # what `rayspec init` scaffolds — swap in your own
+      stubs: .rayspec/stubs/example.yaml   # and the stub script it writes next to it
       rayspec-version: "1.0.0"
 ```
 
@@ -52,14 +52,39 @@ jobs:
 | `project-dir` | `.` | where `.rayspec/` lives, for a repository that keeps it in a subdirectory |
 | `stubs` | — | the stub script that supplies the agents' answers, relative to `project-dir` |
 | `inputs-file` | — | YAML/JSON file of workflow inputs, relative to `project-dir` |
-| `rayspec-version` | latest | the version to install — **pin it**, so a release never changes a check |
+| `rayspec-version` | `>=1.0.0,<2` | the version to install — **pin it**, so a release never changes a check |
 | `python-version` | `3.12` | the interpreter rayspec runs on |
 | `comment` | `true` | post the result on the pull request |
 | `comment-tag` | `default` | distinguishes the comments of several calls in one pull request |
 | `fail-on-error` | `true` | fail the check when the dry run did not succeed |
 
-It sets two outputs, `status` and `exit-code`, so a caller can decide for itself instead of
-letting the check fail.
+**Outputs.** Two of them, set for every run and not only for the one that went well: `status`
+is `succeeded`, `failed`, `paused`, `cancelled` or `not started (usage error)`, and `exit-code` is
+the code rayspec returned ([the table in `rayspec run`](cli.md#exit-codes)). Because they are
+always there, `fail-on-error: false` genuinely hands the verdict over — the check stays green and
+the calling workflow decides what a run that did not succeed means:
+
+<!-- rayspec:skip a GitHub Actions workflow, not a rayspec one -->
+```yaml
+jobs:
+  dry-run:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
+    with:
+      workflow: example
+      stubs: .rayspec/stubs/example.yaml
+      rayspec-version: "1.0.0"
+      fail-on-error: false
+
+  triage:
+    needs: dry-run
+    if: needs.dry-run.outputs.status != 'succeeded'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "the dry run ${{ needs.dry-run.outputs.status }}, exit ${{ needs.dry-run.outputs.exit-code }}"
+```
 
 **Permissions.** The comment needs `pull-requests: write` on the *calling* job, as in the snippet
 above. The reusable workflow requests nothing of its own: a called workflow that asks for a
@@ -73,16 +98,23 @@ design. The job summary carries the same report. Do not reach for `pull_request_
 around it: that runs the fork's code with a writable token.
 
 **Pinning.** `@v1` is a tag that moves with the 1.x line — by hand, as the last step of a release
-(below); pin a commit sha instead if you would rather not track it. Pin `rayspec-version` either
-way — a check that silently changes with the next release is a check nobody trusts.
+(below); pin a commit sha instead if you would rather not track it. `rayspec-version` defaults to
+`>=1.0.0,<2`, the same 1.x line, deliberately rather than to *latest*: the `rayspec` name on PyPI
+was parked with a 0.0.1 placeholder before the first release, so "whatever is newest" had a wrong
+answer available and an unpinned check could quietly install a stub. Pin an exact version anyway —
+a check that silently changes with someone else's release is a check nobody trusts. A bare version
+(`1.0.0`) is pinned exactly; anything starting with an operator (`>=1.2,<2`) is passed through as
+a specifier; an empty string is refused rather than resolved.
 
 ## How rayspec itself is released
 
 The release runs from a tag and needs no credential of mine:
 
-- `uv build` produces the sdist and the wheel; the workflow refuses to continue when the tag and
-  the version in `pyproject.toml` disagree, and checks the metadata with `twine check --strict`
-  before installing the wheel into a clean environment and running it once.
+- `uv build` produces the sdist and the wheel — with a **pinned `uv`**, because the tool that
+  builds what gets signed is part of what a release pins, and pinning the action that installs it
+  to a commit does not pin the tool. The workflow refuses to continue when the tag and the version
+  in `pyproject.toml` disagree, and checks the metadata with `twine check --strict` before
+  installing the wheel into a clean environment and running it once.
 - **PyPI is reached through Trusted Publishing** — a short-lived OIDC token minted for this
   repository and exchanged for an upload token. There is no PyPI token in this repository, so
   there is none to leak or to rotate.
