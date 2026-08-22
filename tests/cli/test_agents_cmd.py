@@ -44,7 +44,14 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _rows(output: str) -> dict[str, str]:
-    return {ln.split("│")[0].strip(): ln for ln in output.splitlines() if "│" in ln}
+    """``{agent name: the whole line}``. Tables carry no borders, so a row is keyed by its first
+    column — an agent name is an identifier and never contains a space."""
+    rows: dict[str, str] = {}
+    for line in output.splitlines():
+        first = line.split()
+        if first:
+            rows[first[0]] = line
+    return rows
 
 
 def test_agents_table_shows_the_resolved_provider_and_model(project: Path) -> None:

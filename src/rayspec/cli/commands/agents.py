@@ -15,7 +15,6 @@ from typing import Any
 
 import typer
 from rich.markup import escape
-from rich.table import Table
 
 from rayspec.cli.commands._loader_common import (
     JsonOption,
@@ -23,6 +22,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     make_context,
+    new_table,
     print_json,
     resolve_output,
     short_path,
@@ -160,7 +160,7 @@ def register(app: typer.Typer) -> None:
                 f"or {ctx.home / 'agents'}"
             )
             return
-        table = Table(show_edge=False, pad_edge=False)
+        table = new_table()
         for col in ("name", "scope", "provider", "model", "effort", "access", "path"):
             table.add_column(col, style="bold" if col == "name" else None)
         for row in rows:

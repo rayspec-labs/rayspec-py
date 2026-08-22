@@ -33,6 +33,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    new_table,
     print_json,
     resolve_output,
 )
@@ -78,7 +79,7 @@ def runs_table(
 ) -> Table:
     """The ``rayspec runs`` table (``planned`` = run id → planned step paths, see
     :func:`rayspec.cli._runs_common.planned_step_paths`)."""
-    table = Table(show_edge=False, pad_edge=False, box=None, header_style="bold")
+    table = new_table()
     table.add_column("run")
     table.add_column("workflow")
     if show_project:

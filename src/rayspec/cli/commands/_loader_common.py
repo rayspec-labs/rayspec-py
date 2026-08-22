@@ -28,6 +28,7 @@ import typer
 import typer.core
 from rich.console import Console
 from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 
 from rayspec.actor import ACTOR_ENV
@@ -484,6 +485,29 @@ def json_line(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
 
 
+def new_table(*, title: str | None = None, show_header: bool = True) -> Table:
+    """The one rayspec table: no box, no edges, a bold header, a left-justified title.
+
+    Listings are read on a terminal and in a redirected file, and the file is the demanding
+    reader: it gets grepped, diffed against yesterday's and pasted into an issue. Borders make
+    all three worse and their width moves with the data, so no table draws any — and no command
+    picks its own, which is the part that kept ``rayspec doctor`` and ``rayspec runs`` from
+    looking like the same program.
+
+    Only ``title`` and ``show_header`` are choices; a caller that wants a different box wants a
+    different tool.
+    """
+    return Table(
+        title=title,
+        title_justify="left",
+        show_header=show_header,
+        header_style="bold",
+        box=None,
+        show_edge=False,
+        pad_edge=False,
+    )
+
+
 def fail(message: str, *, code: int = 2, hint: str | None = None) -> None:
     """Print an error (and hint) to stderr and exit with ``code``.
 
@@ -557,6 +581,7 @@ __all__ = [
     "looks_like_path",
     "make_context",
     "message_problems",
+    "new_table",
     "print_json",
     "report_lines",
     "resolve_output",

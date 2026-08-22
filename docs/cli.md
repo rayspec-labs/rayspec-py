@@ -65,6 +65,12 @@ exception that keeps the promise of their format: `rayspec run|resume|approve|re
 (`rayspec schema` is not a listing at all: it prints a published JSON Schema document, always the
 same bytes as the checked-in `schemas/*.schema.json`.)
 
+The `table` rendering is one style too, for every command that has one: no borders, a bold header
+row, columns separated by two spaces and a left-justified caption where a block has one. So
+`rayspec runs > yesterday.txt` and the same command tomorrow differ where the runs differ and
+nowhere else, and `grep`/`awk` over a redirected listing do not have to know which command wrote
+it. Colour is dropped when stdout is not a terminal (and with `NO_COLOR`), never the content.
+
 ## Commands
 
 ### `rayspec run`

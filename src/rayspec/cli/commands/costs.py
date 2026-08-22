@@ -47,6 +47,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    new_table,
     print_json,
     resolve_output,
 )
@@ -276,7 +277,7 @@ def select_runs(
 
 def costs_table(report: CostReport) -> Table:
     """The grouped table: one row per workflow (most expensive first), the total last."""
-    table = Table(show_edge=False, pad_edge=False, box=None, header_style="bold")
+    table = new_table()
     table.add_column("workflow")
     table.add_column("runs", justify="right")
     table.add_column("tokens", justify="right")

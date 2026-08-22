@@ -1824,6 +1824,12 @@ is `rayspec schema`'s published schema document, and `tests/cli/test_output_styl
 next one (an AST scan) as well as asserting that every command's `--json` document is exactly
 `json_text` of its payload.
 
+`new_table(title=None, show_header=True) -> rich.table.Table` is the same story for listings: no
+box, no edges, bold header, left-justified title — the only knobs are the two arguments, and no
+module under `cli/` may construct a `Table` itself (same test file, same kind of scan). Commands
+print through `console()`/`err_console()` so a redirected listing is rendered at a fixed width
+instead of the 80 columns a bare `rich.console.Console()` assumes.
+
 ### rayspec.skill + CLI `skill`
 The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`
 holds the hand-written `SKILL.md` (frontmatter `name: rayspec`, `description:`) and

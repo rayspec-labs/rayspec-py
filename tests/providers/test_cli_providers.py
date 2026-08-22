@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from rayspec.cli.app import app
+from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.providers import registry
 from rayspec.providers.base import ProviderCapabilities, ProviderRegistration
 from rayspec.providers.capabilities import CLAUDE_CAPABILITIES, CODEX_CAPABILITIES
@@ -78,8 +79,21 @@ def test_providers_includes_registered_third_party():
 
 
 def test_providers_table_uses_terminal_width_without_truncating_labels(monkeypatch):
+    """On a terminal the matrix folds into the terminal's width, labels intact."""
     monkeypatch.setenv("COLUMNS", "60")
+    monkeypatch.setattr(loader_common, "stdout_is_tty", lambda: True)
     result = CliRunner().invoke(app, ["providers"])
     assert result.exit_code == 0, result.output
     assert "instructions_modes" in result.output  # never ellipsised on narrow terminals
     assert max(len(line) for line in result.output.splitlines()) <= 60
+
+
+def test_providers_table_is_the_same_width_whoever_redirects_it(monkeypatch):
+    """Redirected, the listing does not depend on the reader's terminal: piping `rayspec
+    providers` into a file from an 80-column shell and from a wide one gives the same bytes."""
+    monkeypatch.setenv("COLUMNS", "60")
+    narrow = CliRunner().invoke(app, ["providers"])
+    monkeypatch.setenv("COLUMNS", "200")
+    wide = CliRunner().invoke(app, ["providers"])
+    assert narrow.exit_code == 0 and wide.exit_code == 0
+    assert narrow.stdout == wide.stdout

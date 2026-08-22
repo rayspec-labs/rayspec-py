@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.table import Table
 
 from rayspec.cli.commands._loader_common import (
     JsonOption,
@@ -19,6 +18,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    new_table,
     print_json,
     resolve_output,
 )
@@ -127,7 +127,7 @@ def register(app: typer.Typer) -> None:
         if not infos:
             out.print(f"no rayspec worktrees for {project.slug}")
             return
-        table = Table(show_edge=False, pad_edge=False)
+        table = new_table()
         table.add_column("branch", style="bold")
         table.add_column("age")
         table.add_column("state")
