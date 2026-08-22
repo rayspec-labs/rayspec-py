@@ -75,6 +75,9 @@ Layers do not override each other, because no layer can *loosen* another. They c
 | `workspace.protected_paths` | union |
 | `workspace.max_changed_files` / `max_changed_lines` | the smallest value any layer set |
 | `trust.require` | true when any layer sets it |
+| `budget.per_run` / `per_day` / `per_month` / `max_consecutive_failures` | the smallest ceiling any layer set |
+| `max_consecutive_failures` | the smallest value any layer set |
+| `max_concurrent_runs` | per provider, the smallest limit any layer set (a bare integer is `*`, which covers every provider) |
 
 The consequence worth stating plainly: adding a policy file can only ever make a run *less*
 capable. A user file cannot re-admit what the project file excluded, and a project file cannot
@@ -101,7 +104,21 @@ workspace:
   max_changed_lines: 2000
 trust:
   require: true                   # only workflows in .rayspec/trusted.yaml may run
+budget:                           # the operator's spending envelope (runs-and-resume.md)
+  per_run: 2.00
+  per_day: 20.00
+  per_month: 200.00
+max_consecutive_failures: 3       # the failure breaker beside it
+max_concurrent_runs:              # host run slots, per provider (a bare integer covers every one)
+  claude: 2
+  codex: 1
 ```
+
+The last three blocks belong to `rayspec.limits` rather than to the load-time checks on this page:
+reaching one of them **pauses** the run (exit 3) instead of failing it, because an operator's
+ceiling is not a defect in the workflow. They are documented in full under [operational limits
+(policy, not workflow)](runs-and-resume.md#operational-limits-policy-not-workflow). They are policy keys like any other — restrictive
+only, layered most-restrictive-wins, and a control for the purposes of everything below.
 
 An unknown key is an error naming the file and the line, with a "did you mean" for near misses. A
 policy file that cannot be read or parsed is an error too — it is never treated as an empty
@@ -156,9 +173,13 @@ steps.review.agent.provider_options: provider_options.claude.extra_args is refus
 access.max (.rayspec/policy.yaml:2) is in force: the claude adapter applies provider_options over
 the options rayspec computed, and rayspec cannot say whether this key widens what that control
 narrowed — under a control only the keys it has reasoned about pass (env, load_timeout_ms,
-max_buffer_size, max_thinking_tokens, mcp_servers, user). Remove the key, or drop the control it
-could undo
+max_buffer_size, max_thinking_tokens, mcp_servers, user). Set what this key changes through the
+agent's own fields, which policy and review both read, or through providers.claude in config.yaml,
+which belongs to the machine owner
 ```
+
+No refusal on this page ends with "drop the control". A message whose only visible way forward is
+switching the guardrail off is a message that teaches people to switch it off.
 
 #### What counts as a control
 
@@ -175,7 +196,7 @@ the case where an unprotected control does the most damage.
 | `tools` | which tools may run — `deny` and a non-empty `allow` alike |
 | `network: off` | the provider's web tools, by folding `web` into `tools.deny` |
 | `commands` | which shell commands may run |
-| `mcp` | the servers the run may reach (declaring any makes the set strict) |
+| `mcp` | the servers the run may reach — the declared set, and the set an `mcp_servers` entry in `provider_options` is checked against |
 | `max_turns`, `budget_usd` | hard ceilings on turns and money |
 | `on_denial: fail` | makes a refused tool call stop the step — the teeth of every denial |
 
@@ -226,47 +247,79 @@ restricting nothing (with the one line saying why), and `tests/policy/test_contr
 fails when any of that stops being total — in either direction, so a stale entry fails as loudly
 as a missing one, and a nested model added tomorrow fails until someone classifies it.
 
-The keys that pass, and why:
+The keys on the list, and what each one is:
 
-| Provider | Key | Why it is safe |
+| Provider | Key | What it does, and what happens to it under a control |
 | --- | --- | --- |
-| claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs. Checked by name: a variable in the vendor's own namespace (`ANTHROPIC_*`, `CLAUDE_*`) configures the CLI rather than the agent's work, and is refused under a control (below) |
-| claude | `mcp_servers` | extra MCP servers, merged under the agent's `mcp:` block; checked server by server (below) |
+| claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs. **Under a control it carries nothing**: every name is refused, because a variable is read inside the process rayspec starts and rayspec cannot say which of the options it computed a given name overrides (below) |
+| claude | `mcp_servers` | extra MCP servers, merged **under** the agent's `mcp:` block — a name the agent declares is the agent's declaration either way. Under a control, only a server the controls themselves name passes (below) |
 | claude | `max_thinking_tokens` | how many tokens a turn may think for. It moves what a turn costs, never what a cost is measured against — the thinking tokens are reported as usage like any other |
 | claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI to come up (the step's own deadline is enforced by the engine around the whole call) |
 | claude | `user` | an opaque end-user id forwarded to the API |
-| codex | `config.mcp_servers` | as above, checked server by server |
+| codex | `config.mcp_servers` | as above, merged under the agent's `mcp:` block and checked against the same folded set |
 | codex | `config.model_reasoning_summary` | how much of the model's reasoning is summarised into the stream: transcript verbosity |
-| codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; see below |
+| codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; `auto_review` answers them for the agent and is refused under any control; see below |
 | codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
-| codex | `usage_baseline` | usage counters **subtracted** from a resumed thread's totals — the number every spend ceiling is then measured against. Checked by value: under a spend ceiling only a baseline that subtracts nothing passes (below) |
+| codex | `usage_baseline` | usage counters **subtracted** from a resumed thread's totals — the number every spend ceiling is measured against *and* the number `spend.json`, `run.json` and `rayspec costs` report. Checked by value: under any control only a baseline that subtracts nothing passes (below) |
 
-Each of the four unguarded keys says out loud why it needs no guard (`INERT_BECAUSE` in
-`rayspec.policy.enforce`), and each reason is paired with the test that holds it to the code: a
-key set to an extreme value has to leave every option the adapter computes byte-identical. An
-allow-listed key with no guard is inert under every control, which is a second unsafe default
-hiding inside a safe design — `usage_baseline` sat there as "accounting only" while setting the
-number every ceiling is compared against — so "no guard" cannot be reached by leaving a field out.
+Six of the eleven entries carry no guard at all — `max_thinking_tokens`, `max_buffer_size`,
+`load_timeout_ms` and `user` on Claude, `config.model_reasoning_summary` and `ephemeral` on Codex.
+Each of them says out loud why it needs none (`INERT_BECAUSE` in `rayspec.policy.enforce`), and
+each reason is paired with the test that holds it to the code: a key set to an extreme value has to
+leave every option the adapter computes byte-identical. An allow-listed key with no guard is inert
+under every control, which is a second unsafe default hiding inside a safe design —
+`usage_baseline` sat there as "accounting only" while setting the number every ceiling is compared
+against — so "no guard" cannot be reached by leaving a field out.
+
+The other five carry a guard, and a guard has the same problem one level down: it can claim to
+cover a kind of control and then decide from a subset of the controls in force. `mcp_servers`
+consulted the policy document alone, so with no policy file it admitted an arbitrary server past
+the agent's own `mcp:` set, its `tools.deny: [mcp]`, its `network: off` and its `access:
+read-only` — every one of which the trigger had already counted. So a guard is given the union the
+trigger built and nothing else, and `tests/policy/test_guard_completeness.py` runs each guard once
+per control, from every source that can carry one, and fails when it stays silent.
 
 **A control that blocks the permitted case is its own defect** — it teaches people to switch the
-control off. So the two merged keys are checked by *value*, not refused wholesale: under
-`mcp.allow_servers: [github]` an agent may still add `github` through
-`provider_options.claude.mcp_servers`, and only a server the policy excludes is named:
+control off. So `mcp_servers` is checked by *value*, not refused wholesale. The rule is the same
+inversion the key list uses, applied to server names: a server passes when **some** control in
+force names it and **none** refuses it. "Nobody named this server" is the "nobody knows" case, and
+under a control that is a refusal — an MCP server is a process rayspec starts or an endpoint it
+reaches, offering the agent whatever tools it likes.
+
+The controls that name servers are the agent's own `mcp:` block and a policy `mcp.allow_servers`;
+the ones that refuse them are a `tools.deny` naming `mcp` or `mcp:<server>`, a non-empty
+`tools.allow` that names neither, and an `mcp.allow_servers` that leaves the name out. All of them
+at once, never one of them:
 
 ```yaml
+# .rayspec/policy.yaml — mcp: {allow_servers: [github]}
 provider_options:
   claude:
     mcp_servers:
-      github: {type: stdio, command: github-mcp-server}   # allowed — github is on the list
-      evil: {type: stdio, command: /bin/sh}               # refused, by name
+      github: {type: stdio, command: github-mcp-server}   # allowed — policy names github
+      evil: {type: stdio, command: /bin/sh}               # refused — nothing names evil
 ```
 
-Codex's `approval_mode` is guarded the same way. `deny_all` passes anywhere; `auto_review` answers
-the agent's sandbox escalation requests *for* it, so it is refused under any control that withholds
-sandbox power or network access — `access.max` in a policy file, the agent's own `access:`,
-`network: off`, a `tools.deny` that names `web`. A guard matches on the KIND of control, not on
-its spelling: `access.max` and `access: read-only` withhold the same thing, and a guard that knew
-only the first is how a bypass gets written.
+Because both adapters merge this block *under* the agent's own servers, a name the agent already
+declares is the agent's declaration either way — so the way through is to declare the server in
+the neutral `mcp:` block, where policy, `rayspec plan` and code review all read it.
+
+Codex's `approval_mode` is guarded by value too. `deny_all` (the default) passes anywhere;
+`auto_review` answers the agent's sandbox escalation requests *for* it, so it is refused under any
+control. A guard matches on the KIND of control rather than on its spelling — `access.max` and
+`access: read-only` withhold the same thing, and a guard that knew only the first is how a bypass
+gets written — but a guard that narrows to a kind at all has to earn it: every one that ships
+today runs under every control, and the matrix in
+`tests/policy/test_guard_completeness.py` is what holds a narrowing to what it claims.
+
+`env` inverted for the same reason and did not keep a permitted case. It was guarded by a
+two-prefix denylist (`ANTHROPIC_*`, `CLAUDE_*`), and `PATH`, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`,
+`HTTPS_PROXY` and `SSL_CERT_FILE` passed unread under every control while reconfiguring the CLI's
+runtime and its network far more thoroughly than any vendor variable does. That list cannot be
+finished. So under a control every name is refused, and the refusal names the three places that
+still work: `providers.<id>.env` in `config.yaml` (the machine owner's file, merged *over* this
+block), the `env:` of the `mcp:` server that needs it, and the `env:` of the shell or python step
+that needs it.
 
 **Everything else the adapter already refused, it still refuses.** Every field an adapter derives
 from an agent's neutral fields — `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`,
@@ -282,10 +335,21 @@ accepts two leaves the shape it does not walk unguarded — `provider_options.co
 is a real spelling the adapter honours, and it is checked as the same block.
 
 A provider from a [plugin](extending.md) has no allow-list yet, so under a control its
-`provider_options` block is refused whole. That is the same fail-closed default applied to a
-provider rayspec knows nothing about. The way through is `config.yaml` under `providers.<id>`,
-which belongs to the machine owner rather than to the workflow — and which is *why* it is safe:
-that is a setting a workflow cannot edit.
+`provider_options` block is refused whole — and, because `access: workspace-write` and
+`isolation: worktree` are both defaults, "under a control" is the case a plugin provider is
+reached in by default. That is the same fail-closed treatment applied to a provider rayspec knows
+nothing about, and its refusal says so rather than printing an empty list of permitted keys:
+
+```
+provider_options.acme.token is refused while isolation: worktree is in force: … rayspec has no
+allow-list for provider 'acme' yet, so under a control its whole block is refused — the same
+fail-closed default applied to a provider rayspec knows nothing about. Set what this key changes
+through providers.acme in config.yaml, which belongs to the machine owner rather than to the
+workflow this control governs
+```
+
+`config.yaml` under `providers.<id>` is the way through, and it is *why* it is safe: that is a
+setting a workflow cannot edit.
 
 ## The worktree change guard
 
@@ -407,7 +471,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env` — vendor variables refused —, `mcp_servers`, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers`, `config.model_reasoning_summary`, `approval_mode`, `ephemeral`, `usage_baseline` (zero counters only under a spend ceiling) |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env` — every variable refused —, `mcp_servers` — only servers the controls name —, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers` (only servers the controls name), `config.model_reasoning_summary`, `approval_mode` (`deny_all` only), `ephemeral`, `usage_baseline` (zero counters only) |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the

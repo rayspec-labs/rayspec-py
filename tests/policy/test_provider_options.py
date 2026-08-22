@@ -163,8 +163,70 @@ def test_moving_an_mcp_server_into_provider_options_is_an_error(tree: Tree) -> N
     )
     joined = "\n".join(report.errors)
     assert "provider_options.claude.mcp_servers" in joined
-    assert "mcp.allow_servers" in joined
+    assert "not one the controls in force name" in joined
     assert ".rayspec/policy.yaml:" in joined
+
+
+def test_an_arbitrary_server_is_refused_by_the_agents_own_controls_with_no_policy_file(
+    tree: Tree,
+) -> None:
+    """The guard consulted the POLICY DOCUMENT, so with no policy file it consulted nothing.
+
+    Every control on this agent is one the trigger already counts: its declared ``mcp:`` set, a
+    ``tools.deny`` naming the whole ``mcp`` group, ``network: off`` and ``access: read-only``. The
+    allow-list turned on because of them and then waved ``mcp_servers`` through, because the guard
+    asked one source and that source was absent. The answer has to come from the same union the
+    trigger builds.
+    """
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+isolation: none
+steps:
+  - id: think
+    agent:
+      provider: claude
+      model: claude-sonnet-4-5
+      access: read-only
+      network: off
+      tools: {deny: [mcp]}
+      mcp: {docs: {command: docs-mcp}}
+      provider_options:
+        claude:
+          mcp_servers:
+            evil: {type: stdio, command: /bin/sh}
+    prompt: hello
+""",
+    )
+    (message,) = report.errors
+    assert "provider_options.claude.mcp_servers.evil" in message, report.errors
+    assert "mcp: block" in message  # the way out is the neutral field, not dropping a control
+
+
+def test_a_server_the_agent_declares_itself_still_passes(tree: Tree) -> None:
+    """The permitted case: both adapters merge this block UNDER the agent's own servers, so a
+    name the agent declares is the agent's declaration either way."""
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+isolation: none
+steps:
+  - id: think
+    agent:
+      provider: claude
+      model: claude-sonnet-4-5
+      access: read-only
+      mcp: {docs: {command: docs-mcp}}
+      provider_options:
+        claude:
+          mcp_servers:
+            docs: {type: stdio, command: docs-mcp}
+    prompt: hello
+""",
+    )
+    assert report.ok, report.errors
 
 
 def test_moving_an_mcp_server_into_the_codex_config_is_an_error(tree: Tree) -> None:
@@ -188,7 +250,8 @@ steps:
     )
     joined = "\n".join(report.errors)
     assert "provider_options.codex.config.mcp_servers" in joined
-    assert "mcp.allow_servers" in joined
+    assert "not one the controls in force name" in joined
+    assert ".rayspec/policy.yaml:" in joined
 
 
 def test_putting_the_web_tools_back_defeats_network_off_without_any_policy(tree: Tree) -> None:
@@ -363,7 +426,7 @@ steps:
     )
     joined = "\n".join(report.errors)
     assert "mcp_servers" in joined
-    assert "mcp.allow_servers" in joined
+    assert "not one the controls in force name" in joined
 
 
 def test_the_adapter_and_the_check_narrow_a_block_the_same_way() -> None:
@@ -407,21 +470,40 @@ def test_only_the_refused_server_is_named(tree: Tree) -> None:
     assert "evil" in message
 
 
-def test_extra_environment_variables_stay_usable_under_every_control(tree: Tree) -> None:
+def test_an_env_block_with_nothing_in_it_is_still_permitted(tree: Tree) -> None:
+    """The guard refuses VALUES, not the key: an empty block is not a refusal to report."""
     tree.policy(
         "access:\n  max: read-only\ntools:\n  deny: [web]\nmodels:\n  deny: ['*opus*']\n"
         "mcp:\n  allow_servers: [github]\n"
     )
-    _, report = validated(tree, wf("env:\n  GITHUB_TOKEN: ${GH}\n"))
+    _, report = validated(tree, wf("env: {}\n"))
     assert report.ok, report.errors
 
 
 def test_a_codex_agent_may_still_carry_its_accounting_options(tree: Tree) -> None:
     tree.policy("tools:\n  deny: [web]\n")
     _, report = validated(
-        tree, codex_wf("ephemeral: true\nusage_baseline: {input: 10, output: 2}\n")
+        tree, codex_wf("ephemeral: true\nusage_baseline: {input: 0, output: 0}\n")
     )
     assert report.ok, report.errors
+
+
+def test_an_inflated_usage_baseline_is_refused_under_a_control_that_is_not_a_ceiling(
+    tree: Tree,
+) -> None:
+    """The baseline decides what the run REPORTS, not only what a ceiling measures.
+
+    ``spend.json``, ``run.json`` and ``rayspec costs`` are all derived from the same figure, so a
+    baseline the thread never reaches makes a run that spent money look free — under a lockfile,
+    an access cap or a tool denial exactly as much as under a spending envelope. Guarding it on
+    the ``spend`` tag alone made that true only once someone wrote a ceiling down.
+    """
+    tree.policy("tools:\n  deny: [web]\n")
+    _, report = validated(tree, codex_wf("usage_baseline: {input: 999999999}\n"))
+    (message,) = report.errors
+    assert "provider_options.codex.usage_baseline.input" in message, report.errors
+    assert "tools.deny" in message
+    assert "rayspec costs" in message
 
 
 # -- an option that escalates the very control it sits under -------------------------------------
@@ -596,30 +678,57 @@ def test_a_zero_usage_baseline_stays_permitted_under_a_spend_ceiling(tree: Tree)
     assert report.ok, report.errors
 
 
-def test_a_vendor_configuration_variable_is_refused_under_a_control(tree: Tree) -> None:
-    """``env`` adds a variable for the agent's WORK; it is not a way to reconfigure the CLI.
+#: Variables the two-prefix denylist waved through. Every one of them reconfigures the CLI's
+#: runtime or its network at least as thoroughly as ``ANTHROPIC_MODEL`` does, and the list is not
+#: finishable — which is why the guard inverted instead of growing.
+RUNTIME_ENV_NAMES = [
+    "PATH",
+    "NODE_OPTIONS",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTPS_PROXY",
+    "SSL_CERT_FILE",
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "GITHUB_TOKEN",
+]
 
-    ``ANTHROPIC_MODEL`` is read inside a process rayspec only starts, and which of the options
-    rayspec computed a vendor variable overrides is exactly what rayspec cannot say — the same
-    "nobody knows" the allow-list exists for. So under a control a variable in the vendor's own
-    namespace is refused, and the way out is the machine owner's file, not dropping the control.
+
+@pytest.mark.parametrize("name", RUNTIME_ENV_NAMES)
+def test_no_environment_variable_passes_under_a_control(tree: Tree, name: str) -> None:
+    """``env`` was guarded by a two-prefix denylist, which cannot be completed.
+
+    ``PATH``, ``NODE_OPTIONS``, ``NODE_EXTRA_CA_CERTS``, ``HTTPS_PROXY`` and ``SSL_CERT_FILE``
+    passed unread under every control while ``ANTHROPIC_*`` was refused — and they reconfigure the
+    process rayspec starts far more thoroughly than any vendor variable does. A variable is read
+    inside that process, so which of the options rayspec computed a given name overrides is the
+    same "nobody knows" the key allow-list exists for. So the list inverted: a name rayspec has
+    not written down the effect of is refused, and rayspec has written down none.
     """
     tree.policy("models:\n  deny: ['*opus*']\n")
-    _, report = validated(tree, wf("env:\n  ANTHROPIC_MODEL: claude-opus-4-1\n"))
-    joined = "\n".join(report.errors)
-    assert "provider_options.claude.env.ANTHROPIC_MODEL" in joined, report.errors
-    assert "providers.claude.env in config.yaml" in joined
-
-
-def test_only_the_vendor_variable_is_refused(tree: Tree) -> None:
-    """The permitted case survives: adding a variable is what the escape hatch is for."""
-    tree.policy("access:\n  max: read-only\n")
-    _, report = validated(
-        tree, wf("env:\n  GITHUB_TOKEN: ${GH}\n  CLAUDE_CODE_ENABLE_TELEMETRY: '1'\n")
-    )
+    _, report = validated(tree, wf(f"env:\n  {name}: x\n"))
     (message,) = report.errors
-    assert "CLAUDE_CODE_ENABLE_TELEMETRY" in message
-    assert "GITHUB_TOKEN" not in message
+    assert f"provider_options.claude.env.{name}" in message, report.errors
+    assert "models.deny" in message
+
+
+def test_the_env_refusal_names_the_three_places_that_still_work(tree: Tree) -> None:
+    """A refusal whose only way forward is dropping the control teaches people to drop it."""
+    tree.policy("access:\n  max: read-only\n")
+    _, report = validated(tree, wf("env:\n  GITHUB_TOKEN: ${GH}\n"))
+    (message,) = report.errors
+    assert "providers.claude.env in config.yaml" in message
+    assert "mcp: server" in message
+    assert "shell/python step" in message
+    assert "drop" not in message
+
+
+def test_the_reasoned_env_list_is_the_allow_list_and_it_is_empty() -> None:
+    """The mechanism is the point: a name gets in by someone writing its effect down."""
+    from rayspec.policy.enforce import REASONED_ENV_NAMES
+
+    assert dict(REASONED_ENV_NAMES) == {}
+    for name, why in REASONED_ENV_NAMES.items():
+        assert why.strip(), f"{name}: say what this variable does before allowing it"
 
 
 # -- an allow-listed key with no guard says so out loud, and the reason is checked ------------------
@@ -661,6 +770,38 @@ def test_every_inert_key_names_the_test_that_checks_its_reason() -> None:
     module = sys.modules[__name__]
     for key, proof in sorted(INERT_PROOFS.items()):
         assert hasattr(module, proof), f"{key}: no test named {proof}"
+
+
+#: English numerals the page spells the two counts with, so a test can read a sentence.
+_NUMERALS = {
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+}
+
+
+def test_the_page_counts_the_guarded_and_unguarded_keys_correctly() -> None:
+    """The page said "the four unguarded keys" while there were six of them.
+
+    A number in prose is worth what a test reads of it. Both counts are held here, so an entry
+    added to the allow-list fails until the sentence beside it is corrected too.
+    """
+    from pathlib import Path
+
+    from rayspec.policy import ALLOWED_PROVIDER_OPTIONS
+
+    page = (Path(__file__).resolve().parents[2] / "docs" / "policy.md").read_text(encoding="utf-8")
+    lowered = page.lower()
+    inert = len(_inert_keys())
+    total = sum(len(block) for block in ALLOWED_PROVIDER_OPTIONS.values())
+    assert f"{_NUMERALS[inert]} of the {_NUMERALS[total]} entries carry no guard" in lowered
+    assert f"the other {_NUMERALS[total - inert]} carry a guard" in lowered
 
 
 def test_an_allow_listed_key_cannot_become_unguarded_by_omission() -> None:
@@ -790,7 +931,7 @@ steps:
         github: {command: github-mcp-server}
       provider_options:
         claude:
-          env: {GITHUB_TOKEN: x}
+          env: {}
           mcp_servers:
             github: {type: stdio, command: github-mcp-server}
           max_thinking_tokens: 4096
@@ -833,6 +974,44 @@ steps:
 """
 
 
+#: Allow-listed keys whose PERMITTED case under a control is "carry nothing", with the reason.
+#: They appear in the documents below as an empty block rather than a real value, and this table
+#: is what keeps that from quietly becoming "the document forgot to exercise the key".
+NO_VALUE_UNDER_A_CONTROL: dict[tuple[str, tuple[str, ...]], str] = {
+    ("claude", ("env",)): (
+        "a variable is read inside the process rayspec starts, so rayspec cannot say which of the "
+        "options it computed a given name overrides; REASONED_ENV_NAMES is empty, and the ways "
+        "out are providers.claude.env in config.yaml, an mcp: server's own env: and a step's env:"
+    )
+}
+
+
+def test_the_documents_below_exercise_every_allow_listed_key() -> None:
+    """The coverage claim, checked rather than asserted in a docstring."""
+    import yaml
+
+    from rayspec.policy import ALLOWED_PROVIDER_OPTIONS
+
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for document in (EVERYTHING, EVERYTHING_CODEX):
+        for step in yaml.safe_load(document)["steps"]:
+            for provider, block in step["agent"]["provider_options"].items():
+                for path in ALLOWED_PROVIDER_OPTIONS.get(provider, {}):
+                    value: object = block
+                    for part in path:
+                        value = value.get(part) if isinstance(value, dict) else None
+                    if value is not None and value != {}:
+                        seen.add((provider, path))
+    listed = {
+        (provider, path) for provider, block in ALLOWED_PROVIDER_OPTIONS.items() for path in block
+    }
+    assert sorted(listed - seen) == sorted(NO_VALUE_UNDER_A_CONTROL), (
+        "set the key to a real value in the documents, or say here why it cannot carry one"
+    )
+    for key, why in NO_VALUE_UNDER_A_CONTROL.items():
+        assert why.strip(), f"{key}: give the one-line reason"
+
+
 @pytest.mark.parametrize("document", [EVERYTHING, EVERYTHING_CODEX], ids=["claude", "codex"])
 def test_every_permitted_key_still_works_with_every_control_in_force(
     tree: Tree, document: str
@@ -842,8 +1021,9 @@ def test_every_permitted_key_still_works_with_every_control_in_force(
     Every kind of control at once — a policy file, the workflow's own isolation, its four caps, a
     secret input, a step timeout, the agent's access/tools/commands/mcp/caps/on_denial, the model
     lockfile and the machine owner's settings — and every key the allow-list permits, set to a
-    real value. A control that blocks the permitted case teaches people to switch the control
-    off, so this has to stay green as guards are added.
+    real value (or to the empty block that is its permitted case, see
+    :data:`NO_VALUE_UNDER_A_CONTROL`). A control that blocks the permitted case teaches people to
+    switch the control off, so this has to stay green as guards are added.
     """
     tree.policy(
         "access:\n  max: read-only\n"

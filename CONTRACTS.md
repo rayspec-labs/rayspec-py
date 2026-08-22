@@ -802,7 +802,14 @@ from rayspec.policy import (
     #   access{max: read-only|workspace-write|full|None}, tools{deny: list}, mcp{allow_servers:
     #   list|None}, workspace{protected_paths, max_changed_files, max_changed_lines} (ADVISORY —
     #   parsed and merged, but nothing runs the change guard in this build; validate warns),
-    #   trust{require: bool}. Every block is RESTRICTIVE ONLY — there is no key that grants.
+    #   trust{require: bool}, budget{per_run, per_day, per_month, max_consecutive_failures},
+    #   max_consecutive_failures: int|None, max_concurrent_runs: int|{provider: int}|None.
+    #   Every block is RESTRICTIVE ONLY — there is no key that grants. The last three belong to
+    #   `rayspec.limits`, which reads them off EffectivePolicy; the model is the union of every
+    #   key a shipped page documents and a shipped module reads, because a strict model that
+    #   rejects a documented key turns that page into a hard load failure
+    #   (tests/policy/test_policy_document.py holds both directions)
+    BudgetPolicy,  # per_run/per_day/per_month: float|None, max_consecutive_failures: int|None
     apply_policy,  # (resolved, *, capabilities_for=None, policy=None) -> PolicyReport — the ONE
     #   entry point: discovers the layers, runs the checks, folds the denials into the agents.
     #   Anything about to RUN a resolved workflow calls it, validating or not; idempotent.
@@ -810,7 +817,10 @@ from rayspec.policy import (
     load_policy,  # (project_root, *, home=None, environ=None) -> EffectivePolicy   (PolicyError)
     policy_paths,  # (project_root, home=None, environ=None) -> (PolicyPath(name, path), ...)
     POLICY_ENV,  # "RAYSPEC_POLICY"; POLICY_FILENAME "policy.yaml"; LAYER_NAMES highest first
-    EffectivePolicy,  # .layers, .is_empty, .layer(name) + the ACCESSORS consumers code against
+    EffectivePolicy,  # .layers, .is_empty, .layer(name) + the ACCESSORS consumers code against,
+    #   including .budget -> BudgetPolicy, .max_consecutive_failures, .max_concurrent_runs
+    #   ({provider: limit}, "*" = every provider) — the operational ceilings, merged
+    #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them
     PolicyLayer,  # name ("RAYSPEC_POLICY"|"project"|"user"), label, path, policy, lines
     PolicySource,  # layer, label, line, value; .location -> "<label>:<line>"
     PolicyError,  # LoaderError: unreadable/unparsable/invalid policy or trust file
@@ -839,15 +849,20 @@ from rayspec.policy import (
     #   namespace the walk descends into (`config` on codex carries `config.mcp_servers`)
     AllowedOption,  # summary (what the key does — the reasoning, kept next to the entry),
     #   offenders: OptionCheck | Inert (NO default — "no guard" cannot be reached by omission),
-    #   guarded_by: frozenset[control TAG] (empty = under every control) — a guard checks the
-    #   VALUE against the control instead of refusing the key, so `mcp_servers` still adds the
-    #   server `mcp.allow_servers` allows
+    #   guarded_by: frozenset[control TAG] (empty = under every control, which is what every
+    #   shipped entry says) — a guard checks the VALUE against the controls instead of refusing
+    #   the key, so `mcp_servers` still adds a server the controls in force name. Narrowing is
+    #   held to the matrix in tests/policy/test_guard_completeness.py
     Inert, INERT_BECAUSE,  # the named "this key needs no guard, and here is why"; every one is
     #   paired with the test that holds the reason to the code (test_provider_options.py)
-    VENDOR_ENV_PREFIXES, USAGE_COUNTERS,  # what the two value guards added here match on
-    ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .effective,
-    #   .tags {control key: frozenset[tag]}, .governed, .kinds, .covering(tags), .named(keys);
-    #   .of(controls, effective=) folds a list of Control into one view
+    REASONED_ENV_NAMES, USAGE_COUNTERS,  # what the two value guards added here match on;
+    #   REASONED_ENV_NAMES is the (empty) allow-list of env names someone has written the effect
+    #   of — under a control every other variable is refused
+    ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .tags {key: frozenset[tag]},
+    #   .servers: ServerControls, .governed, .kinds, .covering(tags), .named(keys),
+    #   .named_covering(tags), .allowed_servers; .of(controls) folds a list of Control into one
+    #   view. It carries NO handle on the policy document or any other single source: a guard
+    #   reads the fold the trigger built or it decides from a subset of the controls in force
     OptionCheck,  # (value, ControlsInForce) -> ((key path suffix, message), ...); empty = permitted
     SAFE_APPROVAL_MODE,  # "deny_all" — the codex approval_mode that grants nothing
     ACCESS_ORDER, access_rank,
@@ -856,8 +871,17 @@ from rayspec.policy import (
     #   tools trust workspace — the KIND of restriction a control is; guards match on these
     Control,  # key (how it is spelled), tags, sources: (PolicySource, ...)
     Restriction,  # (why, tags, imposed) — one field of one schema that CONSTRAINS the run;
-    #   `.imposed(subject)` -> ((spelled key, value, tags), ...), empty when the field is set to a
-    #   value that restricts nothing (`access: full`, `isolation: none`, a cap left unset)
+    #   `.imposed(subject)` -> (Imposed(key, value, tags, servers=None), ...), empty when the
+    #   field is set to a value that restricts nothing (`access: full`, `isolation: none`, a cap
+    #   left unset)
+    Imposed,  # key (as spelled), value, tags, servers: ServerOpinion | None
+    ServerOpinion,  # what ONE control says about the MCP servers a run may reach:
+    #   admits: frozenset|None (None = it names none), denies: frozenset, denies_all: bool
+    ServerControls,  # the FOLD of every ServerOpinion in force: .named, .admits,
+    #   .refusing(server) -> sources | None (None = permitted; () = nothing names any server)
+    tool_entry_servers,  # (entries, *, allow_list) -> ServerOpinion — a tools: list, read for
+    #   what it says about servers, the same way tool_entry_tags reads it for kinds
+    POLICY_SERVER_KEYS,  # the policy keys that bound the server set
     Carried,  # (by, why) — a nested field a control on the PARENT reads (`tools.deny`); `by` is
     #   checked against the parent's own table, so it cannot name a carrier that does not exist
     AGENT_CONTROLS, AGENT_NON_CONTROLS,  # the agent schema, partitioned
@@ -891,8 +915,9 @@ from rayspec.policy import (
 **Layering is most-restrictive-wins and no layer can widen another.** Order (highest precedence
 first, and precedence decides only the order restrictions are *reported* in): `$RAYSPEC_POLICY` >
 `<project>/.rayspec/policy.yaml` > `<home>/policy.yaml`. `providers.allow` / `mcp.allow_servers`
-INTERSECT, `models.deny` / `tools.deny` / `workspace.protected_paths` UNITE, `access.max` and the
-two `workspace` caps take the MINIMUM, `trust.require` is an OR. A missing file is an absent layer;
+INTERSECT, `models.deny` / `tools.deny` / `workspace.protected_paths` UNITE, `access.max`, the two
+`workspace` caps, the `budget` ceilings, `max_consecutive_failures` and each provider's
+`max_concurrent_runs` take the MINIMUM, `trust.require` is an OR. A missing file is an absent layer;
 a file `$RAYSPEC_POLICY` names that does not exist is a `PolicyError` (a guardrail must not vanish
 silently), as is any file that exists but cannot be read or parsed and any path that exists in some
 other shape — a dangling symlink, a symlink loop, a directory, an unreadable parent. Only a genuine
@@ -986,24 +1011,42 @@ file and `access: read-only` on the agent withhold the same thing, so codex `app
 auto_review` is refused under either. A control key missing from `POLICY_CONTROL_TAGS` gets EVERY
 tag rather than none — an unclassified control must engage every guard, not slip past all of them.
 
-The allow-list keeps the extension points working, by checking the VALUE rather than refusing the
-key: `env` is merged UNDER both the variables rayspec computes and the machine owner's
-`providers.claude.env`, so a workflow can add a variable but never displace one of theirs (the
-adapter builds `env` in that order — it used to build it the other way round, which made the
-allow-list's own reason for admitting the key false), and it is checked NAME by name — a variable
-in the vendor's own configuration namespace (`VENDOR_ENV_PREFIXES`) configures the CLI rayspec is
-constraining inside a process rayspec only starts, which is the same "nobody knows" the allow-list
-exists for, and the way out is `providers.claude.env` in `config.yaml` rather than dropping the
-control; and `mcp_servers` / `config.mcp_servers` (merged under the agent's own servers) is checked
-server by server against `mcp.allow_servers` and `tools.deny`, so the server the policy ALLOWS may
-still be added there. A control that blocks the permitted case is its own defect — it teaches
-people to switch the control off. Codex `approval_mode` is guarded the same way: `deny_all` passes,
-anything that answers the agent's sandbox escalation requests for it is refused under `access.max`
-or `network: off`. Codex `usage_baseline` is guarded on `spend`: it is SUBTRACTED from a resumed
-thread's cumulative totals (`usage_delta` clamps at zero) and the turn's cost is derived from that
-same figure, so a baseline the thread never reaches reports no spend at all and defeats
-`defaults.budget_usd`, `defaults.max_tokens` and a policy envelope alike; under a spend ceiling
-only a baseline whose counters are zero passes, and none is needed — the adapter carries them.
+**A GUARD READS THE FOLD, NEVER A SOURCE.** `ControlsInForce` carries no handle on the policy
+document or on any other single source, because a guard that can reach one source eventually
+decides from one source: `mcp_servers` asked `EffectivePolicy` and therefore admitted an arbitrary
+stdio server past the agent's own `mcp:` set, its `tools.deny: [mcp]`, its `network: off` and its
+`access: read-only` — every one of which the trigger already counted. So each control states its
+own `ServerOpinion` where it is classified and `merged_controls` folds them into `ServerControls`,
+which is the guard's whole answer to "may this MCP server be reached": permitted when SOME control
+in force names it (the agent's `mcp:` block, a policy `mcp.allow_servers`) and NONE refuses it (a
+`tools.deny` naming `mcp`/`mcp:<server>`, a non-empty `tools.allow` naming neither, an
+`mcp.allow_servers` that leaves it out). "Nobody named this server" is a refusal, and the way out
+is the neutral `mcp:` field — both adapters merge the raw block UNDER the agent's own servers, so a
+name the agent declares is the agent's declaration either way.
+
+`env` inverted rather than growing: it was a two-prefix denylist (`ANTHROPIC_`, `CLAUDE_`) while
+`PATH`, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY` and `SSL_CERT_FILE` passed unread
+under every control, and that list cannot be finished. A name is read inside a process rayspec only
+starts, so which computed option it overrides is the same "nobody knows" the allow-list exists for:
+`REASONED_ENV_NAMES` is the allow-list of names whose effect someone has written down, it is empty,
+and under a control every variable is refused — with the three places that still work named in the
+message (`providers.<id>.env` in `config.yaml`, an `mcp:` server's own `env:`, a step's `env:`).
+`env` is still merged UNDER both the variables rayspec computes and the owner's block, which is why
+it is on the list at all. Codex `approval_mode`: `deny_all` (the default) passes, anything that
+answers the agent's sandbox escalation requests for it is refused under any control. Codex
+`usage_baseline` is SUBTRACTED from a resumed thread's cumulative totals (`usage_delta` clamps at
+zero) and the turn's cost is derived from that same figure, so a baseline the thread never reaches
+reports no spend at all — in `spend.json`, `run.json` and `rayspec costs` as much as against
+`defaults.budget_usd`; it is guarded under EVERY control, not only a `spend` one, and only zero
+counters pass. None is needed: the adapter carries them.
+
+**A guard is held to what it claims.** `guarded_by` may narrow a guard to KINDS of control, and
+every entry that ships leaves it empty (= under every control). `tests/policy/test_guard_completeness.py`
+generates the matrix (guard × control) from the classification tables — every entry of
+`AGENT_CONTROLS`, `WORKFLOW_CONTROLS`, `DEFAULTS_CONTROLS`, `STEP_CONTROLS`, `POLICY_CONTROL_TAGS`,
+the `control=True` rows of `EXTERNAL_CONTROLS` and of `CLI_FLAGS` — sets exactly one control and
+fails when the guard stays silent. It is the counterpart of `INERT_PROOFS`: no unguarded key
+without a written reason, and no guarded key without the control it must fire under.
 
 An allow-listed key with NO guard is inert under every control, which is a second unsafe default
 hiding inside a safe design: `usage_baseline` sat on the list as "accounting only" while setting

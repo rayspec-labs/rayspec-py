@@ -426,10 +426,20 @@ FAMILIES: dict[str, Family] = {
 
 
 def _policy_leaf_keys() -> frozenset[str]:
-    """``models.deny``, ``access.max``, … — the keys a policy layer can actually set."""
+    """``models.deny``, ``access.max``, ``max_concurrent_runs`` — the keys a layer can set.
+
+    A block whose annotation is a nested model contributes ``block.key`` for each of its fields;
+    a top-level field that is a plain value (``max_consecutive_failures``) IS the key, and has to
+    be classified under its own name — otherwise a scalar key added to the document would be in
+    no table and reported by nothing.
+    """
     leaves: set[str] = set()
     for block, info in Policy.model_fields.items():
-        for model in _model_types(info.annotation):
+        models = _model_types(info.annotation)
+        if not models:
+            leaves.add(block)
+            continue
+        for model in models:
             leaves.update(f"{block}.{name}" for name in model.model_fields)
     return frozenset(leaves)
 
@@ -501,8 +511,9 @@ def test_every_policy_key_is_classified() -> None:
 
 def test_every_policy_block_holds_a_classified_key() -> None:
     """``Policy.model_fields`` is the block level; a block with no classified key is unreachable."""
+    leaves = _policy_leaf_keys()
     for block in Policy.model_fields:
-        assert any(key.startswith(f"{block}.") for key in _policy_leaf_keys()), block
+        assert block in leaves or any(key.startswith(f"{block}.") for key in leaves), block
 
 
 # -- and the CLI: the fourth place a restriction could be written ---------------------------------

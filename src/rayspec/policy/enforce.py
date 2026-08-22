@@ -25,6 +25,7 @@ from rayspec.policy.controls import (
     CONTROL_TAGS,
     Control,
     ExternalControls,
+    ServerControls,
     agent_controls,
     merged_controls,
     policy_controls,
@@ -62,22 +63,28 @@ class ControlsInForce:
     ``providers.claude``) — and carries the lines that impose each one, so a refusal can always
     quote the file a person has to edit. ``tags`` says which KIND of restriction each control is
     (:data:`~rayspec.policy.controls.CONTROL_TAGS`); a value guard matches on those rather than
-    on a spelling. ``effective`` is the policy the layers came from, or ``None`` when nothing
-    outside the workflow governs the agent — a value-level check consults it and treats its
-    absence as "that policy key restricts nothing here".
+    on a spelling.
+
+    **This is everything a guard may see.** There is deliberately no handle on the policy
+    document, or on any other single source, because a guard that can reach one source will
+    eventually decide from one source: ``mcp_servers`` asked the policy file whether a server was
+    allowed and therefore admitted an arbitrary stdio server past the agent's own ``mcp:`` set,
+    its ``tools.deny: [mcp]``, its ``network: off`` and its ``access: read-only`` — every one of
+    which the trigger had already counted as a control. The trigger was total and the guard was
+    not. So the union the trigger builds is the union the guards read, and ``servers`` is that
+    union's answer to "may this MCP server be reached"
+    (:class:`~rayspec.policy.controls.ServerControls`).
     """
 
     sources: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
-    effective: EffectivePolicy | None = None
     tags: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    servers: ServerControls = field(default_factory=ServerControls)
 
     @classmethod
-    def of(
-        cls, controls: Iterable[Control], *, effective: EffectivePolicy | None = None
-    ) -> ControlsInForce:
+    def of(cls, controls: Iterable[Control]) -> ControlsInForce:
         """Fold every control governing one agent into one view of them."""
-        sources, tags = merged_controls(tuple(controls))
-        return cls(sources=sources, effective=effective, tags=tags)
+        sources, tags, servers = merged_controls(tuple(controls))
+        return cls(sources=sources, tags=tags, servers=servers)
 
     @property
     def governed(self) -> bool:
@@ -109,18 +116,20 @@ class ControlsInForce:
         joined = ", ".join(shown) + f" and {rest} more" if rest else " and ".join(shown)
         return f"{joined} ({where})" if where else joined
 
-    def mcp_denied(self, server: str) -> tuple[PolicySource, ...]:
-        """The layers whose ``mcp.allow_servers`` leaves ``server`` out."""
-        return () if self.effective is None else self.effective.mcp_denied(server)
+    def named_covering(self, tags: Iterable[str]) -> str:
+        """:meth:`named` for the controls of a KIND, falling back to all of them.
 
-    def allowed_mcp_servers(self) -> str:
-        """The servers ``mcp.allow_servers`` does permit, for the "use one of these" half."""
-        allowed = None if self.effective is None else self.effective.allowed_mcp_servers()
-        return ", ".join(sorted(allowed or ())) or "(nothing)"
+        A guard's message should name the control it is actually about, but a guard that runs
+        under every control has to say something when none of them carries the kind it prefers to
+        quote — and "" is how a refusal ends up naming no file at all.
+        """
+        chosen = self.covering(tags)
+        return self.named(chosen) if chosen else self.named()
 
-    def tool_denied(self, entry: str) -> tuple[PolicySource, ...]:
-        """The layers whose ``tools.deny`` denies ``entry``."""
-        return () if self.effective is None else self.effective.tool_denied(entry)
+    @property
+    def allowed_servers(self) -> str:
+        """The MCP servers the controls in force do name, for the "use one of these" half."""
+        return ", ".join(sorted(self.servers.admits)) or "(none)"
 
 
 #: A value-level check on one allow-listed option: the parts of the requested value the controls
@@ -158,12 +167,13 @@ class AllowedOption:
     control refuses, or an :class:`Inert` saying in one line why no guard is needed; it has no
     default, so an entry cannot become unguarded by omission. ``guarded_by`` narrows when a guard
     runs to the KINDS of control it is about (:data:`~rayspec.policy.controls.CONTROL_TAGS`),
-    empty meaning "under every control". Tags rather than spellings: ``access.max`` in a policy
-    file and ``access: read-only`` on the agent withhold the same thing, and a guard that knew
-    only the first is how a bypass gets written.
+    empty meaning "under every control" — which is what every entry that ships says. Narrowing has
+    to be EARNED: a guard that claims a kind and is silent under a control of another kind is the
+    shape every one of these bypasses had, so ``tests/policy/test_guard_completeness.py`` runs each
+    guard once per (kind, source that can carry that kind) and fails when it does not fire.
 
     A guard exists so the check can refuse the *value* a control refuses instead of the key:
-    refusing ``mcp_servers`` outright would block the server ``mcp.allow_servers`` allows, and a
+    refusing ``mcp_servers`` outright would block the server the controls in force do name, and a
     control that blocks the permitted case teaches people to switch the control off.
     """
 
@@ -182,11 +192,24 @@ class AllowedOption:
 
 
 def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
-    """Each server the block would merge in, against ``mcp.allow_servers`` and ``tools.deny``.
+    """Each server the block would merge in, against EVERY control in force.
 
-    Both adapters merge these under the agent's own servers, which is a real need — an extra
-    allowed server is exactly what the escape hatch is for. So the servers are checked one by
-    one and only the refused ones are named.
+    An MCP server is a capability channel: a process rayspec starts (a stdio ``command``) or an
+    endpoint it reaches, offering the agent whatever tools it likes. Both adapters merge this
+    block UNDER the agent's own ``mcp:`` servers, so a name the agent already declares is
+    overridden by the agent's own definition and a name it does not declare is a channel that
+    exists only here — where ``rayspec plan``, a reviewer and the neutral checks do not look.
+
+    So the same inversion the key allow-list uses is applied to the server names: while a control
+    is in force, a server passes only if some control NAMES it (the agent's own ``mcp:`` block,
+    or a policy ``mcp.allow_servers``) and none refuses it (a ``tools.deny`` naming ``mcp`` or
+    ``mcp:<server>``, a non-empty ``tools.allow`` that does not, an ``mcp.allow_servers`` that
+    leaves it out). "Nobody named this server" is the "nobody knows" case, and under a control
+    that is a refusal — which is what the answer has to be when the trigger has already counted
+    the agent's ``mcp:``, its tool lists, its network and its access level as controls.
+
+    The answer comes from :class:`~rayspec.policy.controls.ServerControls`, folded over every
+    source, because a guard that consults one source decides from one source.
     """
     if not isinstance(value, Mapping):
         return (
@@ -198,42 +221,36 @@ def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tupl
         )
     out: list[tuple[str, str]] = []
     for name in sorted(str(key) for key in value):
-        sources = controls.mcp_denied(name)
-        if sources:
-            out.append(
-                (
-                    name,
-                    f"MCP server {name!r} is not allowed by policy: mcp.allow_servers = "
-                    f"{controls.allowed_mcp_servers()} ({sources_text(sources)}); use an allowed "
-                    "server or widen that layer",
-                )
+        refusing = controls.servers.refusing(name)
+        if refusing is None:
+            continue  # a server the controls in force name: the permitted case
+        where = sources_text(refusing) or controls.named()
+        out.append(
+            (
+                name,
+                f"MCP server {name!r} is not one the controls in force name ({where}), and both "
+                "adapters merge this block under the agent's own mcp: servers — so it would add "
+                "a server (and the process or endpoint behind it) that nothing else in the run "
+                f"declares. Servers named right now: {controls.allowed_servers}. Declare it under "
+                "the agent's own mcp: block, where policy, rayspec plan and review all read it",
             )
-            continue
-        denied = controls.tool_denied(f"mcp:{name}") or controls.tool_denied("mcp")
-        if denied:
-            out.append(
-                (
-                    name,
-                    f"MCP server {name!r} is denied by policy: tools.deny "
-                    f"({sources_text(denied)}); remove the server or widen that layer",
-                )
-            )
+        )
     return tuple(out)
 
 
-#: Prefixes of the environment variables a vendor CLI reads as its OWN configuration — the model
-#: it answers with, the endpoint it talks to, the credentials it uses. rayspec cannot know which
-#: of the options it computed a given vendor variable overrides (the list is the vendor's, it
-#: grows between releases, and it is read inside a process rayspec only starts), so under a
-#: control a variable in that namespace is a SETTING rather than a value for the agent's work.
-#: The way out is the machine owner's ``providers.<id>.env`` in ``config.yaml``, which is merged
-#: OVER this block — not dropping the control.
-VENDOR_ENV_PREFIXES: Mapping[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_", "CLAUDE_")}
+#: Environment variable names rayspec has WRITTEN DOWN the effect of — empty, and that is the
+#: point. ``env`` was guarded by a two-prefix denylist (``ANTHROPIC_``, ``CLAUDE_``), which is the
+#: enumeration this package exists to avoid: ``PATH``, ``NODE_OPTIONS``, ``NODE_EXTRA_CA_CERTS``,
+#: ``HTTPS_PROXY`` and ``SSL_CERT_FILE`` reconfigure the CLI's runtime and its network far more
+#: thoroughly than any vendor variable does, and the next one is always a name nobody listed. A
+#: variable is read inside a process rayspec only starts, so which of the options it computed a
+#: given name overrides is exactly what rayspec cannot say. Adding an entry here means writing
+#: that answer down for one name; until someone does, the honest set is empty.
+REASONED_ENV_NAMES: Mapping[str, str] = {}
 
 
-def _vendor_env_guard(provider: str) -> OptionCheck:
-    """Refuse the variables that configure ``provider``'s own CLI; add any other, as before."""
-    prefixes = VENDOR_ENV_PREFIXES[provider]
+def _refused_env(provider: str) -> OptionCheck:
+    """Refuse every variable rayspec has not reasoned about — which is all of them, for now."""
 
     def offenders(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
         if not isinstance(value, Mapping):
@@ -246,17 +263,18 @@ def _vendor_env_guard(provider: str) -> OptionCheck:
             )
         out: list[tuple[str, str]] = []
         for name in sorted(str(key) for key in value):
-            if not name.upper().startswith(prefixes):
-                continue  # adding a variable for the agent's own work is what the hatch is for
+            if name in REASONED_ENV_NAMES:
+                continue
             out.append(
                 (
                     name,
-                    f"{name} configures the {provider} CLI itself rather than adding a value for "
-                    f"the agent's work ({', '.join(prefixes)}…), and rayspec cannot say which of "
-                    f"the options it computed a vendor variable overrides while {controls.named()} "
-                    f"{'is' if len(controls.sources) == 1 else 'are'} in force; set it in "
-                    f"providers.{provider}.env in config.yaml, which belongs to the machine owner "
-                    "and is merged over this block",
+                    f"{name} is set inside the {provider} CLI process rayspec starts, and rayspec "
+                    "cannot say which of the options it computed a given variable overrides — the "
+                    f"same 'nobody knows' the allow-list exists for, while {controls.named()} "
+                    f"{'is' if len(controls.sources) == 1 else 'are'} in force. Set it in "
+                    f"providers.{provider}.env in config.yaml (the machine owner's file, merged "
+                    "OVER this block), in the env: of the mcp: server that needs it, or in the "
+                    "env: of the shell/python step that needs it",
                 )
             )
         return tuple(out)
@@ -290,7 +308,7 @@ def _refused_usage_baseline(
                 "this would subtract",
             ),
         )
-    named = controls.named(controls.covering(("spend",)))
+    named = controls.named_covering(("spend",))
     out: list[tuple[str, str]] = []
     for name, raw in sorted(value.items(), key=lambda item: str(item[0])):
         key = str(name)
@@ -303,9 +321,10 @@ def _refused_usage_baseline(
         out.append(
             (
                 key,
-                f"{raw!r} is subtracted from the usage {named} is measured against: a turn on a "
-                "resumed thread reports its cumulative total minus this, clamped at zero, and its "
-                "cost is derived from that same figure — so a baseline the thread never reaches "
+                f"{raw!r} is subtracted from the usage {named} is measured against, and from what "
+                "the run REPORTS: a turn on a resumed thread reports its cumulative total minus "
+                "this, clamped at zero, its cost is derived from that same figure, and spend.json, "
+                "run.json and `rayspec costs` all read it — so a baseline the thread never reaches "
                 "reports no spend at all. Remove it; the adapter carries a resumed thread's "
                 "counters itself",
             )
@@ -317,13 +336,15 @@ def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tu
     """``auto_review`` grants the sandbox escalations the access control exists to withhold."""
     if str(value) == SAFE_APPROVAL_MODE:
         return ()
-    named = controls.named(controls.covering(("access", "network")))
+    named = controls.named_covering(("access", "network"))
     return (
         (
             "",
             f"{str(value)!r} answers the agent's sandbox escalation requests for "
-            f"it, granting from inside the workflow what {named} withholds; use "
-            f"approval_mode: {SAFE_APPROVAL_MODE} (the default), or drop that restriction",
+            f"it, granting from inside the workflow the power {named} "
+            f"{'is' if len(controls.sources) == 1 else 'are'} there to withhold; use "
+            f"approval_mode: {SAFE_APPROVAL_MODE}, which is the default and refuses every one of "
+            "them",
         ),
     )
 
@@ -360,14 +381,16 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
         ("env",): AllowedOption(
             "extra environment variables for the CLI subprocess, merged UNDER both the variables "
             "rayspec computes and the machine owner's providers.claude.env, so a workflow can "
-            "add one but never displace one of theirs (build_options builds env in that order); "
-            "a variable in the vendor's own configuration namespace is refused instead of added",
-            _vendor_env_guard("claude"),
+            "add one but never displace one of theirs (build_options builds env in that order). "
+            "While a control is in force it carries nothing: a variable name rayspec has not "
+            "reasoned about is refused, and REASONED_ENV_NAMES is empty",
+            _refused_env("claude"),
         ),
         ("mcp_servers",): AllowedOption(
-            "extra MCP servers, merged under the agent's own mcp: block",
+            "extra MCP servers, merged UNDER the agent's own mcp: block. While a control is in "
+            "force only a server the controls themselves name passes — the agent's own mcp: set, "
+            "or a policy mcp.allow_servers",
             _refused_mcp_servers,
-            guarded_by=frozenset({"mcp", "tools"}),
         ),
         ("max_thinking_tokens",): AllowedOption(
             "how many tokens a turn may think for. It moves what a turn costs, never what a cost "
@@ -400,9 +423,10 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
     },
     "codex": {
         ("config", "mcp_servers"): AllowedOption(
-            "extra MCP servers, merged under the agent's own mcp: block",
+            "extra MCP servers, merged UNDER the agent's own mcp: block. While a control is in "
+            "force only a server the controls themselves name passes — the agent's own mcp: set, "
+            "or a policy mcp.allow_servers",
             _refused_mcp_servers,
-            guarded_by=frozenset({"mcp", "tools"}),
         ),
         ("config", "model_reasoning_summary"): AllowedOption(
             "how much of the model's reasoning is summarised into the stream: transcript "
@@ -416,7 +440,6 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
             "how a sandbox escalation request is answered: deny_all (the default) refuses every "
             "one of them, auto_review grants them",
             _refused_approval_mode,
-            guarded_by=frozenset({"access", "network"}),
         ),
         ("ephemeral",): AllowedOption(
             "do not persist the thread — it withholds state, it grants nothing",
@@ -431,7 +454,6 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
             "cumulative total minus this, clamped at zero, and its cost is derived from that "
             "same figure",
             _refused_usage_baseline,
-            guarded_by=frozenset({"spend"}),
         ),
     },
 }
@@ -616,7 +638,7 @@ def agent_control_sources(agent: ResolvedAgent) -> dict[str, tuple[PolicySource,
     nothing and why. These come with no policy file, which is the common case and the case where
     an unprotected control does the most damage.
     """
-    sources, _tags = merged_controls(agent_controls(agent))
+    sources, _tags, _servers = merged_controls(agent_controls(agent))
     return sources
 
 
@@ -663,8 +685,7 @@ def check_provider_options(
                 *per_step.get(key, ()),
                 *agent_controls(agent),
                 *outside,
-            ),
-            effective=effective,
+            )
         )
         _check_provider_options(agent, controls, report)
     return report
@@ -698,13 +719,32 @@ def _spelled(provider: str, path: Sequence[str]) -> str:
 
 
 def _permitted_here(provider: str) -> str:
-    """The keys of ``provider``'s allow-list, spelled inside its own block, comma-joined.
+    """The keys of ``provider``'s allow-list, spelled inside its own block, comma-joined."""
+    allowed = ALLOWED_PROVIDER_OPTIONS.get(provider, {})
+    return ", ".join(sorted(".".join(path) for path in allowed))
+
+
+def _way_out(provider: str) -> str:
+    """What to do instead — never "drop the control", which is the thing being protected.
 
     A refusal that does not say what IS allowed leaves switching the control off as the only
-    obvious way forward, so every refusal carries this.
+    obvious way forward. The provider with NO allow-list at all (the stub, and any provider from
+    a plugin) is the case that used to read worst: it printed "(nothing)" and then offered
+    dropping the control, which is advice to remove the guardrail rather than the setting.
     """
-    allowed = ALLOWED_PROVIDER_OPTIONS.get(provider, {})
-    return ", ".join(sorted(".".join(path) for path in allowed)) or "(nothing)"
+    permitted = _permitted_here(provider)
+    if permitted:
+        return (
+            f"under a control only the keys it has reasoned about pass ({permitted}). Set what "
+            "this key changes through the agent's own fields, which policy and review both read, "
+            f"or through providers.{provider} in config.yaml, which belongs to the machine owner"
+        )
+    return (
+        f"rayspec has no allow-list for provider {provider!r} yet, so under a control its whole "
+        "block is refused — the same fail-closed default applied to a provider rayspec knows "
+        f"nothing about. Set what this key changes through providers.{provider} in config.yaml, "
+        "which belongs to the machine owner rather than to the workflow this control governs"
+    )
 
 
 def _check_provider_options(
@@ -750,9 +790,8 @@ def _walk_options(
                 f"{_spelled(agent.provider, path)} is refused while {controls.named()} "
                 f"{'is' if len(controls.sources) == 1 else 'are'} in force: the {agent.provider} "
                 "adapter applies provider_options over the options rayspec computed, and rayspec "
-                "cannot say whether this key widens what that control narrowed — under a control "
-                f"only the keys it has reasoned about pass ({_permitted_here(agent.provider)}). "
-                "Remove the key, or drop the control it could undo",
+                "cannot say whether this key widens what that control narrowed — "
+                f"{_way_out(agent.provider)}",
             )
         )
 
@@ -945,10 +984,10 @@ __all__ = [
     "ALLOWED_PROVIDER_OPTIONS",
     "COMMAND_POLICY_CAPABILITY",
     "INERT_BECAUSE",
+    "REASONED_ENV_NAMES",
     "SAFE_APPROVAL_MODE",
     "TOOL_GROUPS",
     "USAGE_COUNTERS",
-    "VENDOR_ENV_PREFIXES",
     "AllowedOption",
     "ControlsInForce",
     "Inert",

@@ -29,7 +29,7 @@ from typing import Any
 
 from rayspec.config.paths import rayspec_home
 from rayspec.errors import LoaderError
-from rayspec.policy.model import Policy, access_rank
+from rayspec.policy.model import BudgetPolicy, Policy, access_rank
 from rayspec.schema import SchemaError
 
 #: Environment variable naming an extra policy file, applied ahead of the project and user files.
@@ -229,7 +229,8 @@ class EffectivePolicy:
         question about the file rather than about a list of interesting keys, or the answer goes
         stale the day a key is added. Keys are spelled the way the file spells them
         (``tools.deny``, ``access.max``, ``models.deny``, ``mcp.allow_servers``,
-        ``providers.allow``, ``trust.require``, ``workspace.*``).
+        ``providers.allow``, ``trust.require``, ``workspace.*``, ``budget.*``,
+        ``max_consecutive_failures``, ``max_concurrent_runs``).
         """
         out: dict[str, list[PolicySource]] = {}
         for layer in self.layers:
@@ -268,6 +269,16 @@ class EffectivePolicy:
                     out.setdefault(f"workspace.{cap}", []).append(
                         layer.source(value, "workspace", cap)
                     )
+            for ceiling in ("per_run", "per_day", "per_month", "max_consecutive_failures"):
+                value = getattr(policy.budget, ceiling)
+                if value is not None:
+                    out.setdefault(f"budget.{ceiling}", []).append(
+                        layer.source(value, "budget", ceiling)
+                    )
+            for top in ("max_consecutive_failures", "max_concurrent_runs"):
+                value = getattr(policy, top)
+                if value is not None:
+                    out.setdefault(top, []).append(layer.source(value, top))
         return {key: tuple(sources) for key, sources in out.items()}
 
     # -- mcp ----------------------------------------------------------------------------------
@@ -310,6 +321,50 @@ class EffectivePolicy:
                 sources.extend(cap[1])
         return tuple(sources)
 
+    # -- the operational limits (read by rayspec.limits) ----------------------------------------
+
+    @property
+    def budget(self) -> BudgetPolicy:
+        """``budget:`` as the layers agreed on it — the smallest ceiling any layer set.
+
+        :mod:`rayspec.limits` reads this off the object :func:`load_policy` returns, so the
+        accessor has to exist with the document key's own name: a consumer that reaches for
+        ``policy.budget`` and silently gets ``None`` is a spending envelope that is written down
+        and not applied.
+        """
+        return BudgetPolicy(
+            per_run=self._min_of(lambda p: p.budget.per_run),
+            per_day=self._min_of(lambda p: p.budget.per_day),
+            per_month=self._min_of(lambda p: p.budget.per_month),
+            max_consecutive_failures=self._min_int(lambda p: p.budget.max_consecutive_failures),
+        )
+
+    @property
+    def max_consecutive_failures(self) -> int | None:
+        """The top-level failure breaker: the smallest value any layer set."""
+        return self._min_int(lambda p: p.max_consecutive_failures)
+
+    @property
+    def max_concurrent_runs(self) -> dict[str, int] | None:
+        """``{provider: limit}`` (``"*"`` = every provider), smallest value any layer set.
+
+        A bare integer is the same statement about every provider, so it is normalised to ``*``
+        before the layers are combined — otherwise ``max_concurrent_runs: 1`` in one layer and
+        ``{claude: 4}`` in another would read as two unrelated limits.
+        """
+        merged: dict[str, int] = {}
+        found = False
+        for layer in self.layers:
+            value = layer.policy.max_concurrent_runs
+            if value is None:
+                continue
+            found = True
+            limits = {"*": value} if isinstance(value, int) else dict(value)
+            for name, limit in limits.items():
+                current = merged.get(name)
+                merged[name] = limit if current is None else min(current, limit)
+        return merged if found else None
+
     # -- trust --------------------------------------------------------------------------------
 
     def trust_required(self) -> tuple[PolicySource, ...]:
@@ -331,6 +386,17 @@ class EffectivePolicy:
             current = frozenset(values)
             allowed = current if allowed is None else allowed & current
         return allowed
+
+    def _min_of(self, pick: Any) -> float | None:
+        """The smallest value any layer set for one numeric ceiling (``None`` = no layer set it)."""
+        values = [pick(layer.policy) for layer in self.layers]
+        present = [value for value in values if value is not None]
+        return min(present) if present else None
+
+    def _min_int(self, pick: Any) -> int | None:
+        """:meth:`_min_of` for a whole-number ceiling."""
+        value = self._min_of(pick)
+        return None if value is None else int(value)
 
     def _min_cap(self, field_name: str) -> tuple[int, tuple[PolicySource, ...]] | None:
         values = [

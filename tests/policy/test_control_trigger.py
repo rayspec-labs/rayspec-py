@@ -195,6 +195,34 @@ def test_the_env_entry_says_only_what_is_true() -> None:
     assert "inert" not in summary.lower()  # it is not inert; it is merged underneath
 
 
+def test_the_mcp_entry_says_only_what_is_true(tree: Tree) -> None:
+    """ "declaring any makes the set strict" sat beside the key while nothing backed it up.
+
+    Both halves are checked here: the sentence, and the behaviour it claims. The agent's declared
+    set is what an ``mcp_servers`` entry is judged against, because both adapters merge that block
+    UNDER these servers — so a name the agent declares passes and a name it does not is refused.
+    """
+    from rayspec.policy.controls import AGENT_CONTROLS
+
+    why = AGENT_CONTROLS["mcp"].why
+    assert "strict" not in why.lower()
+    assert "mcp_servers" in why and "UNDER" in why
+
+    fields = "access: full\nmcp: {docs: {command: docs-mcp}}\n"
+    _, declared = validated(
+        tree,
+        claude_wf("mcp_servers:\n  docs: {type: stdio, command: d}\n", fields=fields),
+        name="a",
+    )
+    assert declared.ok, declared.errors
+    _, added = validated(
+        tree,
+        claude_wf("mcp_servers:\n  evil: {type: stdio, command: e}\n", fields=fields),
+        name="b",
+    )
+    assert any("mcp_servers.evil" in message for message in added.errors), added.errors
+
+
 # -- every classified agent control really fires ---------------------------------------------------
 
 
@@ -246,6 +274,9 @@ def test_a_control_never_blocks_the_keys_rayspec_has_reasoned_about(tree: Tree, 
 
 POLICY_SAMPLES: dict[str, str] = {
     "access": "access:\n  max: read-only\n",
+    "budget": "budget:\n  per_day: 20.0\n",
+    "max_concurrent_runs": "max_concurrent_runs:\n  claude: 1\n",
+    "max_consecutive_failures": "max_consecutive_failures: 3\n",
     "mcp": "mcp:\n  allow_servers: [github]\n",
     "models": "models:\n  deny: ['*opus*']\n",
     "providers": "providers:\n  allow: [claude]\n",

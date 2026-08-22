@@ -78,10 +78,43 @@ UNRESTRICTED_ACCESS: str = ACCESS_ORDER[-1]
 #: way — so the carve-out for "nothing to bypass" has to be asked for.
 UNRESTRICTED_ISOLATION: str = "none"
 
-#: ``(spelled key, value, tags)`` — one restriction a field currently imposes.
-Imposed = tuple[str, str, frozenset[str]]
-
 S = TypeVar("S")
+
+
+@dataclass(frozen=True, slots=True)
+class ServerOpinion:
+    """What ONE control says about which MCP servers the run may reach.
+
+    A guard must never ask a single source whether a server is allowed — that is how an arbitrary
+    stdio server walked past an agent's own ``mcp:`` set, its ``tools.deny: [mcp]``, its
+    ``network: off`` and its ``access: read-only`` while a policy file was the only place being
+    consulted. So each control states its own opinion here and :class:`ServerControls` folds them;
+    the guard sees the fold and nothing else.
+
+    ``admits`` is the set of names this control positively names (``None`` = it names none, which
+    is not the same as naming an empty set: ``mcp.allow_servers: []`` admits nothing). ``denies``
+    are the names it refuses outright and ``denies_all`` refuses every one of them.
+    """
+
+    admits: frozenset[str] | None = None
+    denies: frozenset[str] = frozenset()
+    denies_all: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Imposed:
+    """One restriction a field currently imposes: how it is spelled, its value, its kinds.
+
+    ``servers`` is the optional half — what this restriction says about the MCP servers the run
+    may reach. It lives on the restriction rather than in the fold so a new control that bounds
+    the server set says so where it is classified, instead of the fold growing a special case per
+    spelling (which is the enumeration this package exists to avoid).
+    """
+
+    key: str
+    value: str
+    tags: frozenset[str]
+    servers: ServerOpinion | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +124,7 @@ class Control:
     key: str
     tags: frozenset[str]
     sources: tuple[PolicySource, ...]
+    servers: ServerOpinion | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +157,20 @@ class Carried:
     why: str
 
 
+def tool_entry_servers(entries: Iterable[str], *, allow_list: bool) -> ServerOpinion:
+    """What one ``tools:`` list says about the MCP servers the run may reach.
+
+    ``deny: [mcp]`` refuses every server, ``deny: [mcp:github]`` refuses that one. A non-empty
+    ``allow`` list means "nothing else", so it admits exactly the servers it names — and admits
+    none at all when it names no MCP entry, which is the honest reading of "nothing else".
+    """
+    servers = {entry[4:].split("/", 1)[0] for entry in entries if entry.startswith("mcp:")}
+    servers.discard("")
+    if allow_list:
+        return ServerOpinion(admits=frozenset(servers) if "mcp" not in entries else None)
+    return ServerOpinion(denies=frozenset(servers), denies_all="mcp" in entries)
+
+
 def tool_entry_tags(entries: Iterable[str]) -> frozenset[str]:
     """Which kinds of restriction a list of tool entries covers.
 
@@ -146,7 +194,7 @@ def tool_entry_tags(entries: Iterable[str]) -> frozenset[str]:
 def _access(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if agent.access == UNRESTRICTED_ACCESS:
         return ()
-    return ((f"access: {agent.access}", agent.access, frozenset({"access"})),)
+    return (Imposed(f"access: {agent.access}", agent.access, frozenset({"access"})),)
 
 
 def _tools(agent: ResolvedAgent) -> tuple[Imposed, ...]:
@@ -154,14 +202,21 @@ def _tools(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     for name in ("deny", "allow"):
         entries = tuple(getattr(agent.tools, name))
         if entries:
-            out.append((f"tools.{name}", ", ".join(entries), tool_entry_tags(entries)))
+            out.append(
+                Imposed(
+                    f"tools.{name}",
+                    ", ".join(entries),
+                    tool_entry_tags(entries),
+                    tool_entry_servers(entries, allow_list=name == "allow"),
+                )
+            )
     return tuple(out)
 
 
 def _network(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if agent.network != "off":
         return ()
-    return (("network: off", "off", frozenset({"network", "tools"})),)
+    return (Imposed("network: off", "off", frozenset({"network", "tools"})),)
 
 
 def _commands(agent: ResolvedAgent) -> tuple[Imposed, ...]:
@@ -172,7 +227,9 @@ def _commands(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     for name in ("deny", "allow"):
         entries = tuple(getattr(commands, name))
         if entries:
-            out.append((f"commands.{name}", ", ".join(entries), frozenset({"commands", "tools"})))
+            out.append(
+                Imposed(f"commands.{name}", ", ".join(entries), frozenset({"commands", "tools"}))
+            )
     return tuple(out)
 
 
@@ -180,25 +237,34 @@ def _mcp(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if not agent.mcp:
         return ()
     servers = ", ".join(sorted(agent.mcp))
-    return (("mcp", servers, frozenset({"mcp"})),)
+    return (
+        Imposed(
+            "mcp",
+            servers,
+            frozenset({"mcp"}),
+            ServerOpinion(admits=frozenset(agent.mcp)),
+        ),
+    )
 
 
 def _max_turns(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if agent.max_turns is None:
         return ()
-    return ((f"max_turns: {agent.max_turns}", str(agent.max_turns), frozenset({"spend"})),)
+    return (Imposed(f"max_turns: {agent.max_turns}", str(agent.max_turns), frozenset({"spend"})),)
 
 
 def _budget_usd(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if agent.budget_usd is None:
         return ()
-    return ((f"budget_usd: {agent.budget_usd}", str(agent.budget_usd), frozenset({"spend"})),)
+    return (
+        Imposed(f"budget_usd: {agent.budget_usd}", str(agent.budget_usd), frozenset({"spend"})),
+    )
 
 
 def _on_denial(agent: ResolvedAgent) -> tuple[Imposed, ...]:
     if agent.on_denial != "fail":
         return ()
-    return (("on_denial: fail", "fail", frozenset({"tools"})),)
+    return (Imposed("on_denial: fail", "fail", frozenset({"tools"})),)
 
 
 #: Every SECURITY-SHAPED field of the agent schema: setting it constrains the agent, so it is a
@@ -231,8 +297,9 @@ AGENT_CONTROLS: Mapping[str, Restriction[ResolvedAgent]] = {
     ),
     "mcp": Restriction(
         why=(
-            "the MCP servers the run may reach; declaring any makes the set strict, and it is "
-            "the set mcp.allow_servers and the mcp_servers guard are checked against"
+            "the servers the run may reach, as the workflow declares them — the set an "
+            "mcp_servers entry in provider_options is checked against, because both adapters "
+            "merge that block UNDER these"
         ),
         tags=frozenset({"mcp"}),
         imposed=_mcp,
@@ -312,13 +379,16 @@ def agent_controls(agent: ResolvedAgent) -> tuple[Control, ...]:
     out: list[Control] = []
     for name in sorted(AGENT_CONTROLS):
         rule = AGENT_CONTROLS[name]
-        for key, value, tags in rule.imposed(agent):
+        for imposed in rule.imposed(agent):
             where = agent.location(name) or agent.field_path(name)
             out.append(
                 Control(
-                    key=key,
-                    tags=tags,
-                    sources=(PolicySource(layer="workflow", label=where, line=None, value=value),),
+                    key=imposed.key,
+                    tags=imposed.tags,
+                    sources=(
+                        PolicySource(layer="workflow", label=where, line=None, value=imposed.value),
+                    ),
+                    servers=imposed.servers,
                 )
             )
     return tuple(out)
@@ -335,7 +405,7 @@ def _cap(name: str, unit: str = "") -> Callable[[Defaults], tuple[Imposed, ...]]
         if value is None:
             return ()
         text = f"{value}{unit}"
-        return ((f"defaults.{name}: {text}", text, frozenset({"spend"})),)
+        return (Imposed(f"defaults.{name}: {text}", text, frozenset({"spend"})),)
 
     return imposed
 
@@ -389,7 +459,7 @@ def _isolation(workflow: Workflow) -> tuple[Imposed, ...]:
     if workflow.isolation == UNRESTRICTED_ISOLATION:
         return ()
     return (
-        (
+        Imposed(
             f"isolation: {workflow.isolation}",
             workflow.isolation,
             frozenset({"workspace"}),
@@ -418,7 +488,7 @@ def inputs_imposed(inputs: Mapping[str, Any]) -> tuple[Imposed, ...]:
     names = sorted(name for name, spec in inputs.items() if getattr(spec, "secret", False))
     if not names:
         return ()
-    return (("inputs.secret", ", ".join(names), frozenset({"secrets"})),)
+    return (Imposed("inputs.secret", ", ".join(names), frozenset({"secrets"})),)
 
 
 #: Every field of the WORKFLOW document that constrains the run. ``defaults`` and ``inputs``
@@ -490,12 +560,15 @@ def workflow_controls(workflow: Workflow) -> tuple[Control, ...]:
     """Every control the workflow DOCUMENT imposes on every agent it runs."""
     out: list[Control] = []
     for name in sorted(WORKFLOW_CONTROLS):
-        for key, value, tags in WORKFLOW_CONTROLS[name].imposed(workflow):
+        for imposed in WORKFLOW_CONTROLS[name].imposed(workflow):
             out.append(
                 Control(
-                    key=key,
-                    tags=tags,
-                    sources=(PolicySource(layer="workflow", label=name, line=None, value=value),),
+                    key=imposed.key,
+                    tags=imposed.tags,
+                    sources=(
+                        PolicySource(layer="workflow", label=name, line=None, value=imposed.value),
+                    ),
+                    servers=imposed.servers,
                 )
             )
     return tuple(out)
@@ -508,7 +581,7 @@ def _step_timeout(step: StepModel) -> tuple[Imposed, ...]:
     timeout = step.timeout
     if timeout is None:
         return ()
-    return ((f"timeout: {timeout}s", f"{timeout}s", frozenset({"spend"})),)
+    return (Imposed(f"timeout: {timeout}s", f"{timeout}s", frozenset({"spend"})),)
 
 
 #: Every field of a STEP that constrains the run. A step's restriction governs the agent of that
@@ -634,32 +707,38 @@ def step_controls(resolved: ResolvedWorkflow) -> dict[str, tuple[Control, ...]]:
     for path, step in resolved.all_steps():
         location = resolved.step_locations.get(path)
         for name in sorted(STEP_CONTROLS):
-            for key, value, tags in STEP_CONTROLS[name].imposed(step):
+            for imposed in STEP_CONTROLS[name].imposed(step):
                 found = location.location(name) if location is not None else None
                 where = found or f"{path}.{name}"
                 add(
                     _agents_under(resolved, path),
                     Control(
-                        key=f"steps.{path}.{key}",
-                        tags=tags,
+                        key=f"steps.{path}.{imposed.key}",
+                        tags=imposed.tags,
                         sources=(
-                            PolicySource(layer="workflow", label=where, line=None, value=value),
+                            PolicySource(
+                                layer="workflow", label=where, line=None, value=imposed.value
+                            ),
                         ),
+                        servers=imposed.servers,
                     ),
                 )
     for path, body in resolved.includes.items():
-        imposed = (*defaults_imposed(body.defaults), *inputs_imposed(body.inputs))
-        for key, value, tags in imposed:
+        for imposed in (*defaults_imposed(body.defaults), *inputs_imposed(body.inputs)):
             add(
                 _agents_under(resolved, path),
                 Control(
-                    key=f"{path}: {key}",
-                    tags=tags,
+                    key=f"{path}: {imposed.key}",
+                    tags=imposed.tags,
                     sources=(
                         PolicySource(
-                            layer="workflow", label=body.workflow_name, line=None, value=value
+                            layer="workflow",
+                            label=body.workflow_name,
+                            line=None,
+                            value=imposed.value,
                         ),
                     ),
+                    servers=imposed.servers,
                 ),
             )
     return {key: tuple(controls) for key, controls in out.items()}
@@ -680,6 +759,12 @@ POLICY_CONTROL_TAGS: Mapping[str, frozenset[str]] = {
     "workspace.protected_paths": frozenset({"workspace"}),
     "workspace.max_changed_files": frozenset({"workspace"}),
     "workspace.max_changed_lines": frozenset({"workspace"}),
+    "budget.per_run": frozenset({"spend"}),
+    "budget.per_day": frozenset({"spend"}),
+    "budget.per_month": frozenset({"spend"}),
+    "budget.max_consecutive_failures": frozenset({"spend"}),
+    "max_consecutive_failures": frozenset({"spend"}),
+    "max_concurrent_runs": frozenset({"spend"}),
 }
 
 #: Policy keys whose kinds are read off the VALUE rather than the key: ``tools.deny: [web]`` is a
@@ -689,6 +774,21 @@ POLICY_TAGS_FROM_VALUE: frozenset[str] = frozenset({"tools.deny"})
 #: Policy keys that restrict nothing. Empty, and that is the point of the document: every key of
 #: ``policy.yaml`` is restrictive-only, so a key landing here would be a design change.
 POLICY_NON_CONTROLS: Mapping[str, str] = {}
+
+
+#: Policy keys that bound the SET of MCP servers, and how to read the bound off the document.
+#: ``mcp.allow_servers`` names the servers a run may reach; ``tools.deny`` refuses entries.
+#: Anything else has no opinion, which is not the same as admitting everything.
+POLICY_SERVER_KEYS: frozenset[str] = frozenset({"mcp.allow_servers", "tools.deny"})
+
+
+def _policy_servers(key: str, effective: EffectivePolicy) -> ServerOpinion | None:
+    """What one policy key says about the MCP servers the run may reach."""
+    if key == "mcp.allow_servers":
+        return ServerOpinion(admits=effective.allowed_mcp_servers() or frozenset())
+    if key == "tools.deny":
+        return tool_entry_servers(effective.denied_tools(), allow_list=False)
+    return None
 
 
 def policy_controls(effective: EffectivePolicy | None) -> tuple[Control, ...]:
@@ -702,7 +802,9 @@ def policy_controls(effective: EffectivePolicy | None) -> tuple[Control, ...]:
             tags = tool_entry_tags(denied)
         else:
             tags = POLICY_CONTROL_TAGS.get(key, CONTROL_TAGS)
-        out.append(Control(key=key, tags=tags, sources=sources))
+        out.append(
+            Control(key=key, tags=tags, sources=sources, servers=_policy_servers(key, effective))
+        )
     return tuple(out)
 
 
@@ -941,16 +1043,90 @@ def discover_external_controls(project_root: Path, *, home: Path | None = None) 
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ServerControls:
+    """ "May this MCP server be reached" — folded over EVERY control in force.
+
+    The fold is the whole point. ``mcp_servers`` in a ``provider_options`` block is merged into
+    the same server set the agent's neutral ``mcp:`` field feeds, so the question it raises is a
+    question about all of the controls at once. Asking one of them (the policy document) answered
+    "nothing denies this" for a run whose agent declared its own servers, denied the ``mcp`` tool
+    group, switched its network off and asked for read-only access.
+
+    The rule is the same inversion the key allow-list uses, applied to server names: a server is
+    permitted only when **some** control in force names it and **no** control refuses it. "Nobody
+    named this server" is the "nobody knows" case, and under a control that is a refusal.
+    """
+
+    admitted: tuple[tuple[frozenset[str], tuple[PolicySource, ...]], ...] = ()
+    denied: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
+    denied_all: tuple[PolicySource, ...] = ()
+
+    @property
+    def named(self) -> bool:
+        """Whether any control in force names MCP servers at all."""
+        return bool(self.admitted)
+
+    @property
+    def admits(self) -> frozenset[str]:
+        """The names every control that has an opinion admits — the intersection of them."""
+        if not self.admitted:
+            return frozenset()
+        allowed = self.admitted[0][0]
+        for names, _sources in self.admitted[1:]:
+            allowed &= names
+        return allowed
+
+    def sources_for(self, servers: Iterable[str]) -> tuple[PolicySource, ...]:
+        """The lines of every control that names servers but leaves ``servers`` out."""
+        wanted = frozenset(servers)
+        out: list[PolicySource] = []
+        for names, sources in self.admitted:
+            if not wanted <= names:
+                out.extend(sources)
+        return tuple(out)
+
+    def refusing(self, server: str) -> tuple[PolicySource, ...] | None:
+        """The controls refusing ``server``, or ``None`` when every one of them permits it.
+
+        An empty tuple is a refusal too: it means no control in force names any server, so there
+        is nothing to quote beyond the controls themselves — the caller names those.
+        """
+        if self.denied_all:
+            return self.denied_all
+        refused = self.denied.get(server)
+        if refused:
+            return refused
+        if not self.named:
+            return ()
+        if server in self.admits:
+            return None
+        return self.sources_for((server,))
+
+
 def merged_controls(
     controls: Sequence[Control],
-) -> tuple[dict[str, tuple[PolicySource, ...]], dict[str, frozenset[str]]]:
-    """``(key -> sources, key -> tags)`` for a list of controls, keys de-duplicated."""
+) -> tuple[dict[str, tuple[PolicySource, ...]], dict[str, frozenset[str]], ServerControls]:
+    """``(key -> sources, key -> tags, folded server view)`` for a list of controls."""
     sources: dict[str, tuple[PolicySource, ...]] = {}
     tags: dict[str, frozenset[str]] = {}
+    admitted: list[tuple[frozenset[str], tuple[PolicySource, ...]]] = []
+    denied: dict[str, tuple[PolicySource, ...]] = {}
+    denied_all: list[PolicySource] = []
     for control in controls:
         sources[control.key] = (*sources.get(control.key, ()), *control.sources)
         tags[control.key] = tags.get(control.key, frozenset()) | control.tags
-    return sources, tags
+        opinion = control.servers
+        if opinion is None:
+            continue
+        if opinion.admits is not None:
+            admitted.append((opinion.admits, control.sources))
+        for name in sorted(opinion.denies):
+            denied[name] = (*denied.get(name, ()), *control.sources)
+        if opinion.denies_all:
+            denied_all.extend(control.sources)
+    servers = ServerControls(admitted=tuple(admitted), denied=denied, denied_all=tuple(denied_all))
+    return sources, tags, servers
 
 
 __all__ = [
@@ -968,6 +1144,7 @@ __all__ = [
     "INPUT_NON_CONTROLS",
     "POLICY_CONTROL_TAGS",
     "POLICY_NON_CONTROLS",
+    "POLICY_SERVER_KEYS",
     "POLICY_TAGS_FROM_VALUE",
     "STEP_APPROVE_NON_CONTROLS",
     "STEP_CONTROLS",
@@ -984,7 +1161,10 @@ __all__ = [
     "Control",
     "ExternalControl",
     "ExternalControls",
+    "Imposed",
     "Restriction",
+    "ServerControls",
+    "ServerOpinion",
     "agent_controls",
     "defaults_imposed",
     "discover_external_controls",
@@ -992,6 +1172,7 @@ __all__ = [
     "merged_controls",
     "policy_controls",
     "step_controls",
+    "tool_entry_servers",
     "tool_entry_tags",
     "workflow_controls",
 ]
