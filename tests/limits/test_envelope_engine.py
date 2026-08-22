@@ -299,3 +299,53 @@ async def test_closing_the_breaker_says_the_spending_ceilings_are_not_waived(
     await run_with(project, envelope(project, "r1", **caps), resume="r1")
     messages = [e.data.get("message", "") for e in project.events(EventType.WARNING)]
     assert any("spending ceilings are not waived" in m for m in messages), messages
+
+
+async def test_a_ledger_that_cannot_be_written_warns_instead_of_crashing_the_run(
+    project: Project,
+) -> None:
+    """The read path is robust against every corruption shape; the WRITE path has to be too.
+
+    A directory where ``spend.json`` belongs (a bad restore, a `mkdir -p` of the wrong path)
+    is unreadable AND unwritable. Reading it already says so and starts from zero, and the
+    final settle already reports a write it could not make — but the per-step check did not,
+    so the very first commit came out of the CLI as an `IsADirectoryError` traceback.
+    """
+    project.workflow("t", CHAIN)
+    path = ledger_path(project.home / "projects" / "local-test")
+    path.mkdir(parents=True)
+
+    result = await run_with(project, envelope(project, "r1", per_day=10.0), run_id="r1")
+    assert result.status is RunStatus.SUCCEEDED, result.reason  # type: ignore[attr-defined]
+    messages = [e.data.get("message", "") for e in project.events(EventType.WARNING)]
+    unwritable = [m for m in messages if "could not be written" in m]
+    assert unwritable, messages
+    # said once, not once per step: a run of three steps commits three times
+    assert len(unwritable) == 1, unwritable
+    assert "not in the operator's totals" in unwritable[0]
+
+
+async def test_closing_the_breaker_on_an_unwritable_ledger_does_not_crash_either(
+    project: Project,
+) -> None:
+    """`approve` on a breaker pause resets the counter — another write, another crash site."""
+    project.workflow("t", CHAIN)
+    ledger = SpendLedger(ledger_path(project.home / "projects" / "local-test"))
+    ledger.record_outcome(failed=True)
+
+    caps = {"per_day": 10.0, "max_consecutive_failures": 1}
+    await run_with(project, envelope(project, "r1", **caps), run_id="r1")
+    record = project.record("r1")
+    assert record.pause is not None and record.pause.reason == "failures"
+    record.pause.decision = Decision(approved=True, comment="fine")
+    project.store.save(record)
+
+    path = ledger_path(project.home / "projects" / "local-test")
+    path.unlink()
+    path.mkdir()
+
+    project.sink.clear()
+    resumed = await run_with(project, envelope(project, "r1", **caps), resume="r1")
+    assert resumed.status is RunStatus.SUCCEEDED, resumed.reason  # type: ignore[attr-defined]
+    messages = [e.data.get("message", "") for e in project.events(EventType.WARNING)]
+    assert any("could not be written" in m for m in messages), messages

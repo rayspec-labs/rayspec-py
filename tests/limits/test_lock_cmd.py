@@ -267,3 +267,68 @@ def test_repo_checks_the_lockfile_of_the_repo_it_runs(
     )
     assert result.exit_code == 2, result.output
     assert "agents.reviewer" in result.output
+
+
+# -- one gate, one caller set ---------------------------------------------------------------
+
+
+#: Every command that carries the shared ``--locked`` gate and takes a workflow name. They must
+#: not merely all *have* the flag: what "no lockfile" means, and how the refusal is worded, has
+#: to be the same sentence, or the gate is three gates wearing one name.
+GATED = pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(("run", "t", "--dry-run"), id="run"),
+        pytest.param(("plan", "t"), id="plan"),
+        pytest.param(("validate", "t"), id="validate"),
+    ],
+)
+
+
+def flat(text: str) -> str:
+    """Console output with the terminal's line wrapping collapsed, so a long sentence can be
+    compared verbatim instead of by keyword."""
+    return " ".join(text.split())
+
+
+CI_DEFAULT_WARNING = (
+    "warning: no lockfile at .rayspec/rayspec.lock — nothing is pinned, so the CI default has "
+    "nothing to enforce. Run `rayspec lock` and commit the file, or pass --no-locked to say so "
+    "on purpose."
+)
+
+LOCKED_REFUSAL = "error: --locked: no lockfile at .rayspec/rayspec.lock"
+LOCKED_HINT = "hint: run `rayspec lock` and commit the file (it pins the model of every agent)"
+
+
+@GATED
+def test_every_gated_command_says_the_ci_default_has_nothing_to_enforce(
+    root: Path, argv: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`docs/cli.md` names `validate --locked` as the CI gate — the one command a project is
+    most likely to run there, and so the last place the warning may be missing."""
+    monkeypatch.setenv("CI", "true")
+    result = invoke(*argv, "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert CI_DEFAULT_WARNING in flat(result.output)
+
+
+@GATED
+def test_every_gated_command_refuses_a_missing_lockfile_in_the_same_words(
+    root: Path, argv: tuple[str, ...]
+) -> None:
+    result = invoke(*argv, "--locked", "--root", str(root))
+    assert result.exit_code == 2, result.output
+    assert LOCKED_REFUSAL in flat(result.output)
+    assert LOCKED_HINT in flat(result.output)
+
+
+@GATED
+def test_no_gated_command_warns_when_the_lockfile_is_there(
+    root: Path, argv: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert invoke("lock", "--root", str(root)).exit_code == 0
+    monkeypatch.setenv("CI", "true")
+    result = invoke(*argv, "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert "nothing is pinned" not in result.output

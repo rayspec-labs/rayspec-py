@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """`rayspec lock [names...] [--check] [--json] [--root]` — pin what every agent resolves to.
 
-Also the home of the shared ``--locked`` gate that ``run``, ``plan`` and ``validate`` apply
-(:data:`LockedOption`, :func:`enforce_lockfile`), so the three commands cannot drift apart in
-how they read the lockfile or phrase the refusal.
+Also the home of the shared ``--locked`` gate (:data:`LockedOption`,
+:func:`lockfile_in_force`, :func:`enforce_lockfile`) — one implementation with one caller set.
+``run``, ``plan``, ``validate``, ``resume``, ``approve`` and ``reject`` all come here to learn
+what "no lockfile" means, so they cannot drift apart in whether they refuse, whether they warn
+or how the refusal is worded. A command that reads the lockfile for itself is how they do.
 
 ``model: sonnet`` is a tier, ``@fast`` is an alias and an unset ``model:`` is the provider's
 default — all three mean "whatever this resolves to today". The lockfile records what that was;
@@ -43,6 +45,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.errors import RayspecError
 from rayspec.limits import (
     LockEntry,
+    Lockfile,
     LockfileError,
     check_locked,
     load_lockfile,
@@ -72,6 +75,55 @@ def locked_enabled(locked: bool | None, environ: Mapping[str, str] | None = None
     return locked_default(environ if environ is not None else os.environ)
 
 
+def lockfile_in_force(
+    ctx: Context,
+    *,
+    locked: bool | None,
+    project_root: Path | None = None,
+) -> Lockfile | None:
+    """The lockfile the ``--locked`` gate compares against, or ``None`` when nothing is enforced.
+
+    **The** gate: every command that offers ``--locked`` comes through here, so "no lockfile"
+    means one thing and the refusal is one sentence. A command that loads the lockfile itself
+    grows its own answer to both, and the two only look the same until one of them changes.
+
+    ``project_root`` is the project the workflow was LOADED from — with ``--repo`` that is the
+    prepared checkout, not the directory the command was typed in, and checking the caller's
+    lockfile there would validate a file that has nothing to do with the code being run.
+
+    A missing lockfile is refused when ``--locked`` was passed: the flag is a promise that the
+    models were pinned, and "there is nothing to check" must not read as "everything is fine".
+    The CI *default* is different — it may not break a project that never opted in, so with no
+    flag and no lockfile there is simply nothing to enforce. It does not do that in SILENCE,
+    though: the command says on stderr that nothing is pinned, because a CI log with no line
+    about the lockfile reads exactly like one where the lockfile was checked and matched.
+    """
+    if not locked_enabled(locked):
+        return None
+    root = project_root if project_root is not None else ctx.project_root
+    try:
+        lockfile = load_lockfile(root)
+    except LockfileError as exc:
+        fail(str(exc), hint=exc.hint)
+        return None
+    if lockfile is not None:
+        return lockfile
+    if locked:
+        fail(
+            f"--locked: no lockfile at {short_path(lockfile_path(root), ctx)}",
+            hint="run `rayspec lock` and commit the file (it pins the model of every agent)",
+        )
+    err_console().print(
+        Text(
+            f"warning: no lockfile at {short_path(lockfile_path(root), ctx)} — nothing is "
+            "pinned, so the CI default has nothing to enforce. Run `rayspec lock` and "
+            "commit the file, or pass --no-locked to say so on purpose.",
+            style="yellow",
+        )
+    )
+    return None
+
+
 def enforce_lockfile(
     ctx: Context,
     resolved: ResolvedWorkflow,
@@ -82,40 +134,12 @@ def enforce_lockfile(
 ) -> None:
     """Exit 2 when ``--locked`` is in force and the workflow does not match the lockfile.
 
-    ``project_root`` is the project the workflow was LOADED from — with ``--repo`` that is the
-    prepared checkout, not the directory the command was typed in, and checking the caller's
-    lockfile there would validate a file that has nothing to do with the code being run.
-
-    A missing lockfile is refused when ``--locked`` was passed: the flag is a promise that the
-    models were pinned, and "there is nothing to check" must not read as "everything is fine".
-    The CI *default* is different — it may not break a project that never opted in, so with no
-    flag and no lockfile there is simply nothing to enforce. It does not do that in SILENCE,
-    though: the run says on stderr that nothing is pinned, because a CI log with no line about
-    the lockfile reads exactly like one where the lockfile was checked and matched.
+    :func:`lockfile_in_force` is the gate itself — whether the lockfile is enforced, and what a
+    missing one means. This adds the refusal, which is what a command that is about to RUN the
+    workflow does with drift; ``validate`` calls the gate directly and lists drift as an error
+    row beside its other errors instead.
     """
-    if not locked_enabled(locked):
-        return
-    root = project_root if project_root is not None else ctx.project_root
-    try:
-        lockfile = load_lockfile(root)
-    except LockfileError as exc:
-        fail(str(exc), hint=exc.hint)
-        return
-    if lockfile is None:
-        if locked:
-            fail(
-                f"--locked: no lockfile at {short_path(lockfile_path(root), ctx)}",
-                hint="run `rayspec lock` and commit the file (it pins the model of every agent)",
-            )
-        err_console().print(
-            Text(
-                f"warning: no lockfile at {short_path(lockfile_path(root), ctx)} — nothing is "
-                "pinned, so the CI default has nothing to enforce. Run `rayspec lock` and "
-                "commit the file, or pass --no-locked to say so on purpose.",
-                style="yellow",
-            )
-        )
-        return
+    lockfile = lockfile_in_force(ctx, locked=locked, project_root=project_root)
     drifts = check_locked(resolved, lockfile)
     if not drifts:
         return
@@ -252,4 +276,10 @@ def register(app: typer.Typer) -> None:
             )
 
 
-__all__ = ["LockedOption", "enforce_lockfile", "locked_enabled", "register"]
+__all__ = [
+    "LockedOption",
+    "enforce_lockfile",
+    "locked_enabled",
+    "lockfile_in_force",
+    "register",
+]

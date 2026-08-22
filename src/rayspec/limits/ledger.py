@@ -96,11 +96,19 @@ class SpendLedger:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self.warnings: list[str] = []
+        #: what has already been said, so one fact is reported once. A commit normally repairs
+        #: the document it complained about, but a path that can never be WRITTEN (a directory
+        #: where the file belongs, a read-only mount) is re-read and re-reported on every step.
+        self._said: set[str] = set()
 
     # -- public surface -------------------------------------------------------------------
 
     def take_warnings(self) -> list[str]:
-        """Drain what the ledger has to say about itself (empty when all was well)."""
+        """Drain what the ledger has to say about itself (empty when all was well).
+
+        Each distinct problem is reported once per ledger — that is, once per run: an operator
+        reading twenty identical lines learns nothing the first one did not tell them.
+        """
         warnings, self.warnings = self.warnings, []
         return warnings
 
@@ -229,14 +237,21 @@ class SpendLedger:
             )
         broken = _repair(data)
         if broken:
-            self.warnings.append(
+            self._say(
                 f"the spend ledger {self.path} has unreadable values ({_names(broken)}) — "
                 "they start again from zero"
             )
         return data
 
+    def _say(self, message: str) -> None:
+        """Queue ``message`` unless this ledger has already said it."""
+        if message in self._said:
+            return
+        self._said.add(message)
+        self.warnings.append(message)
+
     def _fresh(self, why: str) -> dict[str, Any]:
-        self.warnings.append(
+        self._say(
             f"the spend ledger {self.path} {why} — the accrued day, month and failure "
             "totals start again from zero"
         )

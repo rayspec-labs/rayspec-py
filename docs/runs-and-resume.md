@@ -698,6 +698,10 @@ max_consecutive_failures: 3
   back on the next commit, so one bad byte cannot break every later `run`, `resume` and
   `approve`. Every one of those is reported as a `warning` event, on the console and in
   `rayspec show`, because an envelope that quietly went back to zero is worse than none.
+- Writing it cannot fail a command either. A path that can be read but never *written* — a
+  directory where `spend.json` belongs, a read-only mount, a full disk — costs the run its
+  accounting, not the run: one `warning` event says the ledger could not be written and that
+  this run's spend and outcome are not in the operator's totals, and the run finishes normally.
 
 ### Host run slots
 

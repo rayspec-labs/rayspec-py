@@ -452,7 +452,8 @@ class Runner:
         is not counted; a PAUSED run is not an outcome yet, so the failure streak is left alone.
 
         A ledger that cannot be written loses this run's spend — a smaller failure than refusing
-        to run at all, but never a silent one: the operator is told, because an envelope that
+        to run at all, but never a silent one: every place that writes it reports through
+        :meth:`~rayspec.engine.context.RunContext.ledger_unwritable`, because an envelope that
         quietly forgot a hundred dollars is worse than one that is simply absent.
         """
         envelope = self.envelope
@@ -465,10 +466,7 @@ class Runner:
             elif status is RunStatus.FAILED:
                 await to_thread.run_sync(_record_outcome, envelope, True)
         except OSError as exc:
-            await ctx.warn(
-                f"the spend ledger could not be written ({exc}) — this run's spend and its "
-                "outcome are not in the operator's totals"
-            )
+            await ctx.ledger_unwritable(exc)
         for problem in envelope.take_warnings():
             await ctx.warn(problem)
 
@@ -511,7 +509,12 @@ class Runner:
         run.pause = None
         if not approved or self.envelope is None:
             return
-        self.envelope.waive(close_breaker=breaker)
+        try:
+            # closing the breaker resets the counter, which is another write to the ledger:
+            # a path that cannot be written must not turn an approval into a traceback either
+            await to_thread.run_sync(_waive, self.envelope, breaker)
+        except OSError as exc:
+            await ctx.ledger_unwritable(exc)
         await ctx.warn(
             "the consecutive-failure breaker is closed again for this project "
             "(the spending ceilings are not waived)"
@@ -846,6 +849,11 @@ class Runner:
 def _record_outcome(envelope: Any, failed: bool) -> None:
     """``RunEnvelope.record_outcome`` as a positional call (``to_thread`` takes no kwargs)."""
     envelope.record_outcome(failed=failed)
+
+
+def _waive(envelope: Any, close_breaker: bool) -> None:
+    """``RunEnvelope.waive`` as a positional call (it writes the ledger, so it runs off-loop)."""
+    envelope.waive(close_breaker=close_breaker)
 
 
 def _on_other_host(run: RunRecord) -> bool:

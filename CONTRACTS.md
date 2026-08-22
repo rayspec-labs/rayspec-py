@@ -2967,12 +2967,18 @@ open, `max_concurrent_runs: {claude: 0}` means claude may not run on this host (
 in `LimitsPolicy.warnings`, which the CLI prints before the run — never in silence.
 
 **Lockfile.** `rayspec lock [names...] [--check] [--root] [--json]` (`cli/commands/lock.py`,
-which also owns the shared `LockedOption` + `enforce_lockfile(ctx, resolved, *, locked,
-project_root=None, json_mode=False)` that `run`, `plan`, `validate`, `resume`, `approve` and
-`reject` apply — the last three through `resume.guard_workflow_unchanged(ctx, record, *, force,
-locked=None)`, which re-scopes its context with `_runs_common.record_context(ctx, record)` and
-passes that project). `project_root` is the root the workflow was LOADED from: with `--repo`
-that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
+which also owns the shared `--locked` gate). `lockfile_in_force(ctx, *, locked,
+project_root=None) -> Lockfile | None` is THE gate — it decides whether the lockfile is
+enforced at all, refuses a MISSING one under the flag and prints the CI-default warning — and
+`enforce_lockfile(ctx, resolved, *, locked, project_root=None, json_mode=False)` is that plus
+the drift refusal (exit 2). `run`, `plan`, `resume`, `approve` and `reject` call
+`enforce_lockfile` — the last three through `resume.guard_workflow_unchanged(ctx, record, *,
+force, locked=None)`, which re-scopes its context with `_runs_common.record_context(ctx,
+record)` and passes that project; `validate` calls `lockfile_in_force` because it reports drift
+as an error ROW rather than a refusal. **No command reads the lockfile for the gate itself**:
+one implementation, one caller set, so what "no lockfile" means and how the refusal is worded
+cannot drift between them. `project_root` is the root the workflow was LOADED from: with
+`--repo` that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
 `--locked/--no-locked` defaults to `locked_default(os.environ)` (on under `CI`). An explicit
 `--locked` refuses a MISSING lockfile; the CI default does not — it enforces only a lockfile
 that exists, so setting `CI` cannot break a project that never opted in, but it prints one
@@ -3044,6 +3050,13 @@ one whose `version` is newer than `LEDGER_VERSION` are each replaced whole; a da
 dropped field by field and everything readable is kept. The repaired document is what the next
 commit writes, so the file is fixed rather than re-crashed. Every one of those is a
 `take_warnings()` line, which the engine emits as a `warning` event.
+WRITING may still raise `OSError` (the file is replaced whole, and a caller that swallowed a
+failed `os.replace` would report a total that is not on disk) — so **every engine call that
+writes it is guarded**: `RunContext.check_envelope`, `Runner._settle_envelope`,
+`Runner._refresh_envelope_pause` and the waiver an approval applies. All of them report through
+`RunContext.ledger_unwritable(exc)`, which emits ONE `warning` per run in one wording; the run
+goes on without the accounting, because losing this run's spend is a smaller failure than
+ending it on a traceback — a directory where `spend.json` belongs used to do exactly that.
 
 Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, reason, call_id)`
 + `AgentResult.denials: tuple[Denial, ...] = ()`; `store/model.DenialInfo(tool, reason, call_id)`

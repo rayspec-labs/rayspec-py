@@ -162,7 +162,10 @@ errors. A name that is neither a discovered workflow nor a file is `error: unkno
 `rayspec init` hint (exit 0). `--allow-unsupported` turns capability mismatches into warnings.
 `--locked` / `--no-locked` additionally checks each workflow against
 [`.rayspec/rayspec.lock`](#rayspec-lock); a drifted agent is an **error** here, not a warning
-(on by default under `CI`).
+(on by default under `CI`). Whether the lockfile is enforced, what a *missing* one means and how
+that reads is the same gate `run`, `plan`, `resume`, `approve` and `reject` apply — same refusal
+under the flag, same one `warning:` line on stderr under the `CI` default. `validate --locked` is
+the command a CI job is likeliest to run, so it is the last one that may answer differently.
 Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
 ~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
 found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
