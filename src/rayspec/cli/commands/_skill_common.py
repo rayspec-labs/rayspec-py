@@ -19,7 +19,7 @@ from rayspec.skill import InstalledFile
 def print_install_result(results: list[InstalledFile], target: Path, *, label: str) -> None:
     """Print one line per file (``created`` / ``overwrote`` / ``exists … skipped``) + a summary."""
     out = console()
-    shown_root = target.parent.parent.parent  # <root>/.claude/skills/rayspec -> <root>
+    shown_root = target.parent.parent.parent  # <root>/.claude/skills/<name> -> <root>
     for item in results:
         try:
             rel = item.path.relative_to(shown_root).as_posix()
@@ -45,7 +45,7 @@ def session_hint(directory: Path, *, global_install: bool) -> str:
     """The one-line "open a fresh session" hint printed after an install."""
     where = "any directory" if global_install else str(directory)
     return (
-        f"open a fresh Claude Code session in {where} — the rayspec skill loads automatically "
+        f"open a fresh Claude Code session in {where} — the rayspec skills load automatically "
         "(rayspec skill show)"
     )
 

@@ -23,6 +23,7 @@ from rayspec.cli.commands.init import (
     scaffold,
 )
 from rayspec.loader import load_workflow, validate_workflow
+from rayspec.skill import SKILLS, project_skill_dir
 
 EXPECTED = {
     ".rayspec/workflows/example.yaml",
@@ -249,23 +250,26 @@ def test_in_git_checkout_detects_dir_and_worktree_file(tmp_path: Path) -> None:
     assert in_git_checkout(wt) is True
 
 
-def test_init_also_installs_the_project_skill(target: Path, home: Path) -> None:
+def test_init_installs_both_project_skills(target: Path, home: Path) -> None:
     res = CliRunner().invoke(app, ["init", "--root", str(target)])
     assert res.exit_code == 0, res.output
-    skill = target / ".claude" / "skills" / "rayspec"
-    assert (skill / "SKILL.md").is_file()
-    assert (skill / "references" / "schema.md").is_file()
-    assert ".claude/skills/rayspec/SKILL.md" in res.output
+    dirs = [project_skill_dir(skill, target) for skill in SKILLS]
+    assert [d.name for d in dirs] == ["rayspec-workflows", "rayspec-cli"]
+    for one, directory in zip(SKILLS, dirs, strict=True):
+        assert (directory / "SKILL.md").is_file(), one.name
+        assert (directory / "references" / f"{one.references[0]}.md").is_file(), one.name
+        assert f".claude/skills/{one.name}/SKILL.md" in res.output, one.name
     assert "Claude Code" in res.output
     # idempotent: the second init keeps an edited skill
-    (skill / "SKILL.md").write_text("edited\n", encoding="utf-8")
+    for directory in dirs:
+        (directory / "SKILL.md").write_text("edited\n", encoding="utf-8")
     res = CliRunner().invoke(app, ["init", "--root", str(target)])
     assert res.exit_code == 0, res.output
-    assert (skill / "SKILL.md").read_text(encoding="utf-8") == "edited\n"
+    assert all(d.joinpath("SKILL.md").read_text(encoding="utf-8") == "edited\n" for d in dirs)
     assert "exists" in res.output
     res = CliRunner().invoke(app, ["init", "--root", str(target), "--force"])
     assert res.exit_code == 0, res.output
-    assert (skill / "SKILL.md").read_text(encoding="utf-8") != "edited\n"
+    assert not any(d.joinpath("SKILL.md").read_text(encoding="utf-8") == "edited\n" for d in dirs)
 
 
 def test_init_no_skill_opts_out(target: Path, home: Path) -> None:
@@ -276,7 +280,7 @@ def test_init_no_skill_opts_out(target: Path, home: Path) -> None:
     assert (target / ".rayspec" / "workflows" / "example.yaml").is_file()
 
 
-def test_init_nothing_written_warning_counts_the_skill_too(target: Path, home: Path) -> None:
+def test_init_nothing_written_warning_counts_both_skills_too(target: Path, home: Path) -> None:
     assert CliRunner().invoke(app, ["init", "--root", str(target)]).exit_code == 0
     res = CliRunner().invoke(app, ["init", "--root", str(target)])
     assert res.exit_code == 0, res.output
@@ -288,7 +292,8 @@ def test_init_nothing_written_warning_counts_the_skill_too(target: Path, home: P
     res = CliRunner().invoke(app, ["init", "--root", str(target)])
     assert res.exit_code == 0, res.output
     assert "nothing written" not in res.output
-    assert (target / ".claude" / "skills" / "rayspec" / "SKILL.md").is_file()
+    for one in SKILLS:
+        assert (project_skill_dir(one, target) / "SKILL.md").is_file(), one.name
 
 
 def test_init_skill_write_failure_names_the_scaffold_that_was_written(

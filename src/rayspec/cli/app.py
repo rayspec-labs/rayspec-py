@@ -32,11 +32,13 @@ def discovered_command_modules() -> list[str]:
     )
 
 
-def build_app() -> typer.Typer:
+def build_app(*, plugins: bool = True) -> typer.Typer:
     """A fresh app with the builtin commands registered, then the installed CLI plugins.
 
     Tests build their own app (a plugin installed after import time is only visible to a new
-    app); the module-level :data:`app` is the one the console script runs.
+    app); the module-level :data:`app` is the one the console script runs. ``plugins=False``
+    stops before :func:`register_cli_plugins`, so a caller can reason about the *builtin*
+    surface alone — what this repository ships and documents, whatever is installed next to it.
     """
     app = typer.Typer(
         name="rayspec",
@@ -56,7 +58,8 @@ def build_app() -> typer.Typer:
         register = getattr(module, "register", None)
         if callable(register):
             register(app)
-    register_cli_plugins(app)
+    if plugins:
+        register_cli_plugins(app)
     return app
 
 
