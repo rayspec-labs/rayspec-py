@@ -220,17 +220,43 @@ def test_the_release_workflow_names_the_step_that_is_still_manual() -> None:
     assert "yank" in text and "placeholder" in text
 
 
-def test_publishing_only_happens_for_a_tag() -> None:
-    """``workflow_dispatch`` is the rehearsal: everything except the irreversible half."""
-    workflow = load(RELEASE)
-    for name, spec in workflow["jobs"].items():
-        publishes = any(
+def publishing_jobs() -> list[tuple[str, dict[str, Any]]]:
+    """The two jobs nobody can take back: the PyPI upload and the GitHub release."""
+    return [
+        (name, spec)
+        for name, spec in load(RELEASE)["jobs"].items()
+        if any(
             "gh-action-pypi-publish" in str(step.get("uses", ""))
             or "gh release create" in str(step.get("run", ""))
             for step in spec["steps"]
         )
-        if publishes:
-            assert "refs/tags/v" in str(spec.get("if", "")), f"{name} runs without a tag"
+    ]
+
+
+def test_publishing_only_happens_for_a_pushed_tag() -> None:
+    """``workflow_dispatch`` is the rehearsal: everything except the irreversible half.
+
+    A dispatch can name a tag (``gh workflow run release.yml --ref v0.9.0``), so a gate that
+    only reads ``github.ref`` is a gate the person dispatching can step around.
+    """
+    jobs = publishing_jobs()
+    assert jobs, "nothing in this workflow publishes"
+    for name, spec in jobs:
+        gate = str(spec.get("if", ""))
+        assert "refs/tags/v" in gate, f"{name} runs without a tag"
+        assert "event_name" in gate and "push" in gate, f"{name} publishes on a dispatch: {gate}"
+
+
+def test_a_prerelease_is_published_as_one() -> None:
+    """PyPI reads the version string; GitHub does not, so the flag has to be passed."""
+    [(_name, spec)] = [
+        (name, spec)
+        for name, spec in load(RELEASE)["jobs"].items()
+        if any("gh release create" in str(step.get("run", "")) for step in spec["steps"])
+    ]
+    [step] = [s for s in spec["steps"] if "gh release create" in str(s.get("run", ""))]
+    assert "--prerelease" in step["run"], "a release candidate would become the latest release"
+    assert "prerelease" in str(step.get("env", {})), "the flag is not derived from the version"
 
 
 def test_the_version_guard_accepts_a_matching_tag_and_refuses_anything_else(
@@ -242,11 +268,11 @@ def test_the_version_guard_accepts_a_matching_tag_and_refuses_anything_else(
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "2.3.4"\n', "utf-8")
     outputs = tmp_path / "outputs.txt"
 
-    def guard(ref: str, event: str = "push") -> subprocess.CompletedProcess[str]:
+    def guard(ref: str, ref_type: str = "tag") -> subprocess.CompletedProcess[str]:
         env = {
             **os.environ,
             "REF_NAME": ref,
-            "EVENT_NAME": event,
+            "REF_TYPE": ref_type,
             "GITHUB_OUTPUT": str(outputs),
         }
         return subprocess.run(
@@ -261,8 +287,40 @@ def test_the_version_guard_accepts_a_matching_tag_and_refuses_anything_else(
     assert bad.returncode != 0
     assert "2.3.4" in bad.stdout + bad.stderr and "2.3.5" in bad.stdout + bad.stderr
 
-    rehearsal = guard("main", event="workflow_dispatch")
-    assert rehearsal.returncode == 0, "a rehearsal has no tag to agree with"
+    rehearsal = guard("main", ref_type="branch")
+    assert rehearsal.returncode == 0, "a rehearsal off a branch has no tag to agree with"
+
+    # A dispatch can be pointed at a tag, and then the tag still has to describe the build.
+    dispatched = guard("v2.3.5")
+    assert dispatched.returncode != 0, "a rehearsal on a mismatched tag is not a rehearsal"
+
+
+def test_the_version_guard_says_whether_the_version_is_a_prerelease(tmp_path: Path) -> None:
+    """`gh release create` has no idea that ``1.0.0rc1`` is not the latest release."""
+    script = tmp_path / "guard.py"
+    script.write_text(heredoc(step_with_id(load(RELEASE), "version")["run"], "PY"), "utf-8")
+
+    def outputs_for(version: str) -> str:
+        (tmp_path / "pyproject.toml").write_text(
+            f'[project]\nname = "x"\nversion = "{version}"\n', "utf-8"
+        )
+        out = tmp_path / f"outputs-{version}.txt"
+        env = {
+            **os.environ,
+            "REF_NAME": f"v{version}",
+            "REF_TYPE": "tag",
+            "GITHUB_OUTPUT": str(out),
+        }
+        done = subprocess.run(
+            [sys.executable, str(script)], cwd=tmp_path, env=env, capture_output=True, text=True
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+        return out.read_text(encoding="utf-8")
+
+    assert "prerelease=false" in outputs_for("2.3.4")
+    assert "prerelease=false" in outputs_for("2.3.4.post1")
+    for candidate in ("2.3.4rc1", "2.3.4b2", "2.3.4a1", "2.4.0.dev3"):
+        assert "prerelease=true" in outputs_for(candidate), candidate
 
 
 # ------------------------------------------------------------------ rayspec-dry-run.yml

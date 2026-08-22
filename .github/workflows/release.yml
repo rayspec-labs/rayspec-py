@@ -6,7 +6,8 @@
 # so a tag whose version nobody described stops the run before anything is published.
 #
 # `workflow_dispatch` is the rehearsal: it builds, checks, generates the bill of materials and
-# the notes, and stops short of the two irreversible steps.
+# the notes, and stops short of the two irreversible steps — whichever ref it is pointed at. A
+# dispatch can name a tag, and then the tag still has to agree with the packaged version.
 name: release
 
 on:
@@ -27,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -38,26 +40,36 @@ jobs:
         id: version
         env:
           REF_NAME: ${{ github.ref_name }}
-          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        # `uv run` rather than the runner's `python3`: `tomllib` needs 3.11, and the interpreter
+        # this repository controls is the one installed above.
         run: |
-          python3 - <<'PY'
+          uv run --no-project python - <<'PY'
           import os
           import pathlib
+          import re
           import sys
           import tomllib
+
+          #: A final release is digits, dots and at most a post-release. `1.1.0rc1`, `1.1.0b2` and
+          #: `1.1.0.dev3` are not, and GitHub — unlike PyPI — cannot tell from the name.
+          FINAL = re.compile(r"\d+(?:\.\d+)*(?:\.post\d+)?")
 
           meta = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
           version = meta["project"]["version"]
           ref = os.environ.get("REF_NAME", "")
-          if os.environ.get("EVENT_NAME") == "push":
+          # Any ref that is a tag, however the run was started: a `workflow_dispatch` can be
+          # pointed at one, and then the tag has to describe what would be built.
+          if os.environ.get("REF_TYPE") == "tag":
               tagged = ref.removeprefix("v")
               if tagged != version:
                   print(f"::error::tag {ref} publishes {tagged}, pyproject.toml says {version}")
                   sys.exit(1)
           else:
               print(f"::notice::rehearsal for {version} — nothing will be published")
+          prerelease = "false" if FINAL.fullmatch(version) else "true"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-              handle.write(f"version={version}\n")
+              handle.write(f"version={version}\nprerelease={prerelease}\n")
           PY
 
       - name: Build the sdist and the wheel
@@ -122,7 +134,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # The environment is where the PyPI publisher is bound and where a protection rule can ask a
     # person before the one step nobody can take back.
@@ -145,7 +157,7 @@ jobs:
   announce:
     name: Sign and publish the GitHub release
     needs: [build, publish]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release
@@ -168,15 +180,15 @@ jobs:
       - name: Create the release
         env:
           TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file provenance/release-notes.md \
-            --verify-tag \
-            dist/* provenance/*.cdx.json
+          args=(--title "$TAG" --notes-file provenance/release-notes.md --verify-tag)
+          # Without this a release candidate becomes the repository's "latest release".
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}" dist/* provenance/*.cdx.json
 
       - name: Say what is left for a person to do
         env:
