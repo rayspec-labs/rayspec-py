@@ -152,7 +152,8 @@ does not emit `secret` (a rayspec marker, not JSON Schema).
 from rayspec.loader import (
     discover_workflows,  # (project_root: Path, *, home: Path | None = None) -> list[WorkflowRef]
     discover_agents,  # (project_root, *, home=None) -> list[AgentFileRef(name, path, scope)]
-    find_project_root,  # (start: Path | None = None) -> Path  # nearest dir with .rayspec/ (then .git, then start)
+    find_project_root,  # (start: Path | None = None) -> Path  # nearest dir with .rayspec/ (then .git,
+    #  then `start` itself, resolved: no project, nothing created) — the only project-root discovery
     load_workflow,  # (ref_or_path_or_name, *, project_root, home=None, config=None,
     #  known_providers=None) -> ResolvedWorkflow   (raises LoaderError / SchemaError)
     validate_workflow,  # (resolved, *, capabilities_for=None, template_checker=None,
@@ -801,10 +802,12 @@ from rayspec.workspace import (
     #   when nobody holds it (non-blocking acquire first); False for missing/held/OS error
     WorkspaceError,  # RayspecError root of the layer; GitError(message, args, returncode, stderr)
     Project,  # frozen: root, slug, name, is_git
-    find_project_root,  # (cwd=None) -> Path   git toplevel, else cwd (resolved)
     project_slug,  # (root) -> "host/owner/repo" from origin, else "local/<dir>-<sha1(abspath)[:8]>"
     normalize_remote_url,  # (url) -> slug | None   git@h:o/r.git, ssh://[u@]h[:port]/o/r, https://h/o/r
     project_from_root, discover_project, project_dir,  # project_dir(home, slug) = <home>/projects/<slug>
+    #   discover_project(cwd=None) -> Project rooted at the GIT TOP LEVEL (else cwd, resolved) —
+    #   a different question from `loader.find_project_root` (the directory holding `.rayspec/`),
+    #   which is the ONE project-root discovery; there is no second `find_project_root`
     create_worktree,  # (project, *, home, workflow_name, run_id, base=None) -> Worktree(path, branch,
     #   base_branch, base_sha, head_sha); path <home>/projects/<slug>/worktrees/<wf>-<shortid>,
     #   branch rayspec/<wf>-<shortid> (shortid = last '-' segment of run_id; the full run id on a

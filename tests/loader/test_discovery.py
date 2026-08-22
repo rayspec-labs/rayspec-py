@@ -60,6 +60,22 @@ def test_discover_agents_project_overrides_user(tmp_path: Path):
     assert refs[0].path == root / ".rayspec/agents/reviewer.yaml"
 
 
+def test_find_project_root_is_the_only_one() -> None:
+    """One public project-root discovery, not two that answer differently.
+
+    A second ``find_project_root`` used to live in ``rayspec.workspace``: it returned the git
+    top level, so in a repository whose project sits at ``packages/foo/.rayspec`` the two
+    disagreed about what "the project" is. This scan keeps the duplicate from coming back.
+    """
+    src = Path(__file__).resolve().parents[2] / "src" / "rayspec"
+    defining = sorted(
+        path.relative_to(src).as_posix()
+        for path in src.rglob("*.py")
+        if "def find_project_root(" in path.read_text(encoding="utf-8")
+    )
+    assert defining == ["loader/discovery.py"]
+
+
 def test_find_project_root_walks_up(tmp_path: Path):
     root = tmp_path / "repo"
     (root / ".rayspec").mkdir(parents=True)

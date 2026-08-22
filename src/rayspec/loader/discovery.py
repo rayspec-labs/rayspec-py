@@ -41,9 +41,23 @@ def project_rayspec_dir(project_root: Path) -> Path:
 
 
 def find_project_root(start: Path | None = None) -> Path:
-    """Walk up from ``start`` (default cwd) to the first directory containing ``.rayspec/``.
+    """The project root for ``start`` (default: the process cwd), resolved.
 
-    Falls back to a directory containing ``.git``, then to ``start`` itself.
+    Walks up from ``start`` to the nearest directory containing a ``.rayspec/`` directory. If
+    there is none, the nearest enclosing git repository (a directory holding ``.git``, file or
+    directory, so worktrees and submodules count) is the root.
+
+    **When there is no project at all** — no ``.rayspec/`` and no git repository above ``start``
+    — the answer is ``start`` itself, resolved. Nothing is created and nothing is guessed: the
+    caller gets a directory it can read a config from and list an (empty) set of workflows in.
+    A command that must not treat an arbitrary directory as a project — ``rayspec runs``,
+    ``rayspec costs``, which would otherwise mint a project slug and a store for it — asks the
+    same question again with :func:`rayspec.cli.commands.runs.is_project_dir` and says so
+    instead.
+
+    This is the one project-root discovery. The git top level of a directory is a different
+    question with a different answer (``packages/foo/.rayspec`` in a monorepo) and is answered
+    by :func:`rayspec.workspace.git.toplevel`.
     """
     here = (Path.cwd() if start is None else start).resolve()
     git_root: Path | None = None
