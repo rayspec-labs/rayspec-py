@@ -241,7 +241,10 @@ def register(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--fail-fast",
-                help="Cancel running siblings on failure (kept from launch; only tightens).",
+                help=(
+                    "Cancel running siblings on failure, overriding the workflow's "
+                    "defaults.on_step_failure (kept from launch; only ever tightens)."
+                ),
             ),
         ] = False,
         locked: LockedOption = None,
