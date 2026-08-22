@@ -1,6 +1,10 @@
-"""``SKILL.md`` teaches what the docs teach: its frontmatter, the cheat-sheet workflows (they load,
-validate and dry-run), the stub snippet, the CLI table and the reference list are checked against
-the real loader, stub parser and Typer app."""
+"""Both ``SKILL.md`` files teach what the docs teach: their frontmatter, the cheat-sheet workflows
+(they load, validate and dry-run), the stub snippet, the CLI tables and the reference lists are
+checked against the real loader, stub parser and Typer app.
+
+Everything that can run over both skills is parametrised over :data:`rayspec.skill.SKILLS`;
+what is specific to one of them says so by name.
+"""
 
 from __future__ import annotations
 
@@ -20,79 +24,136 @@ from rayspec.loader import load_workflow, validate_workflow
 from rayspec.loader.yaml import load_yaml
 from rayspec.providers.stub import StubScript
 from rayspec.schema import parse_step
-from rayspec.skill import REFERENCE_NAMES, skill_dir
+from rayspec.skill import CLI_SKILL, SKILLS, WORKFLOWS_SKILL, Skill, skill_dir
 
-SKILL_MD = (skill_dir() / "SKILL.md").read_text(encoding="utf-8")
 _FENCE_RE = re.compile(r"```(?P<lang>[a-z]*)\n(?P<body>.*?)```", re.DOTALL)
 
+#: Every skill's hand-written page, by name.
+TEXT = {skill.name: (skill_dir(skill) / "SKILL.md").read_text(encoding="utf-8") for skill in SKILLS}
+WORKFLOWS_MD = TEXT[WORKFLOWS_SKILL.name]
+CLI_MD = TEXT[CLI_SKILL.name]
 
-def frontmatter() -> dict[str, object]:
-    assert SKILL_MD.startswith("---\n")
-    head = SKILL_MD.split("---\n", 2)[1]
+#: What each skill's page must be shaped like: the headings it owns and a size window. A section
+#: moving from one skill to the other has to be a deliberate edit here, not a silent drift.
+SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
+    WORKFLOWS_SKILL.name: (
+        (
+            "## Mental model",
+            "## The authoring loop",
+            "## YAML cheat-sheet",
+            "## Templating rules that bite",
+            "## Field index",
+            "## CLI quick reference",
+            "## Pitfalls and conventions",
+            "## References",
+        ),
+        250,
+        450,
+    ),
+    CLI_SKILL.name: (
+        (
+            "## Mental model",
+            "## CLI quick reference",
+            "## Stub file",
+            "## Providers, capabilities, cost",
+            "## Pitfalls and conventions",
+            "## References",
+        ),
+        90,
+        400,
+    ),
+}
+
+
+def frontmatter(text: str) -> dict[str, object]:
+    assert text.startswith("---\n")
+    head = text.split("---\n", 2)[1]
     data = yaml.safe_load(head)
     assert isinstance(data, dict)
     return data
 
 
-def yaml_blocks() -> list[str]:
-    return [m.group("body") for m in _FENCE_RE.finditer(SKILL_MD) if m.group("lang") == "yaml"]
+def yaml_blocks(text: str) -> list[str]:
+    return [m.group("body") for m in _FENCE_RE.finditer(text) if m.group("lang") == "yaml"]
 
 
 def workflow_blocks() -> dict[str, str]:
     found: dict[str, str] = {}
-    for body in yaml_blocks():
+    for body in yaml_blocks(WORKFLOWS_MD):
         if "rayspec: 1" in body and "- id:" in body:
             found[yaml.safe_load(body)["name"]] = body
     return found
 
 
-def test_every_yaml_fence_is_valid_yaml_and_every_step_in_it_parses() -> None:
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_every_yaml_fence_is_valid_yaml_and_every_step_in_it_parses(skill: Skill) -> None:
     """Not only the full workflows: every ```yaml fence (the secret snippet, the stub file …)
     must load with PyYAML *and* the strict loader, and every `- id:` step mapping under a
     `steps:` list must be a valid step — an agent copies these verbatim."""
-    blocks = yaml_blocks()
-    assert len(blocks) >= 4
+    blocks = yaml_blocks(TEXT[skill.name])
+    assert blocks, skill.name
     for index, body in enumerate(blocks):
         data = yaml.safe_load(body)
-        assert load_yaml(body, source=f"SKILL.md#{index}") == data
+        source = f"{skill.name}/SKILL.md#{index}"
+        assert load_yaml(body, source=source) == data
         steps = data.get("steps") if isinstance(data, dict) else None
         if isinstance(steps, list):
             for step in steps:
                 assert isinstance(step, dict) and "id" in step, (index, step)
-                parse_step(step, source=f"SKILL.md#{index}")
+                parse_step(step, source=source)
 
 
-def test_frontmatter_is_a_valid_claude_code_skill_header() -> None:
-    data = frontmatter()
-    assert data["name"] == "rayspec" == skill_dir().name
+def test_the_workflows_skill_still_carries_the_full_cheat_sheet() -> None:
+    assert len(yaml_blocks(WORKFLOWS_MD)) >= 3
+    assert set(workflow_blocks()) == {"fix_issue", "review_block"}
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_frontmatter_is_a_valid_claude_code_skill_header(skill: Skill) -> None:
+    data = frontmatter(TEXT[skill.name])
+    assert data["name"] == skill.name == skill_dir(skill).name
     assert re.fullmatch(r"[a-z][a-z0-9-]*", str(data["name"]))
     description = str(data["description"])
     assert 40 < len(description) <= 1024
-    for needle in ("rayspec", "workflow", "Claude Agent SDK", "Codex", ".rayspec/", "CLI"):
-        assert needle in description, needle
+    for needle in ("rayspec", "workflow", "Claude Agent SDK", "Codex", ".rayspec/"):
+        assert needle in description, (skill.name, needle)
+    # each description names the *other* skill, so an agent that loaded one knows the other exists
+    other = next(s for s in SKILLS if s is not skill)
+    assert other.name in description, (skill.name, other.name)
 
 
-def test_skill_md_is_focused() -> None:
-    lines = SKILL_MD.splitlines()
-    assert 250 <= len(lines) <= 450, len(lines)
-    for heading in (
-        "## Mental model",
-        "## The authoring loop",
-        "## YAML cheat-sheet",
-        "## Templating rules that bite",
-        "## CLI quick reference",
-        "## Providers, capabilities, cost",
-        "## Pitfalls and conventions",
-        "## References",
-    ):
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_skill_md_is_focused(skill: Skill) -> None:
+    headings, low, high = SHAPE[skill.name]
+    lines = TEXT[skill.name].splitlines()
+    assert low <= len(lines) <= high, len(lines)
+    for heading in headings:
         assert any(line.startswith(heading) for line in lines), heading
+    # and nothing else: a new section is a deliberate change to SHAPE
+    found = tuple(line.split("(")[0].strip() for line in lines if line.startswith("## "))
+    assert len(found) == len(headings), found
 
 
-def test_every_reference_listed_exists_and_every_reference_is_listed() -> None:
-    listed = set(re.findall(r"`references/([a-z-]+)\.md`", SKILL_MD))
-    assert listed == set(REFERENCE_NAMES), listed ^ set(REFERENCE_NAMES)
-    for name in REFERENCE_NAMES:
-        assert (skill_dir() / "references" / f"{name}.md").is_file()
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_every_reference_listed_exists_and_every_reference_is_listed(skill: Skill) -> None:
+    listed = set(re.findall(r"`references/([a-z-]+)\.md`", TEXT[skill.name]))
+    assert listed == set(skill.references), listed ^ set(skill.references)
+    for name in skill.references:
+        assert (skill_dir(skill) / "references" / f"{name}.md").is_file()
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_each_skill_points_at_the_other_one(skill: Skill) -> None:
+    """The cross-link decision: an agent reading one skill must be told the other exists and
+    when to load it."""
+    other = next(s for s in SKILLS if s is not skill)
+    assert other.name in TEXT[skill.name], skill.name
+    assert re.search(rf"[Ll]oad (?:it|the)[^\n]*`?{other.name}`?|`{other.name}`", TEXT[skill.name])
+
+
+def test_the_authoring_loop_hands_off_to_the_cli_skill() -> None:
+    assert "validate, plan and dry-run" in WORKFLOWS_MD
+    assert "`rayspec-cli` skill" in WORKFLOWS_MD
 
 
 def test_cheat_sheet_covers_every_step_kind() -> None:
@@ -213,8 +274,9 @@ def test_cheat_sheet_workflow_dry_runs_with_an_edited_stub_scaffold(tmp_path: Pa
 
 
 def test_stub_snippet_parses() -> None:
-    [block] = [b for b in yaml_blocks() if "prompt_regex" in b]
-    script = StubScript.from_yaml(block, source="SKILL.md")
+    """The stub file moved to the operating skill; it still has to parse with the real parser."""
+    [block] = [b for b in yaml_blocks(CLI_MD) if "prompt_regex" in b]
+    script = StubScript.from_yaml(block, source="rayspec-cli/SKILL.md")
     assert {e.key for e in script.steps} >= {
         "assess",
         "build[*]/implement",
@@ -224,25 +286,23 @@ def test_stub_snippet_parses() -> None:
     assert script.match
 
 
-def _leaf_commands() -> set[str]:
-    root: Any = get_command(app)
-    found: set[str] = set()
-
-    def walk(group: Any, prefix: str) -> None:
-        for name, cmd in group.commands.items():
-            if hasattr(cmd, "commands"):
-                walk(cmd, f"{prefix}{name} ")
-            else:
-                found.add(f"{prefix}{name}")
-
-    walk(root, "")
-    return found
+def cli_table_section(text: str) -> str:
+    """The ``## CLI quick reference`` section of one page, up to the next ``## `` heading."""
+    assert "## CLI quick reference" in text
+    rest = text.split("## CLI quick reference", 1)[1]
+    return rest.split("\n## ", 1)[0]
 
 
-def test_cli_table_names_only_real_commands_and_flags() -> None:
-    table = SKILL_MD.split("## CLI quick reference", 1)[1].split("**Stub file**", 1)[0]
-    rows = [line for line in table.splitlines() if line.startswith("| `rayspec ")]
-    assert len(rows) >= 14
+def table_rows(text: str) -> list[str]:
+    return [line for line in cli_table_section(text).splitlines() if line.startswith("| `rayspec ")]
+
+
+@pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
+def test_cli_table_names_only_real_commands_and_flags(skill: Skill) -> None:
+    """Soundness: everything a table names exists. (Completeness — that every command is in
+    exactly one of the tables — is ``test_skill_totality.py``.)"""
+    rows = table_rows(TEXT[skill.name])
+    assert rows, skill.name
     leaves = _leaf_commands()
     root: Any = get_command(app)
     for row in rows:
@@ -258,9 +318,8 @@ def test_cli_table_names_only_real_commands_and_flags() -> None:
             else:
                 assert f"{name}" in leaves
         # every --flag listed exists on EVERY command named in the cell (a row such as
-        # `rayspec workflows` · `agents` · `providers` lists flags all three accept); for
-        # groups, on one of the subcommands
-        # A `(… for `a`/`b`)` clause restricts the flags inside it to the named commands.
+        # `rayspec workflows` · `agents` lists flags both accept); for groups, on one of the
+        # subcommands. A `(… for `a`/`b`)` clause restricts the flags inside it to those commands.
         names = [re.match(r"`(?:rayspec )?([a-z]+)", c.strip()) for c in cmd_cell.split("·")]
         assert all(names), cmd_cell
         first_name = names[0].group(1) if names[0] else ""
@@ -296,10 +355,28 @@ def test_cli_table_names_only_real_commands_and_flags() -> None:
                 assert flag in known, (cmd_cell, name, flag)
 
 
-def test_exit_codes_and_env_ref_rule_are_stated() -> None:
-    assert "`0` succeeded · `1` failed · `2` usage/validation error · `3` paused" in SKILL_MD
-    assert "`130` interrupted" in SKILL_MD
-    assert "${RAYSPEC_V<n>}" in SKILL_MD
-    assert "RAYSPEC_INPUT_<NAME>" in SKILL_MD
-    assert "{{# ... #}}" in SKILL_MD
-    assert "{% raw %}" in SKILL_MD
+def _leaf_commands() -> set[str]:
+    root: Any = get_command(app)
+    found: set[str] = set()
+
+    def walk(group: Any, prefix: str) -> None:
+        for name, cmd in group.commands.items():
+            if hasattr(cmd, "commands"):
+                walk(cmd, f"{prefix}{name} ")
+            else:
+                found.add(f"{prefix}{name}")
+
+    walk(root, "")
+    return found
+
+
+def test_exit_codes_are_stated_by_the_operating_skill() -> None:
+    assert "`0` succeeded · `1` failed · `2` usage/validation error · `3` paused" in CLI_MD
+    assert "`130` interrupted" in CLI_MD
+
+
+def test_the_env_ref_rule_is_stated_by_the_authoring_skill() -> None:
+    assert "${RAYSPEC_V<n>}" in WORKFLOWS_MD
+    assert "RAYSPEC_INPUT_<NAME>" in WORKFLOWS_MD
+    assert "{{# ... #}}" in WORKFLOWS_MD
+    assert "{% raw %}" in WORKFLOWS_MD

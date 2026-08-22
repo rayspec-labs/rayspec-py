@@ -1,10 +1,10 @@
-"""Fresh-agent simulation: a workflow authored from ``SKILL.md`` alone (no repo access) passes
-``validate`` → ``plan`` → ``--dry-run --stubs-init`` → ``--dry-run --stubs`` first time.
+"""Fresh-agent simulation: a workflow authored from the installed skills alone (no repo access)
+passes ``validate`` → ``plan`` → ``--dry-run --stubs-init`` → ``--dry-run --stubs`` first time.
 
-The YAML below is what a coding agent wrote after reading only the installed skill: 5 root steps
+The YAML below is what a coding agent wrote after reading only the installed skills: 5 root steps
 (inputs incl. an enum, a Claude read-only agent with ``output_schema``, a ``loop:`` with
 ``until``/``has_signal``, a ``shell:`` step using the env-ref rule, an ``approve:`` gate,
-``outputs:``). It is the acceptance criterion of the skill and doubles as its regression test.
+``outputs:``). It is the acceptance criterion of the two skills and doubles as their regression test.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import yaml
 from typer.testing import CliRunner
 
 from rayspec.cli.app import app
-from rayspec.skill import install_skill
+from rayspec.skill import SKILLS, install_skill, project_skill_dir
 
 FRESH_AGENT_WORKFLOW = """\
 rayspec: 1
@@ -97,8 +97,9 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
     subprocess.run([*git, "add", "-A"], cwd=root, check=True)
     subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=root, check=True)
-    # the only rayspec material the agent had: the installed skill
-    install_skill(root / ".claude" / "skills" / "rayspec")
+    # the only rayspec material the agent had: both installed skills
+    for skill in SKILLS:
+        install_skill(skill, project_skill_dir(skill, root))
     return root, home
 
 
@@ -106,7 +107,8 @@ def test_fresh_agent_workflow_passes_the_authoring_loop_first_try(tmp_path: Path
     root, home = _project(tmp_path)
     env = {"RAYSPEC_HOME": str(home)}
     runner = CliRunner()
-    assert (root / ".claude" / "skills" / "rayspec" / "SKILL.md").is_file()
+    for skill in SKILLS:
+        assert (project_skill_dir(skill, root) / "SKILL.md").is_file()
 
     res = runner.invoke(app, ["validate", "--root", str(root)], env=env)
     assert res.exit_code == 0 and "OK" in res.stdout, res.output

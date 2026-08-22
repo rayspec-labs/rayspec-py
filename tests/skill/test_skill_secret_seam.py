@@ -1,4 +1,4 @@
-"""``SKILL.md`` teaches the secret-input seam: the snippet and the hand-written
+"""The **authoring** skill teaches the secret-input seam: its snippet and its hand-written
 paragraph must match the implementation.
 
 ``inputs.<name>.secret`` shipped in 1.0.0, so these tests always run. The skill text is
@@ -19,13 +19,13 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.schema import InputSpec
-from rayspec.skill import skill_dir
+from rayspec.skill import WORKFLOWS_SKILL, skill_dir
 
 assert "secret" in InputSpec.model_fields, (
     "inputs.<name>.secret shipped in 1.0.0 — this suite must never be skipped again"
 )
 
-SKILL_MD = (skill_dir() / "SKILL.md").read_text(encoding="utf-8")
+SKILL_MD = (skill_dir(WORKFLOWS_SKILL) / "SKILL.md").read_text(encoding="utf-8")
 _FENCE_RE = re.compile(r"```yaml\n(?P<body>.*?)```", re.DOTALL)
 PARAGRAPH = SKILL_MD.split("A secret value is delivered", 1)[1].split("\n\n", 1)[0]
 
