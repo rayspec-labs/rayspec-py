@@ -40,6 +40,19 @@ def test_format_helpers():
     assert fmt_cost(0.12, approx=True) == "~$0.12"
 
 
+def test_the_cost_slot_never_renders_a_token_count():
+    """``fmt_cost`` renders money, and only money.
+
+    Tokens are never shown in a cost slot, so the helper must not have an input that turns
+    into a token count: a caller that hands it the ``None`` of an unpriced step has lost the
+    cost, and that has to be loud rather than a plausible-looking ``0 tok`` where a price
+    belongs.
+    """
+    with pytest.raises(TypeError):
+        fmt_cost(None)  # type: ignore[arg-type]
+    assert fmt_cost(0.0, source="partial") == "≥$0.00"
+
+
 async def test_quiet_console_snapshot():
     console = make_console()
     sink = QuietConsoleSink(console)

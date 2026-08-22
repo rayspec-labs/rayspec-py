@@ -20,7 +20,7 @@ persists anything and never raises into the engine.
 
 The formatting helpers (``fmt_duration``/``fmt_tokens``/``fmt_cost``) are the shared ones:
 :mod:`rayspec.fmt` renders the duration, :mod:`rayspec.providers.pricing` the tokens and the
-cost. This module names them, it does not define how they look.
+cost marker. This module names them, it does not decide how they look.
 """
 
 from __future__ import annotations
@@ -47,8 +47,7 @@ from rayspec.engine.paths import StepPath
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.events.sinks._log import log
 from rayspec.fmt import format_duration
-from rayspec.providers.base import Usage
-from rayspec.providers.pricing import combine_cost_sources, format_cost, format_tokens
+from rayspec.providers.pricing import combine_cost_sources, cost_marker, format_tokens
 from rayspec.textsafe import safe_text
 
 _STATUS_STYLE: dict[str, tuple[str, str]] = {
@@ -76,10 +75,11 @@ fmt_tokens = format_tokens
 def fmt_cost(usd: float, *, approx: bool = False, source: str | None = None) -> str:
     """``$0.12`` — two decimals; ``~$0.12`` when ``approx`` or ``source == "table"`` (a price-table
     estimate); ``≥$0.12`` when ``source == "partial"`` (some steps have tokens but no price). The
-    rendering is :func:`rayspec.providers.pricing.format_cost` (the one formatting rule);
-    ``approx`` is this sink's way of saying "table" for a total it estimated itself."""
+    marker is :func:`rayspec.providers.pricing.cost_marker` (the one formatting rule);
+    ``approx`` is this sink's way of saying "table" for a total it estimated itself. The
+    argument is a cost, never a usage — tokens have their own slot."""
     estimated = approx and source != "partial"
-    return format_cost(usd, "table" if estimated else (source or "none"), Usage())
+    return f"{cost_marker('table' if estimated else source)}${usd:.2f}"
 
 
 def usage_total(usage: Any) -> int | None:

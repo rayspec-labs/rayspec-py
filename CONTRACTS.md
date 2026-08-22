@@ -710,8 +710,9 @@ from rayspec.events.sinks.console import fmt_duration, fmt_tokens, fmt_cost, usa
 # fmt_duration IS rayspec.fmt.format_duration and fmt_tokens IS providers.pricing.format_tokens
 # (names for this sink, not second implementations).
 # fmt_cost(usd, *, approx=False, source=None) -> "$0.12" | "~$0.12" (approx / source "table":
-# price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price);
-# rendered by providers.pricing.format_cost, so the marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
+# price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price); the
+# marker is providers.pricing.cost_marker (usd is a cost, never a usage: no input of this
+# helper renders as tokens). The quiet sink reads the OPTIONAL step.finished /
 # run.finished data key cost_source; when run.finished carries none the run line derives it from
 # the step.finished events seen (QuietConsoleSink.derived_cost_source()).
 # format_stream_warning(step, text) -> "⚠ <step>: <warning>": printed by QuietConsoleSink.
