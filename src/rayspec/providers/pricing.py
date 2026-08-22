@@ -122,6 +122,30 @@ class PriceTable:
         return cost_usd(usage, price)
 
 
+def price_table_of(mapping: Mapping[str, Any] | None) -> tuple[PriceTable, str | None]:
+    """``(table, the one line naming a section too malformed to read)`` — never raises.
+
+    The reason this is not a bare ``try``/``except`` at each call site is what the two call sites
+    did with it: both caught :class:`PricingConfigError`, dropped the table and said nothing. For
+    every provider that reports no cost of its own this table IS the cost, so a section rayspec
+    silently discards takes the operator's ``budget:`` envelope with it — the ceilings are then
+    compared against a figure that no longer exists, and a run that spent money looks free. That
+    is the failure mode this area exists to prevent, and :mod:`rayspec.limits.policy` already
+    answers it for a ceiling that cannot be parsed: drop it and NAME it, so an operator never
+    believes a guardrail is in force when it is not.
+
+    So the problem is returned rather than raised: the caller prints it beside the run's other
+    policy warnings. Nothing here writes to a console.
+    """
+    try:
+        return PriceTable.from_config(mapping), None
+    except PricingConfigError as exc:
+        return PriceTable(), (
+            f"{exc} — the pricing table is not applied, so a step whose provider reports no cost "
+            "of its own counts as $0, including against a policy budget: ceiling"
+        )
+
+
 def cost_usd(usage: Usage, price: Price) -> float:
     """USD cost of ``usage`` at ``price``.
 
@@ -196,4 +220,5 @@ __all__ = [
     "cost_usd",
     "format_cost",
     "format_tokens",
+    "price_table_of",
 ]

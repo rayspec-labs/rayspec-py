@@ -757,6 +757,16 @@ max_consecutive_failures: 3
   the run pauses again on the same ceiling.
 - A waived run is still **counted**: "this run may cost more" is not "this run costs nothing",
   and what it spends is in the day and month totals the next run is measured against.
+- **The prices the ceiling is measured in are part of the ceiling.** For a provider that reports
+  no cost of its own (Codex), the `pricing:` table in `config.yaml` *is* the figure a ceiling is
+  compared against — so a `pricing:` section too malformed to parse used to void the envelope
+  silently. It no longer can: the section is dropped, and `run`, `resume`, `approve` and `reject`
+  all print it beside the policy warnings before the first step
+  (`pricing.<model>: … — the pricing table is not applied, so a step whose provider reports no
+  cost of its own counts as $0, including against a policy budget: ceiling`). The run still
+  starts — an unreadable table is not a reason to refuse one — but nobody is left believing a
+  ceiling is in force when it is measuring nothing. This is the same rule as a ceiling that
+  cannot be parsed: dropped and named, never dropped in silence.
 - `resume`, `approve` and `reject` are subject to all of it, exactly like `run`: they start the
   same agents, so they take the same host run slot and are measured against the same envelope.
 - A `--dry-run` spends nothing and is never counted. A `--stubs` run of a workflow whose agents
