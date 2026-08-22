@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """`rayspec resume <run> [--force] [--yes] [--approve-class NAME] [--no-interactive] [--json]
-[--quiet]` — continue a run in-process through the engine's resume entry point.
+[--quiet] [--fail-fast]` — continue a run in-process through the engine's resume entry point.
 
 A paused run re-asks its pending gate on a TTY; without a TTY (or with ``--no-interactive``)
 the command points to ``rayspec approve|reject`` and exits 3 (still paused) unless ``--yes``
@@ -8,6 +8,12 @@ auto-approves. Before any of that the workflow is re-loaded and a changed hash i
 (exit 2, ``--force`` hint) — :func:`guard_workflow_unchanged` is the ONE guard every resume
 entry point (``resume``, ``approve``, ``reject``, ``run --resume``) applies first.
 Everything else (reuse cache, live-pid refusal) is the engine's.
+
+A gate this command answers — at the terminal or with ``--yes`` — is recorded against whoever
+ran **this** command, not against the run's actor. The run keeps naming whoever launched it
+(``run.actor`` is resolved once, at its first start), and a resume days later is a second person
+making a decision the first one never made. The identity is resolved at the gate, in the process
+that answers it: see :mod:`rayspec.engine.executors.approve`.
 """
 
 from __future__ import annotations
@@ -231,6 +237,13 @@ def register(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", help="Also show step starts.")] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        fail_fast: Annotated[
+            bool,
+            typer.Option(
+                "--fail-fast",
+                help="Cancel running siblings on failure (kept from launch; only tightens).",
+            ),
+        ] = False,
         locked: LockedOption = None,
         wait_slot: WaitSlotOption = None,
         root: RootOption = None,
@@ -238,7 +251,8 @@ def register(app: typer.Typer) -> None:
         """Resume a paused/failed/interrupted run (steps that succeeded are reused).
 
         Succeeded and cancelled runs are refused (exit 2) unless --force. Secret inputs must be
-        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused.
+        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused,
+        and so is a --fail-fast given at launch (--fail-fast here can only tighten it further).
         """
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
@@ -332,6 +346,7 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             wait_slot=wait_slot,
             approve_classes=approve_class or (),
+            fail_fast=fail_fast,
         )
         raise typer.Exit(code=code)
 

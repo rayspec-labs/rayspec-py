@@ -180,3 +180,61 @@ def test_an_explicit_env_mapping_is_taken_as_given(monkeypatch: pytest.MonkeyPat
     actor = resolve_actor(env={ACTOR_ENV: "scheduler@example.invalid"})
     assert actor.id == "scheduler@example.invalid"
     assert actor.source == "env"
+
+
+def _no_such_uid(_uid: int) -> object:
+    """``pwd.getpwuid`` on a host where this uid has no entry — a container's ordinary case."""
+    raise KeyError("getpwuid(): uid not found")
+
+
+def test_a_uid_without_an_account_entry_is_not_named_by_a_planted_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the account database is the first choice and it can simply be absent: a container running
+    # under a uid with no passwd entry is the ordinary case, not the exotic one. The fallback
+    # must go through `operator_env` like everything else here — `getpass.getuser` reads
+    # `os.environ` directly, which is where a `.env` a step wrote has already landed.
+    from rayspec.procenv import forget_env_file_values, note_env_file_values
+
+    pwd = pytest.importorskip("pwd", reason="the account database is POSIX-only")
+    monkeypatch.setattr(pwd, "getpwuid", _no_such_uid)
+    planted = {name: "planted@corp.invalid" for name in ("USER", "LOGNAME", "LNAME", "USERNAME")}
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    note_env_file_values(planted, origin="/home/.rayspec/.env")
+    try:
+        actor = resolve_actor()
+        assert actor.id != "planted@corp.invalid"
+        assert (actor.id, actor.source) == ("unknown", "unknown")
+    finally:
+        forget_env_file_values()
+
+
+def test_the_os_user_is_never_asked_of_getpass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # not "the resolver prefers the account database": `getpass.getuser` may not be on the path
+    # at all, because it is the one lookup here that bypasses `operator_env` by construction
+    import getpass
+
+    pwd = pytest.importorskip("pwd", reason="the account database is POSIX-only")
+    monkeypatch.setattr(pwd, "getpwuid", _no_such_uid)
+
+    def refuse() -> str:
+        raise AssertionError("the actor resolver read os.environ through getpass.getuser")
+
+    monkeypatch.setattr(getpass, "getuser", refuse)
+    for name in ("USER", "LOGNAME", "LNAME", "USERNAME"):
+        monkeypatch.delenv(name, raising=False)
+    assert resolve_actor().source == "unknown"
+
+
+def test_the_operators_own_user_still_answers_without_an_account_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # narrowing the source must not take away the case it exists for: `$USER` as the OPERATOR
+    # exported it is still a source the audited run cannot write
+    pwd = pytest.importorskip("pwd", reason="the account database is POSIX-only")
+    monkeypatch.setattr(pwd, "getpwuid", _no_such_uid)
+    monkeypatch.setenv("USER", "operator")
+    actor = resolve_actor()
+    assert actor.id == "operator"
+    assert actor.source == "os"

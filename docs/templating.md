@@ -145,6 +145,11 @@ All Jinja builtins (`default`, `length`, `join`, `tojson`, `lower`, `trim`, `rep
 
 `has_signal` is also a test: `{% if steps.review.output is has_signal('BUILD-CLEAN') %}`.
 
+`tojson` serialises a whole context root as well — `{{ inputs | tojson }}`, `{{ steps | tojson }}`
+— using the same conversion as `RAYSPEC_CONTEXT` (`steps/<path>/context.json`), so a script reads
+the identical shape whichever of the two it is handed. A reference to something that is not
+there still fails loudly rather than becoming `null`.
+
 Growth policy ([constitution.md](constitution.md)): a filter is added only if it is not a
 one-liner from builtins, is pure/total/deterministic and *shapes* rather than *judges* data.
 Anything else is a `python:` step.

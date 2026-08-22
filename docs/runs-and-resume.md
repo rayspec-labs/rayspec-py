@@ -52,6 +52,7 @@ runs/<run-id>/
   "inputs": {"target": ".", "strictness": "strict", "token": "<secret>"},   // a secret: true input is stored as "<secret>"
   "secret_inputs": ["token"],             // names of the secret: true inputs (their values are never persisted)
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
+  "fail_fast": false,                     // --fail-fast as given at launch; restored by every resume entry (a resume may tighten it, never loosen it)
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
   "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run: an exported
@@ -136,7 +137,7 @@ start, and never rewritten — a resume by somebody else leaves it naming whoeve
 | field | what it is |
 |---|---|
 | `id` | the identity itself |
-| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user), `unknown` |
+| `source` | where it came from: `env` (`RAYSPEC_ACTOR`), `os` (the operating-system user — see the row below for what that means exactly), `unknown` when nothing answered |
 | `ci` | the CI system detected from the environment (`github-actions`, `gitlab-ci`, `buildkite`, `circleci`, `azure-pipelines`, `jenkins`, `teamcity`, or the generic `ci`), else `null` |
 | `provider_accounts` | provider id → the account the environment **named** (`ANTHROPIC_ACCOUNT`, `OPENAI_ORG_ID`/`OPENAI_ORGANIZATION`) |
 | `declared_id` | a `RAYSPEC_ACTOR` a `.env` file asked for and did **not** get, kept as a claim; `null` normally |
@@ -155,10 +156,12 @@ the answer is not obvious for any of these:
 | source | trusted for an identity? | why |
 |---|---|---|
 | the process environment **as the operator exported it** | yes | it lives in the process that launches the run or answers the gate; a step is a child of that process and cannot write it |
-| the operating-system user | yes | read from the account database (POSIX `pwd`), not from `$USER` |
+| the operating-system user | yes | the account database (POSIX `pwd`) for this process's uid — a fact about the process that no environment can influence |
+| `$USER` / `$LOGNAME` / `$LNAME` / `$USERNAME`, **as the operator exported them** | yes, but only as a fallback | asked when the account database has no entry for the uid (a container started with `--user 1000:1000`), and read through the same subtraction as everything else — never with `getpass.getuser`, which reads them straight out of the live environment and ahead of the account database |
 | a `RAYSPEC_ACTOR` rayspec loaded from `$RAYSPEC_HOME/.env` | **no** | `$RAYSPEC_HOME` is exported into every step: `printf 'RAYSPEC_ACTOR=…' > "$RAYSPEC_HOME/.env"` is one line, and the file is applied by *every* later command |
 | a `RAYSPEC_ACTOR` rayspec loaded from `<project>/.rayspec/.env` | **no** | it is a file in the tree the run works in, applied by `run`/`resume`/`approve`/`reject` |
 | `git config user.email`, any scope | **no** | a run's steps execute as you, with your `$HOME` and inside the repository the worktree came from, so `git config [--global] user.email …` is one command in one step |
+| a `RAYSPEC_ACTOR` your **shell startup file** exports | yes — and this is the one gap, see [What this does not give you](#what-this-does-not-give-you) | by the time rayspec sees it, it is in the environment the operator handed over, and nothing can tell it from one the operator typed |
 
 A run's `shell:` steps and its agents execute as you (`workspace-write` is a permission mode of
 the agent, not an operating-system sandbox). So every "no" above is one line in one step away
@@ -211,6 +214,20 @@ none:
   later commands (a proxy URL, say). That is the same trust boundary the file always had — it is
   a file on your machine — but the identity rule does not fix it, and this build does not either.
   Keep an eye on it the way you would on `~/.bashrc`; `rayspec doctor` lists both files.
+- **The defence is per process, and a shell startup file is outside it.** A step runs as you, so
+  it can append `export RAYSPEC_ACTOR=someone-else` to `~/.zshrc`, `~/.bashrc` or `~/.profile`.
+  Nothing happens to the run that did it, or to any process already running: rayspec never reads
+  those files, and a variable that is not in a process cannot be read out of it. But your **next
+  shell** exports it, and from that moment the value really is in the environment you handed over
+  — indistinguishable, by construction, from you having typed it, and it will be recorded as
+  `source: env` on everything you run from that shell.
+
+  This is not a hole the identity rule can close, and pretending otherwise would be the third
+  guarantee this area described wider than it was built. Close it where it actually lives: run
+  workflows in a container or a sandbox that has no write access to your dotfiles, or review those
+  files the way you would review anything else that decides what your shell does. A quick check
+  after an unfamiliar workflow: `grep RAYSPEC_ACTOR ~/.zshrc ~/.bashrc ~/.profile`, and `rayspec
+  audit <run> --commands` shows what the run executed.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from
@@ -220,13 +237,28 @@ Every decision carries its own actor too, next to `by`:
 
 - `by` says which door the decision came through: `cli` (`rayspec approve`/`reject`), `tty` (the
   terminal prompt of the run itself), `--yes`, `dry-run`;
-- `actor` says whose hand it was. For a decision recorded by `rayspec approve`/`reject` it is
-  whoever ran that command — often not the person who launched the run. For a gate answered in the
-  run's own terminal it is the run's actor.
+- `actor` says whose hand it was. It is resolved **in the process that answers the gate, at the
+  moment it answers** — never copied from `run.json`. So it is whoever ran `rayspec approve`, or
+  whoever answered the terminal prompt, or whoever ran the `rayspec resume --yes` that waived it.
 
-`pause.decision` holds it while the run is paused, and the `run.decision` event in `events.jsonl`
-keeps it afterwards (the pause slot is cleared the moment the gate consumes the decision, the event
-log is not).
+That last one is why `actor` is not simply `run.actor`. The run's actor is resolved once, at the
+run's first start, and a resume never rewrites it — so a gate answered two days later by a second
+operator would otherwise be recorded as a decision by the person who launched the run.
+
+`pause.decision` holds the decision while the run is paused, and the `run.decision` event in
+`events.jsonl` keeps it afterwards (the pause slot is cleared the moment the gate consumes the
+decision, the event log is not). The `actor` inside `pause.decision` is **not** what the gate
+stamps on the decision: the run directory is yours, so any step running as you can write a
+decision into a paused run's `run.json` and put any name on it. A stored decision supplies the
+*answer*; the identity is asked for again in the process that consumes it. In the ordinary case
+those are the same process (`rayspec approve` records the decision and resumes in-process) and the
+two agree. When they do not, the ledger says so:
+
+```console
+warning: the decision found in the record for ok names 'ceo@corp.invalid'; a decision read back
+from run.json is an answer, not evidence of whose hand it was — anything running as you can write
+that file — so this gate is recorded as decided by 'you'
+```
 
 ### The local audit log
 
@@ -368,6 +400,12 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   before anything is written — exit 2 `run <id> was launched with --dry-run --stubs <path>; its
   recorded stubs file requires --dry-run (… would run for real)`, hint `pass --dry-run to resume
   it as a dry run (rayspec resume does so automatically), or switch the agents to provider: stub`;
+- a run launched with `--fail-fast` recorded that (`fail_fast`), and every entry restores it, so
+  the second half of a run uses the failure policy the first half did. `rayspec resume
+  --fail-fast` turns it on for a run launched without it (and is recorded in turn); the flag may
+  only ever *tighten* — omitting it never turns a recorded one off, and `approve`/`reject` need
+  no flag of their own. The workflow's own `defaults.on_step_failure` is in the file both halves
+  read and needs no such treatment;
 - the workflow hash must match; otherwise the resume is **refused** (exit 2, `pass --force`)
   unless `--force`, in which case a leaf whose `fingerprint` (rendered prompt/script + agent)
   changed is re-run with a warning and the rest is reused. Every entry point applies this guard
@@ -434,13 +472,27 @@ strictly* it is held. A workflow can name a class but cannot define one, so it c
 a rule an operator set — which is what makes it safe to leave a workflow running on a schedule
 that is also allowed to publish a release.
 
-**rayspec does not read an operator policy yet.** There is nowhere to load one from, so today
-naming a class records the intent, makes the gate addressable by `--approve-class`, and nothing
-more. Nothing pretends otherwise: `rayspec plan` and the gate itself warn
-(`steps.publish.approve.class: names approval class 'release', but no operator policy is in
-force, so the gate is not held`), and `rayspec plan --risk` reports the gate as `unheld-class`.
-The table below is what each rule does wherever the rules come from — the engine enforces
-them today — not a description of a file you can write.
+The classes are defined in the `approvals:` block of a [`policy.yaml`](policy.md#approval-classes)
+— the same three layers, discovered the same way, combined most-restrictive-wins:
+
+```yaml
+# .rayspec/policy.yaml
+approvals:
+  classes:
+    release:
+      allow_yes: false
+```
+
+Every command that can reach a gate reads them: `rayspec run`, `rayspec resume`, `rayspec
+approve` / `rayspec reject`, `rayspec test`, and `rayspec plan` / `plan --risk` before anything
+runs. A class **no** layer in force defines keeps the permissive default, and every one of those
+commands except `rayspec test` says so rather than letting the name pass for a lock
+(`steps.publish.approve.class: 'release' is not defined by the operator policy, so the gate is
+not held`, or `…but no operator policy is in force…` when there is no file at all); `plan --risk`
+reports such a gate as `unheld-class`. `rayspec test` enforces the rules and stays silent about
+an unknown class: the harness has no warning surface, and a passing case discards its run
+directory, so there is nowhere to put the notice. Validate the spelling with `rayspec plan
+--risk` rather than reading a green suite as proof the class is held.
 
 | Rule | What it forbids | What still works |
 |---|---|---|
@@ -474,8 +526,7 @@ and a gate nobody can reject is a gate nobody can get out of.
 release_check --approve-class chore` answers the tidy-up gates and still stops at the release
 one. It is repeatable, and it pre-approves nothing at all for a class whose rules say
 `allow_yes: false`. A name no gate in the workflow uses simply pre-approves nothing: the run
-pauses exactly as it would have. Until a policy can be loaded, no class is marked
-`allow_yes: false`, so `--approve-class` is today the only half of this feature with an effect.
+pauses exactly as it would have.
 
 `rayspec test` is governed by the same rules. A case is a dry run and a dry run approves gates,
 but a class held shut is not waived by the mode a gate is reached in — and with `--exec-shell` a
@@ -684,18 +735,31 @@ max_consecutive_failures: 3
   `pause.reason: "failures"` — a different control from `budget`, and a different decision.
 - **Continuing**: `rayspec resume <run>` re-evaluates the ceiling — raise it (or wait for the
   next day) and the run picks up where it stopped. `rayspec approve <run> "checked it"` says
-  "run it anyway" and **waives** the control that stopped this run: approving a spend does not
-  clear the failure streak, and closing the breaker does not waive a spend. `rayspec reject
-  <run>` changes nothing, so the run pauses again on the same ceiling.
+  "run it anyway" and **waives the control that stopped this run — only that one**: approving a
+  spend does not clear the failure streak, and closing the breaker does not waive a spend. A run
+  approved past the breaker that then reaches `policy.budget` pauses again on the money, and the
+  console says which control the approval covered. `rayspec reject <run>` changes nothing, so
+  the run pauses again on the same ceiling.
+- A waived run is still **counted**: "this run may cost more" is not "this run costs nothing",
+  and what it spends is in the day and month totals the next run is measured against.
 - `resume`, `approve` and `reject` are subject to all of it, exactly like `run`: they start the
   same agents, so they take the same host run slot and are measured against the same envelope.
 - A `--dry-run` spends nothing and is never counted. A `--stubs` run of a workflow whose agents
   are `provider: stub` is a real run as far as the ledger is concerned: if you have configured
   `pricing:` for the stub's model, that price is what gets committed. Leave the stub's models
   out of `pricing:` if you would rather it counted as nothing.
-- The ledger is replaced whole on every write and never left half-written. If it is ever found
-  unreadable it is replaced with a fresh document — and that is reported as a `warning` event
-  and on the console, because an envelope that quietly went back to zero is worse than none.
+- The ledger is replaced whole on every write and never left half-written. Reading it never
+  fails a command: a document that cannot be parsed at all, one that is empty (a zero-byte file
+  is a truncation — rayspec never writes one) and one stamped with a format version newer than
+  this rayspec understands are each replaced with a fresh document, and a single total that is
+  not a number is dropped while everything readable is kept. The repaired document is written
+  back on the next commit, so one bad byte cannot break every later `run`, `resume` and
+  `approve`. Every one of those is reported as a `warning` event, on the console and in
+  `rayspec show`, because an envelope that quietly went back to zero is worse than none.
+- Writing it cannot fail a command either. A path that can be read but never *written* — a
+  directory where `spend.json` belongs, a read-only mount, a full disk — costs the run its
+  accounting, not the run: one `warning` event says the ledger could not be written and that
+  this run's spend and outcome are not in the operator's totals, and the run finishes normally.
 
 ### Host run slots
 
@@ -752,7 +816,9 @@ CI job is the commonest unattended shape there is, and the workflow-hash guard d
 *tier* that was re-pointed in `config.yaml`. With `--repo`, the lockfile checked is the one in the
 checkout the workflow came from. The CI default only enforces a lockfile that exists — a project
 that never ran `rayspec lock` is not broken by setting a variable — while an explicit `--locked`
-refuses a missing one. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
+refuses a missing one. Not refusing is not the same as not mentioning it: under the CI default
+with no lockfile the run prints one `warning:` line on stderr saying nothing is pinned, so a CI
+log where the lockfile was checked and a CI log where there was no lockfile do not look alike. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
 stored run and the lockfile talk about the same agents.
 
 ## Publishing the run branch

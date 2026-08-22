@@ -27,7 +27,7 @@ import os
 import socket
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +47,7 @@ from rayspec.engine.runtime import (
     run_with_signals,
     unwrap_exception_group,
 )
-from rayspec.engine.scheduler import run_graph
+from rayspec.engine.scheduler import STOPPED_REASON, run_graph
 from rayspec.engine.toolchain import capture_toolchain
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType
@@ -65,8 +65,8 @@ from rayspec.loader.inputs import (
     split_secret_inputs,
 )
 from rayspec.providers.base import Provider, Usage
-from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR
-from rayspec.schema import RunStatus
+from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, Redactor
+from rayspec.schema import RunStatus, StepStatus
 from rayspec.store.base import RunStore
 from rayspec.store.model import (
     ActorInfo,
@@ -214,6 +214,13 @@ class Runner:
         makes the run refuse to start: a workflow with a secret input and no way to redact it
         must not write a single byte.
 
+        The assignment is VERIFIED, not assumed. A store whose ``redactor`` setter accepts the
+        value and drops it (a plugin store that never reads the attribute back, a
+        ``__setattr__`` that filters unknown names) raises nothing, so the exception probe alone
+        let exactly the shape the refusal exists for through — and the run then wrote every raw
+        secret. The store is asked for what it now holds, and the refusal is the same one either
+        way: the difference between "it refused" and "it lied" is not one the run can act on.
+
         The two sets of values are handed over as PAIRS, not merged into one mapping: an input
         name and a ``config.secrets`` name are independent namespaces that can collide, and
         merging by name would drop one of the two values from the redactor while
@@ -234,15 +241,26 @@ class Runner:
         try:
             self.store.redactor = updated
         except (AttributeError, TypeError) as exc:
-            names = sorted({name for name, value in secrets if not current.covers(value)})
-            raise EngineError(
-                f"{type(self.store).__name__} does not accept a redactor, so the secret "
-                f"value(s) {', '.join(names or sorted({n for n, _ in secrets}))} could not be "
-                f"kept out of the run directory",
-                hint="use a store whose `redactor` attribute can be assigned (every store "
-                "rayspec builds can), or run a workflow without secret inputs",
-            ) from exc
+            raise self._no_redactor(secrets, current) from exc
+        installed = getattr(self.store, "redactor", None)
+        if not isinstance(installed, Redactor) or installed.uncovered(secrets):
+            raise self._no_redactor(secrets, current)
         self._unredactable = tuple(n for n in updated.skipped if n not in current.skipped)
+
+    def _no_redactor(self, secrets: list[tuple[str, Any]], current: Redactor) -> EngineError:
+        """The refusal: this store does not hold the boundary, so nothing may be written.
+
+        One message for both ways that can happen — the assignment raised, or it was accepted
+        and dropped. The names are the values still uncovered by whatever the store had before.
+        """
+        names = sorted(set(current.uncovered(secrets)) or {n for n, _ in secrets})
+        return EngineError(
+            f"{type(self.store).__name__} does not hold the redactor it is given (assigning "
+            f"one is refused or silently dropped), so the secret value(s) {', '.join(names)} "
+            "could not be kept out of the run directory",
+            hint="use a store whose `redactor` attribute can be assigned and read back (every "
+            "store rayspec builds can), or run a workflow without secret inputs",
+        )
 
     # -- entry points ---------------------------------------------------------------------
 
@@ -452,7 +470,8 @@ class Runner:
         is not counted; a PAUSED run is not an outcome yet, so the failure streak is left alone.
 
         A ledger that cannot be written loses this run's spend — a smaller failure than refusing
-        to run at all, but never a silent one: the operator is told, because an envelope that
+        to run at all, but never a silent one: every place that writes it reports through
+        :meth:`~rayspec.engine.context.RunContext.ledger_unwritable`, because an envelope that
         quietly forgot a hundred dollars is worse than one that is simply absent.
         """
         envelope = self.envelope
@@ -465,10 +484,7 @@ class Runner:
             elif status is RunStatus.FAILED:
                 await to_thread.run_sync(_record_outcome, envelope, True)
         except OSError as exc:
-            await ctx.warn(
-                f"the spend ledger could not be written ({exc}) — this run's spend and its "
-                "outcome are not in the operator's totals"
-            )
+            await ctx.ledger_unwritable(exc)
         for problem in envelope.take_warnings():
             await ctx.warn(problem)
 
@@ -511,9 +527,15 @@ class Runner:
         run.pause = None
         if not approved or self.envelope is None:
             return
-        self.envelope.waive(close_breaker=breaker)
+        try:
+            # closing the breaker resets the counter, which is another write to the ledger:
+            # a path that cannot be written must not turn an approval into a traceback either
+            await to_thread.run_sync(_waive, self.envelope, breaker)
+        except OSError as exc:
+            await ctx.ledger_unwritable(exc)
         await ctx.warn(
-            "the consecutive-failure breaker is closed again for this project"
+            "the consecutive-failure breaker is closed again for this project "
+            "(the spending ceilings are not waived)"
             if breaker
             else "the spending ceilings are waived for this run (the failure breaker is not)"
         )
@@ -640,6 +662,12 @@ class Runner:
             if self.options.stubs_path is not None:
                 run.stubs_path = self.options.stubs_path  # --stubs on resume overrides
             run.secret_inputs = tuple(secret_input_names(workflow))
+            # the operator's ``--fail-fast`` override is part of the RUN, not of this entry:
+            # restored from the record so the second half runs under the policy the first did,
+            # and re-supplying the flag may still tighten a run launched without it (it never
+            # loosens one — the same rule ``RunContext.fail_fast_for`` applies within a run)
+            self.options = replace(self.options, fail_fast=self.options.fail_fast or run.fail_fast)
+            run.fail_fast = self.options.fail_fast
             run.status = RunStatus.RUNNING
             run.reason = None
             run.ended_at = None
@@ -666,6 +694,7 @@ class Runner:
             ),
             secret_inputs=tuple(secret_input_names(workflow)),
             stubs_path=self.options.stubs_path,
+            fail_fast=bool(self.options.fail_fast),
             status=RunStatus.RUNNING,
             started_at=utcnow(),
             pid=os.getpid(),
@@ -704,11 +733,11 @@ class Runner:
         # ``run_graph`` the caller never reaches ``outcomes.update(...)``, so that dict is empty
         # exactly in the case this guard exists for.
         #
-        # TOP-LEVEL ONLY (``StepPath`` depth 1). Composite steps roll their bodies up under their
-        # own policy — ``each.on_failure: continue`` tolerates a failed item, ``loop.on_exhausted``
-        # decides an exhausted loop — and those nested records stay ``tolerated=False`` in the
-        # store. Counting them here would fail a run whose ``each:`` step legitimately succeeded.
-        failed = [r for r in failed_steps(run) if len(StepPath.parse(r.path).segments) == 1]
+        # ANY DEPTH, but only where no composite has already answered for the record
+        # (:func:`run_failures`): a failed step is a failure of the run wherever in the graph it
+        # happened, and a ``stop:`` inside an ``each:``/``include:`` body is exactly how one used
+        # to be hidden.
+        failed = run_failures(run)
         if ctx.stopped is not None:
             # The step that RAISED the stop must not outrank its own signal: `on_reject: cancel`
             # records the gate as REJECTED *and* stops the run, and that is a deliberate cancel
@@ -847,6 +876,11 @@ def _record_outcome(envelope: Any, failed: bool) -> None:
     envelope.record_outcome(failed=failed)
 
 
+def _waive(envelope: Any, close_breaker: bool) -> None:
+    """``RunEnvelope.waive`` as a positional call (it writes the ledger, so it runs off-loop)."""
+    envelope.waive(close_breaker=close_breaker)
+
+
 def _on_other_host(run: RunRecord) -> bool:
     """Whether ``run.host`` names another machine (shared ``RAYSPEC_HOME``): unknowable liveness."""
     return bool(run.host) and run.host != socket.gethostname()
@@ -953,11 +987,88 @@ def failed_steps(run: RunRecord) -> list[StepRecord]:
     return [r for r in run.steps.values() if r.status in FAILED_LIKE and not r.tolerated]
 
 
+def stop_collateral(record: StepRecord) -> bool:
+    """Whether ``record`` was torn down by a ``stop:`` rather than failing on its own.
+
+    Cancelling the running siblings is *how* a ``stop:`` ends a sibling list, and the scheduler
+    records each of them ``interrupted`` with the skip reason
+    :data:`~rayspec.engine.scheduler.STOPPED_REASON`. That makes them ``FAILED_LIKE``, but they
+    are the signal's own teardown rather than an independent failure: counting them turned a
+    declared ``stop: {status: cancelled}`` into a ``failed`` run whose reason was the collateral
+    it had ordered itself — and whether that happened depended only on whether a sibling was
+    still in flight, which is timing. A step cancelled after a FAILURE (``--fail-fast``) carries
+    the reason ``failed`` instead, an outside cancellation ``interrupted``, and a gate rejected
+    with ``on_reject: cancel`` is recorded ``rejected``.
+
+    What this pair does NOT say is that nothing failed. A COMPOSITE whose body stopped is
+    recorded ``interrupted`` (``stopped``) too — that is the contract, and it holds whether the
+    body merely stopped or had already failed a step first, because the ``stop:`` pre-empts the
+    roll-up that would otherwise have failed the composite. So the marker alone cannot tell a
+    carrier of the signal from a step whose failure the signal buried; only the body's own
+    records can, which is what :func:`run_failures` reads.
+    """
+    return record.status is StepStatus.INTERRUPTED and record.skip_reason == STOPPED_REASON
+
+
+def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
+    """Whether an enclosing composite has already settled the verdict on ``record``.
+
+    A composite rolls its body up under its own policy — ``each.on_failure: continue`` tolerates
+    a failed item, ``loop.on_exhausted`` decides an exhausted loop, ``include:`` fails on the
+    first untolerated body step — and it is the composite's record, not the body's, that the run
+    then counts (nested records stay ``tolerated=False`` in the store whatever the composite
+    decided, so the flag cannot be read for this). A composite that was torn down by the
+    ``stop:`` itself has settled nothing: its body was pre-empted mid-roll-up, so what its body
+    recorded is still unanswered and the search continues through it.
+
+    "Not stop collateral" is the test, and it is deliberately wider than "rolled its body up": a
+    composite the run paused at, or one an outside cancellation interrupted, also stands between
+    the run and this record. Only a stop's own teardown is transparent here, because only that is
+    damage the stop caused.
+
+    A missing container answers ``False`` — nothing settled a verdict, so the record is still
+    counted. The scheduler persists a composite's record before dispatching its body, so this is
+    unreachable in a run that produced body records at all; it is spelled the fail-closed way
+    because the whole purpose of the caller is that a failed step is never quietly dropped.
+    """
+    path = StepPath.parse(record.path)
+    for depth in range(1, path.depth):  # every enclosing composite, outermost first
+        name, _index = path.segments[depth - 1]
+        # a composite's own record path never carries the iteration index its body scope does
+        # (``fan`` for the ``each:`` whose items are ``fan[0]/…``)
+        container = run.steps.get(str(StepPath((*path.segments[: depth - 1], (name, None)))))
+        if container is not None and not stop_collateral(container):
+            return True
+    return False
+
+
+def run_failures(run: RunRecord) -> list[StepRecord]:
+    """The records that make the RUN failed — untolerated failures nothing has answered for.
+
+    A ``stop:`` may declare the run's status only when nothing genuinely failed, and "genuinely"
+    means anywhere in the graph: a run whose ``run.json`` holds a failed step must never report
+    success, publish ``outputs:`` and exit 0, however deep the step sits. So this is not the
+    top-level records — it is every untolerated ``FAILED_LIKE`` record that is neither the stop's
+    own collateral (:func:`stop_collateral`) nor already accounted for by a composite that rolled
+    it up (:func:`answered_by_a_composite`). The nesting is what carries the difference: a body
+    failure under a composite that *finished* is that composite's verdict to make, a body failure
+    under a composite the ``stop:`` cut short is nobody's — so it is the run's.
+    """
+    return [
+        r
+        for r in failed_steps(run)
+        if not stop_collateral(r) and not answered_by_a_composite(run, r)
+    ]
+
+
 __all__ = [
     "RunResult",
     "Runner",
     "Workspace",
+    "answered_by_a_composite",
     "failed_steps",
     "fallback_project_slug",
     "process_start_time",
+    "run_failures",
+    "stop_collateral",
 ]
