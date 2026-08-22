@@ -28,6 +28,7 @@ the one thing a total may never hide.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -53,6 +54,7 @@ from rayspec.cli.commands._loader_common import (
 from rayspec.providers.base import Usage
 from rayspec.providers.pricing import COST_SOURCES, combine_cost_sources, cost_marker
 from rayspec.schema import RunStatus
+from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord
 from rayspec.textsafe import safe_text
 
@@ -112,6 +114,63 @@ def parse_since(text: str, *, now: datetime | None = None) -> datetime:
 def _aware(moment: datetime) -> datetime:
     """A stored timestamp as UTC (records written by rayspec are aware; be forgiving anyway)."""
     return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+#: The stamp a run id starts with (``new_run_id``: ``YYYYMMDD-HHMMSS-<4 chars>``, UTC).
+_RUN_ID_STAMP_RE = re.compile(r"^(\d{8}-\d{6})(?:-|$)")
+
+
+def run_id_created_at(run_id: str) -> datetime | None:
+    """The UTC moment encoded in a run id, or ``None`` when the id has another shape.
+
+    The one thing that is still knowable about a run whose record cannot be read: ``rayspec``
+    mints time-sortable ids, so a lost run can still be placed in (or out of) a ``--since``
+    window. Anything else about it — its workflow above all — is only in the record.
+    """
+    match = _RUN_ID_STAMP_RE.match(run_id)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
+    except ValueError:  # 20261301-000000-… is a directory name, not a date
+        return None
+
+
+def unreadable_run_ids(
+    store: FileRunStore, loaded: Sequence[RunRecord], *, since: datetime | None = None
+) -> list[str]:
+    """Run ids of the store that produced no record, newest first (the runs missing from a sum).
+
+    Two different failures, one consequence. A ``run.json`` that does not parse is *listed* by
+    the store and skipped when it is loaded. A ``run.json`` that is **missing** is worse: the
+    store's listing only reports directories that have one, so the run is invisible — the totals
+    would silently shrink by one run with ``runs_unreadable`` still saying zero. The run
+    directories are therefore scanned as well, and a directory whose name is a run id counts.
+
+    ``since`` drops the ids whose own timestamp puts them outside the window; an id of another
+    shape carries no timestamp, so it is kept rather than assumed to be out of scope. There is
+    no ``workflow`` counterpart on purpose — which workflow a run belonged to is only in the
+    record that could not be read, so a ``--workflow`` roll-up keeps counting it.
+    """
+    have = {run.run_id for run in loaded}
+    candidates = set(store.list_run_ids())  # a run.json that is there but does not parse
+    try:
+        entries = list(os.scandir(store.runs_root))
+    except OSError:  # no store yet, or one this user may not read
+        entries = []
+    candidates |= {
+        entry.name
+        for entry in entries
+        if entry.is_dir() and run_id_created_at(entry.name) is not None
+    }
+    lost = [run_id for run_id in candidates if run_id not in have]
+    if since is not None:
+        lost = [
+            run_id
+            for run_id in lost
+            if (created := run_id_created_at(run_id)) is None or created >= since
+        ]
+    return sorted(lost, reverse=True)
 
 
 def cost_bucket(run: RunRecord) -> str:
@@ -223,23 +282,29 @@ def aggregate(records: Sequence[RunRecord], *, label: str, incomplete: bool = Fa
 class CostReport:
     """The whole answer: one group per workflow plus the total over the same runs.
 
-    ``runs_unreadable`` counts the ``run.json`` files the store could not parse. They are not in
-    any group — nothing could be read out of them — so the number is carried here and the total
-    is marked as a lower bound, because a sum that silently shrank is the one failure this
-    command exists to prevent.
+    ``unreadable`` holds the ids of the runs the store could not hand over — a ``run.json`` that
+    does not parse, and one that is not there at all. They are in no group (nothing could be read
+    out of them), so they are carried here, named rather than merely counted, and the total is
+    marked as a lower bound: a sum that silently shrank is the one failure this command exists to
+    prevent.
     """
 
     groups: tuple[CostGroup, ...]
     total: CostGroup
-    runs_unreadable: int = 0
+    unreadable: tuple[str, ...] = ()
+
+    @property
+    def runs_unreadable(self) -> int:
+        """How many run records are missing from these totals."""
+        return len(self.unreadable)
 
 
-def build_report(records: Sequence[RunRecord], *, unreadable: int = 0) -> CostReport:
+def build_report(records: Sequence[RunRecord], *, unreadable: Sequence[str] = ()) -> CostReport:
     """Group ``records`` by workflow name, most expensive first, then by name.
 
     An unpriced group sorts last (its cost is unknown, not zero) but is never dropped, so the
-    run counts of the groups always add up to the total's. ``unreadable`` is the number of run
-    records the store could not load; it makes the total a lower bound.
+    run counts of the groups always add up to the total's. ``unreadable`` are the ids of the run
+    records the store could not load; they make the total a lower bound.
     """
     by_workflow: dict[str, list[RunRecord]] = {}
     for run in records:
@@ -249,8 +314,8 @@ def build_report(records: Sequence[RunRecord], *, unreadable: int = 0) -> CostRe
     groups.sort(key=lambda g: (g.cost_usd is None, -(g.cost_usd or 0.0), g.label))
     return CostReport(
         groups=tuple(groups),
-        total=aggregate(list(records), label="total", incomplete=unreadable > 0),
-        runs_unreadable=unreadable,
+        total=aggregate(list(records), label="total", incomplete=bool(unreadable)),
+        unreadable=tuple(unreadable),
     )
 
 
@@ -347,6 +412,7 @@ def costs_payload(
         "workflow": workflow,
         **total,
         "runs_unreadable": report.runs_unreadable,
+        "runs_unreadable_ids": list(report.unreadable),
         "workflows": [group_payload(group) for group in report.groups],
     }
 
@@ -375,18 +441,29 @@ def _runs(count: int) -> str:
     return "1 run" if count == 1 else f"{count} runs"
 
 
-def unreadable_notice(count: int) -> str | None:
-    """The line for run records the store could not parse, or ``None`` when there are none.
+#: How many lost run ids the notice spells out before it only counts the rest.
+NAMED_UNREADABLE = 3
 
-    A skipped record is a missing row in ``rayspec runs`` — visible. In a *total* it is
-    invisible, so it is said out loud even though the store only logs a warning.
+
+def unreadable_notice(ids: Sequence[str]) -> str | None:
+    """The line for run records the store could not read, or ``None`` when there are none.
+
+    The ids are NAMED, not just counted: a record that cannot be read is missing from
+    ``rayspec runs`` as well, so "run `rayspec runs` to see which" would send the reader after
+    rows that are not there either. The id is the only handle the run still has.
     """
-    if count <= 0:
+    if not ids:
         return None
-    noun, verb = ("record", "is") if count == 1 else ("records", "are")
+    noun, verb = ("record", "is") if len(ids) == 1 else ("records", "are")
+    named = ", ".join(ids[:NAMED_UNREADABLE])
+    if len(ids) > NAMED_UNREADABLE:
+        named += f", … ({len(ids) - NAMED_UNREADABLE} more)"
     return (
-        f"{count} run {noun} could not be read and {verb} not in these totals — "
-        f"run `rayspec runs` to see which"
+        f"{len(ids)} run {noun} could not be read and {verb} not in these totals: {named} "
+        f"— its run.json is missing or unparseable (`rayspec show <id>`)"
+        if len(ids) == 1
+        else f"{len(ids)} run {noun} could not be read and {verb} not in these totals: {named} "
+        f"— their run.json files are missing or unparseable (`rayspec show <id>`)"
     )
 
 
@@ -427,7 +504,7 @@ def partial_notices(report: CostReport) -> list[str]:
             f"{_runs(total.runs_in_flight)} {verb} still running or paused — those figures "
             f"are not final"
         )
-    unreadable = unreadable_notice(report.runs_unreadable)
+    unreadable = unreadable_notice(report.unreadable)
     if unreadable is not None:
         lines.append(unreadable)
     if not lines:
@@ -494,12 +571,14 @@ def register(app: typer.Typer) -> None:
                     highlight=False,
                 )
             return
-        # list_runs() drops a run.json it cannot parse (a log warning the CLI suppresses); the
-        # id listing is the only place the shortfall is still visible, and a total may not hide it
-        known = len(ctx.store.list_run_ids())
+        # list_runs() drops a run.json it cannot parse (a log warning the CLI suppresses) and
+        # never sees one that is missing; both leave a run out of the sum, which is the one thing
+        # a total may not hide, so they are collected by id and reported below the table
         loaded = ctx.store.list_runs(limit=None)
         records = select_runs(loaded, since=cutoff, workflow=workflow)
-        report = build_report(records, unreadable=max(known - len(loaded), 0))
+        report = build_report(
+            records, unreadable=unreadable_run_ids(ctx.store, loaded, since=cutoff)
+        )
         if json_:
             out.print(
                 json.dumps(
@@ -521,7 +600,7 @@ def register(app: typer.Typer) -> None:
                 markup=False,
                 highlight=False,
             )
-            unreadable = unreadable_notice(report.runs_unreadable)
+            unreadable = unreadable_notice(report.unreadable)
             if unreadable is not None:
                 out.print(unreadable, style="dim", markup=False, highlight=False)
             return
@@ -539,6 +618,7 @@ def register(app: typer.Typer) -> None:
 __all__ = [
     "BUCKETS",
     "IN_FLIGHT",
+    "NAMED_UNREADABLE",
     "SINCE_HINT",
     "UNKNOWN",
     "CostGroup",
@@ -553,7 +633,9 @@ __all__ = [
     "parse_since",
     "partial_notices",
     "register",
+    "run_id_created_at",
     "scope_line",
     "select_runs",
     "unreadable_notice",
+    "unreadable_run_ids",
 ]

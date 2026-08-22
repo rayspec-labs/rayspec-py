@@ -1584,28 +1584,38 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `runs_usage_unknown`, a run whose own source is `partial`, **or** `incomplete=True`;
   `runs_in_flight` is reported but does not move the marker. `CostGroup.partial` = the cost is a
   lower bound, `CostGroup.tokens_partial` = the token count is.
-- `build_report(records, *, unreadable=0) -> CostReport(groups, total, runs_unreadable)` — grouped
+- `build_report(records, *, unreadable=()) -> CostReport(groups, total, unreadable)` — grouped
   by workflow, most expensive first then by name; the sort key is tri-state
   (`(cost_usd is None, -cost, label)`) so an unpriced group sorts after a real `$0.00` one.
-  Groups are never dropped: `sum(g.runs) == total.runs`. `unreadable` is passed as
-  `incomplete=` to the total's fold, so a store the command could not read completely can never
-  present an exact-looking sum. The command computes it as
-  `len(store.list_run_ids()) - len(store.list_runs())` (`list_runs` swallows an unparseable
-  `run.json` into a log warning; `list_run_ids` only lists dirs that have one).
+  Groups are never dropped: `sum(g.runs) == total.runs`. `unreadable` are the **ids** of the runs
+  that produced no record (`CostReport.runs_unreadable` is their count); a non-empty tuple is
+  passed as `incomplete=` to the total's fold, so a store the command could not read completely
+  can never present an exact-looking sum. The command computes it with
+  `unreadable_run_ids(store, loaded, since=)`: the ids `store.list_run_ids()` reports that no
+  record came back for (an unparseable `run.json`, swallowed into a log warning by `list_runs`)
+  **plus** the run directories the listing cannot see at all because their `run.json` is missing.
+  `since` drops the ids whose own timestamp (`run_id_created_at`, the `YYYYMMDD-HHMMSS` prefix
+  `new_run_id` mints) is outside the window; an id of another shape has no timestamp and is kept.
+  There is no `workflow` counterpart — which workflow a lost run belonged to is only in the
+  record that could not be read.
 - Presentation: `costs_table(report)` (workflow · runs · tokens · cost · cost source, total row
   last; the tokens cell is `≥…` when `tokens_partial`, `unknown` when nothing was reported at
-  all and `-` only for a genuine zero), `scope_line`, `empty_notice`, `unreadable_notice(count)`,
+  all and `-` only for a genuine zero), `scope_line`, `empty_notice`, `unreadable_notice(ids)`
+  (names up to `NAMED_UNREADABLE` ids and counts the rest — a record that cannot be read is
+  missing from `rayspec runs` too, so the id is the only handle it still has),
   `partial_notices(report) -> list[str]` (one line per counter above, then the marker line — and
   the marker line is only printed for a marker that is on screen: `no cost is known for any run
   in scope` when `total.cost_usd is None`, `totals marked ≥ are a lower bound` when the total
   renders with `≥`, nothing otherwise), `group_payload` / `costs_payload`.
 - `--json`: one object `{project, since, workflow, runs, runs_unknown_cost, runs_partial_cost,
-  runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{…}, cost_usd, cost_source,
+  runs_usage_unknown, runs_in_flight, runs_unreadable, runs_unreadable_ids, tokens, usage{…},
+  cost_usd, cost_source,
   cost_sources{…}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost,
   runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source,
   cost_sources{…}, first_run_at, last_run_at}]}`. The top level is the total over exactly the runs
   in `workflows`; `cost_sources` counts every run once (zero buckets omitted); `runs_unreadable`
-  is top level only (an unreadable record cannot be attributed to a workflow) and `project` is
+  and `runs_unreadable_ids` are top level only (an unreadable record cannot be attributed to a
+  workflow) and `project` is
   `null` outside a rayspec project — no slug is claimed there, on disk or in the output. Exit 0
   with `runs: 0` when nothing is in scope (an unknown `--workflow` is a filter that matched
   nothing, not an error) · exit 2 on a bad `--since`.

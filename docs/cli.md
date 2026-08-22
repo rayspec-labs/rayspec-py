@@ -693,8 +693,23 @@ zero**. That is the one property this command is built around: the run counts of
 add up to the `total` row, a group in which nothing is priced prints its run count next to an empty
 cost, and a total that is missing anything is marked `≥` and explained in the lines below the
 table. A total that quietly omits runs would be worse than no total at all — which is why a run
-record the store cannot parse (a truncated or hand-edited `run.json`) is not simply skipped: it is
-counted, the total is marked `≥`, and a line says how many records could not be read.
+record the store cannot read is not simply skipped: it is counted, the total is marked `≥`, and a
+line below the table **names** the runs it is missing. Two ways a record goes unread and they are
+one fact for a sum: a `run.json` that does not parse (truncated, hand-edited) and one that is not
+there at all — the second is the quieter of the two, because a run directory without a `run.json`
+is invisible to `rayspec runs` as well, which is why the ids are named here rather than pointed
+at another listing:
+
+```
+1 run record could not be read and is not in these totals: 20260818-100000-cccc — its run.json is
+missing or unparseable (`rayspec show <id>`)
+```
+
+With `--since`, only the lost runs whose own id places them **inside** the window are reported: a
+rayspec run id starts with its UTC timestamp, so a record that cannot be read can still be dated.
+Nothing else about it can — its workflow is only in the record — so `--workflow` keeps counting
+it: a roll-up that quietly dropped a run that might have been one of this workflow's is exactly
+the failure above.
 
 Runs that are still `running` or `paused` are summed like any other — their cost so far is real
 money — but a line below the table says how many, because those figures are not final: an approval
@@ -725,7 +740,7 @@ Options:
 
 - `--since` `<when>` — Only runs created at or after this point: a window (`7d`, `24h`, `90m`) or a date (`2026-08-01`). Inclusive at the cutoff.
 - `--workflow` `<name>` — Only runs of this workflow (exact recorded name).
-- `--json` — Machine-readable output: one object `{project (the slug, or null outside a project), since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds. The four `runs_*` counters are why a figure may be a lower bound: runs with no cost at all, priced runs holding a step with tokens but no price, runs whose usage was cut off, and runs still running or paused. `runs_unreadable` (top level only — an unreadable record cannot be attributed to a workflow) counts `run.json` files the store could not parse; anything above zero means the totals are missing runs.
+- `--json` — Machine-readable output: one object `{project (the slug, or null outside a project), since (ISO cutoff | null), workflow (the filter | null), runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, runs_unreadable, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd (null when nothing is priced), cost_source ("provider" | "table" | "partial" | "none"), cost_sources{provider?, table?, partial?, none?, unknown?}, first_run_at, last_run_at, workflows: [{workflow, runs, runs_unknown_cost, runs_partial_cost, runs_usage_unknown, runs_in_flight, tokens, usage{…}, cost_usd, cost_source, cost_sources{…}, first_run_at, last_run_at}]}`. The top-level figures are the total over exactly the runs in `workflows`, so `sum(w.runs for w in workflows) == runs`; `cost_sources` counts every run once (zero buckets are omitted); `since` is what was asked for, `first_run_at`/`last_run_at` what the store actually holds. The four `runs_*` counters are why a figure may be a lower bound: runs with no cost at all, priced runs holding a step with tokens but no price, runs whose usage was cut off, and runs still running or paused. `runs_unreadable` and `runs_unreadable_ids` (top level only — an unreadable record cannot be attributed to a workflow) count and name the runs the store could not read (a `run.json` that does not parse, or one that is missing entirely); anything above zero means the totals are missing runs. With `--since` only the ids the window contains are listed (a run id carries its UTC timestamp); `--workflow` cannot filter them, because a record that cannot be read does not say which workflow it belonged to.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 This command is per-project and per-user by design. Roll-ups across projects, teams, repositories
