@@ -554,10 +554,18 @@ def register(app: typer.Typer) -> None:
             input_exc = exc
         input_rows = _input_rows(rw, values, input_exc, inputs or [])
         providers_report = _provider_report(rw, caps, ctx.config)
-        classes = ApprovalClasses(
-            rules=policy_class_rules(ctx.project_root, ctx.home),
-            policy_loaded=policy_in_force(ctx.project_root, ctx.home),
-        )
+        try:
+            classes = ApprovalClasses(
+                rules=policy_class_rules(ctx.project_root, ctx.home),
+                policy_loaded=policy_in_force(ctx.project_root, ctx.home),
+            )
+        except RayspecError as exc:  # an unreadable or invalid policy file
+            # the same boundary `run` and `resume` stand inside. A plan measured against a
+            # policy nobody could read would be a report about guardrails that may or may not
+            # exist, so it is not printed: a mistyped key gets the loader's sentence and exit 2,
+            # like every other file this command cannot read.
+            fail(str(exc), hint=exc.hint)
+            return
         warnings = [*rw.warnings, *report.warnings, *unheld_classes(gate_classes(rw), classes)]
         if caps.warning:
             warnings.append(caps.warning)

@@ -160,18 +160,25 @@ ApproveClassOption = Annotated[
 
 
 def operator_policy(project_root: Path, home: Path | None) -> EffectivePolicy | None:
-    """The policy in force for this project, or ``None`` when no layer is.
+    """Load the operator's policy — ``None`` only when the search found no file at all.
 
     The policy file — its keys, its layering (environment over project over user, most
-    restrictive wins) and its loader — belongs to :mod:`rayspec.policy`. This is the one place
-    ``run``/``resume`` reach for it, and it reaches for the SAME loader every other consumer
-    uses (``rayspec.limits``, the load-time checks), so an operator cannot end up with a file
-    that caps their spending and is invisible to their gates.
+    restrictive wins) and its loader — belongs to :mod:`rayspec.policy`. This calls the SAME
+    loader every other consumer uses (:mod:`rayspec.limits`, the load-time checks), so an
+    operator cannot end up with a file that caps their spending and is invisible to their gates.
 
-    A file that exists but cannot be read raises :class:`~rayspec.policy.PolicyError` from the
-    loader rather than returning ``None``: a guardrail that silently disappears is the one
-    failure mode this seam may not have, and the CLI boundary turns that into exit 2 like any
-    other load error.
+    It is the one seam the CLI reads that policy through for approval purposes, and four
+    commands are behind it: ``run`` and ``resume`` via :func:`approval_classes_for`, ``test``
+    through the same call, ``plan`` through
+    :func:`~rayspec.cli.commands.plan.policy_in_force` as well.
+
+    A file that exists but cannot be read RAISES :class:`~rayspec.policy.PolicyError` rather
+    than returning ``None``: a guardrail that silently disappears is the one failure mode this
+    seam may not have. So ``None`` means "searched and found nothing", never "found something
+    and gave up on it" — and every caller has to stand inside a
+    :class:`~rayspec.errors.RayspecError` boundary that turns the raise into ``error: …`` and
+    exit 2. A caller without one answers a one-character typo in ``policy.yaml`` with a
+    traceback, which reads as rayspec being broken rather than the file.
     """
     effective = load_policy(project_root, home=home)
     return None if effective.is_empty else effective

@@ -27,6 +27,7 @@ from typer.testing import CliRunner, Result
 from rayspec.cli.app import app
 from rayspec.cli.commands.run import approval_classes_for, operator_policy, policy_class_rules
 from rayspec.engine.approval_classes import ApprovalClasses, rules_from_policy
+from rayspec.errors import RayspecError
 from rayspec.policy import load_policy
 from rayspec.policy.controls import policy_controls
 from rayspec.policy.model import Policy
@@ -369,3 +370,112 @@ def test_a_checked_in_case_cannot_approve_what_the_policy_holds(project: Project
     res = project.cli("test", "--exec-shell")
     assert res.exit_code == 1, res.output
     assert not project.marker.exists(), "the gated step ran anyway"
+
+
+# -- a policy file the loader cannot read ------------------------------------------------------
+
+#: A typo in a policy file is the likeliest thing anyone does wrong with this feature, and it is
+#: the case every command that reads one has to survive: the loader refuses the whole document,
+#: so the seam raises instead of returning ``None``. Nothing here mentions approval classes — the
+#: file caps spending and says nothing about gates — because wiring the seam up made every one of
+#: these commands read it either way.
+TYPO = """budget:
+  per_run: 2.0
+  typo_key: 1
+"""
+
+#: The same case with nothing that stops the command before it reaches the policy: `exec_shell:
+#: true` is refused first (that is its own guarantee), and refusing it would prove nothing here.
+PLAIN_CASE = """id: happy
+workflow: ship
+inputs:
+  marker: "{marker}"
+expect:
+  status: succeeded
+"""
+
+
+def write_case(project: Project, text: str) -> Path:
+    case = project.root / ".rayspec" / "tests" / "ship" / "happy.yaml"
+    case.parent.mkdir(parents=True, exist_ok=True)
+    case.write_text(text.format(marker=project.marker), encoding="utf-8")
+    return case
+
+
+#: Every invocation that now reaches the policy seam, and what it owes a person who mistyped one
+#: key: the loader's own sentence about their file, exit 2, and no exception out of the command.
+#: ``run`` and ``validate`` are in the table not because they were broken but because they were
+#: the ones that were right — a boundary only some commands stand inside is how this got here.
+MISTYPED_POLICY_COMMANDS: tuple[tuple[str, ...], ...] = (
+    ("plan", "ship"),
+    ("plan", "ship", "--risk"),
+    ("plan", "ship", "--json"),
+    ("test",),
+    ("test", "--exec-shell"),
+    ("validate",),
+    ("run", "ship", "--no-interactive", "--dry-run"),
+)
+
+
+@pytest.mark.parametrize("argv", MISTYPED_POLICY_COMMANDS, ids=lambda a: " ".join(a))
+def test_a_mistyped_policy_key_is_an_error_message_not_a_traceback(
+    project: Project, argv: tuple[str, ...]
+) -> None:
+    """The regression this section exists for.
+
+    Wiring the seam up gave four commands a call that raises, and only two of them stood inside a
+    ``RayspecError`` boundary: ``rayspec plan`` and ``rayspec test`` answered a one-character
+    mistake in ``policy.yaml`` with a rich traceback and exit 1, which reads as "rayspec is
+    broken" rather than "your file is". The commands are asserted as a table because the defect
+    was never in one of them — it was in a boundary added command by command.
+    """
+    project.policy(TYPO)
+    write_case(project, PLAIN_CASE)
+    res = project.cli(*argv)
+    assert not isinstance(res.exception, RayspecError), (
+        f"{' '.join(argv)} let a {type(res.exception).__name__} out of the command"
+    )
+    assert res.exit_code == 2, res.output
+    assert ".rayspec/policy.yaml" in res.output
+    assert "typo_key" in res.output
+
+
+def test_the_broken_case_is_the_file_not_the_key(project: Project) -> None:
+    """Not only a strict-schema refusal: a file that is not a mapping at all takes the same path.
+
+    ``plan`` is the command that used to crash, and what reaches the person has to be the
+    loader's own sentence about their file whichever way it is unreadable.
+    """
+    project.policy("- this is a list, not a policy\n")
+    res = project.cli("plan", "ship")
+    assert not isinstance(res.exception, RayspecError)
+    assert res.exit_code == 2, res.output
+    assert ".rayspec/policy.yaml" in res.output
+
+
+def test_test_still_writes_the_junit_document_it_promised(project: Project, tmp_path: Path) -> None:
+    """``--junit`` is written for every usage error, and an unreadable policy file is one.
+
+    A CI job whose report file is simply absent reports nothing at all — the second thing a
+    traceback here took away.
+    """
+    project.policy(TYPO)
+    write_case(project, PLAIN_CASE)
+    report = tmp_path / "reports" / "junit.xml"
+    res = project.cli("test", "--junit", str(report))
+    assert res.exit_code == 2, res.output
+    assert report.exists(), "no JUnit document was written"
+    assert "typo_key" in report.read_text(encoding="utf-8")
+
+
+def test_a_readable_policy_still_runs_every_case(project: Project) -> None:
+    """The other half: reading the policy up front, once, must not stop the suite running.
+
+    ``--exec-shell`` makes the gated body real, so a class that holds nothing lets the case
+    through and the marker appears — the same assertion the held-class case makes in reverse.
+    """
+    project.policy("approvals:\n  classes:\n    release: {allow_yes: true}\n")
+    write_case(project, CASE)
+    res = project.cli("test", "--exec-shell")
+    assert res.exit_code == 0, res.output
+    assert project.marker.exists()

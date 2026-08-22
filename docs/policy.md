@@ -133,6 +133,11 @@ policy, because a guardrail that silently disappears is worse than none. That co
 symlink loop, a directory or an unreadable parent are each an error naming the path and what it
 is. A path that is genuinely absent is the only silent case, because that is the ordinary one.
 
+Every command that reads the file answers the same way — the loader's sentence on stderr and exit
+2, never a traceback: `validate`, `plan`, `run`, `resume`, `approve`, `reject` and `test`. A typo
+in a policy key is the commonest thing that happens to this file, and what comes back has to read
+as "your file is wrong", not as "rayspec is broken".
+
 ### What a violation looks like
 
 ```

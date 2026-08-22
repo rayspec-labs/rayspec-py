@@ -261,7 +261,10 @@ the pricing table (~$)`, or — for a provider without cost reporting whose mode
 [pricing](providers.md#pricing) entry — the nudge `tokens only — add pricing.<model> for estimates
 (<docs URL>#pricing)`, naming only the unpriced models when some are priced or disabled;
 models disabled with a `null` pricing entry are listed as `pricing disabled (null) for <model>`
-without a nudge). Exit 2 on validation or input errors.
+without a nudge). Exit 2 on validation or input errors, and on a `policy.yaml` the loader
+cannot read — the report is not printed at all in that case, because a plan measured
+against guardrails nobody could read would be a report about restrictions that may or may
+not be in force.
 `--json`: `{workflow, path, hash, isolation, description, inputs: {name: {name, type, value,
 state: ok|missing|invalid|undefined, problem, secret}}, input_errors, agents: [{name, provider, model,
 effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
@@ -420,8 +423,10 @@ status, run_id, run_dir, duration_s, failures: [{field, summary, detail, fix, lo
 
 Exit `0` when every case passed, `1` when any failed, `2` for a usage error — a filter that
 matches nothing (the known `<suite>:<case>` names are listed), no cases at all, a case that needs
-`--exec-shell`, or a malformed case file (`error: <file>:<line>: unknown field 'statuss' for
-expect; did you mean 'status'?`).
+`--exec-shell`, a malformed case file (`error: <file>:<line>: unknown field 'statuss' for
+expect; did you mean 'status'?`), or a `policy.yaml` that cannot be read (the approval classes
+are read once, before the first case runs, so a mistyped key is one message rather than one per
+case).
 
 ### `rayspec workflows`
 

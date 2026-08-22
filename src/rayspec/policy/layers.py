@@ -378,10 +378,6 @@ class EffectivePolicy:
                 )
         return ApprovalsPolicy(classes=merged)
 
-    def approval_class_sources(self) -> tuple[PolicySource, ...]:
-        """Every layer line that HOLDS an approval class (empty when no layer holds one)."""
-        return tuple(source for layer in self.layers for source in _held_classes(layer))
-
     # -- the operational limits (read by rayspec.limits) ----------------------------------------
 
     @property

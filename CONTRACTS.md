@@ -827,8 +827,8 @@ from rayspec.policy import (
     #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them;
     #   .approvals -> ApprovalsPolicy (ADDITIVE) is the same shape for the gate rules — the union
     #   of the class NAMES, with allow_yes AND-ed and require_tty OR-ed per class, under the
-    #   document key's own name so `rules_from_policy` finds them; .approval_class_sources() ->
-    #   (PolicySource, ...) is the provenance of every class that HOLDS something
+    #   document key's own name so `rules_from_policy` finds them. The provenance of a class
+    #   that HOLDS something is `control_sources()["approvals.classes"]`, like every other key
     PolicyLayer,  # name ("RAYSPEC_POLICY"|"project"|"user"), label, path, policy, lines
     PolicySource,  # layer, label, line, value; .location -> "<label>:<line>"
     PolicyError,  # LoaderError: unreadable/unparsable/invalid policy or trust file
@@ -941,7 +941,9 @@ Accessors (this is the seam consumers code against — never the raw documents; 
 `allowed_providers()`, `allowed_mcp_servers()`, `max_access()`, `denied_tools()`, `change_guard()`,
 `control_sources()` (policy key → the layers restricting it, for checks that only need to know a
 restriction EXISTS; it reports EVERY key any layer sets — `providers.allow`, `models.deny`,
-`access.max`, `tools.deny`, `mcp.allow_servers`, `trust.require`, `workspace.*` — so "is this run
+`access.max`, `tools.deny`, `mcp.allow_servers`, `trust.require`, `approvals.classes` (only for a
+class that HOLDS something), `workspace.*`, `budget.*`, `max_consecutive_failures`,
+`max_concurrent_runs` — so "is this run
 governed" stays a question about the file rather than about a list of interesting keys) and `workspace_sources()`
 for display and injection. `EffectivePolicy.labels` / `.searched` (additive) are the layers in
 force and the paths that were looked at — the searched list is NOT shortened against the project
@@ -2860,15 +2862,21 @@ caller can route around them):
   `--yes | dry-run | --approve-class | auto_if | tty | cli`).
 - `rayspec test` is governed by the same rules: `run_case(..., approval_classes=…)` takes them
   from its caller (the harness reads no policy itself) and `cli/commands/test.py` passes
-  `approval_classes_for(suite.root, ctx.home)`. A case reaching a gate held shut pauses and
-  fails — which is what `--exec-shell` demands, since the gated body really runs.
+  `approval_classes_for(suite.root, ctx.home)`, read once per suite root BEFORE the first case
+  runs. A case reaching a gate held shut pauses and fails — which is what `--exec-shell` demands,
+  since the gated body really runs. A policy file that cannot be read is a usage error for this
+  command (exit 2, `--junit` still written), like a malformed case file.
 
 CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
 `run.ApproveClassOption`). `run.operator_policy(project_root, home) -> EffectivePolicy | None` is
 the ONE seam that reads the operator's policy — `rayspec.policy.load_policy` over the same three
 layers every other consumer reads, `None` only when no layer is in force (a file that exists and
-cannot be read raises `PolicyError`, never `None`) — and `run.policy_class_rules` turns
-`.approvals` into `{name: ClassRules}` via `rules_from_policy`;
+cannot be read raises `PolicyError`, never `None`, so EVERY caller stands inside a `RayspecError`
+boundary that turns it into `error: …` and exit 2: `run` and `validate` through the
+`report.errors` of `validate_workflow`, `resume` through `refuse_policy_violations`, `plan` and
+`test` around the call itself — a caller without one answers a typo in `policy.yaml` with a
+traceback) — and `run.policy_class_rules` turns `.approvals` into `{name: ClassRules}` via
+`rules_from_policy`;
 `run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
 the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass, and
 sets `policy_loaded` from that same seam so a warning cannot claim there is no policy while the
