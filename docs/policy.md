@@ -86,6 +86,7 @@ names all of them — because editing one of them would not be enough.
 
 ## The keys
 
+<!-- rayspec:skip a policy file, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml
 providers:
@@ -291,6 +292,7 @@ the ones that refuse them are a `tools.deny` naming `mcp` or `mcp:<server>`, a n
 `tools.allow` that names neither, and an `mcp.allow_servers` that leaves the name out. All of them
 at once, never one of them:
 
+<!-- rayspec:skip an agent's `provider_options`, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml — mcp: {allow_servers: [github]}
 provider_options:
@@ -395,6 +397,7 @@ on every run that sets it.
 
 `.rayspec/trusted.yaml` lists the workflows this checkout may run, by hash:
 
+<!-- rayspec:skip a trust file, not a workflow -->
 ```yaml
 workflows:
   - workflow: .rayspec/workflows/nightly.yaml
@@ -440,6 +443,7 @@ of the fields that count as a control is
 Two things you want to say about an agent before leaving it alone overnight live on the agent, not
 in the policy file, because they are part of what the workflow *is*:
 
+<!-- rayspec:skip an agent file, not a workflow -->
 ```yaml
 # .rayspec/agents/reviewer.yaml
 provider: claude
