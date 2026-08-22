@@ -89,6 +89,7 @@ from rayspec.providers.base import (
     ProviderNotInstalledError,
     ResultStatus,
     Usage,
+    usage_dict,
 )
 from rayspec.providers.capabilities import CLAUDE_CAPABILITIES
 from rayspec.schema import provider_option_block
@@ -620,8 +621,8 @@ class _Mapper:
             AgentEvent(
                 kind="usage",
                 data={
-                    "usage": _usage_dict(usage),
-                    "turn_total": _usage_dict(total),
+                    "usage": usage_dict(usage),
+                    "turn_total": usage_dict(total),
                     "message_id": message.message_id,
                 },
                 nested=message.parent_tool_use_id is not None,
@@ -667,16 +668,6 @@ def _usage_from(raw: Mapping[str, Any] | None) -> Usage:
         cache_write=cache_write,
         output=num("output_tokens"),
     )
-
-
-def _usage_dict(usage: Usage) -> dict[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 def _model_from_usage(model_usage: Mapping[str, Any] | None) -> str | None:

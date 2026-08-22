@@ -404,8 +404,10 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   the second half of a run uses the failure policy the first half did. `rayspec resume
   --fail-fast` turns it on for a run launched without it (and is recorded in turn); the flag may
   only ever *tighten* — omitting it never turns a recorded one off, and `approve`/`reject` need
-  no flag of their own. The workflow's own `defaults.on_step_failure` is in the file both halves
-  read and needs no such treatment;
+  no flag of their own. A run paused at an approval gate records the tightening even though that
+  resume stops at the gate (exit 3), so `--fail-fast` first and `approve`/`reject` second is a
+  usable order; `rayspec show` reports what was recorded. The workflow's own
+  `defaults.on_step_failure` is in the file both halves read and needs no such treatment;
 - the workflow hash must match; otherwise the resume is **refused** (exit 2, `pass --force`)
   unless `--force`, in which case a leaf whose `fingerprint` (rendered prompt/script + agent)
   changed is re-run with a warning and the rest is reused. Every entry point applies this guard

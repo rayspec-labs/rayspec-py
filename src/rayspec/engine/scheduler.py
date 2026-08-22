@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-from collections.abc import Mapping
 from typing import Any
 
 import anyio
@@ -44,6 +43,7 @@ from rayspec.engine.context import (
     RunContext,
     StepOutcome,
     error_info,
+    failed_outcome,
     merge_cost_source,
     utcnow,
     view_of,
@@ -53,7 +53,7 @@ from rayspec.engine.executors.artifacts import collect_artifacts
 from rayspec.engine.graph import FAILED_LIKE, StepGraph, join_decision
 from rayspec.engine.retry import TIMEOUT_ERROR_TYPE, delay_for, policy_for, should_retry
 from rayspec.events.model import EventType
-from rayspec.providers.base import Usage
+from rayspec.providers.base import Usage, usage_dict
 from rayspec.schema import ApproveStep, StepModel, StepStatus
 from rayspec.store.model import ErrorInfo, StepRecord
 from rayspec.templating import TemplateRenderError
@@ -168,7 +168,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                         outcome = (
                             _skipped(record, "when_false")
                             if verdict is False
-                            else _failed(record, verdict)
+                            else failed_outcome(record, verdict)
                         )
                         await finish(outcome, step, scope, ctx)
                         settle(outcome)
@@ -242,7 +242,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                             outcome = (
                                 _skipped(record, "when_false")
                                 if verdict is False
-                                else _failed(record, verdict)
+                                else failed_outcome(record, verdict)
                             )
                             await finish(outcome, step, scope, ctx)
                             settle(outcome)
@@ -338,7 +338,7 @@ async def run_one(
     except RunControl as exc:
         outcome = _controlled(record, exc)
     except Exception as exc:  # bugs become failed steps, not crashes
-        outcome = _failed(record, error_info(exc, type_="engine"))
+        outcome = failed_outcome(record, error_info(exc, type_="engine"))
     try:
         await finish(outcome, step, scope, ctx)
     except anyio.get_cancelled_exc_class():
@@ -387,7 +387,7 @@ async def _dispatch(
         with anyio.fail_after(timeout):
             return await executor(step, scope, ctx, record, record.attempts)
     except TimeoutError:
-        return _failed(
+        return failed_outcome(
             record,
             ErrorInfo(
                 type=TIMEOUT_ERROR_TYPE, message=f"timed out after {timeout:g}s", transient=False
@@ -449,7 +449,7 @@ async def run_leaf(
                 with anyio.fail_after(timeout):
                     outcome = await executor(step, scope, ctx, record, attempt)
             except TimeoutError:
-                outcome = _failed(
+                outcome = failed_outcome(
                     record,
                     ErrorInfo(
                         type=TIMEOUT_ERROR_TYPE,
@@ -463,7 +463,7 @@ async def run_leaf(
             except RunControl:
                 raise
             except Exception as exc:
-                outcome = _failed(record, error_info(exc, type_="engine"))
+                outcome = failed_outcome(record, error_info(exc, type_="engine"))
         accumulate(outcome.record)
         last = outcome
         rec = outcome.record
@@ -551,13 +551,6 @@ def _skipped(record: StepRecord, reason: str) -> StepOutcome:
     return StepOutcome(record=record)
 
 
-def _failed(record: StepRecord, error: ErrorInfo) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.error = error
-    record.ok = False
-    return StepOutcome(record=record)
-
-
 def _interrupted(record: StepRecord, reason: str) -> StepOutcome:
     record.status = StepStatus.INTERRUPTED
     record.skip_reason = reason
@@ -614,7 +607,7 @@ async def finish(outcome: StepOutcome, step: StepModel, scope: ExecScope, ctx: R
     data: dict[str, Any] = {
         "status": str(rec.status.value),
         "duration_ms": rec.duration_ms,
-        "usage": _usage_dict(rec.usage),
+        "usage": usage_dict(rec.usage),
         "cost_usd": rec.cost_usd,
         "error": rec.error.model_dump() if rec.error is not None else None,
         "skip_reason": rec.skip_reason,
@@ -633,16 +626,6 @@ async def _finish_quietly(
 ) -> None:
     with contextlib.suppress(Exception):  # the run is unwinding; nothing better to do
         await finish(outcome, step, scope, ctx)
-
-
-def _usage_dict(usage: Any) -> Mapping[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 __all__ = [

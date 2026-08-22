@@ -126,6 +126,7 @@ from rayspec.providers.base import (
     ProviderNotInstalledError,
     ResultStatus,
     Usage,
+    usage_dict,
 )
 from rayspec.providers.capabilities import CODEX_CAPABILITIES
 from rayspec.providers.pricing import PriceTable
@@ -266,16 +267,6 @@ def usage_delta(current: Usage, previous: Usage) -> Usage:
         output=max(current.output - previous.output, 0),
         reasoning=max(current.reasoning - previous.reasoning, 0),
     )
-
-
-def _usage_dict(usage: Usage) -> dict[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 def _env_signature(env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
@@ -1104,9 +1095,9 @@ class CodexProvider:
             AgentEvent(
                 kind="usage",
                 data={
-                    "usage": _usage_dict(delta),
-                    "total": _usage_dict(total),
-                    "turn_total": _usage_dict(state.usage),
+                    "usage": usage_dict(delta),
+                    "total": usage_dict(total),
+                    "turn_total": usage_dict(state.usage),
                     "model_context_window": payload.token_usage.model_context_window,
                 },
             )
@@ -1160,7 +1151,7 @@ class CodexProvider:
             "turn_status": turn_status.value if turn_status is not None else None,
             "turn_error": _jsonable(turn.error) if turn is not None and turn.error else None,
             "timed_out": timed_out,
-            "usage_total": _usage_dict(total) if total is not None else None,
+            "usage_total": usage_dict(total) if total is not None else None,
         }
         if deadline_exceeded:
             raw["deadline_exceeded"] = True

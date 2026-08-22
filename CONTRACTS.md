@@ -32,6 +32,12 @@ src/rayspec/
   cli/commands/{init,doctor}.py + cli/templates/<kind>/**
   cli/commands/{new,completion}.py + cli/templates/new/** + the packaged examples corpus
   cli/_docs.py  DOCS_BASE + docs_url(rel) — the only way a hint cites a doc
+  fmt.py        format_duration / humanize_duration — the ONE rendering of a duration, for the
+               listings, the console tree, the approval panel and the cap reasons alike (a leaf
+               module: no rayspec imports). Tokens and costs render through providers/pricing.py
+  resources.py  walk_files(node, *, keep_dir=, keep_file=) — the ONE recursive listing of a
+               packaged data tree (the skill, the init scaffolds, the example corpus); a leaf
+               module over importlib.resources, no rayspec imports
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
   loader/secrets.py  where a `secret: true` input may appear (the placement rules)
@@ -725,9 +731,12 @@ from rayspec.events import (  # models + protocol + sinks (no JsonlSink: the sto
     #                  emit_stream() for the Live tree
 )
 from rayspec.events.sinks.console import fmt_duration, fmt_tokens, fmt_cost, usage_total, error_text
+# fmt_duration IS rayspec.fmt.format_duration and fmt_tokens IS providers.pricing.format_tokens
+# (names for this sink, not second implementations).
 # fmt_cost(usd, *, approx=False, source=None) -> "$0.12" | "~$0.12" (approx / source "table":
 # price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price); the
-# marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
+# marker is providers.pricing.cost_marker (usd is a cost, never a usage: no input of this
+# helper renders as tokens). The quiet sink reads the OPTIONAL step.finished /
 # run.finished data key cost_source; when run.finished carries none the run line derives it from
 # the step.finished events seen (QuietConsoleSink.derived_cost_source()).
 # format_stream_warning(step, text) -> "⚠ <step>: <warning>": printed by QuietConsoleSink.
@@ -1424,10 +1433,17 @@ from rayspec.engine.context import (
     #   none = no record has a cost; partial = some record has tokens but no cost (the sum is a
     #   lower bound, rendered "≥$"); table = an estimate is in the sum and nothing is unknown
     #   ("~$"); provider = every record with tokens reported a provider cost ("$"). Records
-    #   without tokens and cost (shell/python/skipped) do not count.
+    #   without tokens and cost (shell/python/skipped) do not count. Folds through
+    #   providers.pricing.combine_cost_sources (the one fold); a record that has a cost but
+    #   names no source counts as "provider". `cli._runs_common.run_cost_source` calls it.
     totals_of,  # (records) -> (Usage, cost_usd | None, cost_source); RunContext.run_totals()
     #   applies it to every record of the run (run.json cost_source, run.finished, RunResult),
     #   RunContext.budget_totals() to the accounted ones
+    mark_failed,  # (record, error) -> record  stamps status=failed + ok=False + error, the ONE
+    #   place those three are set together
+    failed_outcome,  # (record, error, *, output=None) -> StepOutcome  mark_failed + the outcome
+    #   (output carried as text when the step produced one before failing); every executor and
+    #   the scheduler fail a step through it
 )
 from rayspec.engine.approval import (
     ApprovalPrompt,  # Protocol: async __call__(ApprovalRequest) -> ApprovalAnswer | None (None = pause)
@@ -1447,6 +1463,9 @@ from rayspec.engine.approval import (
     #   line via format_totals ("steps: 3 · tokens: 12.3k tok · cost: —"; the executor passes
     #   totals {steps, tokens, cost_usd, cost_source}) — never a raw None or raw seconds
     clean_answer, enable_readline, humanize_duration, fmt_cost, format_totals,
+    #   humanize_duration is re-exported from rayspec.fmt (which also owns the compact
+    #   format_duration the listings and the console tree print) — one duration rendering per
+    #   shape, in one module, so a third shape is never added by accident
     git_summary, git_diff,  # (workdir) -> str, best effort, capped; used by the console prompt
 )
 from rayspec.engine.runtime import (
@@ -1558,7 +1577,13 @@ Semantics fixed here (tests in `tests/engine/`):
   pid that last ran). `run.pause` is cleared when the
   gate that owns it reaches a decision by any path (stored decision, `--yes`, dry run, TTY), so
   `RunResult.pause` is only non-None for a run that is `paused`. `RunRecord.dry_run` (additive)
-  records `--dry-run`.
+  records `--dry-run`, `RunRecord.fail_fast` (additive) `--fail-fast`: a resume continues with
+  the blast radius the run was started with. `RunContext.fail_fast` is `options.fail_fast or
+  run.fail_fast` and is what `fail_fast_for` / `keep_going_for` read; `Runner._prepare_record`
+  OR-s the flag of a resume entry into the record and saves it. A failure policy only ever
+  TIGHTENS, so no entry point can clear a recorded one. The workflow's own
+  `defaults.on_step_failure` is NOT recorded — it is part of the workflow, and the hash guard
+  refuses a resume of a changed one.
 - Declared `artifacts:`: `executors.artifacts.collect_artifacts(step, scope, ctx, outcome)` runs
   in `scheduler._execute` after the executor (`_dispatch`) and before `finish`, for EVERY kind.
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
@@ -1636,7 +1661,7 @@ Semantics fixed here (tests in `tests/engine/`):
   `RunContext.elapsed_s()` is `utcnow() - RunRecord.started_at` (the ORIGINAL start — a resume
   entry keeps it, so the cap measures the run, not the attempt, waiting at an approval gate
   included); `context.time_reason(elapsed_s, defaults)` renders `time limit exceeded (elapsed
-  2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
+  2h 4m > timeout_total 2h 0m)` (`rayspec.fmt.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
   the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
@@ -1709,8 +1734,12 @@ interactive=, prompt=None)` returns `None` (pause at gates) or a `SuspendingAppr
 runs the `ConsoleApprovalPrompt` inside `async with sink.suspended():` for every sink exposing
 `suspended()`; `rayspec run` and `_runs_common.resume_run` (`resume`/`approve`/`reject`;
 additive kwargs `inputs=` (re-supplied secrets), `stub_script: StubScript | None =`,
-`stubs_path=`; the resumed run inherits `dry_run` from the record) both use
-it. `print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
+`stubs_path=`, `fail_fast=` (`resume --fail-fast`, OR-ed into `RunRecord.fail_fast`); the resumed
+run inherits `dry_run` and `fail_fast` from the record) both use
+it. `resume --fail-fast` records the tightening even when the pending-gate short-circuit ends the
+command (exit 3, one extra line naming the flag): a failure policy only ever tightens, so it is
+safe to persist for whoever continues the run, and the flag must not be accepted and dropped.
+`print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
 (never markup: `[stub] think` stays literal) and through
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
@@ -1724,7 +1753,9 @@ treats every directory with a `runs/` child as a store and never descends into i
 `source.git/` or `locks/`; `find_run(ctx, ref)` → `(store, RunRecord)` resolving full ids and unique prefixes in the current
 project first, then every project under the home (`UnknownRunIdError` / `AmbiguousRunIdError`
 with candidates newest first; `lookup_run` prints them with exit 2); `fmt_duration/fmt_tokens/
-fmt_cost` (`providers.pricing.format_cost`: `$0.12`, `~$0.12` for table prices, `-` when no cost
+fmt_cost` (`fmt_duration` IS `rayspec.fmt.format_duration` and `fmt_tokens` IS
+`providers.pricing.format_tokens`; `fmt_cost` renders through `providers.pricing.format_cost`:
+`$0.12`, `~$0.12` for table prices, `-` when no cost
 is known — tokens are never shown in a cost slot; listings have a `tokens` column) / `fmt_when` (relative within 30 days) / `run_duration_ms` /
 `steps_progress(run, *, planned=None)` (done = succeeded, tolerated or skipped; total =
 recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_step_paths(ctx, run, *, cache=None)`
@@ -1732,9 +1763,11 @@ recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_
 resumed: running/paused/interrupted/failed/cancelled; `None` for succeeded runs or when the
 workflow no longer loads — any loader exception is swallowed, a listing never fails on a broken
 workflow; `cache` memoises per (project root, workflow) for one listing) / `unpriced_steps` / `run_cost_source`
-(`provider|table|partial|none` via `combine_cost_sources`) / `pid_command_line(pid)` (`ps -o
+(`provider|table|partial|none` — the engine's `engine.context.cost_source_of` applied to a stored
+record, so a listing prints what the engine wrote into `RunRecord.cost_source`) / `pid_command_line(pid)` (`ps -o
 command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|approve|reject` as whole tokens + run id / workflow name / file as a whole token) /
-`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
+`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`, `fail_fast` — the
+recorded failure policy, next to `dry_run`; `rayspec show` marks both on the run header) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by
 recorded path, then by name) / `check_workflow_unchanged(run, resolved, force=)` (the engine's
 hash rule as a `ResumeError`, applied before anything is persisted) / `record_root(ctx, run)` /
@@ -3183,6 +3216,8 @@ recorded — never the tool input.
   stamps now. `StreamRecord.kind` for shell steps: `stdout`, `stderr`, `exit`. A `usage`
   AgentEvent carries `data["usage"]` (this report's delta) and `data["turn_total"]` (cumulative
   usage of the attempt so far) as `{input, cached_input, cache_write, output, reasoning}` dicts
+  (`providers.base.usage_dict(usage)`, additive — the ONE spelling of that mapping, used by the
+  adapters, the scheduler's event data and the CLI's `--json` rows alike)
   — the engine records `turn_total` for an attempt cut off before its result.
 - **RunEvent.data** keys: `step.started {kind, attempt}`, `step.retry {attempt, delay_s, error}`,
   `step.finished {status, duration_ms, usage, cost_usd, error, skip_reason, tolerated}`,
