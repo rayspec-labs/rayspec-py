@@ -78,7 +78,9 @@ on:
         type: boolean
     outputs:
       status:
-        description: succeeded · failed · paused · cancelled · not started (usage error)
+        description: >-
+          succeeded · failed · paused · cancelled · not started (usage error) · interrupted,
+          or `exit <code>` for a code no release of rayspec has a name for
         value: ${{ jobs.dry-run.outputs.status }}
       exit-code:
         description: The exit code rayspec returned.
@@ -153,6 +155,9 @@ jobs:
             2) status="not started (usage error)" ;;
             3) status=paused ;;
             4) status=cancelled ;;
+            130) status=interrupted ;;
+            # Reachable: a code this release of rayspec does not define, and 127 for a rayspec
+            # that never installed. Reporting it verbatim beats reporting nothing.
             *) status="exit $code" ;;
           esac
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
@@ -192,6 +197,7 @@ jobs:
               2: "not started (usage error)",
               3: "paused",
               4: "cancelled",
+              130: "interrupted",
           }
           ICON = {
               "succeeded": "white_check_mark",

@@ -766,6 +766,7 @@ DOCUMENTED_OUTCOMES: list[tuple[int, str]] = [
     (2, "not started (usage error)"),
     (3, "paused"),
     (4, "cancelled"),
+    (130, "interrupted"),
 ]
 
 
@@ -845,6 +846,33 @@ def test_every_documented_outcome_sets_both_documented_outputs(
     done, outputs, _work = _run_step(tmp_path, code)
     assert done.returncode == 0, done.stdout + done.stderr
     assert outputs.get("exit-code") == str(code), outputs
+    assert outputs.get("status") == status, outputs
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    DOCUMENTED_OUTCOMES,
+    ids=[status for _code, status in DOCUMENTED_OUTCOMES],
+)
+def test_the_report_and_the_output_call_one_outcome_by_one_name(
+    tmp_path: Path, code: int, status: str
+) -> None:
+    """Two tables turn an exit code into a name: the run step's ``case`` and the report's.
+
+    Different audiences read them — a person reads the comment, a calling workflow reads
+    ``status`` — and they drifted: an interrupted run was ``interrupted`` in the comment and
+    ``exit 130`` in the output, which reads as two different things having happened.
+
+    The event stream is empty here on purpose. A real run puts its own status in the summary
+    event and the report prefers it; the table below is what answers when there is no stream to
+    read, which is exactly the case nobody looks at.
+    """
+    _done, outputs, _work = _run_step(tmp_path, code)
+    events = tmp_path / f"events-{code}.jsonl"
+    events.write_text("", encoding="utf-8")
+    comment = _render(tmp_path, events, code)
+    [heading] = [line for line in comment.splitlines() if line.startswith("###")]
+    assert heading.endswith(status), heading
     assert outputs.get("status") == status, outputs
 
 
