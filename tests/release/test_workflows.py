@@ -278,6 +278,33 @@ def publishing_jobs() -> list[tuple[str, dict[str, Any]]]:
     ]
 
 
+def test_the_page_and_the_run_summary_count_the_same_manual_steps() -> None:
+    """A release-day checklist that under-counts itself is how a step gets skipped.
+
+    ``docs/ci.md`` is what a person reads before a release; the run's summary is what actually
+    prints when one finishes. They may not disagree about how much is left to do by hand.
+    """
+    import re
+
+    [summary] = [
+        step
+        for _job, step in steps_of(load(RELEASE))
+        if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
+    ]
+    numbered = re.findall(r'echo "(\d+)\.', str(summary["run"]))
+    assert numbered, "the run's summary lists nothing that stays manual"
+
+    page = (REPO_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    counted = {
+        1: "One thing stays manual",
+        2: "Two things stay manual",
+        3: "Three things stay manual",
+    }
+    assert counted[len(numbered)] in page, f"the page does not say {counted[len(numbered)]!r}"
+    [paragraph] = [block for block in page.split("\n\n") if "stay manual" in block]
+    assert "`v1`" in paragraph, "the tag every foreign repository follows is not in the checklist"
+
+
 def test_publishing_only_happens_for_a_pushed_tag() -> None:
     """``workflow_dispatch`` is the rehearsal: everything except the irreversible half.
 

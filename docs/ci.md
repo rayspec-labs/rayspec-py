@@ -19,7 +19,8 @@ Two CI-only behaviours are worth knowing before the first red build:
   ([`rayspec lock`](cli.md#rayspec-lock)). A project with no lockfile is not affected — there is
   nothing to enforce — so the default never breaks a repository that did not opt in.
 - **Nothing may wait for a person.** Pass `--no-interactive` so an `approve:` gate pauses the run
-  (exit 3) instead of prompting into a log nobody is reading.
+  (exit 3) instead of prompting into a log nobody is reading. That is about *real* runs in CI: a
+  dry run auto-approves every gate, so it never pauses and never exits 3.
 
 ## The dry-run check, as a workflow you can call
 
@@ -70,9 +71,9 @@ that reason alone.
 design. The job summary carries the same report. Do not reach for `pull_request_target` to work
 around it: that runs the fork's code with a writable token.
 
-**Pinning.** `@v1` is a tag that moves with the 1.x line; pin a commit sha instead if you would
-rather not track it. Pin `rayspec-version` either way — a check that silently changes with the
-next release is a check nobody trusts.
+**Pinning.** `@v1` is a tag that moves with the 1.x line — by hand, as the last step of a release
+(below); pin a commit sha instead if you would rather not track it. Pin `rayspec-version` either
+way — a check that silently changes with the next release is a check nobody trusts.
 
 ## How rayspec itself is released
 
@@ -95,9 +96,10 @@ The release runs from a tag and needs no credential of mine:
 `workflow_dispatch` on the same workflow is the rehearsal: it builds, checks, generates the bill
 of materials and the notes, and stops short of the two irreversible steps.
 
-Two things stay manual on purpose, and the run's summary says so when it finishes: yanking the
-placeholder that holds the `rayspec` name on PyPI, and rolling the next `## [Unreleased]` heading
-into `CHANGELOG.md`.
+Three things stay manual on purpose, and the run's summary says so when it finishes: yanking the
+placeholder that holds the `rayspec` name on PyPI, moving the `v1` tag onto the released commit
+so every repository calling the dry-run workflow at `@v1` gets the new release, and rolling the
+next `## [Unreleased]` heading into `CHANGELOG.md`.
 
 ## The documentation site
 
