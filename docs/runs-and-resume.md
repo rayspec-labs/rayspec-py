@@ -445,10 +445,13 @@ approvals:
 Every command that can reach a gate reads them: `rayspec run`, `rayspec resume`, `rayspec
 approve` / `rayspec reject`, `rayspec test`, and `rayspec plan` / `plan --risk` before anything
 runs. A class **no** layer in force defines keeps the permissive default, and every one of those
-commands says so rather than letting the name pass for a lock
+commands except `rayspec test` says so rather than letting the name pass for a lock
 (`steps.publish.approve.class: 'release' is not defined by the operator policy, so the gate is
 not held`, or `…but no operator policy is in force…` when there is no file at all); `plan --risk`
-reports such a gate as `unheld-class`.
+reports such a gate as `unheld-class`. `rayspec test` enforces the rules and stays silent about
+an unknown class: the harness has no warning surface, and a passing case discards its run
+directory, so there is nowhere to put the notice. Validate the spelling with `rayspec plan
+--risk` rather than reading a green suite as proof the class is held.
 
 | Rule | What it forbids | What still works |
 |---|---|---|

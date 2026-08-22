@@ -167,10 +167,13 @@ def operator_policy(project_root: Path, home: Path | None) -> EffectivePolicy | 
     loader every other consumer uses (:mod:`rayspec.limits`, the load-time checks), so an
     operator cannot end up with a file that caps their spending and is invisible to their gates.
 
-    It is the one seam the CLI reads that policy through for approval purposes, and four
-    commands are behind it: ``run`` and ``resume`` via :func:`approval_classes_for`, ``test``
-    through the same call, ``plan`` through
-    :func:`~rayspec.cli.commands.plan.policy_in_force` as well.
+    It is the one seam the CLI reads that policy through for approval purposes, and SIX commands
+    are behind it: ``run`` and ``resume`` via :func:`approval_classes_for`; ``approve`` and
+    ``reject`` through the same call, reached via
+    :func:`~rayspec.cli._runs_common.resume_run`; ``test`` through it as well; and ``plan``
+    through :func:`~rayspec.cli.commands.plan.policy_in_force`. Count them from the callers, not
+    from memory — an enumeration that missed two commands is what left this seam returning
+    ``None`` while the policy file it was supposed to read already existed.
 
     A file that exists but cannot be read RAISES :class:`~rayspec.policy.PolicyError` rather
     than returning ``None``: a guardrail that silently disappears is the one failure mode this

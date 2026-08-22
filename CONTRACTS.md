@@ -2871,11 +2871,13 @@ CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
 `run.ApproveClassOption`). `run.operator_policy(project_root, home) -> EffectivePolicy | None` is
 the ONE seam that reads the operator's policy — `rayspec.policy.load_policy` over the same three
 layers every other consumer reads, `None` only when no layer is in force (a file that exists and
-cannot be read raises `PolicyError`, never `None`, so EVERY caller stands inside a `RayspecError`
-boundary that turns it into `error: …` and exit 2: `run` and `validate` through the
+cannot be read raises `PolicyError`, never `None`, and every command answers a typo in
+`policy.yaml` with `error: …` and exit 2 rather than a traceback: `run` and `validate` through the
 `report.errors` of `validate_workflow`, `resume` through `refuse_policy_violations`, `plan` and
-`test` around the call itself — a caller without one answers a typo in `policy.yaml` with a
-traceback) — and `run.policy_class_rules` turns `.approvals` into `{name: ClassRules}` via
+`test` around the call itself. `approve` and `reject` reach the seam through
+`_runs_common.resume_run`, which is NOT itself inside a boundary — they exit cleanly because
+`guard_workflow_unchanged` reads the policy earlier and fails first. Adding a caller means
+checking which of those two is true for it; a caller with neither answers with a traceback) — and `run.policy_class_rules` turns `.approvals` into `{name: ClassRules}` via
 `rules_from_policy`;
 `run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
 the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass, and
