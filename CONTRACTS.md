@@ -2185,9 +2185,16 @@ from rayspec.registry import (
 `rayspec.cli.app`: `build_app()` builds a fresh app (builtins by pkgutil, then plugins); the
 module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
 `PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app)`,
-`loaded_cli_plugins()`, `reset_cli_plugins()`, `command_names(app)`, `installed_plugins()`
+`loaded_cli_plugins()`, `cli_plugin_problems()`, `reset_cli_plugins()`, `command_names(app)`,
+`installed_plugins()`
 (`InstalledPlugin(group, name, value, distribution, version, status, detail)` — what
-`rayspec plugins [--json]` prints). A CLI plugin may not shadow a builtin command name (the
+`rayspec plugins [--json]` prints) and the reporting trio `plugin_notice(problems)` /
+`notice_wanted(argv=None, env=None)` / `NOTICE_LIMIT` + `HELP_FLAGS` + `COMPLETE_VAR`: a CLI
+plugin problem is **one rayspec line on stderr** (never a `RuntimeWarning`, whose rendering names
+rayspec's own source file for somebody else's bug), and it is not printed for an invocation that
+only reads the CLI (no arguments, any `--help`, `rayspec completion`, `_RAYSPEC_COMPLETE` set).
+The extension groups keep warning where they are resolved (`rayspec.registry`).
+A CLI plugin may not shadow a builtin command name (the
 command is removed again and reported; a plugin that had only part of what it registered
 refused is still `ok` and `rayspec plugins` names what was dropped), may not replace the root
 callback (the replacement is dropped), and anything it registered before raising is rolled back

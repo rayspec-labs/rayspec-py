@@ -130,8 +130,7 @@ def test_a_partially_refused_plugin_names_the_dropped_command(
         modules={"acme_partly": PARTLY_REFUSED},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_partly:register"}},
     )
-    with pytest.warns(RuntimeWarning, match="'run'"):
-        payload = json.loads(_invoke(["plugins", "--json"]).output)
+    payload = json.loads(_invoke(["plugins", "--json"]).output)
     row = {(r["group"], r["name"]): r for r in payload["plugins"]}[("rayspec.cli_plugins", "acme")]
     assert row["status"] == "ok"
     assert row["detail"] == "adds acme-lint; dropped run (already provided)"
