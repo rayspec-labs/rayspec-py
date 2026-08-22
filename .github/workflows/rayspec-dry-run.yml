@@ -265,20 +265,32 @@ jobs:
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
           BODY: ${{ runner.temp }}/rayspec-comment.md
+          COMMENT_TAG: ${{ inputs.comment-tag }}
           MARKER: "<!-- rayspec-dry-run: ${{ inputs.comment-tag }} -->"
         run: |
           set -uo pipefail
+          # The marker is part of the jq program below, so the tag has to be a plain name: a
+          # quote or a backslash in it would rewrite the filter instead of being searched for.
+          case "$COMMENT_TAG" in
+            "" | *[!A-Za-z0-9._-]*)
+              echo "::error::comment-tag must match [A-Za-z0-9._-]+ — got: $COMMENT_TAG"
+              exit 1
+              ;;
+          esac
           post() {
+            # --paginate runs --jq once per page, so more than one page can answer.
             existing=$(gh api "repos/$REPO/issues/$NUMBER/comments" --paginate \
-              --jq "[.[] | select(.body | contains(\"$MARKER\"))] | last | .id // empty") || return 1
+              --jq "[.[] | select(.body | contains(\"$MARKER\"))] | last | .id // empty" \
+              | tail -n1) || return 1
             if [ -n "$existing" ]; then
               gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$BODY" --silent
             else
               gh api -X POST "repos/$REPO/issues/$NUMBER/comments" -F "body=@$BODY" --silent
             fi
           }
-          post || echo "::warning::could not post the comment — the calling job needs
-          permissions: pull-requests: write. The result is in this run's job summary."
+          # One line: GitHub reads only the first line of an annotation, and the second half is
+          # the half that says what to do about it.
+          post || echo "::warning::could not post the comment — the calling job needs permissions: pull-requests: write. The result is in this run's job summary."
 
       - name: Fail the check when the dry run did not succeed
         if: inputs.fail-on-error && steps.run.outputs.status != 'succeeded'

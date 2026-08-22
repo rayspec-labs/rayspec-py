@@ -434,6 +434,70 @@ def test_the_recipe_edits_its_own_comment_instead_of_adding_one_per_push() -> No
     assert "MARKER" in comment["run"]
 
 
+def _post_comment(
+    tmp_path: Path, comment_tag: str
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run the comment step's script with ``gh`` replaced by a stub that records its arguments."""
+    script = tmp_path / "comment.sh"
+    script.write_text(step_with_id(load(RECIPE), "comment")["run"], encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    calls = tmp_path / "gh-calls.txt"
+    stub = bin_dir / "gh"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> {calls}\n', encoding="utf-8")
+    stub.chmod(0o755)
+    body = tmp_path / "comment.md"
+    body.write_text("hello\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "REPO": "o/r",
+        "NUMBER": "7",
+        "BODY": str(body),
+        "COMMENT_TAG": comment_tag,
+        "MARKER": f"<!-- rayspec-dry-run: {comment_tag} -->",
+    }
+    done = subprocess.run(
+        ["bash", str(script)], env=env, capture_output=True, text=True, cwd=tmp_path
+    )
+    return done, calls
+
+
+def test_a_comment_tag_that_would_rewrite_the_jq_program_is_refused(tmp_path: Path) -> None:
+    """It is the one value a stranger picks that is spliced into code rather than passed as data.
+
+    A tag carrying a quote or a backslash would rewrite the filter that searches for the marker
+    instead of being searched for, so the shape is checked before anything is called.
+    """
+    done, calls = _post_comment(tmp_path, '" ) | .id // empty] | .[0] | ("')
+    assert done.returncode != 0, done.stdout
+    assert "comment-tag" in done.stdout + done.stderr
+    assert not calls.exists(), "the tag reached the API before it was checked"
+
+
+def test_an_ordinary_comment_tag_posts(tmp_path: Path) -> None:
+    done, calls = _post_comment(tmp_path, "dry-run.1")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "issues/7/comments" in calls.read_text(encoding="utf-8")
+
+
+def test_only_one_comment_id_survives_pagination() -> None:
+    """``--paginate`` applies ``--jq`` once per page, so the filter can emit an id per page.
+
+    A pull request whose marker matches on two pages would then build a URL out of two ids and
+    report the failure as a missing permission, which is the wrong diagnosis.
+    """
+    run = step_with_id(load(RECIPE), "comment")["run"]
+    assert "--paginate" not in run or "tail -n1" in run
+
+
+def test_the_warning_about_a_missing_permission_is_a_single_annotation() -> None:
+    """GitHub reads one line as the annotation; a second line is an ordinary log line."""
+    run = step_with_id(load(RECIPE), "comment")["run"]
+    [line] = [item for item in run.splitlines() if "::warning::" in item]
+    assert "pull-requests" in line, "the half that says what to do is not in the annotation"
+
+
 def test_the_recipe_always_writes_the_job_summary() -> None:
     """The comment is a convenience; the run's own summary is the record that always exists."""
     runs = " ".join(str(step.get("run", "")) for _job, step in steps_of(load(RECIPE)))
