@@ -19,6 +19,7 @@ dogfoods itself through its own `.rayspec/workflows/`. The table below is the co
 
 ## Minimal workflow to copy
 
+<!-- rayspec:run -->
 ```yaml
 # .rayspec/workflows/review.yaml
 rayspec: 1

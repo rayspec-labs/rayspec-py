@@ -17,6 +17,7 @@ A workflow says *what runs, in what order, under which gates, with which agent*.
 hand judgement to an agent; the engine runs the DAG, fans out, loops, pauses for humans, keeps
 every step's output as a file and resumes from it.
 
+<!-- rayspec:run issue=123 -->
 ```yaml
 # .rayspec/workflows/fix_issue.yaml
 rayspec: 1
