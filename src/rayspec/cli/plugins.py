@@ -49,6 +49,8 @@ from typing import Any
 
 import typer
 
+from rayspec.textsafe import safe_text
+
 #: Entry-point group scanned for third-party commands (value = ``module:register``).
 CLI_ENTRY_POINT_GROUP = "rayspec.cli_plugins"
 
@@ -109,13 +111,23 @@ COMPLETE_VAR = "_RAYSPEC_COMPLETE"
 #: Arguments that mean "show me the command list", not "run something".
 HELP_FLAGS: frozenset[str] = frozenset({"--help", "-h"})
 
+#: Flags that answer a question about rayspec itself and exit — the same "only reading the CLI"
+#: case as :data:`HELP_FLAGS`, and the same reason to stay quiet: `rayspec --version` in a
+#: script can do nothing about a plugin somebody else installed.
+READING_FLAGS: frozenset[str] = HELP_FLAGS | frozenset({"--version", "-V"})
+
 #: The most one problem may contribute to the notice; an exception message is arbitrary text.
 NOTICE_LIMIT = 140
 
 
 def _one_line(text: str, limit: int = NOTICE_LIMIT) -> str:
-    """``text`` as a single bounded line — the notice is one line whatever a plugin raised."""
-    lines = [line for line in text.strip().splitlines() if line.strip()]
+    """``text`` as a single bounded line — the notice is one line whatever a plugin raised.
+
+    ``safe_text`` first: the text is a third-party exception message on its way to a terminal,
+    and ``splitlines()`` does not remove an ESC — a message carrying ``ESC [ 2 J`` would clear
+    the screen the notice was printed on, which is the opposite of one quiet line.
+    """
+    lines = [line for line in safe_text(text).strip().splitlines() if line.strip()]
     first = lines[0].strip() if lines else ""
     if len(lines) > 1 and len(first) < limit:
         first += " …"
@@ -143,24 +155,30 @@ def notice_wanted(argv: Sequence[str] | None = None, env: Mapping[str, str] | No
     """Whether this invocation should be told about a plugin problem.
 
     Quiet for the invocations that are only *reading* the CLI — no arguments (Typer prints the
-    help screen), any ``--help``/``-h``, the ``completion`` command and a completion request in
-    flight (``_RAYSPEC_COMPLETE``): a plugin that was skipped is a property of the installation,
-    so repeating it into somebody's command list, or into the shell's completion output, is
-    noise nothing can be done about there. Everything that actually runs a command gets the line.
+    help screen), any :data:`READING_FLAGS` (``--help``/``-h``, ``--version``/``-V``), the
+    ``completion`` command and a completion request in flight (``_RAYSPEC_COMPLETE``): a plugin
+    that was skipped is a property of the installation, so repeating it into somebody's command
+    list, into ``rayspec --version`` in a script, or into the shell's completion output is noise
+    nothing can be done about there. Everything that actually runs a command gets the line.
     """
     environ = os.environ if env is None else env
     if environ.get(COMPLETE_VAR):
         return False
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args or HELP_FLAGS & set(args):
+    if not args or READING_FLAGS & set(args):
         return False
     return args[0] != "completion"
 
 
-def _report(problems: Sequence[str]) -> None:
-    """Print the one-line notice for ``problems`` on stderr, when this invocation wants it."""
+def _report(problems: Sequence[str], argv: Sequence[str] | None = None) -> None:
+    """Print the one-line notice for ``problems`` on stderr, when ``argv`` wants it.
+
+    ``argv`` is passed in rather than read here so the decision is an argument of the scan: with
+    the process's own command line reached for in the middle of it, what rayspec printed was a
+    function of ambient global state that a caller could not set without patching ``sys``.
+    """
     line = plugin_notice(problems)
-    if line is not None and notice_wanted():
+    if line is not None and notice_wanted(argv):
         # sys.stderr is resolved at call time: a caller (pytest, a wrapper) may have replaced it
         print(f"rayspec: {line}", file=sys.stderr)
 
@@ -234,25 +252,33 @@ def _entry_points(group: str, problems: list[str] | None = None) -> list[EntryPo
         return []
 
 
-def register_cli_plugins(app: typer.Typer) -> tuple[LoadedCliPlugin, ...]:
+def register_cli_plugins(
+    app: typer.Typer, *, argv: Sequence[str] | None = None
+) -> tuple[LoadedCliPlugin, ...]:
     """Register every installed CLI plugin on ``app`` (builtins must already be registered).
 
     Returns one :class:`LoadedCliPlugin` per visited entry point — the record ``rayspec plugins``
     prints. Never raises: every failure is a skipped plugin, recorded on the result and reported
     as the single stderr line of :func:`plugin_notice`.
+
+    ``argv`` is the command line the notice decision is made from (:func:`notice_wanted`),
+    resolved from ``sys.argv`` once, here, when it is not given — this is the one place that
+    reads it, so a caller can say what invocation this is instead of patching the process.
     """
+    if argv is None:
+        argv = list(sys.argv[1:])
     problems: list[str] = []
     eps = _entry_points(CLI_ENTRY_POINT_GROUP, problems)
     if not eps:
         _state.loaded = ()
         _state.problems = tuple(problems)
-        _report(problems)
+        _report(problems, argv)
         return ()
     taken = command_names(app)
     loaded = [_register_one(app, ep, taken, problems) for ep in eps]
     _state.loaded = tuple(loaded)
     _state.problems = tuple(problems)
-    _report(problems)
+    _report(problems, argv)
     return _state.loaded
 
 
@@ -269,6 +295,9 @@ def _register_one(
     where = f"CLI plugin {ep.name!r} ({ep.value})"
 
     def failed(error: str) -> LoadedCliPlugin:
+        # the message is a third-party exception's, and it is rendered twice (the notice and
+        # the `rayspec plugins` detail cell): neutralise it once, where it enters the record
+        error = safe_text(error)
         problems.append(f"{where} {error}; skipped")
         return LoadedCliPlugin(ep.name, ep.value, distribution, version, error=error)
 
@@ -425,7 +454,16 @@ def installed_plugins() -> list[InstalledPlugin]:
                 elif registry.is_registered(registry.GROUP_KINDS[group], ep.name):
                     status = "ok"
             rows.append(
-                InstalledPlugin(group, ep.name, ep.value, distribution, version, status, detail)
+                # one table cell, and part of it is a third-party exception message
+                InstalledPlugin(
+                    group,
+                    ep.name,
+                    ep.value,
+                    distribution,
+                    version,
+                    status,
+                    safe_text(detail, keep_newlines=False),
+                )
             )
     return rows
 
@@ -436,6 +474,7 @@ __all__ = [
     "HELP_FLAGS",
     "NOTICE_LIMIT",
     "PLUGIN_GROUPS",
+    "READING_FLAGS",
     "InstalledPlugin",
     "LoadedCliPlugin",
     "cli_plugin_problems",

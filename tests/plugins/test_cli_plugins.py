@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 
 import pytest
 import typer
@@ -73,14 +74,24 @@ def _build():
     return build_app()
 
 
-def _build_reporting(capsys: pytest.CaptureFixture[str]) -> tuple[typer.Typer, str]:
-    """Build the app and return it with what the plugin scan printed on stderr.
+def _build_reporting(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: Sequence[str] = ("workflows",),
+) -> tuple[typer.Typer, str]:
+    """Build the app under an explicit ``argv`` and return what the plugin scan printed on stderr.
 
     A plugin problem is a rayspec line, never a Python warning: Python renders one with the
     absolute path of rayspec's own ``plugins.py`` plus an echoed line of its source, which reads
     as a rayspec crash about somebody else's package. ``simplefilter("error")`` makes the old
     behaviour a test failure rather than something to notice later.
+
+    ``sys.argv`` is pinned because the notice is deliberately skipped for an invocation that is
+    only *reading* the CLI: without a command line of its own, every assertion below would be
+    about how pytest happened to be started (bare ``pytest`` leaves ``sys.argv[1:]`` empty, which
+    reads as "no arguments" and prints nothing).
     """
+    monkeypatch.setattr("sys.argv", ["rayspec", *argv])
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         app = _build()
@@ -103,14 +114,16 @@ def test_plugin_command_is_registered_and_runs(install_plugin: InstallPlugin) ->
 
 
 def test_plugin_may_not_shadow_a_builtin_command(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_plugin(
         "acme-rayspec",
         modules={"acme_plugin": SHADOWS_BUILTIN},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "acme" in notice and "'run'" in notice
     result = CliRunner().invoke(app, ["run", "--help"])
     assert result.exit_code == 0
@@ -119,14 +132,16 @@ def test_plugin_may_not_shadow_a_builtin_command(
 
 
 def test_broken_plugin_never_breaks_the_cli(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_plugin(
         "acme-rayspec",
         modules={"acme_plugin": RAISES_ON_IMPORT},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "boom at import time" in notice
     result = CliRunner().invoke(app, ["--help"])
     assert result.exit_code == 0
@@ -134,14 +149,16 @@ def test_broken_plugin_never_breaks_the_cli(
 
 
 def test_plugin_that_raises_while_registering_is_rolled_back(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_plugin(
         "acme-rayspec",
         modules={"acme_plugin": RAISES_IN_REGISTER},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "boom during register" in notice
     result = CliRunner().invoke(app, ["--help"])
     assert result.exit_code == 0
@@ -149,20 +166,24 @@ def test_plugin_that_raises_while_registering_is_rolled_back(
 
 
 def test_entry_point_that_is_not_callable_is_skipped(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_plugin(
         "acme-rayspec",
         modules={"acme_plugin": NOT_CALLABLE},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "not callable" in notice
     assert CliRunner().invoke(app, ["--help"]).exit_code == 0
 
 
 def test_plugin_can_not_replace_the_root_callback(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rayspec import __version__
 
@@ -171,7 +192,7 @@ def test_plugin_can_not_replace_the_root_callback(
         modules={"acme_plugin": REPLACES_CALLBACK},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "replaced the root callback" in notice
     result = CliRunner().invoke(app, ["--version"])
     assert result.exit_code == 0
@@ -180,7 +201,9 @@ def test_plugin_can_not_replace_the_root_callback(
 
 
 def test_first_plugin_wins_a_collision_between_two_plugins(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_plugin(
         "acme-rayspec",
@@ -192,7 +215,7 @@ def test_first_plugin_wins_a_collision_between_two_plugins(
         modules={"zeta_plugin": GOOD.replace("acme ok", "zeta ok")},
         entry_points={"rayspec.cli_plugins": {"zeta": "zeta_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "zeta" in notice and "'acme-lint'" in notice
     result = CliRunner().invoke(app, ["acme-lint"])
     assert result.exit_code == 0
@@ -238,7 +261,9 @@ def register(app: typer.Typer) -> None:
 
 
 def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Builtins are protected by identity, so moving an entry can not delete one."""
     from rayspec.cli.plugins import command_names, loaded_cli_plugins
@@ -249,7 +274,7 @@ def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
         modules={"acme_plugin": REORDERS_THE_TABLE},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert notice == ""  # nothing was shadowed, so nothing is reported
     assert baseline <= command_names(app)
     assert "acme-first" in command_names(app)
@@ -261,7 +286,9 @@ def test_plugin_that_reorders_the_command_table_keeps_every_builtin(
 
 
 def test_plugin_that_drops_builtins_is_rolled_back_and_reported(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Clearing the table is undone: the plugin's own commands go with it."""
     from rayspec.cli.plugins import command_names, loaded_cli_plugins
@@ -272,7 +299,7 @@ def test_plugin_that_drops_builtins_is_rolled_back_and_reported(
         modules={"acme_plugin": CLEARS_THE_TABLE},
         entry_points={"rayspec.cli_plugins": {"acme": "acme_plugin:register"}},
     )
-    app, notice = _build_reporting(capsys)
+    app, notice = _build_reporting(capsys, monkeypatch)
     assert "removed builtin commands" in notice
     assert baseline <= command_names(app)
     assert "acme-only" not in command_names(app)
@@ -319,6 +346,13 @@ RAISES_A_MULTILINE_ERROR = """
 raise RuntimeError("first line\\nsecond line\\nthird line")
 """
 
+#: An exception message is arbitrary text, and a terminal reads some of it as commands:
+#: ``ESC [ 2 J`` clears the screen (wiping whatever the notice was printed under), ``ESC ] 0 ;``
+#: rewrites the window title, BEL rings.
+RAISES_AN_ESCAPE_SEQUENCE = """
+raise RuntimeError("\\x1b[2J\\x1b[31mTOTALLY FINE\\x1b[0m\\x07 \\x1b]0;pwned\\x07")
+"""
+
 
 def _install_broken(install_plugin: InstallPlugin, source: str = RAISES_ON_IMPORT) -> None:
     install_plugin(
@@ -329,11 +363,13 @@ def _install_broken(install_plugin: InstallPlugin, source: str = RAISES_ON_IMPOR
 
 
 def test_a_broken_plugin_is_one_rayspec_line_pointing_at_rayspec_plugins(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """What the user actually sees: not a `RuntimeWarning` with rayspec's own file path in it."""
     _install_broken(install_plugin)
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch)
     assert notice.count("\n") == 1  # exactly one line
     line = notice.strip()
     assert line.startswith("rayspec: ")
@@ -345,17 +381,37 @@ def test_a_broken_plugin_is_one_rayspec_line_pointing_at_rayspec_plugins(
 
 
 def test_a_multiline_failure_is_still_one_line(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A plugin's exception message is arbitrary text; the notice is one bounded line."""
     _install_broken(install_plugin, RAISES_A_MULTILINE_ERROR)
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch)
     assert notice.count("\n") == 1
     assert "first line" in notice and "second line" not in notice
 
 
+def test_a_plugins_error_can_not_write_escape_sequences_to_the_terminal(
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The notice interpolates somebody else's exception message into the user's terminal."""
+    from rayspec.cli.plugins import installed_plugins
+
+    _install_broken(install_plugin, RAISES_AN_ESCAPE_SEQUENCE)
+    _, notice = _build_reporting(capsys, monkeypatch)
+    assert "\x1b" not in notice and "\x07" not in notice
+    assert "TOTALLY FINE" in notice  # the text survives, only the control codes are gone
+    detail = next(row.detail for row in installed_plugins() if row.name == "acme")
+    assert "\x1b" not in detail and "\x07" not in detail
+
+
 def test_two_broken_plugins_still_produce_one_line(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_broken(install_plugin)
     install_plugin(
@@ -363,7 +419,7 @@ def test_two_broken_plugins_still_produce_one_line(
         modules={"zeta_plugin": NOT_CALLABLE},
         entry_points={"rayspec.cli_plugins": {"zeta": "zeta_plugin:register"}},
     )
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch)
     assert notice.count("\n") == 1
     assert "and 1 more" in notice
 
@@ -375,6 +431,8 @@ def test_two_broken_plugins_still_produce_one_line(
         pytest.param(["--help"], id="root-help"),
         pytest.param(["run", "--help"], id="command-help"),
         pytest.param(["completion", "zsh"], id="completion-script"),
+        pytest.param(["--version"], id="version"),
+        pytest.param(["-V"], id="version-short"),
     ],
 )
 def test_an_invocation_that_only_reads_is_not_interrupted(
@@ -385,8 +443,7 @@ def test_an_invocation_that_only_reads_is_not_interrupted(
 ) -> None:
     """A skipped plugin is a standing condition, not an answer to what was typed."""
     _install_broken(install_plugin)
-    monkeypatch.setattr("sys.argv", ["rayspec", *argv])
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch, argv)
     assert notice == ""
 
 
@@ -402,8 +459,7 @@ def test_a_completion_request_is_not_interrupted(
     assert PLUGINS_COMPLETE_VAR == COMPLETE_VAR  # spelled out in plugins.py; keep them in step
     _install_broken(install_plugin)
     monkeypatch.setenv(COMPLETE_VAR, "complete_zsh")
-    monkeypatch.setattr("sys.argv", ["rayspec", "run"])
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch, ["run"])
     assert notice == ""
 
 
@@ -413,18 +469,42 @@ def test_running_a_command_does_get_the_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_broken(install_plugin)
-    monkeypatch.setattr("sys.argv", ["rayspec", "workflows"])
-    _, notice = _build_reporting(capsys)
+    _, notice = _build_reporting(capsys, monkeypatch, ["workflows"])
     assert notice.startswith("rayspec: ")
 
 
+def test_the_notice_decision_is_the_argv_it_is_given_not_the_process(
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether the line is printed is an ARGUMENT of the scan, not ambient global state.
+
+    Reading ``sys.argv`` deep inside the scan made the outcome of every assertion above a
+    function of how the *test runner* had been started: under a bare ``pytest`` the process
+    argv is empty, which reads as "no arguments" and prints nothing.
+    """
+    from rayspec.cli.plugins import register_cli_plugins
+
+    _install_broken(install_plugin)
+    monkeypatch.setattr("sys.argv", ["rayspec"])  # a process argv that would stay quiet
+    register_cli_plugins(typer.Typer(), argv=["workflows"])
+    assert "boom at import time" in capsys.readouterr().err
+
+    monkeypatch.setattr("sys.argv", ["rayspec", "workflows"])  # ... and one that would speak
+    register_cli_plugins(typer.Typer(), argv=[])
+    assert capsys.readouterr().err == ""
+
+
 def test_the_problems_are_kept_for_rayspec_plugins(
-    install_plugin: InstallPlugin, capsys: pytest.CaptureFixture[str]
+    install_plugin: InstallPlugin,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The line is a pointer; `rayspec plugins` is the report, and it works when it is quiet."""
     from rayspec.cli.plugins import cli_plugin_problems
 
     _install_broken(install_plugin)
-    _build_reporting(capsys)
+    _build_reporting(capsys, monkeypatch)
     (problem,) = cli_plugin_problems()
     assert "boom at import time" in problem
