@@ -85,6 +85,34 @@ capable. A user file cannot re-admit what the project file excluded, and a proje
 re-admit what `RAYSPEC_POLICY` excluded. When several layers forbid the same thing, the error
 names all of them — because editing one of them would not be enough.
 
+### A permitted name is not a permission
+
+The invariant above is a claim about every key at once, so it has one rule holding it up:
+
+> **A policy key names things; it never authorises one.** Where a key carries identifiers — server
+> names in `mcp.allow_servers`, model ids in `models.deny`, provider ids in `providers.allow` — the
+> identifier narrows a set of things that already exist and are already written down somewhere a
+> reviewer reads. It cannot vouch for a *definition* the workflow supplies, because the workflow
+> chooses what it puts behind a name it is allowed to use.
+
+`mcp.allow_servers: [github]` says *"of the MCP servers this run declares, only `github` may be
+reached"*. It does not say what `github` is — the command rayspec starts, the argv, the endpoint it
+opens. That comes from the agent's own `mcp:` block, in the neutral field `rayspec plan` prints and
+code review reads. So a `provider_options` entry naming `github` is checked against the
+**definition**, not against the allow-list: matching a permitted name is necessary, never
+sufficient. Without that half, adding `mcp: {allow_servers: [github]}` to a project — a key that
+can only ever take something away — turned a workflow the controls already refused into a clean
+`rayspec validate` and gave the agent an MCP server running `/bin/sh -c 'curl … | sh'`.
+
+The rule generalises past that key. Any guard that decides from an identifier the workflow also
+controls is asking the workflow for its own permission — `tools.allow: [mcp:github]` is the same
+defect with no policy file in it at all — so a guard matches on a name *and* on the thing the name
+refers to, or it does not match on a name. `tests/policy/test_restriction_only.py` pins the
+invariant itself rather than any one key: for a workflow some set of controls already refuses,
+adding **any** key of `policy.yaml` must leave it refused, and must not shorten the list of reasons.
+The matrix is read off the classification tables, so a key added tomorrow is covered the day it
+lands.
+
 ## The keys
 
 <!-- rayspec:skip a policy file, not a workflow -->
@@ -210,7 +238,7 @@ the case where an unprotected control does the most damage.
 | `tools` | which tools may run — `deny` and a non-empty `allow` alike |
 | `network: off` | the provider's web tools, by folding `web` into `tools.deny` |
 | `commands` | which shell commands may run |
-| `mcp` | the servers the run may reach — the declared set, and the set an `mcp_servers` entry in `provider_options` is checked against |
+| `mcp` | the servers the run may reach — the declared set, which is also the only thing an `mcp_servers` entry in `provider_options` may be checked against (a name on a policy allow-list defines no server) |
 | `max_turns`, `budget_usd` | hard ceilings on turns and money |
 | `on_denial: fail` | makes a refused tool call stop the step — the teeth of every denial |
 
@@ -266,11 +294,11 @@ The keys on the list, and what each one is:
 | Provider | Key | What it does, and what happens to it under a control |
 | --- | --- | --- |
 | claude | `env` | extra environment variables, merged **under** rayspec's own *and* the machine owner's `providers.claude.env` — a workflow can add a variable, never displace one of theirs. **Under a control it carries nothing**: every name is refused, because a variable is read inside the process rayspec starts and rayspec cannot say which of the options it computed a given name overrides (below) |
-| claude | `mcp_servers` | extra MCP servers, merged **under** the agent's `mcp:` block — a name the agent declares is the agent's declaration either way. Under a control, only a server the controls themselves name passes (below) |
+| claude | `mcp_servers` | extra MCP servers, merged **under** the agent's `mcp:` block — a name the agent declares is the agent's declaration either way. Under a control, only a server some control **defines** passes, and only while none refuses the name (below) |
 | claude | `max_thinking_tokens` | how many tokens a turn may think for. It moves what a turn costs, never what a cost is measured against — the thinking tokens are reported as usage like any other |
 | claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI to come up (the step's own deadline is enforced by the engine around the whole call) |
 | claude | `user` | the **OS account the CLI subprocess is started under**: the SDK hands it to `open_process(user=...)`, which resolves it with `getpwnam` and calls `setuid` in the child before `exec`. Under any control only `null` passes — the identity the run already has (below) |
-| codex | `config.mcp_servers` | as above, merged under the agent's `mcp:` block and checked against the same folded set |
+| codex | `config.mcp_servers` | as above, merged under the agent's `mcp:` block and checked against the same folded set, by the same guard |
 | codex | `config.model_reasoning_summary` | how much of the model's reasoning is summarised into the stream: transcript verbosity |
 | codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; `auto_review` answers them for the agent and is refused under any control; see below |
 | codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
@@ -301,29 +329,41 @@ per control, from every source that can carry one, and fails when it stays silen
 
 **A control that blocks the permitted case is its own defect** — it teaches people to switch the
 control off. So `mcp_servers` is checked by *value*, not refused wholesale. The rule is the same
-inversion the key list uses, applied to server names: a server passes when **some** control in
-force names it and **none** refuses it. "Nobody named this server" is the "nobody knows" case, and
-under a control that is a refusal — an MCP server is a process rayspec starts or an endpoint it
-reaches, offering the agent whatever tools it likes.
+inversion the key list uses, and it asks two questions rather than one, because an MCP server is a
+process rayspec starts or an endpoint it opens, offering the agent whatever tools it likes:
 
-The controls that name servers are the agent's own `mcp:` block and a policy `mcp.allow_servers`;
-the ones that refuse them are a `tools.deny` naming `mcp` or `mcp:<server>`, a non-empty
-`tools.allow` that names neither, and an `mcp.allow_servers` that leaves the name out. All of them
-at once, never one of them:
+1. **Does any control refuse the name?** A `tools.deny` naming `mcp` or `mcp:<server>`, a non-empty
+   `tools.allow` that names neither, an `mcp.allow_servers` that leaves the name out. All of them at
+   once, never one of them.
+2. **Does any control *define* the server?** Only the agent's own `mcp:` block does — it carries the
+   command or endpoint, in the neutral field policy checks, `rayspec plan` prints and review reads.
+   "Nobody said what this server is" is the "nobody knows" case, and under a control that is a
+   refusal.
+
+A policy `mcp.allow_servers` and a `tools.allow: [mcp:<server>]` entry answer the first question
+only. They are lists of **names**, and this block is where the *definition* would come from — so
+admitting a server because a list mentions its name would let the workflow choose the command
+behind a name it was given permission to use. That is [a permitted name is not a
+permission](#a-permitted-name-is-not-a-permission), and it is the shape a purely restrictive key
+took when it granted a capability.
 
 <!-- rayspec:skip an agent's `provider_options`, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml — mcp: {allow_servers: [github]}
+mcp:
+  github: {command: github-mcp-server}                    # the agent's own block: the DEFINITION
 provider_options:
   claude:
     mcp_servers:
-      github: {type: stdio, command: github-mcp-server}   # allowed — policy names github
+      github: {type: stdio, command: github-mcp-server}   # allowed — the agent defines github
       evil: {type: stdio, command: /bin/sh}               # refused — nothing names evil
 ```
 
-Because both adapters merge this block *under* the agent's own servers, a name the agent already
-declares is the agent's declaration either way — so the way through is to declare the server in
-the neutral `mcp:` block, where policy, `rayspec plan` and code review all read it.
+Drop the `mcp:` block above and `github` is refused too, with the allow-list still in place:
+*"permitted by name … but a permitted name is not a definition"*. Because both adapters merge the
+raw block *under* the agent's own servers, a name the agent declares is the agent's declaration
+either way — so the way through is always to declare the server in the neutral `mcp:` block, never
+to widen a list.
 
 Codex's `approval_mode` is guarded by value too. `deny_all` (the default) passes anywhere;
 `auto_review` answers the agent's sandbox escalation requests *for* it, so it is refused under any
@@ -552,7 +592,7 @@ This is the part that matters more than the feature list.
 | `network: off` | denies the provider's web tools | denies web search |
 | `commands:` | **advisory** — warned about on every validate | **advisory** — warned about on every validate |
 | `workspace:` (the change guard) | **not enforced in this build** — library + policy key, warned about on every validate | **not enforced in this build** — library + policy key, warned about on every validate |
-| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env` — every variable refused —, `mcp_servers` — only servers the controls name —, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers` (only servers the controls name), `config.model_reasoning_summary`, `approval_mode` (`deny_all` only), `ephemeral`, `usage_baseline` (zero counters only) |
+| `provider_options:` | fields the adapter computes are ignored with a warning; `env`/`mcp_servers` merge under them; under any control the block is an ALLOW-list (`env` — every variable refused —, `mcp_servers` — only servers a control DEFINES —, `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user`) | same, for the `config` keys the adapter computes; allow-list is `config.mcp_servers` (only servers a control DEFINES), `config.model_reasoning_summary`, `approval_mode` (`deny_all` only), `ephemeral`, `usage_baseline` (zero counters only) |
 
 * **`network: off` is not a firewall.** It denies the provider's own web tools. A shell command
   the agent runs — `curl`, a package install, a test that opens a socket — still reaches the
@@ -578,7 +618,9 @@ This is the part that matters more than the feature list.
 
 * No policy is fetched over the network, and no key names an organisation or a shared registry.
   Three files on this machine, that is all.
-* Policy cannot grant a permission. Every key removes something; that is what makes layering safe.
+* Policy cannot grant a permission. Every key removes something; that is what makes layering safe —
+  and where a key carries identifiers, naming one narrows a set, it never authorises a definition
+  the workflow supplies (["a permitted name is not a permission"](#a-permitted-name-is-not-a-permission)).
 * Policy does not change what a step *does*. It decides whether the workflow may run at all and
   which knobs the agents are allowed to reach.
 

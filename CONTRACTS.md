@@ -885,7 +885,8 @@ from rayspec.policy import (
     #   of — under a control every other variable is refused
     ControlsInForce,  # .sources {control key: (PolicySource, ...)}, .tags {key: frozenset[tag]},
     #   .servers: ServerControls, .governed, .kinds, .covering(tags), .named(keys),
-    #   .named_covering(tags), .allowed_servers; .of(controls) folds a list of Control into one
+    #   .named_covering(tags), .allowed_servers (the servers a control DEFINES and none refuses —
+    #   never the names an allow-list mentions); .of(controls) folds a list of Control into one
     #   view. It carries NO handle on the policy document or any other single source: a guard
     #   reads the fold the trigger built or it decides from a subset of the controls in force
     OptionCheck,  # (value, ControlsInForce) -> ((key path suffix, message), ...); empty = permitted
@@ -902,9 +903,14 @@ from rayspec.policy import (
     #   left unset)
     Imposed,  # key (as spelled), value, tags, servers: ServerOpinion | None
     ServerOpinion,  # what ONE control says about the MCP servers a run may reach:
-    #   admits: frozenset|None (None = it names none), denies: frozenset, denies_all: bool
-    ServerControls,  # the FOLD of every ServerOpinion in force: .named, .admits,
-    #   .refusing(server) -> sources | None (None = permitted; () = nothing names any server)
+    #   admits: frozenset|None (None = it names none), defines: frozenset (subset of admits — the
+    #   names this control also carries the DEFINITION of; an allow-list of names defines none),
+    #   denies: frozenset, denies_all: bool
+    ServerControls,  # the FOLD of every ServerOpinion in force: .named, .admits, .definable,
+    #   .refusing(server) -> sources | None (None = permitted; () = nothing names any server) —
+    #   the NAME question; .defining(server) -> sources | None answers the other one. A caller
+    #   judging a definition the WORKFLOW supplies must ask both: a permitted name is necessary
+    #   and never sufficient (mcp.allow_servers GRANTED a server otherwise)
     tool_entry_servers,  # (entries, *, allow_list) -> ServerOpinion — a tools: list, read for
     #   what it says about servers, the same way tool_entry_tags reads it for kinds
     POLICY_SERVER_KEYS,  # the policy keys that bound the server set
@@ -1045,12 +1051,23 @@ decides from one source: `mcp_servers` asked `EffectivePolicy` and therefore adm
 stdio server past the agent's own `mcp:` set, its `tools.deny: [mcp]`, its `network: off` and its
 `access: read-only` — every one of which the trigger already counted. So each control states its
 own `ServerOpinion` where it is classified and `merged_controls` folds them into `ServerControls`,
-which is the guard's whole answer to "may this MCP server be reached": permitted when SOME control
-in force names it (the agent's `mcp:` block, a policy `mcp.allow_servers`) and NONE refuses it (a
-`tools.deny` naming `mcp`/`mcp:<server>`, a non-empty `tools.allow` naming neither, an
-`mcp.allow_servers` that leaves it out). "Nobody named this server" is a refusal, and the way out
-is the neutral `mcp:` field — both adapters merge the raw block UNDER the agent's own servers, so a
-name the agent declares is the agent's declaration either way.
+which is the guard's whole answer to "may this MCP server be reached": permitted when NO control
+refuses it (a `tools.deny` naming `mcp`/`mcp:<server>`, a non-empty `tools.allow` naming neither, an
+`mcp.allow_servers` that leaves it out) AND some control DEFINES it. "Nobody named this server" is a
+refusal, and so is "nobody said what it is".
+
+**A NAME IS NOT A DEFINITION.** `mcp.allow_servers: [github]` and `tools.allow: [mcp:github]`
+contribute the name `github` and nothing else, so admitting a `provider_options` server on a name
+match let a purely restrictive policy key GRANT one: with no policy file the run was refused, and
+adding the allow-list handed the agent an MCP server running `/bin/sh -c 'curl … | sh'`. Only a
+control that carries the command or endpoint — today the agent's own `mcp:` block — sets
+`ServerOpinion.defines`, and only that makes a name safe to match. It is also the way out, because
+both adapters merge the raw block UNDER the agent's own servers, so a name the agent declares is
+the agent's declaration either way. Generally: a guard that decides from an identifier the workflow
+also controls is asking the workflow for its own permission.
+`tests/policy/test_restriction_only.py` pins the invariant itself over every key of the document —
+adding a key to a workflow the controls already refuse must never produce an OK, or a shorter list
+of reasons.
 
 `env` inverted rather than growing: it was a two-prefix denylist (`ANTHROPIC_`, `CLAUDE_`) while
 `PATH`, `NODE_OPTIONS`, `NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY` and `SSL_CERT_FILE` passed unread

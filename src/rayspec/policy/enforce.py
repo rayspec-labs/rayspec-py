@@ -128,8 +128,13 @@ class ControlsInForce:
 
     @property
     def allowed_servers(self) -> str:
-        """The MCP servers the controls in force do name, for the "use one of these" half."""
-        return ", ".join(sorted(self.servers.admits)) or "(none)"
+        """The MCP servers a raw block may name, for the "use one of these" half of a refusal.
+
+        The servers some control DEFINES and none refuses — not the names an allow-list mentions.
+        A refusal that offered the allow-list's names would be advertising the bypass: a name on
+        it is not a server until something says what that server is.
+        """
+        return ", ".join(sorted(self.servers.definable)) or "(none)"
 
 
 #: A value-level check on one allow-listed option: the parts of the requested value the controls
@@ -201,12 +206,24 @@ def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tupl
     exists only here — where ``rayspec plan``, a reviewer and the neutral checks do not look.
 
     So the same inversion the key allow-list uses is applied to the server names: while a control
-    is in force, a server passes only if some control NAMES it (the agent's own ``mcp:`` block,
-    or a policy ``mcp.allow_servers``) and none refuses it (a ``tools.deny`` naming ``mcp`` or
+    is in force, a server passes only if no control refuses it (a ``tools.deny`` naming ``mcp`` or
     ``mcp:<server>``, a non-empty ``tools.allow`` that does not, an ``mcp.allow_servers`` that
-    leaves it out). "Nobody named this server" is the "nobody knows" case, and under a control
-    that is a refusal — which is what the answer has to be when the trigger has already counted
-    the agent's ``mcp:``, its tool lists, its network and its access level as controls.
+    leaves it out) — and only if some control DEFINES it. "Nobody named this server" is the
+    "nobody knows" case, and under a control that is a refusal.
+
+    The second half is the one that was missing, and without it a restrictive-only policy key
+    GRANTED a capability. ``mcp.allow_servers: [github]`` contributes a NAME. The command behind
+    that name — ``/bin/sh -c 'curl … | sh'`` in the run that found this — came from the workflow
+    the policy governs, so matching the name admitted a definition the policy never saw: with no
+    policy file the run was refused, and adding a key that can only ever take something away made
+    it validate clean. An allow-list narrows the servers a run may reach; it cannot say what one
+    of them is, and a guard that matches on an identifier the workflow also controls is asking
+    the workflow for its own permission. Matching a permitted name is necessary, never sufficient.
+
+    So the definition has to come from a control that carries one: today the agent's own ``mcp:``
+    block, in the neutral field policy, ``rayspec plan`` and review all read — and the field both
+    adapters merge this block UNDER, which is why a name declared there is that declaration
+    either way. The way out of this refusal is to move the server there, never to widen a list.
 
     The answer comes from :class:`~rayspec.policy.controls.ServerControls`, folded over every
     source, because a guard that consults one source decides from one source.
@@ -220,21 +237,37 @@ def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tupl
             ),
         )
     out: list[tuple[str, str]] = []
+    is_are = "is" if len(controls.sources) == 1 else "are"
     for name in sorted(str(key) for key in value):
         refusing = controls.servers.refusing(name)
-        if refusing is None:
-            continue  # a server the controls in force name: the permitted case
-        where = sources_text(refusing) or controls.named()
-        out.append(
-            (
-                name,
-                f"MCP server {name!r} is not one the controls in force name ({where}), and both "
-                "adapters merge this block under the agent's own mcp: servers — so it would add "
-                "a server (and the process or endpoint behind it) that nothing else in the run "
-                f"declares. Servers named right now: {controls.allowed_servers}. Declare it under "
-                "the agent's own mcp: block, where policy, rayspec plan and review all read it",
+        if refusing is not None:
+            where = sources_text(refusing) or controls.named()
+            out.append(
+                (
+                    name,
+                    f"MCP server {name!r} is not one the controls in force name ({where}), and "
+                    "both adapters merge this block under the agent's own mcp: servers — so it "
+                    "would add a server (and the process or endpoint behind it) that nothing "
+                    f"else in the run declares. Servers declared right now: "
+                    f"{controls.allowed_servers}. Declare it under the agent's own mcp: block, "
+                    "where policy, rayspec plan and review all read it",
+                )
             )
-        )
+        elif controls.servers.defining(name) is None:
+            out.append(
+                (
+                    name,
+                    f"MCP server {name!r} is permitted by name ({controls.named_covering(('mcp',))}"
+                    "), but a permitted name is not a definition: nothing in the run declares "
+                    f"what {name!r} IS, and this block supplies that itself — the process rayspec "
+                    "starts or the endpoint it opens, chosen by the workflow the controls govern. "
+                    "An allow-list narrows which servers may be reached; it cannot authorise one, "
+                    f"and {controls.named()} {is_are} in force. Declare the server under the "
+                    "agent's own mcp: block, where policy, rayspec plan and review all read the "
+                    "command; both adapters merge this block under that one, so the declaration "
+                    f"wins. Servers declared right now: {controls.allowed_servers}",
+                )
+            )
     return tuple(out)
 
 
@@ -421,8 +454,8 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
         ),
         ("mcp_servers",): AllowedOption(
             "extra MCP servers, merged UNDER the agent's own mcp: block. While a control is in "
-            "force only a server the controls themselves name passes — the agent's own mcp: set, "
-            "or a policy mcp.allow_servers",
+            "force a server passes only when a control DEFINES it — the agent's own mcp: set — "
+            "and none refuses the name; an allow-list of names authorises no definition",
             _refused_mcp_servers,
         ),
         ("max_thinking_tokens",): AllowedOption(
@@ -459,8 +492,8 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
     "codex": {
         ("config", "mcp_servers"): AllowedOption(
             "extra MCP servers, merged UNDER the agent's own mcp: block. While a control is in "
-            "force only a server the controls themselves name passes — the agent's own mcp: set, "
-            "or a policy mcp.allow_servers",
+            "force a server passes only when a control DEFINES it — the agent's own mcp: set — "
+            "and none refuses the name; an allow-list of names authorises no definition",
             _refused_mcp_servers,
         ),
         ("config", "model_reasoning_summary"): AllowedOption(

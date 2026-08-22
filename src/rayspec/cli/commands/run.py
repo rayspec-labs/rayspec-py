@@ -64,7 +64,7 @@ from rayspec.limits import (
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 from rayspec.policy import EffectivePolicy, load_policy
-from rayspec.providers.pricing import PriceTable, cost_marker
+from rayspec.providers.pricing import cost_marker, price_table_of
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, RedactingSink, Redactor
 from rayspec.schema import ApproveStep, PromptStep, RunStatus
 from rayspec.secrets import (
@@ -950,19 +950,19 @@ def register(app: typer.Typer) -> None:
                 terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
             ),
         )
-        try:
-            price_table = PriceTable.from_config(ctx.config.pricing)
-        except RayspecError:
-            price_table = None
+        # a pricing table dropped silently takes the envelope below with it: for a provider
+        # that reports no cost of its own the table IS the cost a ceiling is compared against
+        price_table, pricing_problem = price_table_of(ctx.config.pricing)
         # The operator's ceilings for this machine (empty when no policy file applies). A dry
         # run maps every provider to the stub: it spends nothing and occupies no real agent, so
         # neither the envelope nor a host slot applies to it.
         policy = limits_policy(project_root, home=ctx.home)
         # a ceiling that cannot be read must be visible, not invisible: an operator who wrote
-        # one and never sees it applied would otherwise believe the machine is capped
+        # one and never sees it applied would otherwise believe the machine is capped — which is
+        # as true of the prices it is measured in as of the ceiling itself
         report_lines(
             "policy warnings:",
-            list(policy.warnings),
+            [*policy.warnings, *([pricing_problem] if pricing_problem else [])],
             style="yellow",
             printer=common.err_console().print,
         )

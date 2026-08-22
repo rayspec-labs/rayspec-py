@@ -95,11 +95,28 @@ class ServerOpinion:
     ``admits`` is the set of names this control positively names (``None`` = it names none, which
     is not the same as naming an empty set: ``mcp.allow_servers: []`` admits nothing). ``denies``
     are the names it refuses outright and ``denies_all`` refuses every one of them.
+
+    ``defines`` is the half a NAME cannot supply, and leaving it out inverted the invariant the
+    whole document rests on. ``mcp.allow_servers: [github]`` contributes the name ``github`` and
+    nothing else — not the command, not the endpoint, not the argv. A workflow that then writes
+    its own ``github`` into ``provider_options`` supplied the definition itself, so admitting it
+    on the name match made a restrictive-only key GRANT a capability: with no policy file the run
+    was refused, and adding the allow-list handed the agent ``/bin/sh -c 'curl … | sh'``. Only a
+    control that carries the definition where policy, ``rayspec plan`` and review all read it —
+    today the agent's own ``mcp:`` block — puts a name here. Matching a permitted name is
+    necessary; it is never sufficient.
     """
 
     admits: frozenset[str] | None = None
+    defines: frozenset[str] = frozenset()
     denies: frozenset[str] = frozenset()
     denies_all: bool = False
+
+    def __post_init__(self) -> None:
+        # a control cannot define a server it does not itself permit: the fold would then admit a
+        # definition no control stands behind, which is the defect this field exists to close
+        if self.defines and (self.admits is None or not self.defines <= self.admits):
+            raise ValueError("ServerOpinion.defines must be a subset of admits")
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +181,11 @@ def tool_entry_servers(entries: Iterable[str], *, allow_list: bool) -> ServerOpi
     ``deny: [mcp]`` refuses every server, ``deny: [mcp:github]`` refuses that one. A non-empty
     ``allow`` list means "nothing else", so it admits exactly the servers it names — and admits
     none at all when it names no MCP entry, which is the honest reading of "nothing else".
+
+    It DEFINES nothing (:attr:`ServerOpinion.defines` stays empty). ``tools.allow: [mcp:github]``
+    is a list of tool entries: it says which servers may be reached, never what ``github`` is —
+    and an agent writes that list itself, so treating it as a definition let a workflow name the
+    identifier and supply the command behind it in the same file.
     """
     servers = {entry[4:].split("/", 1)[0] for entry in entries if entry.startswith("mcp:")}
     servers.discard("")
@@ -235,6 +257,13 @@ def _commands(agent: ResolvedAgent) -> tuple[Imposed, ...]:
 
 
 def _mcp(agent: ResolvedAgent) -> tuple[Imposed, ...]:
+    """The agent's own ``mcp:`` block — the one control that DEFINES servers, not just names them.
+
+    It carries the command or endpoint behind each name, in the neutral field policy checks,
+    ``rayspec plan`` prints and a reviewer reads. That is what makes it the only source a
+    ``provider_options`` server may be matched against: both adapters merge that raw block UNDER
+    this one, so a name declared here is this declaration either way.
+    """
     if not agent.mcp:
         return ()
     servers = ", ".join(sorted(agent.mcp))
@@ -243,7 +272,7 @@ def _mcp(agent: ResolvedAgent) -> tuple[Imposed, ...]:
             "mcp",
             servers,
             frozenset({"mcp"}),
-            ServerOpinion(admits=frozenset(agent.mcp)),
+            ServerOpinion(admits=frozenset(agent.mcp), defines=frozenset(agent.mcp)),
         ),
     )
 
@@ -790,7 +819,12 @@ POLICY_SERVER_KEYS: frozenset[str] = frozenset({"mcp.allow_servers", "tools.deny
 
 
 def _policy_servers(key: str, effective: EffectivePolicy) -> ServerOpinion | None:
-    """What one policy key says about the MCP servers the run may reach."""
+    """What one policy key says about the MCP servers the run may reach.
+
+    Neither key defines a server. ``mcp.allow_servers`` is a list of NAMES: it narrows the set a
+    run may reach and says nothing about what any of them is, which is exactly why it cannot
+    authorise a definition a workflow supplies elsewhere.
+    """
     if key == "mcp.allow_servers":
         return ServerOpinion(admits=effective.allowed_mcp_servers() or frozenset())
     if key == "tools.deny":
@@ -1063,9 +1097,18 @@ class ServerControls:
     The rule is the same inversion the key allow-list uses, applied to server names: a server is
     permitted only when **some** control in force names it and **no** control refuses it. "Nobody
     named this server" is the "nobody knows" case, and under a control that is a refusal.
+
+    Permission is one of two questions, and conflating them inverted the invariant. A name says
+    which servers may be reached; a DEFINITION says what one of them is — the process rayspec
+    starts, the endpoint it opens, the argv behind it. ``mcp.allow_servers`` and a ``tools.allow``
+    entry contribute names only, and both are written where the run can already reach: the
+    operator writes the first, the agent writes the second. So :meth:`refusing` answers the name
+    question and :meth:`defining` answers the other, and a caller judging a definition the
+    WORKFLOW supplies has to ask both — a matching name is necessary, never sufficient.
     """
 
     admitted: tuple[tuple[frozenset[str], tuple[PolicySource, ...]], ...] = ()
+    defined: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
     denied: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
     denied_all: tuple[PolicySource, ...] = ()
 
@@ -1098,17 +1141,40 @@ class ServerControls:
 
         An empty tuple is a refusal too: it means no control in force names any server, so there
         is nothing to quote beyond the controls themselves — the caller names those.
+
+        This is the NAME question only. A ``None`` here means every control permits a server so
+        called; it does not mean any of them said what that server is (:meth:`defining`).
         """
         if self.denied_all:
             return self.denied_all
         refused = self.denied.get(server)
-        if refused:
+        # `is not None`, never truthiness: an empty tuple is a control that refuses this server
+        # and has no line to quote, which this method's own contract calls a refusal. Reading it
+        # as "not refused" is a refusal disappearing because its provenance happened to be empty
+        if refused is not None:
             return refused
         if not self.named:
             return ()
         if server in self.admits:
             return None
         return self.sources_for((server,))
+
+    def defining(self, server: str) -> tuple[PolicySource, ...] | None:
+        """The controls that DEFINE ``server``, or ``None`` when none of them does.
+
+        Only a control carrying the command or endpoint behind a name appears here — today the
+        agent's own ``mcp:`` block, which both adapters merge a raw ``provider_options`` block
+        UNDER, so its declaration wins on a name collision. An allow-list of names defines
+        nothing, and answering "may this definition be used?" from one is how a restrictive-only
+        policy key came to grant a capability.
+        """
+        sources = self.defined.get(server)
+        return None if sources is None else sources  # () = defined, with no line to quote
+
+    @property
+    def definable(self) -> frozenset[str]:
+        """The servers a workflow may name in a raw block: defined somewhere, refused nowhere."""
+        return frozenset(name for name in self.defined if self.refusing(name) is None)
 
 
 def merged_controls(
@@ -1118,6 +1184,7 @@ def merged_controls(
     sources: dict[str, tuple[PolicySource, ...]] = {}
     tags: dict[str, frozenset[str]] = {}
     admitted: list[tuple[frozenset[str], tuple[PolicySource, ...]]] = []
+    defined: dict[str, tuple[PolicySource, ...]] = {}
     denied: dict[str, tuple[PolicySource, ...]] = {}
     denied_all: list[PolicySource] = []
     for control in controls:
@@ -1128,11 +1195,20 @@ def merged_controls(
             continue
         if opinion.admits is not None:
             admitted.append((opinion.admits, control.sources))
+        # a UNION, unlike admits: each definition stands on its own, and a control that defines
+        # none must not erase one another control wrote down
+        for name in sorted(opinion.defines):
+            defined[name] = (*defined.get(name, ()), *control.sources)
         for name in sorted(opinion.denies):
             denied[name] = (*denied.get(name, ()), *control.sources)
         if opinion.denies_all:
             denied_all.extend(control.sources)
-    servers = ServerControls(admitted=tuple(admitted), denied=denied, denied_all=tuple(denied_all))
+    servers = ServerControls(
+        admitted=tuple(admitted),
+        defined=defined,
+        denied=denied,
+        denied_all=tuple(denied_all),
+    )
     return sources, tags, servers
 
 
