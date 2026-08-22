@@ -133,6 +133,39 @@ def mask(value: Any, subs: list[tuple[re.Pattern[str], str]]) -> Any:
     return value
 
 
+def canonical_order(events: list[Any]) -> list[Any]:
+    """Group each step's events together, so concurrent steps cannot reorder the corpus.
+
+    The stream is captured from a real run, and steps that run in parallel interleave: whichever
+    of two concurrent prompt steps finishes first emits its ``step.finished`` first. The corpus
+    asserted a *total* order over that, which is not a property of the run — it is a property of
+    which coroutine the event loop happened to resume, and it made the suite fail roughly two runs
+    in five once the engine grew a little more work on the step-start path.
+
+    Canonicalising keeps everything the corpus is actually for. Within one step the order is
+    untouched, so a changed sequence of stream records still fails. Steps keep the order they
+    *started* in, so a reordered graph still fails. Run-level events (``run.started``,
+    ``run.finished`` and the warnings between them) keep their position relative to the steps that
+    surround them. What is discarded is only the interleaving between steps that were running at
+    the same time — which no committed file could pin down without being flaky.
+    """
+    order: dict[str, int] = {}
+    for event in events:
+        path = event.get("step_path")
+        if isinstance(path, str) and path not in order:
+            order[path] = len(order)
+    # A run-level event sorts with the step that precedes it, so it stays where it was written
+    # relative to the surrounding steps rather than migrating to one end.
+    keys: list[tuple[int, int]] = []
+    current = -1
+    for index, event in enumerate(events):
+        path = event.get("step_path")
+        if isinstance(path, str):
+            current = order[path]
+        keys.append((current, index))
+    return [event for _, event in sorted(zip(keys, events, strict=True), key=lambda pair: pair[0])]
+
+
 def cli_args(suite: Suite, case: Case, *, inputs_file: Path) -> list[str]:
     """``rayspec run`` command line for ``case`` — the same one ``rayspec test`` simulates."""
     args = ["run", case.workflow, "--root", str(suite.root), "--dry-run", "--json"]
@@ -174,7 +207,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
     record_path = Path(summary["run_dir"]) / "run.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     subs = text_substitutions(home=home, root=suite.root)
-    events = [mask(json.loads(line), subs) for line in lines[:-1]]
+    events = canonical_order([mask(json.loads(line), subs) for line in lines[:-1]])
     return {
         "events.jsonl": "".join(json.dumps(e, sort_keys=True) + "\n" for e in events),
         "summary.json": json.dumps(mask(summary, subs), indent=2, sort_keys=True) + "\n",
@@ -185,6 +218,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
 __all__ = [
     "MASKED_KEYS",
     "USAGE_KEYS",
+    "canonical_order",
     "capture",
     "cli_args",
     "invoke",

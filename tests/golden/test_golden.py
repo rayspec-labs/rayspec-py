@@ -144,3 +144,43 @@ def test_masking_leaves_nothing_machine_specific() -> None:
                 if pattern.search(line):
                     offenders.append(f"{path.relative_to(GOLDEN_DIR)}:{lineno}: {what}")
     assert not offenders, offenders[:20]
+
+
+def test_the_corpus_does_not_depend_on_which_concurrent_step_finishes_first() -> None:
+    """Interleaving two parallel steps must not change the captured file.
+
+    The corpus used to assert a total order over events from steps running at the same time, so
+    whichever coroutine the event loop resumed first decided the file — and roughly two runs in
+    five disagreed with it. A gate that fails at random stops being believed, and this project
+    merges on the strength of this one.
+
+    ``canonical_order`` keeps each step's own events in order and each step in the order it
+    started; only the interleaving *between* concurrent steps is normalised. This checks that
+    directly, without needing a flaky run to prove it.
+    """
+    from ._capture import canonical_order
+
+    a_first = [
+        {"type": "run.started", "step_path": None},
+        {"type": "step.started", "step_path": "a"},
+        {"type": "step.started", "step_path": "b"},
+        {"type": "step.finished", "step_path": "a"},
+        {"type": "stream", "step_path": "b"},
+        {"type": "step.finished", "step_path": "b"},
+        {"type": "run.finished", "step_path": None},
+    ]
+    # The same run with b's stream record landing before a's step.finished — a pure race.
+    b_first = [
+        a_first[0],
+        a_first[1],
+        a_first[2],
+        a_first[4],
+        a_first[3],
+        a_first[5],
+        a_first[6],
+    ]
+    assert canonical_order(a_first) == canonical_order(b_first)
+
+    # What the corpus is for still fails: a step's own events reordered, and a reordered graph.
+    swapped_within = [a_first[0], a_first[2], a_first[1], *a_first[3:]]
+    assert canonical_order(swapped_within) != canonical_order(a_first)
