@@ -550,7 +550,12 @@ def test_the_warning_is_a_single_annotation_that_says_where_the_report_is() -> N
         pytest.param(
             "gh: Resource not accessible by integration (HTTP 403)",
             "pull-requests: write",
-            id="403",
+            id="403-denied",
+        ),
+        pytest.param(
+            "gh: API rate limit exceeded for installation ID 1234. (HTTP 403)",
+            "rate limit",
+            id="403-rate-limited",
         ),
         pytest.param("gh: Not Found (HTTP 404)", "o/r#7", id="404"),
         pytest.param("dial tcp: lookup api.github.com: no such host", "no such host", id="network"),
@@ -565,6 +570,10 @@ def test_the_warning_names_what_actually_went_wrong(
     A missing grant is a 403 and the caller can fix it; a 404 is a pull request this token cannot
     see, and a network blip is neither. Blaming ``pull-requests: write`` for all three is how a
     green repository spends an afternoon on its permissions block.
+
+    And a 403 is not by itself a missing grant: a rate limit — primary or secondary — and an
+    archived repository carry the same code, so gh's own words have to reach the warning rather
+    than be replaced by the one diagnosis the caller has already ruled out.
     """
     done, _calls = _post_comment(tmp_path, "default", gh_exit=1, gh_said=gh_said)
     assert done.returncode == 0, done.stdout + done.stderr

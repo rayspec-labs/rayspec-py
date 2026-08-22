@@ -332,13 +332,16 @@ jobs:
           }
           # `gh` fails for more than one reason and the report must not misdiagnose the one it
           # got: a missing grant is 403, a pull request this token cannot see is 404, and a
-          # network blip is neither. Its own stderr is quoted when it is none of those.
+          # network blip is neither. Its own stderr is quoted whenever it said anything, because
+          # a code alone does not distinguish the refusals that share one.
           rc=0
           said=$(post 2>&1) || rc=$?
           if [ "$rc" -ne 0 ]; then
             said=$(printf '%s' "$said" | tr '\n\r' '  ' | tail -c 300)
             case "$said" in
-              *"HTTP 403"*) why="the calling job needs permissions: pull-requests: write" ;;
+              # Four different refusals share this code — a denied grant, both rate limits and an
+              # archived repository — so gh's own words come first and the grant is a suggestion.
+              *"HTTP 403"*) why="gh exited $rc: $said — if that is a refusal and not a rate limit, the calling job needs permissions: pull-requests: write" ;;
               *"HTTP 404"*) why="$REPO#$NUMBER is not visible to this job's token" ;;
               *[![:space:]]*) why="gh exited $rc: $said" ;;
               *) why="gh exited $rc without a message — a network problem, most likely" ;;
