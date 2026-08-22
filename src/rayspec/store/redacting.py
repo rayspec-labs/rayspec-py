@@ -30,7 +30,7 @@ from pydantic import ValidationError
 
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.redact import NULL_REDACTOR, Redactor, StreamRedactor
-from rayspec.store.file import StoreError
+from rayspec.store.file import RUN_IDENTITY_FIELDS, StoreError
 from rayspec.store.model import RunRecord
 
 #: Read-only members forwarded to the wrapped store unchanged (they never carry a secret in).
@@ -181,7 +181,7 @@ class RedactingStore:
         """
         if not self.redactor:
             return run
-        dump = self.redactor.redact_dump(run)
+        dump = self.redactor.redact_dump(run, preserve=RUN_IDENTITY_FIELDS)
         try:
             return type(run).model_validate(dump)
         except ValidationError as exc:

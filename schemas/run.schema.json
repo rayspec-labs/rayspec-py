@@ -924,6 +924,11 @@
       "default": null,
       "title": "Stubs Path"
     },
+    "fail_fast": {
+      "default": false,
+      "title": "Fail Fast",
+      "type": "boolean"
+    },
     "secret_inputs": {
       "default": [],
       "items": {

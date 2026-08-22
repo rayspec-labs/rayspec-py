@@ -632,6 +632,13 @@ from rayspec.store.file import (
 #   RunRecord.cost_source (additive): "provider" | "table" | "partial" | "none" —
 #       the run-level cost source the engine computes on every final status (see the engine
 #       section: rayspec.engine.context.cost_source_of); older run.json files read as "none"
+#   RunRecord.fail_fast: bool = False (additive): whether --fail-fast was in force
+#       for the run. The failure policy is a blast-radius control and the flag is the operator's
+#       override of defaults.on_step_failure, so it is recorded at launch and RESTORED by every
+#       resume entry (resume / approve / reject / run --resume): without it the second half of a
+#       run silently ran under a looser policy than the first. A resume entry may still TIGHTEN
+#       it (`rayspec resume --fail-fast`), never loosen it, and the tightened value is recorded
+#       in turn; False in older records, which is what those runs did
 #   RunRecord.pid_started_at: str | None = None (additive): start time of the
 #       process behind pid — the `ps -o lstart= -p <pid>` string as printed under LC_ALL=C TZ=UTC
 #       (fixed env, so launch and cancel shells agree; Linux when ps is missing/fails: the
@@ -1488,6 +1495,21 @@ Semantics fixed here (tests in `tests/engine/`):
   paused is `paused`. Control signals raised by several `each:` items concurrently collapse into
   one (first wins, a pause beats a stop; the other items are cancelled with reason
   `stopped`/`paused`) — never a failed composite.
+- A `stop:` declares the RUN's status (`Runner._finalize`) only when nothing genuinely failed, and
+  "genuinely" means anywhere in the graph: `runner.run_failures(run)` is every untolerated
+  `FAILED_LIKE` record at ANY depth, minus what the stop tore down (`runner.stop_collateral`:
+  `interrupted` + `stopped`, the pair the scheduler records for a sibling a `stop:` cancelled)
+  and minus anything an enclosing composite has already answered for
+  (`runner.answered_by_a_composite`: any enclosing container that is NOT itself stop collateral —
+  one that rolled its body up under its own policy, `each.on_failure: continue` or
+  `loop.on_exhausted`, but equally one the run paused at or an outside cancellation interrupted.
+  It is that composite's record the run counts, not the body's, which stays `tolerated=False`
+  whatever the composite decided. A missing container counts the record: nothing settled it). The `interrupted`/`stopped` pair on its own does NOT mean nothing failed: by
+  the bullet above a composite whose body stopped carries it whether or not a body step had
+  already failed, so what settles it is the body's own records. Without that, a `stop: {status:
+  succeeded}` inside an `each:`/`include:` body reported a run holding a failed step as succeeded,
+  exit 0, `outputs:` published. The step that RAISED the stop (`ctx.stopped.step_path` — an
+  `on_reject: cancel` gate is `rejected` *and* stops the run) never counts against its own signal.
 - Wind-down (`scheduler.run_graph`): when a sibling list ends because fail-fast tore down its task
   group or a control signal cancelled it, the steps still PENDING are not blanket-skipped. They are
   decided in dependency order by the same `join_decision(..., draining=True)`, so `join: always`
@@ -2283,14 +2305,31 @@ Two new packages and one new loader module; nothing else moved.
   growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
   included (a structured result or a tool payload can put a secret in the key position), plus a
   **number** whose whole text IS a secret, so a JSON document stays well-formed.
-  `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
+  `redact_dump(model, *, preserve=()) -> Any` — a pydantic model's JSON-able dump with the
+  PARSED values
   redacted, and any substitution the model cannot hold put back at exactly the field it broke
   (a structural number equal to a secret is a coincidence, not a leak). The record's own
   STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
   keyed by step path), names a place in the record rather than carrying a value — while
-  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
+  everything free-form inside it goes through `redact_obj`, keys included. `preserve` (additive)
+  names the TOP-LEVEL fields that are identity rather than content — the strings the record is
+  looked up BY; both stores pass `store.file.RUN_IDENTITY_FIELDS`, because a secret that collides
+  with one of those used to rewrite it and leave the run permanently unreachable (`unknown
+  workflow '[REDACTED:…]'`). A record one level down declares its own instead, as the ClassVar
+  `redaction_identity` (`redact.IDENTITY_FIELDS_ATTR`), honoured wherever that model appears at
+  whatever depth — `preserve` is the writer's word about the record it is handing over and cannot
+  reach a field the writer does not know is there. `RunRecord.redaction_identity = ("run_id",
+  "workflow_name", "workflow_path", "project_root")` **is** `RUN_IDENTITY_FIELDS` (one list, not
+  two); `StepRecord` declares `("path", "id", "output_ref", "prompt_ref")` — the key its record is
+  already filed under, plus the refs the store built out of it, so `rayspec explain` no longer
+  dies on `invalid step path '[REDACTED:…]'`; `WorkspaceInfo` declares `("workdir",)`, the
+  directory a resumed run runs in (without it the second half failed `cwd does not exist:
+  [REDACTED:…]`). Every other structural string stays redacted. The writer serialises
   that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
-  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
+  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`),
+  `uncovered(secrets) -> tuple[str, ...]` (additive: the NAMES `redact` would still let through
+  — the read-back a caller installing a redactor checks, so a store that accepts the assignment
+  and drops it is caught) and
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
   is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
   already knew everything) are how a later caller ADDS a value without discarding one already
@@ -2341,7 +2380,9 @@ Additive changes to existing modules:
   assigns the real one at run start, and the Runner installs what the CLI did not). Every writer
   redacts, and everything JSON-shaped is redacted on the PARSED value rather than on the
   serialised text — a secret that is a bare JSON token would otherwise be swapped for an
-  unquoted marker and leave a file that no longer parses: `save` (`redact_dump(run)`, then
+  unquoted marker and leave a file that no longer parses: `save`
+  (`redact_dump(run, preserve=RUN_IDENTITY_FIELDS)`, plus whatever each nested record declares
+  as its own `redaction_identity`, then
   serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
   `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
   value), `append_event` (the event's `data`, the only free-form part), `append_stream`
@@ -2363,8 +2404,10 @@ Additive changes to existing modules:
   through `extend`, including values `covers` reports as covered, so a value too short to redact
   lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
   emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
-  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
-  `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
+  the run, an embedder only has events. The assignment is then READ BACK
+  (`Redactor.uncovered`): a store whose `redactor` cannot be assigned — or one whose setter
+  accepts the value and drops it, which raises nothing — raises `EngineError` naming the values,
+  and the run writes nothing. **The boundary is therefore not a
   caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
   by construction.
 - `engine/executors/_process.py`: `process_env` adds `ctx.options.config_secrets` under their own

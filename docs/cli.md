@@ -959,6 +959,7 @@ Options:
 - `--verbose` — Also show step starts.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
 - `--stubs` `<path>` — Stub script for the resumed run (default: the file recorded at launch).
+- `--fail-fast` — Cancel running siblings on failure. The override the run was launched with is recorded (`run.json` `fail_fast`) and restored on every resume entry — `approve` and `reject` included — so the second half of a run never runs under a looser failure policy than the first. This flag may only ever *tighten*: it turns fail-fast on for a run launched without it (and is recorded in turn), and omitting it never turns a recorded one off. The workflow's own `defaults.on_step_failure` is in the file both halves read and needs no such treatment.
 - `--locked` / `--no-locked` — Check the resumed workflow against `.rayspec/rayspec.lock` (see [`rayspec run`](#rayspec-run)); on by default under `CI`. A resume is where an unattended job spends the second half of a run, and the workflow hash does not cover a tier that was re-pointed in `config.yaml` — so the lockfile is checked here too — the one in the run's own project, against the models its own `config.yaml` resolves.
 - `--wait-slot` `DURATION` — Queue for a free host run slot instead of failing (same spellings as [`rayspec run`](#rayspec-run)). A resume takes a slot because it starts the same agents.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.

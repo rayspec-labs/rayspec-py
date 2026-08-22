@@ -52,6 +52,7 @@ runs/<run-id>/
   "inputs": {"target": ".", "strictness": "strict", "token": "<secret>"},   // a secret: true input is stored as "<secret>"
   "secret_inputs": ["token"],             // names of the secret: true inputs (their values are never persisted)
   "stubs_path": null,                     // --stubs file (absolute path) or --stubs-from donor ("run:<id>"), reused by resume
+  "fail_fast": false,                     // --fail-fast as given at launch; restored by every resume entry (a resume may tighten it, never loosen it)
   "status": "succeeded", "reason": null,
   "created_at": "…", "started_at": "…", "ended_at": "…",
   "actor": {"id": "me", "source": "os", "ci": null,                // who launched the run: an exported
@@ -366,6 +367,12 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   before anything is written — exit 2 `run <id> was launched with --dry-run --stubs <path>; its
   recorded stubs file requires --dry-run (… would run for real)`, hint `pass --dry-run to resume
   it as a dry run (rayspec resume does so automatically), or switch the agents to provider: stub`;
+- a run launched with `--fail-fast` recorded that (`fail_fast`), and every entry restores it, so
+  the second half of a run uses the failure policy the first half did. `rayspec resume
+  --fail-fast` turns it on for a run launched without it (and is recorded in turn); the flag may
+  only ever *tighten* — omitting it never turns a recorded one off, and `approve`/`reject` need
+  no flag of their own. The workflow's own `defaults.on_step_failure` is in the file both halves
+  read and needs no such treatment;
 - the workflow hash must match; otherwise the resume is **refused** (exit 2, `pass --force`)
   unless `--force`, in which case a leaf whose `fingerprint` (rendered prompt/script + agent)
   changed is re-run with a warning and the rest is reused. Every entry point applies this guard

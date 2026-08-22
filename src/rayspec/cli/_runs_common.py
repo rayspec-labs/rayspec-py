@@ -790,6 +790,7 @@ def resume_run(
     secret_provider: SecretProvider | None = None,
     wait_slot: str | None = None,
     approve_classes: Sequence[str] = (),
+    fail_fast: bool = False,
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
 
@@ -811,6 +812,10 @@ def resume_run(
 
     ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
     does, because it starts the same agents.
+
+    ``fail_fast`` is ``--fail-fast`` given on THIS entry. The run's own recorded override is
+    restored by the engine either way (``RunRecord.fail_fast``), and this can only tighten it —
+    a resume never turns fail-fast off.
 
     ``ctx`` is re-scoped to the run's project (:func:`record_context`) before anything
     project-scoped is read, so the second half of a run gets the same config, policy and
@@ -898,6 +903,7 @@ def resume_run(
         interactive=interactive,
         force=force,
         resume=True,
+        fail_fast=fail_fast,  # the engine ORs in the run's recorded override
         stub_script=stub_script,
         stubs_path=stubs_path,
         provider_settings=ctx.config.providers,

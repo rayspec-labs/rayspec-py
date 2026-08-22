@@ -274,7 +274,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     control = state["control"]
     if control is not None and not isinstance(control, RunPaused):
         # a stop / reject cancelled the graph: the leftovers are decided, the cleanup ones run
-        await wind_down("stopped", cancelled=True)
+        await wind_down(STOPPED_REASON, cancelled=True)
     elif control is None and state["draining"] and fail_fast:
         await wind_down("run_failed", cancelled=False)
     # a cleanup step may have signalled a stop or a pause of its own (only if nothing had yet)
@@ -284,9 +284,18 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     return outcomes
 
 
+#: The ``skip_reason`` a step carries when a ``stop:`` cancelled it while the sibling list was
+#: torn down. It is the marker the runner reads to tell a stop's own teardown from a failure that
+#: happened on its own (:func:`rayspec.engine.runner.stop_collateral`) — one name, so the two
+#: sides can never drift apart.
+STOPPED_REASON = "stopped"
+#: The same, for a pause.
+PAUSED_REASON = "paused"
+
+
 def cancel_reason_for(control: RunControl) -> str:
     """The ``skip_reason`` of steps interrupted because of ``control`` (``paused``/``stopped``)."""
-    return "paused" if isinstance(control, RunPaused) else "stopped"
+    return PAUSED_REASON if isinstance(control, RunPaused) else STOPPED_REASON
 
 
 def _evaluate_when(step: StepModel, scope: ExecScope, ctx: RunContext) -> bool | ErrorInfo:
@@ -560,10 +569,10 @@ def _interrupted(record: StepRecord, reason: str) -> StepOutcome:
 def _controlled(record: StepRecord, control: RunControl) -> StepOutcome:
     if isinstance(control, RunPaused):
         record.status = StepStatus.PAUSED
-        record.skip_reason = "paused"
+        record.skip_reason = PAUSED_REASON
     else:
         record.status = StepStatus.INTERRUPTED
-        record.skip_reason = "stopped"
+        record.skip_reason = STOPPED_REASON
         record.ok = False
     return StepOutcome(record=record, control=control)
 
@@ -637,6 +646,8 @@ def _usage_dict(usage: Any) -> Mapping[str, int]:
 
 
 __all__ = [
+    "PAUSED_REASON",
+    "STOPPED_REASON",
     "cancel_reason_for",
     "finalize",
     "finish",

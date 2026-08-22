@@ -391,9 +391,10 @@ The run installs the **redaction boundary** itself: before it writes a byte it m
 `Redactor` cover every `secret: true` input it was given and every value in
 `RunOptions.config_secrets`, so an embedded run cannot persist a secret by forgetting to wire
 one. A redactor you assigned to `store.redactor` yourself is *extended*, never replaced — that is
-how the CLI adds `config.secrets` values and the opt-in detectors on top. A store whose
-`redactor` attribute cannot be assigned makes a workflow with secret inputs refuse to start
-rather than write anything. A value too short to redact (under four characters, which would
+how the CLI adds `config.secrets` values and the opt-in detectors on top. The assignment is
+read back: a store whose `redactor` attribute cannot be assigned — or one whose setter accepts
+the value and quietly drops it — makes a workflow with secret inputs refuse to start rather than
+write anything. A value too short to redact (under four characters, which would
 match everywhere) is named in a `warning` event right after `run.started`, so an embedded run
 hears about it too. Event sinks are a separate surface: they print rather than persist, and a
 sink of your own is yours to wrap (`rayspec.redact.RedactingSink`) if it writes anywhere.
