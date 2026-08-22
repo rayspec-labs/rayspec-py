@@ -106,9 +106,13 @@ jobs:
           VERSION: ${{ inputs.rayspec-version }}
         run: |
           set -euo pipefail
+          # A PEP 508 specifier never needs whitespace, and a stray space is not a version: an
+          # input of " " walked past the guard below and became `rayspec `, which resolves to the
+          # latest release — the one thing this step exists to refuse.
+          VERSION="$(printf '%s' "$VERSION" | tr -d '[:space:]')"
           case "$VERSION" in
             "")
-              echo "::error::rayspec-version is empty — that installs whatever PyPI serves as the latest release. Pass a version, or leave the input out for the default."
+              echo "::error::rayspec-version is blank — that installs whatever PyPI serves as the latest release. Pass a version, or leave the input out for the default."
               exit 1
               ;;
             # `v1.0.0` is the tag this workflow is called at, so a caller reaches for it here

@@ -1031,6 +1031,10 @@ def _install_step(
         pytest.param("v1.0.0", "tool install rayspec==1.0.0", id="tag-shaped"),
         pytest.param(">=1.0.0,<2", "tool install rayspec>=1.0.0,<2", id="range"),
         pytest.param("==1.0.0", "tool install rayspec==1.0.0", id="operator"),
+        # A repository variable with a stray space is the accident this guards; `rayspec 1.0.0`
+        # is not a specifier and uv refuses it with a message that never mentions whitespace.
+        pytest.param(" 1.0.0 ", "tool install rayspec==1.0.0", id="padded"),
+        pytest.param(">= 1.0.0, < 2", "tool install rayspec>=1.0.0,<2", id="spaced-range"),
     ],
 )
 def test_the_version_input_becomes_the_specifier_it_reads_as(
@@ -1041,15 +1045,28 @@ def test_the_version_input_becomes_the_specifier_it_reads_as(
     assert expected in calls, calls
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" ", id="one-space"),
+        pytest.param("\t", id="tab"),
+        pytest.param("  ", id="two-spaces"),
+    ],
+)
 def test_an_empty_version_is_refused_instead_of_resolving_to_whatever_is_newest(
-    tmp_path: Path,
+    tmp_path: Path, version: str
 ) -> None:
     """The ``rayspec`` name was parked on PyPI with a 0.0.1 placeholder before the first release.
 
     *Latest* therefore had a wrong answer available, and an empty input is how a consumer
     following the documentation installed it — as a passing check that ran a stub.
+
+    Whitespace is the same input wearing a different coat, and the likelier accident of the two:
+    a repository variable with a stray space became ``rayspec `` — a name with no specifier,
+    which resolves to the latest release — and only the empty string was ever refused.
     """
-    done, calls = _install_step(tmp_path, "")
+    done, calls = _install_step(tmp_path, version)
     assert done.returncode != 0, done.stdout
     assert "rayspec-version" in done.stdout + done.stderr
     assert not calls, "PyPI was reached before the input was looked at"
