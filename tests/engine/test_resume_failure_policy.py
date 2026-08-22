@@ -77,6 +77,13 @@ steps:
   - {id: indep, needs: [busy], shell: ok}
 """
 
+#: The same workflow with the sibling held open instead of sitting on a timer. Cancellation only
+#: reaches a sibling that is STILL RUNNING when the failure is settled (``scheduler.run_graph``),
+#: so a 50 ms sleep makes the assertion a race — one a loaded runner loses, and ``busy`` then
+#: reports SUCCEEDED. ``block`` runs until the harness releases it, which it never does here.
+CONTINUE_BLOCKING = CONTINUE.replace('"sleep:0.05"', "block")
+assert "block" in CONTINUE_BLOCKING, "CONTINUE no longer holds the body this test rewrites"
+
 
 async def test_the_recorded_flag_also_beats_on_step_failure_continue(harness: Harness) -> None:
     """A recorded ``--fail-fast`` tightens a workflow that asked to keep going, as the flag does.
@@ -84,7 +91,7 @@ async def test_the_recorded_flag_also_beats_on_step_failure_continue(harness: Ha
     Without it ``busy`` finishes and ``indep`` launches after the failure; with it the running
     sibling is cancelled and nothing new starts.
     """
-    harness.workflow("t", CONTINUE)
+    harness.workflow("t", CONTINUE_BLOCKING)
     g = make_graph_harness(harness, harness.load("t"))
     g.run.fail_fast = True
     with anyio.fail_after(5):
