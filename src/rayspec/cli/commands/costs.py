@@ -160,7 +160,7 @@ def save_in_flight(run_dir: Path, *, now: float | None = None) -> bool:
             moment - path.stat().st_mtime < SAVE_GRACE_S
             for path in run_dir.glob(f"{RUN_JSON}.*.tmp")
         )
-    except OSError:  # a directory that vanished under us is not one to report either
+    except OSError:  # the staging file was renamed into place while we looked: a save landed
         return True
 
 
