@@ -207,6 +207,100 @@ def test_dogfood_release_check_notes_range_uses_a_single_root_commit() -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# review_sweep: what `artifacts:` puts in front of the reader, and when
+# --------------------------------------------------------------------------------------------
+
+
+REVIEW_SWEEP = EXAMPLES_DIR / "review_sweep"
+
+
+def _run_id(inv: Any) -> str:
+    summary = check_examples._summary_from_json(inv.stdout)
+    assert summary is not None, inv.output
+    return str(summary["run_id"])
+
+
+def _shown(run_id: str, root: Path, home: Path) -> Any:
+    inv = _invoke(["show", run_id, "--json", "--root", str(root)], home)
+    assert inv.exit_code == 0, inv.output
+    return json.loads(inv.stdout)
+
+
+def test_review_sweep_dry_run_records_no_artifacts(home: Path) -> None:
+    """The README's credential-free walkthrough. A dry run executes no shell step, so no report
+    is written and there is no artifact to check, copy or record — `rayspec show` has nothing to
+    list, and a README sentence promising otherwise sends the reader looking for a table."""
+    inv = _invoke(
+        ["run", "review_sweep", "--dry-run", "--stubs", str(REVIEW_SWEEP / "stubs.yaml"),
+         "--root", str(REVIEW_SWEEP), "--json"],
+        home,
+    )  # fmt: skip
+    assert inv.exit_code == 1, inv.output  # one angle is scripted to fail
+    shown = _shown(_run_id(inv), REVIEW_SWEEP, home)
+    assert shown["artifacts"] == []
+    assert all(step["artifacts"] == [] for step in shown["steps"]), shown["steps"]
+    assert not (REVIEW_SWEEP / "reports").exists()  # nor did it write into the checkout
+
+
+@pytest.fixture
+def review_sweep_project(tmp_path: Path) -> Path:
+    """``examples/review_sweep`` as a project of its own, with the reviewer switched to the stub
+    provider: the shell steps, the artifact check and the copy into the run directory are the
+    real path, only the three angles' answers are scripted instead of bought."""
+    root = tmp_path / "review_sweep"
+    shutil.copytree(REVIEW_SWEEP, root)
+    workflow = root / ".rayspec" / "workflows" / "review_sweep.yaml"
+    text = workflow.read_text(encoding="utf-8").replace("provider: claude", "provider: stub")
+    workflow.write_text(text, encoding="utf-8")
+    return root
+
+
+def test_review_sweep_keeps_the_reports_of_a_run_that_really_ran(
+    review_sweep_project: Path, home: Path
+) -> None:
+    """The other half of the same sentence: this is where `rayspec show` does list them, with
+    their size and sha256, because a real run wrote three files and the store copied them."""
+    inv = _invoke(
+        ["run", "review_sweep", "-i", "target=stubs.yaml",
+         "--stubs", str(review_sweep_project / "stubs_clean.yaml"),
+         "--root", str(review_sweep_project), "--json"],
+        home,
+    )  # fmt: skip
+    assert inv.exit_code == 0, inv.output
+    shown = _shown(_run_id(inv), review_sweep_project, home)
+    assert [a["path"] for a in shown["artifacts"]] == [
+        "reports/api.md",
+        "reports/docs.md",
+        "reports/tests.md",
+    ]
+    for artifact in shown["artifacts"]:
+        assert artifact["size"] > 0 and len(artifact["sha256"]) == 64
+        assert (Path(shown["run_dir"]) / artifact["ref"]).is_file()
+
+
+def _sections(readme: Path) -> dict[str, str]:
+    """The README's `## ` sections by heading."""
+    out: dict[str, str] = {}
+    heading = ""
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            out[heading] = ""
+        elif heading:
+            out[heading] += line + "\n"
+    return out
+
+
+def test_review_sweep_readme_puts_the_artifacts_claim_where_it_holds() -> None:
+    """`rayspec show` lists artifacts for a run that produced files, and only there."""
+    sections = _sections(REVIEW_SWEEP / "README.md")
+    dry, real = sections["Try it without credentials"], sections["Run it for real"]
+    assert "under `artifacts:`" in real and "sha256" in real
+    assert "sha256" not in dry
+    assert "no `artifacts:` section" in dry  # the dry-run half states the absence, not a table
+
+
+# --------------------------------------------------------------------------------------------
 # an example is scaffolded into a project of its own: what it names, it must ship
 # --------------------------------------------------------------------------------------------
 
@@ -216,6 +310,9 @@ def _example_names() -> list[str]:
 
     return sorted(example_names())
 
+
+#: Any link into this repository's `docs/` from a file that lands in somebody else's project.
+_REPO_DOC_URL_RE = re.compile(r"https://github\.com/rayspec-labs/rayspec-py/\S*?docs/[^\s)\]]*")
 
 _TREE_ENTRY_RE = re.compile(r"^(?:[├└]──|\|--)\s*(?P<name>\S+)")
 _BRACE_RE = re.compile(r"\{([^{}]*)\}")
@@ -275,6 +372,7 @@ def test_no_scaffolded_file_points_outside_the_project_it_scaffolds(name: str) -
     """A scaffolded file may cite a doc only by URL — `docs/cli.md` explains why for hints, and a
     file that lands in somebody's project is in exactly the same position: there is no checkout
     above it to resolve `../../docs/schema.md` or `examples/README.md` against."""
+    from rayspec.cli._docs import DOCS_BASE
     from rayspec.cli.commands.init import example_files
 
     for rel, node in example_files(name):
@@ -285,3 +383,12 @@ def test_no_scaffolded_file_points_outside_the_project_it_scaffolds(name: str) -
         assert "examples/README.md" not in text, (
             f"{name}/{rel} cites examples/README.md, which `init --from` never writes"
         )
+        assert "scripts/" not in text, (
+            f"{name}/{rel} names something under scripts/, which only exists in a checkout of "
+            f"the repository — a scaffolded project has `rayspec test` and nothing else"
+        )
+        for url in _REPO_DOC_URL_RE.findall(text):
+            assert url.startswith(DOCS_BASE), (
+                f"{name}/{rel} cites {url}, which does not start with `_docs.DOCS_BASE` "
+                f"({DOCS_BASE}) — that constant is where the location of the docs is decided"
+            )

@@ -10,7 +10,7 @@ examples/review_sweep/
 ├── .rayspec/workflows/review_sweep.yaml   # the workflow
 ├── stubs.yaml                             # one angle fails (scripted, for --dry-run)
 ├── stubs_clean.yaml                       # every angle answers
-├── checks.yaml                            # what scripts/check_examples.py asserts
+├── checks.yaml                            # the cases `rayspec test` runs here
 └── README.md
 ```
 
@@ -73,8 +73,9 @@ With `stubs.yaml` the run ends `failed` (exit 1) and the steps end like this:
 | `tests`, `tests_report` | succeeded |
 | `digest` | succeeded (`join: always`) |
 
-`rayspec show <run-id>` then lists the two reports the run did produce under `artifacts:`, with
-their size and sha256.
+No report is written: a dry run executes no shell step, so there is nothing to check, copy or
+record, and `rayspec show <run-id>` prints the step tree above with no `artifacts:` section under
+it. The reports are what a real run keeps.
 
 ## Run it for real
 
@@ -86,5 +87,5 @@ rayspec show <run-id>            # the step tree, and the artifacts table
 Needs a logged-in `claude` CLI (or `ANTHROPIC_API_KEY`). `isolation: none` runs in the directory
 itself, so the `reports/` directory the report steps write is created there; a declared artifact
 is copied into the run directory as well, which is what keeps it after the checkout moves on.
-A `--dry-run` writes nothing and checks no artifact — there is nothing to check, because no step
-really ran.
+`rayspec show <run-id>` lists every report the run produced under `artifacts:`, with its size and
+sha256 — three of them when all three angles answer, two when one of them is down.

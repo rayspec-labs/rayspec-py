@@ -10,7 +10,7 @@ examples/secret_via_tool/
 ├── .rayspec/config.yaml                       # secrets: GITHUB_TOKEN ← env RAYSPEC_EXAMPLE_GITHUB_TOKEN
 ├── .rayspec/workflows/secret_via_tool.yaml    # the tool step + the agent step
 ├── stubs.yaml                                 # scripted answer for --dry-run
-├── checks.yaml                                # what scripts/check_examples.py asserts
+├── checks.yaml                                # the cases `rayspec test` runs here
 └── README.md
 ```
 
