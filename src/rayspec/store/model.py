@@ -248,6 +248,14 @@ class RunRecord(_Model):
     #: additive: absolute path of the ``--stubs`` file given at launch (``None`` when the run
     #: was not scripted); ``resume``/``approve``/``reject`` reuse it, ``--stubs`` overrides it
     stubs_path: str | None = None
+    #: additive: whether ``--fail-fast`` was in force for this run. The failure policy is a
+    #: blast-radius control, and the CLI flag is the operator's override of the workflow's own
+    #: ``defaults.on_step_failure`` — it lives on the command line, so without recording it the
+    #: second half of a run (``resume``/``approve``/``reject``) silently ran under a looser
+    #: policy than the first. Written at launch and re-written on every resume entry, where the
+    #: flag may still TIGHTEN it (it never loosens); ``False`` in records written before the
+    #: field existed, which is the behaviour those runs had.
+    fail_fast: bool = False
     #: additive: names of the inputs declared ``secret: true``; their values are never
     #: persisted (``inputs`` holds ``"<secret>"`` for the ones that were given) and must be
     #: supplied again on every resume entry

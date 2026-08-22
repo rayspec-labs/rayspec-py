@@ -10,8 +10,8 @@ through and nothing about runs, stores, sinks or configuration; the callers wire
   :meth:`Redactor.redact_obj`, which work on the PARSED value: replacing a secret in the
   serialised text turns a bare JSON token (a numeric secret) into an unquoted marker and leaves
   a file that no longer parses. Free-form KEYS are redacted beside their values; a record's own
-  structure (field names, the step paths its steps are keyed by) is left alone on purpose —
-  see :meth:`Redactor.redact_dump`;
+  structure (field names, the step paths its steps are keyed by) and the identity fields the
+  writer names (``preserve``) are left alone on purpose — see :meth:`Redactor.redact_dump`;
 * the shared subprocess runner redacts ``stdout.log``/``stderr.log`` and the stdout/stderr
   stream records as they are produced;
 * :class:`RedactingSink` wraps the event sinks so the console and ``--json`` are covered too.
@@ -295,7 +295,7 @@ class Redactor:
                     return replacement
         return value
 
-    def redact_dump(self, model: BaseModel) -> Any:
+    def redact_dump(self, model: BaseModel, *, preserve: Sequence[str] = ()) -> Any:
         """``model`` as a JSON-able mapping with every secret replaced in the PARSED values.
 
         This is what a writer must persist a record through. Redacting the *serialised* text
@@ -315,15 +315,22 @@ class Redactor:
         mapping of records (the run's steps, keyed by step path) name a place in the record
         rather than carry a value, and rewriting one drops the field on the way back in
         (pydantic ignores what it does not know) or points a step at a directory that is not
-        there. Structural *strings* are a smaller version of the same coincidence and are NOT
-        exempt: a secret that equals the run id rewrites ``run_id``, and the record then no
-        longer names its own directory. That trade is deliberate — the value is far more likely
-        to be a leak than a generated id is to collide with it.
+        there.
+
+        ``preserve`` names the TOP-LEVEL fields that are identity rather than content: the
+        strings the record is looked up BY. They are the same class one level up — rewriting one
+        does not leak less, it destroys the record just as a rewritten field name would, and
+        there is no way to undo it afterwards. The caller decides which they are, because this
+        module knows nothing about runs (:data:`rayspec.store.file.RUN_IDENTITY_FIELDS`).
+        Only the top level is exempt: a nested record that happens to use the same field name
+        is content and stays redacted. Every other structural string is NOT exempt — a secret
+        that equals the workflow hash or the project slug is far more likely to be a leak than
+        a coincidence, and neither is what a later command resolves the run by.
         """
         data = model.model_dump(mode="json")
         if not self:
             return data
-        out = self._redact_record(model, data)
+        out = self._redact_record(model, data, preserve=preserve)
         if out == data:  # nothing matched: skip the round trip a checkpoint pays on every save
             return out
         cls = type(model)
@@ -340,12 +347,15 @@ class Redactor:
         )
         return out
 
-    def _redact_record(self, model: BaseModel, data: Any) -> Any:
+    def _redact_record(self, model: BaseModel, data: Any, *, preserve: Sequence[str] = ()) -> Any:
         """``data`` (the dump of ``model``) redacted, with the model's own structure intact.
 
         The model instance is walked beside its dump so that a field name stays a field name;
         everything the record holds that is free-form — ``inputs``, ``outputs``, a toolchain
-        payload — goes through :meth:`redact_obj`, whose keys ARE redacted.
+        payload — goes through :meth:`redact_obj`, whose keys ARE redacted. ``preserve`` (field
+        names or their serialisation aliases) is passed through from :meth:`redact_dump` and
+        applies to this level only — nested records are reached through :meth:`_redact_child`,
+        which does not carry it.
         """
         if not isinstance(data, dict):
             return self.redact_obj(data)
@@ -353,9 +363,16 @@ class Redactor:
             (info.serialization_alias or info.alias or name): name
             for name, info in type(model).model_fields.items()
         }
+        keep = (
+            frozenset(key for key, name in fields.items() if key in preserve or name in preserve)
+            if preserve
+            else frozenset()
+        )
         return {
             key: (
-                self._redact_child(getattr(model, fields[key], None), value)
+                value
+                if key in keep
+                else self._redact_child(getattr(model, fields[key], None), value)
                 if key in fields
                 else self.redact_obj(value)
             )
@@ -387,6 +404,22 @@ class Redactor:
         if len(text) < MIN_REDACTABLE_LEN:
             return True
         return self.redact(text) != text
+
+    def uncovered(self, secrets: Secrets) -> tuple[str, ...]:
+        """The NAMES in ``secrets`` whose value :meth:`redact` would still let through.
+
+        The read-back half of installing a redactor: assigning one to a store is not proof that
+        it took (a setter may accept the value and drop it), so the caller asks the store for
+        what it now holds and checks it here. Empty means every value is covered — including the
+        ones deliberately not redacted because they are shorter than
+        :data:`MIN_REDACTABLE_LEN`, which nothing could cover and which must therefore never
+        read as a failure. Takes the same pairs :meth:`build` does.
+        """
+        items: Iterable[tuple[str, Any]] = (
+            cast("Mapping[str, Any]", secrets).items() if isinstance(secrets, Mapping) else secrets
+        )
+        missing = [name for name, value in items if value is not None and not self.covers(value)]
+        return tuple(dict.fromkeys(missing))
 
     def extend(self, secrets: Secrets) -> Redactor:
         """This redactor plus ``{name: value}`` — the same detectors, the union of the literals.

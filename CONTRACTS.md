@@ -632,6 +632,13 @@ from rayspec.store.file import (
 #   RunRecord.cost_source (additive): "provider" | "table" | "partial" | "none" —
 #       the run-level cost source the engine computes on every final status (see the engine
 #       section: rayspec.engine.context.cost_source_of); older run.json files read as "none"
+#   RunRecord.fail_fast: bool = False (additive): whether --fail-fast was in force
+#       for the run. The failure policy is a blast-radius control and the flag is the operator's
+#       override of defaults.on_step_failure, so it is recorded at launch and RESTORED by every
+#       resume entry (resume / approve / reject / run --resume): without it the second half of a
+#       run silently ran under a looser policy than the first. A resume entry may still TIGHTEN
+#       it (`rayspec resume --fail-fast`), never loosen it, and the tightened value is recorded
+#       in turn; False in older records, which is what those runs did
 #   RunRecord.pid_started_at: str | None = None (additive): start time of the
 #       process behind pid — the `ps -o lstart= -p <pid>` string as printed under LC_ALL=C TZ=UTC
 #       (fixed env, so launch and cancel shells agree; Linux when ps is missing/fails: the
@@ -2266,14 +2273,23 @@ Two new packages and one new loader module; nothing else moved.
   growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
   included (a structured result or a tool payload can put a secret in the key position), plus a
   **number** whose whole text IS a secret, so a JSON document stays well-formed.
-  `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
+  `redact_dump(model, *, preserve=()) -> Any` — a pydantic model's JSON-able dump with the
+  PARSED values
   redacted, and any substitution the model cannot hold put back at exactly the field it broke
   (a structural number equal to a secret is a coincidence, not a leak). The record's own
   STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
   keyed by step path), names a place in the record rather than carrying a value — while
-  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
+  everything free-form inside it goes through `redact_obj`, keys included. `preserve` (additive)
+  names the TOP-LEVEL fields that are identity rather than content — the strings the record is
+  looked up BY; both stores pass `store.file.RUN_IDENTITY_FIELDS = ("run_id", "workflow_name",
+  "workflow_path")`, because a secret that collides with one of those used to rewrite it and
+  leave the run permanently unreachable (`unknown workflow '[REDACTED:…]'`). Every other
+  structural string stays redacted. The writer serialises
   that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
-  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
+  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`),
+  `uncovered(secrets) -> tuple[str, ...]` (additive: the NAMES `redact` would still let through
+  — the read-back a caller installing a redactor checks, so a store that accepts the assignment
+  and drops it is caught) and
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
   is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
   already knew everything) are how a later caller ADDS a value without discarding one already
@@ -2324,7 +2340,8 @@ Additive changes to existing modules:
   assigns the real one at run start, and the Runner installs what the CLI did not). Every writer
   redacts, and everything JSON-shaped is redacted on the PARSED value rather than on the
   serialised text — a secret that is a bare JSON token would otherwise be swapped for an
-  unquoted marker and leave a file that no longer parses: `save` (`redact_dump(run)`, then
+  unquoted marker and leave a file that no longer parses: `save`
+  (`redact_dump(run, preserve=RUN_IDENTITY_FIELDS)`, then
   serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
   `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
   value), `append_event` (the event's `data`, the only free-form part), `append_stream`
@@ -2346,8 +2363,10 @@ Additive changes to existing modules:
   through `extend`, including values `covers` reports as covered, so a value too short to redact
   lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
   emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
-  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
-  `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
+  the run, an embedder only has events. The assignment is then READ BACK
+  (`Redactor.uncovered`): a store whose `redactor` cannot be assigned — or one whose setter
+  accepts the value and drops it, which raises nothing — raises `EngineError` naming the values,
+  and the run writes nothing. **The boundary is therefore not a
   caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
   by construction.
 - `engine/executors/_process.py`: `process_env` adds `ctx.options.config_secrets` under their own

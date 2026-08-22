@@ -27,7 +27,7 @@ import os
 import socket
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +47,7 @@ from rayspec.engine.runtime import (
     run_with_signals,
     unwrap_exception_group,
 )
-from rayspec.engine.scheduler import run_graph
+from rayspec.engine.scheduler import STOPPED_REASON, run_graph
 from rayspec.engine.toolchain import capture_toolchain
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType
@@ -65,8 +65,8 @@ from rayspec.loader.inputs import (
     split_secret_inputs,
 )
 from rayspec.providers.base import Provider, Usage
-from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR
-from rayspec.schema import RunStatus
+from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, Redactor
+from rayspec.schema import RunStatus, StepStatus
 from rayspec.store.base import RunStore
 from rayspec.store.model import (
     ActorInfo,
@@ -214,6 +214,13 @@ class Runner:
         makes the run refuse to start: a workflow with a secret input and no way to redact it
         must not write a single byte.
 
+        The assignment is VERIFIED, not assumed. A store whose ``redactor`` setter accepts the
+        value and drops it (a plugin store that never reads the attribute back, a
+        ``__setattr__`` that filters unknown names) raises nothing, so the exception probe alone
+        let exactly the shape the refusal exists for through — and the run then wrote every raw
+        secret. The store is asked for what it now holds, and the refusal is the same one either
+        way: the difference between "it refused" and "it lied" is not one the run can act on.
+
         The two sets of values are handed over as PAIRS, not merged into one mapping: an input
         name and a ``config.secrets`` name are independent namespaces that can collide, and
         merging by name would drop one of the two values from the redactor while
@@ -234,15 +241,26 @@ class Runner:
         try:
             self.store.redactor = updated
         except (AttributeError, TypeError) as exc:
-            names = sorted({name for name, value in secrets if not current.covers(value)})
-            raise EngineError(
-                f"{type(self.store).__name__} does not accept a redactor, so the secret "
-                f"value(s) {', '.join(names or sorted({n for n, _ in secrets}))} could not be "
-                f"kept out of the run directory",
-                hint="use a store whose `redactor` attribute can be assigned (every store "
-                "rayspec builds can), or run a workflow without secret inputs",
-            ) from exc
+            raise self._no_redactor(secrets, current) from exc
+        installed = getattr(self.store, "redactor", None)
+        if not isinstance(installed, Redactor) or installed.uncovered(secrets):
+            raise self._no_redactor(secrets, current)
         self._unredactable = tuple(n for n in updated.skipped if n not in current.skipped)
+
+    def _no_redactor(self, secrets: list[tuple[str, Any]], current: Redactor) -> EngineError:
+        """The refusal: this store does not hold the boundary, so nothing may be written.
+
+        One message for both ways that can happen — the assignment raised, or it was accepted
+        and dropped. The names are the values still uncovered by whatever the store had before.
+        """
+        names = sorted(set(current.uncovered(secrets)) or {n for n, _ in secrets})
+        return EngineError(
+            f"{type(self.store).__name__} does not hold the redactor it is given (assigning "
+            f"one is refused or silently dropped), so the secret value(s) {', '.join(names)} "
+            "could not be kept out of the run directory",
+            hint="use a store whose `redactor` attribute can be assigned and read back (every "
+            "store rayspec builds can), or run a workflow without secret inputs",
+        )
 
     # -- entry points ---------------------------------------------------------------------
 
@@ -640,6 +658,12 @@ class Runner:
             if self.options.stubs_path is not None:
                 run.stubs_path = self.options.stubs_path  # --stubs on resume overrides
             run.secret_inputs = tuple(secret_input_names(workflow))
+            # the operator's ``--fail-fast`` override is part of the RUN, not of this entry:
+            # restored from the record so the second half runs under the policy the first did,
+            # and re-supplying the flag may still tighten a run launched without it (it never
+            # loosens one — the same rule ``RunContext.fail_fast_for`` applies within a run)
+            self.options = replace(self.options, fail_fast=self.options.fail_fast or run.fail_fast)
+            run.fail_fast = self.options.fail_fast
             run.status = RunStatus.RUNNING
             run.reason = None
             run.ended_at = None
@@ -666,6 +690,7 @@ class Runner:
             ),
             secret_inputs=tuple(secret_input_names(workflow)),
             stubs_path=self.options.stubs_path,
+            fail_fast=bool(self.options.fail_fast),
             status=RunStatus.RUNNING,
             started_at=utcnow(),
             pid=os.getpid(),
@@ -708,7 +733,16 @@ class Runner:
         # own policy — ``each.on_failure: continue`` tolerates a failed item, ``loop.on_exhausted``
         # decides an exhausted loop — and those nested records stay ``tolerated=False`` in the
         # store. Counting them here would fail a run whose ``each:`` step legitimately succeeded.
-        failed = [r for r in failed_steps(run) if len(StepPath.parse(r.path).segments) == 1]
+        #
+        # A step the stop CANCELLED is not one of them (:func:`stop_collateral`): tearing the
+        # sibling list down is how a ``stop:`` ends a run, so counting its own teardown made a
+        # declared, deliberate stop report as ``failed`` — with the collateral as the reason,
+        # and only when a sibling happened to still be in flight.
+        failed = [
+            r
+            for r in failed_steps(run)
+            if len(StepPath.parse(r.path).segments) == 1 and not stop_collateral(r)
+        ]
         if ctx.stopped is not None:
             # The step that RAISED the stop must not outrank its own signal: `on_reject: cancel`
             # records the gate as REJECTED *and* stops the run, and that is a deliberate cancel
@@ -953,6 +987,25 @@ def failed_steps(run: RunRecord) -> list[StepRecord]:
     return [r for r in run.steps.values() if r.status in FAILED_LIKE and not r.tolerated]
 
 
+def stop_collateral(record: StepRecord) -> bool:
+    """Whether ``record`` is a step a ``stop:`` cancelled while winding its sibling list down.
+
+    Cancelling the running siblings is *how* a ``stop:`` ends a sibling list, and the scheduler
+    records each of them ``interrupted`` with the skip reason
+    :data:`~rayspec.engine.scheduler.STOPPED_REASON`. That makes them ``FAILED_LIKE``, but they
+    are the signal's own teardown rather than an independent failure: counting them turned a
+    declared ``stop: {status: cancelled}`` into a ``failed`` run whose reason was the collateral
+    it had ordered itself — and whether that happened depended only on whether a sibling was
+    still in flight, which is timing.
+
+    Nothing else produces this pair. A step cancelled after a FAILURE (``--fail-fast``) carries
+    the reason ``failed``, an outside cancellation ``interrupted``, and a gate rejected with
+    ``on_reject: cancel`` is recorded ``rejected`` — so every genuine failure still outranks the
+    stop, which is what keeps a ``stop:`` from laundering one.
+    """
+    return record.status is StepStatus.INTERRUPTED and record.skip_reason == STOPPED_REASON
+
+
 __all__ = [
     "RunResult",
     "Runner",
@@ -960,4 +1013,5 @@ __all__ = [
     "failed_steps",
     "fallback_project_slug",
     "process_start_time",
+    "stop_collateral",
 ]
