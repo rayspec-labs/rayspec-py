@@ -3,7 +3,18 @@
 All notable changes to rayspec are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
-## [Unreleased]
+## [1.0.0] — 2026-08-22
+
+First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
+on the Claude Agent SDK and the OpenAI Codex SDK. YAML coordinates, code computes, agents judge
+(`docs/constitution.md`).
+
+Everything below ships in this one release; the two parts are a reading order, not a history.
+
+## The authoring loop, governance and hardening
+
+The work that turned an engine into something you can develop against, leave running and audit
+afterwards.
 
 ### Added
 - **`rayspec test`** — run a project's declarative workflow cases offline against the stub provider:
@@ -309,11 +320,9 @@ All notable changes to rayspec are documented here. The format follows
 - **An example ships whole**, `checks.yaml` included, so a scaffolded project can run the cases its
   own README describes.
 
-## [1.0.0] — 2026-08-20
+## The engine, the language and the CLI
 
-First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
-on the Claude Agent SDK and the OpenAI Codex SDK. YAML coordinates, code computes, agents judge
-(`docs/constitution.md`).
+The workflow language, the scheduler, the two provider adapters and the command line.
 
 ### Added — workflow language
 - YAML workflow files (`.rayspec/workflows/<name>.yaml`, `rayspec: 1`) with exactly one kind key per
@@ -429,10 +438,19 @@ on the Claude Agent SDK and the OpenAI Codex SDK. YAML coordinates, code compute
 
 ### Known issues / limitations
 - POSIX-first (macOS, Linux); Windows is best-effort and untested.
-- Secret inputs (v1) reach only `shell:`/`python:` steps via the environment — agent steps cannot
-  receive secrets; a shell step that echoes a secret persists it in its output (see `docs/schema.md`).
+- Secret inputs reach only `shell:`/`python:` steps, through the environment; an agent step cannot
+  receive one, and asking for it is a load-time error (see `docs/schema.md`). A value a step prints
+  IS redacted on its way to every writer — the store, the event stream, the console — but redaction
+  is exact-match, so a step that transforms a secret before printing it (encoding it, splitting it,
+  hashing it) defeats it. Give a step a capability rather than a credential where you can;
+  `examples/secret_via_tool` is the idiom.
 - Cost for Codex models is shown as tokens only unless a `pricing:` entry is configured.
+- POSIX shell semantics: a value is passed as `${RAYSPEC_V<n>}` and never spliced into a script, so
+  single quotes stop the shell expanding it — the one thing most likely to surprise you.
 - This release was verified with the local gate (`ruff`, `ruff format`, `pyright`,
-  `pytest -m "not live"`, `scripts/check_examples.py`); CI has not yet produced a green run.
+  `pytest -m "not live"`, `scripts/check_examples.py`) on Python 3.12, and by installing the wheel
+  and running it on 3.11. **GitHub Actions has never produced a green run**: standard runners are
+  free only on public repositories, so every workflow file here — CI, the release pipeline, the
+  reusable check, the docs publish — is written and locally checked but has not executed for real.
 
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0
