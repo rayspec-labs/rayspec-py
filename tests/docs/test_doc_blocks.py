@@ -155,3 +155,61 @@ def test_a_marker_separated_from_its_fence_is_stranded(tmp_path: Path) -> None:
         "README.md:1: rayspec marker is not above a fenced block"
     ]
     assert check_examples.doc_block_problems(check_examples.find_doc_blocks(root))
+
+
+def _fragment(text: str, marker: str = "validate") -> Any:
+    """A ``DocBlock`` standing for one snippet, without going through a page."""
+    return check_examples.DocBlock(source="docs/providers.md", line=1, marker=marker, text=text)
+
+
+def test_an_agents_only_fragment_gets_a_step_per_agent() -> None:
+    """A wrapper whose steps name no agent checks nothing about the agents it wrapped."""
+    doc = check_examples.doc_workflow(
+        _fragment("agents:\n  reviewer:\n    provider: claude\n  writer:\n    provider: claude\n")
+    )
+    assert "agent: reviewer" in doc, doc
+    assert "agent: writer" in doc, doc
+
+
+def test_an_agents_fragment_is_checked_against_its_own_provider(tmp_path: Path) -> None:
+    """`on_denial: fail` needs `denial_reporting`; on Codex that is a validation error."""
+    block = _fragment("agents:\n  reviewer:\n    provider: codex\n    on_denial: fail\n")
+    problems = check_examples.check_doc_block(block, home=tmp_path)
+    assert any("on_denial" in problem for problem in problems), problems
+
+
+def test_a_supported_agents_fragment_still_passes(tmp_path: Path) -> None:
+    """The same fragment on a provider that supports the field must stay green."""
+    block = _fragment("agents:\n  reviewer:\n    provider: claude\n    on_denial: fail\n")
+    assert check_examples.check_doc_block(block, home=tmp_path) == []
+
+
+def test_an_agents_fragment_naming_a_missing_file_is_caught(tmp_path: Path) -> None:
+    """`instructions_file:` is read when an agent is used — and only then."""
+    block = _fragment(
+        "agents:\n  reviewer:\n    provider: claude\n    instructions_file: ./nope.md\n"
+    )
+    assert check_examples.check_doc_block(block, home=tmp_path)
+
+
+def test_a_missing_reference_in_a_prompt_body_fails_the_run_check(tmp_path: Path) -> None:
+    """The run level is worth its name where a body is rendered: every ``prompt:`` template."""
+    block = _fragment(
+        "rayspec: 1\n"
+        "name: doc_probe\n"
+        "agents:\n"
+        "  reviewer:\n"
+        "    provider: claude\n"
+        "steps:\n"
+        '  - id: collect\n    shell: "true"\n'
+        "  - id: review\n"
+        "    needs: [collect]\n"
+        "    agent: reviewer\n"
+        '    prompt: "{{ steps.collect.output.verdict }}"\n',
+        marker="run",
+    )
+    assert (
+        check_examples.check_doc_block(dataclasses.replace(block, marker="validate"), home=tmp_path)
+        == []
+    ), "the snippet must still VALIDATE — otherwise this proves nothing about the run level"
+    assert check_examples.check_doc_block(block, home=tmp_path)

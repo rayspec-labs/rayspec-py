@@ -77,8 +77,10 @@ __all__ = [
     "cli_contract_check",
     "discover_suites",
     "doc_block_problems",
+    "doc_declared_agents",
     "doc_problems",
     "doc_sources",
+    "doc_steps_for",
     "doc_workflow",
     "doc_workflow_name",
     "find_doc_blocks",
@@ -421,7 +423,11 @@ def unbacked_claims(rows: Mapping[str, list[str]], suites: list[Suite]) -> list[
 #: * ``<!-- rayspec:validate -->`` — loaded and validated the way ``rayspec validate`` does;
 #: * ``<!-- rayspec:run [k=v …] -->`` — additionally driven through ``rayspec run --dry-run``
 #:   (every agent becomes the scripted stub, shell/python bodies are skipped), with ``k=v`` as its
-#:   ``--input`` pairs. This is where a snippet that parses but cannot run shows up;
+#:   ``--input`` pairs. This is where a snippet that parses but cannot run shows up — as far as a
+#:   dry run goes, which is the graph, the schedule and every ``prompt:`` body: the run builds,
+#:   every step reaches a terminal status and a prompt template is really rendered against the
+#:   context. A ``shell:``/``python:`` body is skipped and therefore never rendered either, so a
+#:   missing reference inside one is NOT caught at this level;
 #: * ``<!-- rayspec:skip <why> -->`` — deliberately illustrative, with the one-line reason.
 #:
 #: The marker is an HTML comment rather than a fence token so that it stays invisible in the
@@ -453,6 +459,7 @@ _DOC_IS_DOCUMENT = re.compile(r"^rayspec:\s*1\s*(?:#.*)?$", re.MULTILINE)
 _DOC_DECLARED_NAME = re.compile(r"^name:\s*(?P<name>[a-z][a-z0-9_]*)\s*(?:#.*)?$", re.MULTILINE)
 _DOC_HAS_STEPS = re.compile(r"^steps:", re.MULTILINE)
 _DOC_NOOP_STEP = 'steps:\n  - id: noop\n    shell: "true"\n'
+_DOC_STEP_ID = re.compile(r"[a-z][a-z0-9_]*")
 
 
 @dataclass(frozen=True)
@@ -622,13 +629,42 @@ def doc_workflow_name(block: DocBlock) -> str:
     return f"doc_{stem}_{block.line}"
 
 
+def doc_declared_agents(text: str) -> list[str]:
+    """The agent names a fragment declares under ``agents:``, in order (``[]`` when it has none)."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+    agents = data.get("agents") if isinstance(data, Mapping) else None
+    return [str(key) for key in agents] if isinstance(agents, Mapping) else []
+
+
+def doc_steps_for(text: str) -> str:
+    """The ``steps:`` a fragment without any is given so that what it declares is exercised.
+
+    One ``prompt:`` step per declared agent, because a shell noop names no agent and therefore
+    resolves no provider capability: an ``agents:`` fragment would validate whatever it said. A
+    fragment that declares no agent gets the trivial shell step, which is all a workflow needs to
+    be a workflow.
+    """
+    agents = doc_declared_agents(text)
+    if not agents:
+        return _DOC_NOOP_STEP
+    steps = ["steps:"]
+    for index, agent in enumerate(agents, start=1):
+        stem = agent if _DOC_STEP_ID.fullmatch(agent) else f"agent_{index}"
+        steps += [f"  - id: use_{stem}", f"    agent: {agent}", '    prompt: "Say hi"']
+    return "\n".join(steps) + "\n"
+
+
 def doc_workflow(block: DocBlock) -> str:
     """The workflow document a block is checked as — the block itself, or a minimal wrapper.
 
     A complete document (it says ``rayspec: 1``) is used verbatim, with a ``name:`` added when it
     declares none. A fragment is wrapped: a step list becomes the ``steps:`` of a minimal
-    workflow, any other mapping is spliced into one (and gets a trivial step when it has none), so
-    an ``inputs:``, ``agents:`` or ``defaults:`` fragment is checked exactly as written.
+    workflow, any other mapping is spliced into one (and gets the steps of :func:`doc_steps_for`
+    when it has none), so an ``inputs:``, ``agents:`` or ``defaults:`` fragment is checked exactly
+    as written.
     """
     text = block.text
     name = doc_workflow_name(block)
@@ -640,7 +676,7 @@ def doc_workflow(block: DocBlock) -> str:
         return f"rayspec: 1\nname: {name}\nsteps:\n" + textwrap.indent(text, "  ")
     body = f"rayspec: 1\nname: {name}\n" + text
     if not _DOC_HAS_STEPS.search(text):
-        body += _DOC_NOOP_STEP
+        body += doc_steps_for(text)
     return body
 
 
