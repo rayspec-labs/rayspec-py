@@ -328,3 +328,25 @@ def test_only_the_ledger_kinds_are_parsed(
     assert result.exit_code == 0, result.output
     # a multi-MB transcript must not be validated record by record just to be thrown away
     assert seen and all(kinds is not None and set(kinds) <= AUDIT_STREAM_KINDS for kinds in seen)
+
+
+def test_a_shell_step_keeps_both_of_its_rows(
+    cli: CliRunner, work_project: Path, finished: tuple[str, FileRunStore]
+) -> None:
+    # `--commands` answers "what did this run execute" — and a command that started and never
+    # finished is a different fact from one that succeeded. Only ``step.started`` carries the
+    # step's kind, so matching on the payload alone silently drops half of every shell step.
+    run_id, _store = finished
+    rows = _commands(cli, run_id, work_project)
+    details = [r["detail"] for r in rows if r["kind"] == "step" and r["step"] == "build"]
+    assert any(d.startswith("started") for d in details), rows
+    assert "succeeded" in details, rows
+
+
+def test_a_step_that_is_not_a_command_keeps_neither_row(
+    cli: CliRunner, work_project: Path, finished: tuple[str, FileRunStore]
+) -> None:
+    # the other half of the same rule: keeping the finish row must not widen the filter
+    run_id, _store = finished
+    rows = _commands(cli, run_id, work_project)
+    assert not [r for r in rows if r["kind"] == "step" and r["step"] in {"ask", "gate"}], rows

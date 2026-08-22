@@ -8,6 +8,12 @@ auto-approves. Before any of that the workflow is re-loaded and a changed hash i
 (exit 2, ``--force`` hint) — :func:`guard_workflow_unchanged` is the ONE guard every resume
 entry point (``resume``, ``approve``, ``reject``, ``run --resume``) applies first.
 Everything else (reuse cache, live-pid refusal) is the engine's.
+
+A gate this command answers — at the terminal or with ``--yes`` — is recorded against whoever
+ran **this** command, not against the run's actor. The run keeps naming whoever launched it
+(``run.actor`` is resolved once, at its first start), and a resume days later is a second person
+making a decision the first one never made. The identity is resolved at the gate, in the process
+that answers it: see :mod:`rayspec.engine.executors.approve`.
 """
 
 from __future__ import annotations
