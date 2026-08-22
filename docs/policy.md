@@ -459,6 +459,7 @@ nothing else — never workflow content, never an input, never a secret.
 than a machine's capability: it says what may approve an [approval
 gate](runs-and-resume.md#approval-classes), and what may never approve one automatically.
 
+<!-- rayspec:skip a policy document, not a workflow — the validator has nothing to check it against -->
 ```yaml
 # .rayspec/policy.yaml
 approvals:
@@ -471,6 +472,7 @@ approvals:
 
 A workflow names a class and cannot define one:
 
+<!-- rayspec:skip one step of a workflow, shown on its own -->
 ```yaml
 - id: publish
   needs: [build]

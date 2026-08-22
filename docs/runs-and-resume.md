@@ -475,6 +475,7 @@ that is also allowed to publish a release.
 The classes are defined in the `approvals:` block of a [`policy.yaml`](policy.md#approval-classes)
 — the same three layers, discovered the same way, combined most-restrictive-wins:
 
+<!-- rayspec:skip a policy document, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml
 approvals:
