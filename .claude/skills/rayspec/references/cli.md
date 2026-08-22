@@ -380,14 +380,18 @@ Run the project's declarative workflow cases: every case is a **dry run against 
 provider**, so a suite needs no network and no worktree, starts no subprocess and is given no
 credentials — the project's `.rayspec/.env` is deliberately *not* loaded for this command. It is
 the edit → check loop after changing a prompt, a `when:` or a stub, and it is safe to run against
-a checkout you have not read. Cases are discovered from two layouts (see [testing.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/testing.md)
+a checkout you have not read. Cases are discovered from the layouts below (see [testing.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/testing.md)
 for the file format):
 
 - `.rayspec/tests/<workflow>/<case>.yaml` — one case per file; the directory names the workflow
   and the file stem names the case. Suite name: `tests/<workflow>`.
-- `<project>/checks.yaml` next to an example (`examples/<name>/checks.yaml`, each example being a
-  self-contained project) and `.rayspec/dryrun/checks.yaml` for the project's own workflows —
-  a mapping with a `checks:` list. Suite names: the example directory / `dogfood`.
+- `checks.yaml` at the **project root** — the project's own suite, and where the file lands when
+  the project is a scaffolded example (`rayspec init --from <name>` writes it). Suite name:
+  `checks`. It is read only when it is a mapping with a `checks:` list, so a `checks.yaml` that
+  belongs to another tool is passed over instead of reported as broken.
+- `examples/<name>/checks.yaml` (each example being a self-contained project) and
+  `.rayspec/dryrun/checks.yaml` for the project's own workflows — a mapping with a `checks:`
+  list. Suite names: the example directory / `dogfood`.
 
 One line per case is printed while it runs (`ok tests/build:happy (0.04s)`), then the four-line
 block of every unmet expectation and a `24 passed, 1 failed in 2.2s` summary:

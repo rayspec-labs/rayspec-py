@@ -686,3 +686,20 @@ def test_a_failed_scaffold_leaves_no_temporary_files(tmp_path: Path, home: Path)
     _blocked(target, "stubs.yaml")
     CliRunner().invoke(app, ["init", "--from", "hello_review", "--root", str(target)])
     assert [p.name for p in target.rglob("*") if p.is_file()] == []
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_a_scaffolded_example_finds_and_passes_its_own_test_cases(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of "an example is a project": `rayspec test` is a shipped command, so the
+    scaffold has to bring the cases with it and discovery has to find them where they land."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert (target / "checks.yaml").is_file()
+    monkeypatch.chdir(target)
+    run = CliRunner().invoke(app, ["test"])
+    assert run.exit_code == 0, run.output
+    assert " passed" in run.output and "no cases" not in run.output

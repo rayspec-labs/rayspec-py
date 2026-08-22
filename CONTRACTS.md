@@ -1657,9 +1657,11 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   scaffold outside a git checkout prints that stderr `warning:` (names `git init` and
   `rayspec init --kind content`), exit stays 0; `content` is silent.
 - `rayspec init --from <example>` scaffolds one of the packaged **example projects** instead of a
-  `--kind` template: every file of `examples/<name>/` except `checks.yaml` (repository test data),
-  copied verbatim to the same relative path — `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml` and
-  `README.md` land at the root. Same `ScaffoldFile` actions, same `--force`/`--no-skill`/`--root`
+  `--kind` template: every file of `examples/<name>/`, copied verbatim to the same relative path —
+  `.rayspec/**` stays `.rayspec/**`, `stubs*.yaml`, `checks.yaml` and `README.md` land at the root.
+  `checks.yaml` goes with it because the scaffold is a *project*: `rayspec test` discovers a root
+  `checks.yaml` (suite `checks`), so the cases the README describes run where they landed, and the
+  README's tree diagram is true of the directory the user is looking at. Same `ScaffoldFile` actions, same `--force`/`--no-skill`/`--root`
   behaviour and the same `error: cannot write the scaffold: …` mapping as `scaffold()`; the
   kind-switch and non-git warnings do not apply. `--from` together with `--kind` is exit 2, and an
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
@@ -1689,7 +1691,7 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   names those two paths under `examples/` as well, because `.gitignore` anchors them at the
   repository root only. `tests/cli/test_init_cmd.py` builds a wheel from a staged copy with that
   local state planted and asserts the corpus is in and the state is out.
-- Python surface: `EXAMPLES_DIR`, `EXAMPLE_SKIP`, `EXAMPLE_OPTIONAL`, `examples_root() ->
+- Python surface: `EXAMPLES_DIR`, `EXAMPLE_OPTIONAL`, `examples_root() ->
   Traversable | None`, `example_names() -> tuple[str, ...]` (a directory with a `.rayspec/`),
   `example_files(name) -> [(relative posix path, resource)]` (raises `LookupError`),
   `example_conflicts(root, name) -> list[str]`, `scaffold_example(root, name, *, force=False) ->
@@ -2803,7 +2805,12 @@ store; nothing depends on it.
   those assertions are never evaluated, so the case would report `ok` whatever it claims.
   `discover_suites(root)` returns `Suite(name, root, checks_path, checks, locations, checks_label)`
   for
-  `examples/<name>/checks.yaml` (rooted at the example), `.rayspec/dryrun/checks.yaml` (`dogfood`,
+  `examples/<name>/checks.yaml` (rooted at the example), `<root>/checks.yaml` (`checks`, rooted at
+  the project — the same file at the place it lands when the project *is* the example, i.e. after
+  `rayspec init --from <name>`; read only when `is_suite_document()` recognises it positively as a
+  mapping with a `checks:`/`cases:` list, because the project root is shared ground and a
+  `checks.yaml` of another tool must be passed over rather than reported as broken),
+  `.rayspec/dryrun/checks.yaml` (`dogfood`,
   rooted at the project) and `.rayspec/tests/<workflow>/<case>.yaml` (`tests/<workflow>`, rooted at
   the project; the directory names the workflow, the file stem the case). Discovery of a
   greenfield directory skips a document that `is_case_document()` recognises as *something else* —

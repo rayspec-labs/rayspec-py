@@ -188,6 +188,32 @@ def test_discovery_finds_suites_and_greenfield_cases(tmp_path: Path) -> None:
     assert greenfield.checks[0].workflow == "build"
 
 
+def test_a_projects_own_checks_yaml_is_discovered(tmp_path: Path) -> None:
+    """The layout a project scaffolded from an example has: the example IS the project, so its
+    ``checks.yaml`` sits at the root — there is no ``examples/`` directory to put it under."""
+    (tmp_path / "checks.yaml").write_text("checks:\n  - workflow: demo\n", encoding="utf-8")
+    (suite,) = discover_suites(tmp_path)
+    assert suite.name == "checks"
+    assert suite.root == tmp_path
+    assert suite.checks_path == tmp_path / "checks.yaml"
+    assert [c.workflow for c in suite.checks] == ["demo"]
+
+
+def test_a_root_checks_yaml_does_not_collide_with_the_example_suites(tmp_path: Path) -> None:
+    (tmp_path / "checks.yaml").write_text("checks:\n  - workflow: own\n", encoding="utf-8")
+    (tmp_path / "examples" / "demo").mkdir(parents=True)
+    (tmp_path / "examples" / "demo" / "checks.yaml").write_text(
+        "checks:\n  - workflow: demo\n", encoding="utf-8"
+    )
+    assert {s.name for s in discover_suites(tmp_path)} == {"checks", "demo"}
+
+
+def test_a_root_document_that_is_not_a_case_file_is_left_alone(tmp_path: Path) -> None:
+    """``checks.yaml`` at the root of an unrelated project may be somebody else's file."""
+    (tmp_path / "checks.yaml").write_text("steps:\n  review: {text: hi}\n", encoding="utf-8")
+    assert discover_suites(tmp_path) == []
+
+
 def test_greenfield_case_workflow_defaults_to_the_directory(tmp_path: Path) -> None:
     tests_dir = tmp_path / ".rayspec" / "tests" / "release"
     tests_dir.mkdir(parents=True)

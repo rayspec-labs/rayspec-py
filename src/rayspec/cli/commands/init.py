@@ -92,9 +92,6 @@ SCAFFOLD_FILES: dict[str, tuple[str, ...]] = {
 #: selection, so a used checkout's local state never reaches the artefact).
 EXAMPLES_DIR = "examples"
 
-#: Files of an example that belong to the repository's test harness, not to a user's project.
-EXAMPLE_SKIP = frozenset({"checks.yaml"})
-
 #: Files of an example that are documentation only. An existing copy is kept instead of refused:
 #: trying an example inside a repository that already has a README is a normal thing to do, and
 #: nothing the example prints depends on its own README being there.
@@ -124,7 +121,10 @@ def _walk_project(node: Traversable, prefix: str = "") -> list[tuple[str, Traver
     """``[(relative posix path, file)]`` below ``node``, sorted; ``.rayspec/`` is kept.
 
     Unlike :func:`_walk` this keeps dot-directories (an example *is* a ``.rayspec/`` project) and
-    drops only build artefacts and the files of :data:`EXAMPLE_SKIP`.
+    drops only build artefacts. **Everything else goes**, ``checks.yaml`` included: it is the
+    example's own test suite, `rayspec test` is a shipped command, and a scaffolded project that
+    cannot run the cases its README describes is a project with a missing file. It is also what
+    every example README's tree diagram says is there.
     """
     found: list[tuple[str, Traversable]] = []
     for child in node.iterdir():
@@ -133,7 +133,7 @@ def _walk_project(node: Traversable, prefix: str = "") -> list[tuple[str, Traver
             if child.name == "__pycache__":
                 continue
             found.extend(_walk_project(child, f"{rel}/"))
-        elif rel not in EXAMPLE_SKIP:
+        else:
             found.append((rel, child))
     return sorted(found, key=lambda item: item[0])
 

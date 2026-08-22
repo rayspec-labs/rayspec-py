@@ -204,3 +204,84 @@ def test_dogfood_release_check_notes_range_uses_a_single_root_commit() -> None:
     text = twin.read_text(encoding="utf-8")
     assert "--max-parents=0 HEAD" in text
     assert "--max-parents=0 HEAD | tail -1" in text
+
+
+# --------------------------------------------------------------------------------------------
+# an example is scaffolded into a project of its own: what it names, it must ship
+# --------------------------------------------------------------------------------------------
+
+
+def _example_names() -> list[str]:
+    from rayspec.cli.commands.init import example_names
+
+    return sorted(example_names())
+
+
+_TREE_ENTRY_RE = re.compile(r"^(?:[├└]──|\|--)\s*(?P<name>\S+)")
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _tree_blocks(readme: Path) -> list[tuple[str, list[str]]]:
+    """``(root line, entry names)`` for every ASCII tree diagram in ``readme``."""
+    found: list[tuple[str, list[str]]] = []
+    for body in _fenced_blocks(readme):
+        lines = [line for line in body.splitlines() if line.strip()]
+        if len(lines) < 2 or not lines[0].rstrip().endswith("/"):
+            continue
+        entries = [m.group("name") for line in lines[1:] if (m := _TREE_ENTRY_RE.match(line))]
+        if entries:
+            found.append((lines[0].strip(), entries))
+    return found
+
+
+def _expand(entry: str) -> list[str]:
+    """``workflows/{a,b}.yaml`` -> the two paths it stands for."""
+    match = _BRACE_RE.search(entry)
+    if match is None:
+        return [entry]
+    return [
+        expanded
+        for option in match.group(1).split(",")
+        for expanded in _expand(entry[: match.start()] + option.strip() + entry[match.end() :])
+    ]
+
+
+@pytest.mark.parametrize("name", _example_names())
+def test_every_file_a_readme_tree_lists_is_actually_scaffolded(name: str) -> None:
+    """`rayspec init --from <name>` writes a project; its README describes THAT project. A tree
+    diagram naming a file the scaffold does not write sends a wheel user after nothing."""
+    from rayspec.cli.commands.init import example_files
+
+    shipped = {rel for rel, _ in example_files(name)}
+    readme = EXAMPLES_DIR / name / "README.md"
+    for root_line, entries in _tree_blocks(readme):
+        prefix = root_line.removeprefix(f"examples/{name}/")
+        for entry in entries:
+            for path in _expand(entry):
+                assert f"{prefix}{path}" in shipped, (
+                    f"{readme}: the tree lists {prefix}{path}, which `init --from {name}` "
+                    f"does not write (it ships {sorted(shipped)})"
+                )
+
+
+def test_the_readme_trees_are_actually_being_checked() -> None:
+    """Not every example draws one; the ones that do must not all have been parsed away."""
+    with_trees = [n for n in _example_names() if _tree_blocks(EXAMPLES_DIR / n / "README.md")]
+    assert len(with_trees) >= 4, with_trees
+
+
+@pytest.mark.parametrize("name", _example_names())
+def test_no_scaffolded_file_points_outside_the_project_it_scaffolds(name: str) -> None:
+    """A scaffolded file may cite a doc only by URL — `docs/cli.md` explains why for hints, and a
+    file that lands in somebody's project is in exactly the same position: there is no checkout
+    above it to resolve `../../docs/schema.md` or `examples/README.md` against."""
+    from rayspec.cli.commands.init import example_files
+
+    for rel, node in example_files(name):
+        if not rel.endswith((".md", ".yaml", ".yml")):
+            continue
+        text = node.read_text(encoding="utf-8")
+        assert "](../" not in text, f"{name}/{rel} links outside the scaffolded project"
+        assert "examples/README.md" not in text, (
+            f"{name}/{rel} cites examples/README.md, which `init --from` never writes"
+        )
