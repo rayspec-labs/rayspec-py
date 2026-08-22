@@ -1011,6 +1011,16 @@ def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
     decided, so the flag cannot be read for this). A composite that was torn down by the
     ``stop:`` itself has settled nothing: its body was pre-empted mid-roll-up, so what its body
     recorded is still unanswered and the search continues through it.
+
+    "Not stop collateral" is the test, and it is deliberately wider than "rolled its body up": a
+    composite the run paused at, or one an outside cancellation interrupted, also stands between
+    the run and this record. Only a stop's own teardown is transparent here, because only that is
+    damage the stop caused.
+
+    A missing container answers ``False`` — nothing settled a verdict, so the record is still
+    counted. The scheduler persists a composite's record before dispatching its body, so this is
+    unreachable in a run that produced body records at all; it is spelled the fail-closed way
+    because the whole purpose of the caller is that a failed step is never quietly dropped.
     """
     path = StepPath.parse(record.path)
     for depth in range(1, path.depth):  # every enclosing composite, outermost first
@@ -1018,7 +1028,7 @@ def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
         # a composite's own record path never carries the iteration index its body scope does
         # (``fan`` for the ``each:`` whose items are ``fan[0]/…``)
         container = run.steps.get(str(StepPath((*path.segments[: depth - 1], (name, None)))))
-        if container is None or not stop_collateral(container):
+        if container is not None and not stop_collateral(container):
             return True
     return False
 

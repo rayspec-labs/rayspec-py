@@ -1483,10 +1483,11 @@ Semantics fixed here (tests in `tests/engine/`):
   `FAILED_LIKE` record at ANY depth, minus what the stop tore down (`runner.stop_collateral`:
   `interrupted` + `stopped`, the pair the scheduler records for a sibling a `stop:` cancelled)
   and minus anything an enclosing composite has already answered for
-  (`runner.answered_by_a_composite`: a container that is NOT itself stop collateral rolled its
-  body up under its own policy — `each.on_failure: continue`, `loop.on_exhausted` — so it is that
-  composite's record the run counts, not the body's, which stays `tolerated=False` whatever the
-  composite decided). The `interrupted`/`stopped` pair on its own does NOT mean nothing failed: by
+  (`runner.answered_by_a_composite`: any enclosing container that is NOT itself stop collateral —
+  one that rolled its body up under its own policy, `each.on_failure: continue` or
+  `loop.on_exhausted`, but equally one the run paused at or an outside cancellation interrupted.
+  It is that composite's record the run counts, not the body's, which stays `tolerated=False`
+  whatever the composite decided. A missing container counts the record: nothing settled it). The `interrupted`/`stopped` pair on its own does NOT mean nothing failed: by
   the bullet above a composite whose body stopped carries it whether or not a body step had
   already failed, so what settles it is the body's own records. Without that, a `stop: {status:
   succeeded}` inside an `each:`/`include:` body reported a run holding a failed step as succeeded,
