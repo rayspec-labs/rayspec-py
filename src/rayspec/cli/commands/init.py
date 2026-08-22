@@ -10,7 +10,9 @@ tests.
 
 from __future__ import annotations
 
+import os
 import shlex
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import resources
@@ -378,24 +380,75 @@ def _place(root: Path, files: list[tuple[str, Traversable]], *, force: bool) -> 
     The one writer behind :func:`scaffold` and :func:`scaffold_example`, so a template scaffold
     and an example scaffold report and fail identically. The standard
     ``.rayspec/{workflows,agents,prompts,stubs}`` directories are always created.
+
+    **Whole or not at all.** A scaffold is a project, not a pile of files: half of one is a
+    directory whose own commands fail, and — because ``.rayspec/`` is what makes a directory a
+    rayspec project — a half-written one is also a project that did not exist a moment ago. So
+    every file is read first, then written to a temporary name beside its target (which is where
+    a full disk or a read-only directory shows up), and only then are the temporaries moved into
+    place. Anything that goes wrong before that last step leaves the directory exactly as it was:
+    the temporaries are removed and so are the directories this call created. Refusing was
+    already atomic (:func:`example_conflicts` runs before anything is written); this is the
+    error path catching up.
     """
     if root.exists() and not root.is_dir():
         raise NotADirectoryError(f"{root} is not a directory")
-    for sub in ALWAYS_DIRS:
-        (root / PROJECT_DIR / sub).mkdir(parents=True, exist_ok=True)
-    results: list[ScaffoldFile] = []
+    planned: list[tuple[ScaffoldFile, bytes]] = []
     for rel, node in files:
         target = root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_dir():
             raise IsADirectoryError(f"{target} is a directory, expected a file (or nothing)")
         existed = target.exists()
         if existed and not force:
-            results.append(ScaffoldFile(rel, target, "skipped"))
+            planned.append((ScaffoldFile(rel, target, "skipped"), b""))
             continue
-        target.write_bytes(node.read_bytes())
-        results.append(ScaffoldFile(rel, target, "overwritten" if existed else "created"))
-    return results
+        # read before writing anything: an unreadable source is then not half a scaffold either
+        planned.append(
+            (ScaffoldFile(rel, target, "overwritten" if existed else "created"), node.read_bytes())
+        )
+    created_dirs: list[Path] = []
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for sub in ALWAYS_DIRS:
+            _mkdir_p(root / PROJECT_DIR / sub, created_dirs)
+        for item, data in planned:
+            if item.action == "skipped":
+                continue
+            _mkdir_p(item.path.parent, created_dirs)
+            tmp = item.path.with_name(f".{item.path.name}.rayspec-{os.getpid()}")
+            tmp.write_bytes(data)
+            staged.append((tmp, item.path))
+        for tmp, target in staged:
+            os.replace(tmp, target)
+    except BaseException:
+        _undo(staged, created_dirs)
+        raise
+    return [item for item, _ in planned]
+
+
+def _mkdir_p(path: Path, created: list[Path]) -> None:
+    """``mkdir -p path``, appending the directories that did not exist yet (shallowest first)."""
+    missing: list[Path] = []
+    node = path
+    while not node.exists() and node.parent != node:
+        missing.append(node)
+        node = node.parent
+    path.mkdir(parents=True, exist_ok=True)
+    created.extend(reversed(missing))
+
+
+def _undo(staged: list[tuple[Path, Path]], created_dirs: list[Path]) -> None:
+    """Remove the temporaries and the directories this call created; never raises.
+
+    Directories are removed deepest first and only while they are empty, so a directory the
+    target already had — or one somebody else is using — is left alone.
+    """
+    for tmp, _target in staged:
+        with suppress(OSError):
+            tmp.unlink()
+    for directory in reversed(created_dirs):
+        with suppress(OSError):  # not empty: something else lives there now
+            directory.rmdir()
 
 
 def detect_kind(root: Path) -> str | None:

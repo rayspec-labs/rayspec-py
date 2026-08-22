@@ -621,3 +621,68 @@ def test_init_from_keeps_an_existing_readme_and_drops_the_step_that_names_it(
     monkeypatch.chdir(target)
     command = _printed_dry_run(res.output)
     assert CliRunner().invoke(app, command[1:]).exit_code == 0
+
+
+# --------------------------------------------------------------------------------------------
+# whole or not at all
+# --------------------------------------------------------------------------------------------
+
+
+def _blocked(target: Path, relative: str) -> None:
+    """Put a directory where the scaffold's ``relative`` file goes, so writing it raises."""
+    path = target / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+
+
+def test_init_from_writes_nothing_when_one_file_cannot_be_written(
+    tmp_path: Path, home: Path
+) -> None:
+    """`--from` is documented as applied whole or not at all. The refusal path already was;
+    the *error* path wrote every file it got to before the one that failed."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, "stubs.yaml")  # sorts after the .rayspec/ tree and README.md
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    assert "stubs.yaml" in res.output and "directory" in res.output
+    left = sorted(p.name for p in target.iterdir())
+    assert left == ["stubs.yaml"]  # only the directory that was already there
+    assert not (target / ".rayspec").exists()  # not even an empty project directory
+    assert not (target / "README.md").exists()
+
+
+def test_init_writes_nothing_when_one_template_file_cannot_be_written(
+    tmp_path: Path, home: Path
+) -> None:
+    """The same for the generic scaffold: both paths go through one writer."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, ".rayspec/stubs/example.yaml")
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert not (target / ".rayspec" / "workflows" / "example.yaml").exists()
+    assert not (target / ".rayspec" / "config.yaml").exists()
+
+
+def test_a_failed_scaffold_leaves_an_existing_project_alone(tmp_path: Path, home: Path) -> None:
+    """Rolling back may not take a directory that was already there with it."""
+    target = tmp_path / "proj"
+    (target / ".rayspec" / "workflows").mkdir(parents=True)
+    (target / ".rayspec" / "notes.txt").write_text("mine", encoding="utf-8")
+    _blocked(target, ".rayspec/stubs/example.yaml")
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert (target / ".rayspec" / "notes.txt").read_text(encoding="utf-8") == "mine"
+    assert (target / ".rayspec" / "workflows").is_dir()
+
+
+def test_a_failed_scaffold_leaves_no_temporary_files(tmp_path: Path, home: Path) -> None:
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, "stubs.yaml")
+    CliRunner().invoke(app, ["init", "--from", "hello_review", "--root", str(target)])
+    assert [p.name for p in target.rglob("*") if p.is_file()] == []

@@ -1665,7 +1665,13 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   unknown (or empty) name is exit 2 `error: unknown example '<n>'[; did you mean '<m>'?]` with a
   `hint:` listing every example and its first workflow's `description:` (truncated at 72 chars);
   with no corpus at all the error is `no examples are packaged with this build` instead.
-- An example is applied **whole or not at all**. Before anything is written,
+- A scaffold is applied **whole or not at all**, on both paths. `_place()` reads every source
+  first, writes each file to a temporary name beside its target and only then moves them into
+  place; a failure before that last step removes the temporaries and every directory the call
+  created (deepest first, only while empty), so an `OSError` — a directory where a file goes, a
+  full disk, a read-only tree — leaves the target exactly as it was, `.rayspec/` included. A
+  half-written scaffold would otherwise also be a rayspec *project* that did not exist before.
+- For `--from` the refusal is the other half of the same rule. Before anything is written,
   `example_conflicts(root, name)` lists the files the target already holds with *different*
   content; a non-empty list without `--force` is exit 2 naming them, because writing the rest
   around a kept `config.yaml` or stub file leaves a project whose own printed next steps fail.

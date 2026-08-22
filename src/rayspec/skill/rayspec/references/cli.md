@@ -1053,7 +1053,11 @@ hint: available examples (rayspec init --from <name>):
   …
 ```
 
-An example is applied whole or not at all. When the target directory already holds one of its
+An example is applied whole or not at all — and so is the generic scaffold. Every file is written
+to a temporary name beside its target first and moved into place only once all of them are ready,
+so a write that fails (a directory where a file goes, a full disk, a read-only tree) leaves the
+directory exactly as it was: no half-written project, and no `.rayspec/` that would make a
+directory look like a rayspec project. When the target directory already holds one of its
 files with *different* content — a `config.yaml` from a plain `rayspec init`, another example's
 `stubs.yaml`, a workflow you edited — `--from` refuses (exit 2, naming those files) instead of
 writing the rest around them: a kept `config.yaml` or stub file belongs to something else, and
