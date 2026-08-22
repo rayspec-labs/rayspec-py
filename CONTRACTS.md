@@ -1835,9 +1835,13 @@ serialisable without `default=`.
 `new_table(title=None, show_header=True) -> rich.table.Table` is the same story for listings: no
 box, no edges, bold header, left-justified title — the only knobs are the two arguments, and no
 module under `cli/` may construct a `Table` itself (same test file, same kind of scan: any dotted
-path or import alias, `Table.grid`, and a subclass). Commands
-print through `console()`/`err_console()` so a redirected listing is rendered at a fixed width
-instead of the 80 columns a bare `rich.console.Console()` assumes.
+path or import alias, `Table.grid`, and a subclass). Its lines end where their text ends: Rich pads
+every cell out to its column width, and with no right border to sit behind, that padding would be
+trailing whitespace on most lines of a redirected listing, so the table strips it as it renders
+(same test file — no listing may leave any). Commands print through `console()`/`err_console()` so
+a redirected listing is rendered at a fixed width instead of the 80 columns a bare
+`rich.console.Console()` assumes; rows and columns are never dropped, but cells that do not fit
+that width are folded or ellipsised by Rich.
 
 ### rayspec.skill + CLI `skill`
 The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`

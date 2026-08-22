@@ -69,10 +69,15 @@ exception that keeps the promise of their format: `rayspec run|resume|approve|re
 same bytes as the checked-in `schemas/*.schema.json`.)
 
 The `table` rendering is one style too, for every command that has one: no borders, a bold header
-row, columns separated by two spaces and a left-justified caption where a block has one. So
+row, columns separated by two spaces, a left-justified caption where a block has one, and every
+line ending where its text ends — no trailing padding to turn up in a diff. So
 `rayspec runs > yesterday.txt` and the same command tomorrow differ where the runs differ and
 nowhere else, and `grep`/`awk` over a redirected listing do not have to know which command wrote
-it. Colour is dropped when stdout is not a terminal (and with `NO_COLOR`), never the content.
+it. Colour is dropped when stdout is not a terminal (and with `NO_COLOR`). Rows and columns are
+never dropped, but a listing wider than the console does have its cells folded or shortened to
+fit: to the terminal's width on a terminal, and to a fixed 200 columns when stdout is redirected,
+so a redirected listing does not depend on the width of the shell that produced it. `--json` is
+the rendering that never shortens anything.
 
 ## Commands
 

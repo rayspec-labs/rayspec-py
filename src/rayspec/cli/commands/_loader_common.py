@@ -17,7 +17,7 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -26,8 +26,9 @@ from typing import Annotated, Any
 import click
 import typer
 import typer.core
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markup import escape
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
@@ -517,6 +518,40 @@ def json_line(payload: Any) -> str:
     return _dumps(payload, separators=_COMPACT)
 
 
+class _Listing(Table):
+    """A :class:`~rich.table.Table` that ends its lines where the text ends.
+
+    Rich pads every cell out to its column width. With a border that padding sits behind the
+    right edge and nobody sees it; without one — and rayspec's listings have none — it becomes
+    trailing whitespace on most lines of a redirected listing. That is the noise that makes
+    ``git diff`` complain, an editor rewrite the file on save and a pasted snippet look wrong,
+    on a file whose whole point is that it diffs cleanly against yesterday's.
+
+    Stripping it here rather than at each print site is deliberate: a listing cannot be printed
+    without going through the table it was built from, so there is no second way to emit one.
+    """
+
+    def _segments(self, console: Console, options: ConsoleOptions) -> Iterator[Segment]:
+        """``Table``'s own rendering, flattened to segments."""
+        for item in super().__rich_console__(console, options):
+            if isinstance(item, Segment):
+                yield item
+            else:  # pragma: no cover — Table yields segments, but the protocol allows both
+                yield from console.render(item, options)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        """Render as ``Table`` does, minus the padding at the end of every line."""
+        for line in Segment.split_lines(self._segments(console, options)):
+            segments = list(line)
+            while segments and not segments[-1].text.strip():
+                segments.pop()
+            if segments:
+                last = segments[-1]
+                segments[-1] = Segment(last.text.rstrip(), last.style, last.control)
+            yield from segments
+            yield Segment("\n")
+
+
 def new_table(*, title: str | None = None, show_header: bool = True) -> Table:
     """The one rayspec table: no box, no edges, a bold header, a left-justified title.
 
@@ -524,12 +559,12 @@ def new_table(*, title: str | None = None, show_header: bool = True) -> Table:
     reader: it gets grepped, diffed against yesterday's and pasted into an issue. Borders make
     all three worse and their width moves with the data, so no table draws any — and no command
     picks its own, which is the part that kept ``rayspec doctor`` and ``rayspec runs`` from
-    looking like the same program.
+    looking like the same program. Lines end where their text ends (:class:`_Listing`).
 
     Only ``title`` and ``show_header`` are choices; a caller that wants a different box wants a
     different tool.
     """
-    return Table(
+    return _Listing(
         title=title,
         title_justify="left",
         show_header=show_header,

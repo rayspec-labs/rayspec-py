@@ -369,10 +369,18 @@ def test_tables_are_plain_when_stdout_is_redirected(
     command: str, extra: list[str], project: Path, home: Path
 ) -> None:
     """A redirected listing is text a person diffs or greps, so it carries no borders — and the
-    same borders for every command, which is none."""
+    same borders for every command, which is none.
+
+    Nor any trailing whitespace: with the right border gone, the padding Rich puts after the last
+    cell has nothing to sit behind. It is what makes `git diff` complain, an editor rewrite the
+    file on save and a pasted snippet look wrong — invisible noise on most lines of a file whose
+    whole point is that it diffs cleanly against yesterday's.
+    """
     argv = [*command.split(), *extra]
     if "--root" in _flags(command):
         argv += ["--root", str(project)]
     res = CliRunner().invoke(app, argv)
     drawn = sorted(BOX_DRAWING & set(res.stdout))
     assert not drawn, f"{command} drew {drawn} into a redirected listing"
+    padded = [line for line in res.stdout.splitlines() if line != line.rstrip()]
+    assert not padded, f"{command} left trailing whitespace on {len(padded)} line(s): {padded[:3]}"
