@@ -12,7 +12,7 @@ isolation: none                     # every step only reads the checkout
 
 defaults:
   agent: reviewer
-  max_parallel: 3
+  max_parallel: 3                   # the three angles are independent: run them together
   timeout: 5m
   on_step_failure: continue         # a failed branch does not stop the ones beside it
 
@@ -30,6 +30,8 @@ steps:
   # Three angles on the same change. They share one input and nothing else, which is what makes
   # `on_step_failure: continue` the right policy: one of them failing says nothing about the
   # other two, and a run that stopped there would have to be started again to learn the rest.
+  # The policy decides what happens to the work that has NOT started when a step fails: here
+  # that is the report step of every angle that was still reviewing.
   - id: api
     needs: [collect]
     prompt: |
