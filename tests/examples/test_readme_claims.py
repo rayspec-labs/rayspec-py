@@ -49,13 +49,19 @@ def _fenced_blocks(readme: Path) -> list[str]:
 
 
 def _step_lines(text: str) -> list[tuple[str, str, str]]:
-    """``(symbol, path, status)`` of every console step line in ``text`` (durations dropped)."""
+    """``(symbol, path, status)`` of every console step line in ``text``, sorted; durations dropped.
+
+    Sorted because an ``each:`` fans its items out concurrently and they finish in whatever order
+    the event loop wakes them, so the console prints them in a different order from one run to the
+    next — a README cannot pin that, and comparing it made this test fail under load while passing
+    on its own. What the block still promises is every step, once, with the status it ended in.
+    """
     out: list[tuple[str, str, str]] = []
     for raw in text.splitlines():
         m = _STEP_LINE_RE.match(raw.strip())
         if m and m.group("symbol") not in "●■":
             out.append((m.group("symbol"), m.group("path"), m.group("status")))
-    return out
+    return sorted(out, key=lambda line: line[1])
 
 
 def _expected_block(readme: Path, *, containing: str) -> str:

@@ -67,6 +67,30 @@ class _FrozenRedactorStore:
         return getattr(self._inner, name)
 
 
+class _SilentlyDroppingStore:
+    """A store whose ``redactor`` setter ACCEPTS the value and drops it.
+
+    The shape the refusal exists for, and the one an ``AttributeError``/``TypeError`` probe
+    cannot see: a plugin store with a ``redactor`` attribute it never reads back, a store that
+    stores it on a copy, a ``__setattr__`` that filters unknown names. Assigning raises nothing,
+    so a run that trusted the assignment wrote every raw secret.
+    """
+
+    def __init__(self, inner: FileRunStore) -> None:
+        self._inner = inner
+
+    @property
+    def redactor(self) -> Redactor:
+        return NULL_REDACTOR
+
+    @redactor.setter
+    def redactor(self, value: Redactor) -> None:
+        """Accepted and discarded."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def _files_containing(root: Path, needle: str) -> list[str]:
     return sorted(
         str(path.relative_to(root))
@@ -144,6 +168,57 @@ def test_a_store_that_cannot_hold_a_redactor_refuses_to_start(
         runner.run_sync()
     assert "secret" in str(exc.value)
     assert not (tmp_path / "store" / "runs").exists()
+
+
+def test_a_store_that_drops_the_redactor_refuses_to_start(tmp_path: Path, project: Path) -> None:
+    """The boundary must VERIFY the assignment, not assume it took.
+
+    A setter that accepts and discards the value raises nothing, so the run started with
+    ``NULL_REDACTOR`` in place and wrote every raw secret into ``run.json``, ``events.jsonl``
+    and the step outputs — exactly the outcome the refusal exists to prevent.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+
+    store = cast(RunStore, _SilentlyDroppingStore(FileRunStore(tmp_path / "store")))
+    runner = Runner(
+        _resolved(project, home),
+        inputs={"token": SECRET},
+        store=store,
+        project_root=project,
+    )
+    with pytest.raises(EngineError) as exc:
+        runner.run_sync()
+    assert "token" in str(exc.value) and "redactor" in str(exc.value)
+    assert not (tmp_path / "store" / "runs").exists(), "not one byte before the refusal"
+
+
+def test_a_store_that_keeps_the_redactor_is_accepted(tmp_path: Path, project: Path) -> None:
+    """The read-back must not reject a store that simply holds what it was given."""
+    home = tmp_path / "home"
+    home.mkdir()
+    store = FileRunStore(tmp_path / "store")
+    result = Runner(
+        _resolved(project, home),
+        inputs={"token": SECRET},
+        store=store,
+        project_root=project,
+    ).run_sync()
+    assert result.exit_code == 0, result.reason
+
+
+def test_a_short_secret_does_not_trip_the_read_back(tmp_path: Path, project: Path) -> None:
+    """A value too short to redact is never covered by anyone — and must not read as a refusal."""
+    home = tmp_path / "home"
+    home.mkdir()
+    store = FileRunStore(tmp_path / "store")
+    result = Runner(
+        _resolved(project, home),
+        inputs={"token": "ab"},
+        store=store,
+        project_root=project,
+    ).run_sync()
+    assert result.exit_code == 0, result.reason
 
 
 def test_a_workflow_without_secrets_leaves_the_store_alone(tmp_path: Path, project: Path) -> None:

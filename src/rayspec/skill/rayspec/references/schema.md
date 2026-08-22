@@ -93,7 +93,7 @@ steps:
   - id: push
     shell: gh auth login --with-token <<<"$RAYSPEC_INPUT_TOKEN" && gh pr create …
   - id: api
-    shell: curl -H "Authorization: Bearer $GH_TOKEN" …
+    shell: 'curl -H "Authorization: Bearer $GH_TOKEN" …'
     env: { GH_TOKEN: "{{ inputs.token }}" }      # the ONE template that may name a secret
 ```
 

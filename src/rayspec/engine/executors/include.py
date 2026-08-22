@@ -13,7 +13,13 @@ from typing import Any
 
 import jsonschema
 
-from rayspec.engine.context import ExecScope, RunContext, StepOutcome, error_info
+from rayspec.engine.context import (
+    ExecScope,
+    RunContext,
+    StepOutcome,
+    error_info,
+    failed_outcome,
+)
 from rayspec.engine.executors.loop import body_failure_message, failed_body_step
 from rayspec.engine.graph import StepGraph
 from rayspec.loader.inputs import coerce_input
@@ -58,7 +64,7 @@ async def run_include(
     def_path = scope.def_path(step.id)
     body = ctx.resolved.includes.get(def_path)
     if body is None:
-        return _fail(
+        return failed_outcome(
             record, ErrorInfo(type="include", message=f"include body not loaded for {def_path}")
         )
     tctx = ctx.template_context(scope)
@@ -66,7 +72,7 @@ async def run_include(
         with_values = ctx.engine.render_value(dict(step.with_), tctx)
         inputs = resolve_include_inputs(body.inputs, dict(with_values))
     except (TemplateRenderError, ValueError, jsonschema.ValidationError) as exc:
-        return _fail(record, error_info(exc, type_="with"))
+        return failed_outcome(record, error_info(exc, type_="with"))
     child = scope.child(
         prefix=scope.record_path(step.id),
         def_prefix=f"{def_path}/",
@@ -80,7 +86,7 @@ async def run_include(
     if failed is not None:
         rec = failed.record
         msg = body_failure_message(failed)
-        return _fail(
+        return failed_outcome(
             record,
             ErrorInfo(
                 type="body", message=f"step {rec.id!r} {rec.status.value}: {msg}", transient=False
@@ -89,17 +95,10 @@ async def run_include(
     try:
         outputs = ctx.engine.render_value(dict(body.outputs), ctx.template_context(child))
     except TemplateRenderError as exc:
-        return _fail(record, error_info(exc, type_="outputs"))
+        return failed_outcome(record, error_info(exc, type_="outputs"))
     record.status = StepStatus.SUCCEEDED
     record.ok = True
     return StepOutcome(record=record, output=outputs, output_kind="json")
-
-
-def _fail(record: StepRecord, error: ErrorInfo) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.ok = False
-    record.error = error
-    return StepOutcome(record=record)
 
 
 __all__ = ["resolve_include_inputs", "run_include"]

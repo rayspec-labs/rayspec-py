@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from rayspec.engine.context import ExecScope, RunContext, StepOutcome
+from rayspec.engine.context import ExecScope, RunContext, StepOutcome, mark_failed
 from rayspec.engine.executors._process import resolve_cwd
 from rayspec.schema import PythonStep, ShellStep, StepModel, StepStatus
 from rayspec.store.model import ErrorInfo
@@ -120,10 +120,10 @@ def _failed(outcome: StepOutcome, message: str) -> StepOutcome:
     The step's own output (a script's stdout, an agent's answer) is kept — it is usually the
     first thing someone reads when asking why the file is missing.
     """
-    record = outcome.record
-    record.status = StepStatus.FAILED
-    record.ok = False
-    record.error = ErrorInfo(type=ARTIFACT_ERROR_TYPE, message=message, transient=False)
+    mark_failed(
+        outcome.record,
+        ErrorInfo(type=ARTIFACT_ERROR_TYPE, message=message, transient=False),
+    )
     return outcome
 
 

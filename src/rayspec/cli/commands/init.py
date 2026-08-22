@@ -26,6 +26,7 @@ from rich.markup import escape
 
 from rayspec.cli.commands._loader_common import console, err_console, fail
 from rayspec.cli.commands._skill_common import print_install_result
+from rayspec.resources import walk_files
 from rayspec.schema.base import suggest
 from rayspec.skill import install_skill, project_skill_dir
 
@@ -64,21 +65,17 @@ def _template_root(kind: str) -> Traversable:
     return resources.files("rayspec.cli.templates") / kind
 
 
-def _walk(node: Traversable, prefix: str = "") -> list[tuple[str, Traversable]]:
-    """``[(relative posix path, file)]`` for every file below ``node``, sorted by path."""
-    found: list[tuple[str, Traversable]] = []
-    for child in node.iterdir():
-        rel = f"{prefix}{child.name}"
-        if child.is_dir():
-            found.extend(_walk(child, f"{rel}/"))
-        elif not child.name.startswith((".", "__")) and child.name != "__init__.py":
-            found.append((rel, child))
-    return sorted(found, key=lambda item: item[0])
-
-
 def template_files(kind: str) -> list[tuple[str, Traversable]]:
-    """The template files of ``kind`` as ``[(".rayspec/<path>", resource)]``."""
-    return [(f"{PROJECT_DIR}/{rel}", node) for rel, node in _walk(_template_root(kind))]
+    """The template files of ``kind`` as ``[(".rayspec/<path>", resource)]``.
+
+    Dotfiles and the package plumbing (``__init__.py``) belong to the wheel, not to the
+    scaffold a user asked for.
+    """
+    files = walk_files(
+        _template_root(kind),
+        keep_file=lambda _rel, name: not name.startswith((".", "__")) and name != "__init__.py",
+    )
+    return [(f"{PROJECT_DIR}/{rel}", node) for rel, node in files]
 
 
 #: ``{kind: (".rayspec/workflows/example.yaml", ...)}`` — what each kind writes.
@@ -117,25 +114,16 @@ def examples_root() -> Traversable | None:
     return None
 
 
-def _walk_project(node: Traversable, prefix: str = "") -> list[tuple[str, Traversable]]:
+def _walk_project(node: Traversable) -> list[tuple[str, Traversable]]:
     """``[(relative posix path, file)]`` below ``node``, sorted; ``.rayspec/`` is kept.
 
-    Unlike :func:`_walk` this keeps dot-directories (an example *is* a ``.rayspec/`` project) and
-    drops only build artefacts. **Everything else goes**, ``checks.yaml`` included: it is the
-    example's own test suite, `rayspec test` is a shipped command, and a scaffolded project that
-    cannot run the cases its README describes is a project with a missing file. It is also what
-    every example README's tree diagram says is there.
+    Unlike :func:`template_files` this keeps dot-directories (an example *is* a ``.rayspec/``
+    project) and drops only build artefacts. **Everything else goes**, ``checks.yaml`` included:
+    it is the example's own test suite, ``rayspec test`` is a shipped command, and a scaffolded
+    project that cannot run the cases its README describes is a project with a missing file. It is
+    also what every example README's tree diagram says is there.
     """
-    found: list[tuple[str, Traversable]] = []
-    for child in node.iterdir():
-        rel = f"{prefix}{child.name}"
-        if child.is_dir():
-            if child.name == "__pycache__":
-                continue
-            found.extend(_walk_project(child, f"{rel}/"))
-        else:
-            found.append((rel, child))
-    return sorted(found, key=lambda item: item[0])
+    return walk_files(node, keep_dir=lambda _rel, name: name != "__pycache__")
 
 
 def _names(root: Traversable) -> tuple[str, ...]:

@@ -22,7 +22,13 @@ Shape and scope, deliberately:
   Thursday's money, or every other run started on Thursday would get headroom nobody granted;
 * a per-run entry is kept for :data:`RETAIN_DAYS` after its LAST commit, so a run that is still
   being resumed is never re-baselined. A run resumed after longer than that has been forgotten
-  and its next commit counts as fresh spend.
+  and its next commit counts as fresh spend;
+* **reading never raises.** The file is plain JSON under a path a person can edit and a full
+  disk can truncate, and it is read at the START of every ``run`` / ``resume`` / ``approve``.
+  A value of the wrong type is dropped and named, a document of a format this rayspec does not
+  understand is replaced, and the repaired document is written back on the next commit — one
+  malformed byte must not brick the project until somebody deletes a file they have never
+  heard of.
 
 Nothing in this file is a secret: run ids, dates, counts and dollar amounts.
 """
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -89,11 +96,19 @@ class SpendLedger:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self.warnings: list[str] = []
+        #: what has already been said, so one fact is reported once. A commit normally repairs
+        #: the document it complained about, but a path that can never be WRITTEN (a directory
+        #: where the file belongs, a read-only mount) is re-read and re-reported on every step.
+        self._said: set[str] = set()
 
     # -- public surface -------------------------------------------------------------------
 
     def take_warnings(self) -> list[str]:
-        """Drain what the ledger has to say about itself (empty when all was well)."""
+        """Drain what the ledger has to say about itself (empty when all was well).
+
+        Each distinct problem is reported once per ledger — that is, once per run: an operator
+        reading twenty identical lines learns nothing the first one did not tell them.
+        """
         warnings, self.warnings = self.warnings, []
         return warnings
 
@@ -122,7 +137,7 @@ class SpendLedger:
             if not isinstance(entry, dict):
                 entry = {}
                 runs[run_id] = entry
-            delta = amount - float(entry.get("cost_usd") or 0.0)
+            delta = amount - (_amount(entry.get("cost_usd")) or 0.0)
             # the LAST commit's buckets: what the pruning clock is measured from
             entry.update(
                 {
@@ -179,12 +194,18 @@ class SpendLedger:
             os.close(fd)
 
     def _read(self) -> dict[str, Any]:
-        """The parsed document, or a fresh one when the file is missing or unreadable.
+        """The parsed, repaired document, or a fresh one when the file is missing or unreadable.
 
         A ledger that cannot be parsed is REPLACED, never raised: losing the accrued total is a
         smaller failure than refusing to run at all, and the next commit rebuilds it. It is also
         recorded in :attr:`warnings`, because an envelope that quietly went back to zero is
         exactly what an operator must not have to discover for themselves.
+
+        The same rule applies field by field (:func:`_repair`): a document that parses but holds
+        a total that is not a number keeps everything that IS readable and loses only the value
+        that is not. Raising instead would take the whole project down — ``_state_of`` runs on
+        the way out of a commit that has already been written, so the bad value would still be
+        on disk for the next command to die on.
         """
         try:
             raw = self.path.read_bytes()
@@ -193,17 +214,44 @@ class SpendLedger:
         except OSError as exc:
             return self._fresh(f"cannot be read ({exc.strerror or exc})")
         if not raw.strip():
-            return {"version": LEDGER_VERSION}
+            # rayspec replaces this file whole and never writes an empty one: a zero-byte
+            # ledger is a truncation. Silence here would be the one reset of the day, month
+            # and failure totals nobody is told about.
+            return self._fresh("is empty")
         try:
             data = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return self._fresh("is not readable JSON")
         if not isinstance(data, dict):
             return self._fresh("is not a ledger document")
+        version = data.get("version", LEDGER_VERSION)
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            return self._fresh("has no readable format version")
+        if version > LEDGER_VERSION:
+            # _write stamps a version; reading has to honour it. Reinterpreting a newer
+            # document under this version's rules would read totals that mean something else
+            # and then stamp it back down, losing whatever the newer rayspec kept.
+            return self._fresh(
+                f"is version {version}, newer than this rayspec understands "
+                f"(version {LEDGER_VERSION})"
+            )
+        broken = _repair(data)
+        if broken:
+            self._say(
+                f"the spend ledger {self.path} has unreadable values ({_names(broken)}) — "
+                "they start again from zero"
+            )
         return data
 
+    def _say(self, message: str) -> None:
+        """Queue ``message`` unless this ledger has already said it."""
+        if message in self._said:
+            return
+        self._said.add(message)
+        self.warnings.append(message)
+
     def _fresh(self, why: str) -> dict[str, Any]:
-        self.warnings.append(
+        self._say(
             f"the spend ledger {self.path} {why} — the accrued day, month and failure "
             "totals start again from zero"
         )
@@ -231,17 +279,98 @@ class SpendLedger:
             raise
 
 
+#: How many unreadable fields a warning names before it summarises the rest.
+_MAX_NAMED = 6
+
+
+def _names(broken: list[str]) -> str:
+    """``days.2026-08-21, consecutive_failures`` — field paths only, never their values."""
+    if len(broken) <= _MAX_NAMED:
+        return ", ".join(broken)
+    return f"{', '.join(broken[:_MAX_NAMED])} and {len(broken) - _MAX_NAMED} more"
+
+
+def _amount(value: Any) -> float | None:
+    """``value`` as a money amount, or ``None`` when it is not one.
+
+    A bool is not an amount (``True`` would read as ``$1``), and neither is ``NaN``, an
+    infinity or an integer too large to be a float — ``json`` parses all three, and a ceiling
+    compared against any of them is not a ceiling. A NEGATIVE amount is legitimate: a run that
+    commits a smaller total than before books the difference back into the day the correction
+    is made in.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:  # a JSON integer with more digits than a float can hold
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _repair(data: dict[str, Any]) -> list[str]:
+    """Drop every field this module reads that is not the kind of value it reads.
+
+    Returns the paths of what was dropped, so the caller can name them. Mutates ``data`` in
+    place: the document handed back is the one that gets written on the next commit, which is
+    what repairs the file on disk.
+    """
+    broken: list[str] = []
+    for name in ("days", "months"):
+        bucket = data.get(name)
+        if bucket is None:
+            continue
+        if not isinstance(bucket, dict):
+            data[name] = {}
+            broken.append(name)
+            continue
+        for stamp in sorted(bucket):
+            if _amount(bucket[stamp]) is None:
+                del bucket[stamp]
+                broken.append(f"{name}.{stamp}")
+    failures = data.get("consecutive_failures")
+    if failures is not None and (
+        isinstance(failures, bool) or not isinstance(failures, int) or failures < 0
+    ):
+        # a counter that is not a whole number ≥ 0 is not a counter, and a negative one would
+        # hand the breaker headroom nobody granted
+        data["consecutive_failures"] = 0
+        broken.append("consecutive_failures")
+    runs = data.get("runs")
+    if runs is not None and not isinstance(runs, dict):
+        data["runs"] = {}
+        broken.append("runs")
+    elif isinstance(runs, dict):
+        for run_id in sorted(runs):
+            entry = runs[run_id]
+            if not isinstance(entry, dict):
+                del runs[run_id]
+                broken.append(f"runs.{run_id}")
+            elif entry.get("cost_usd") is not None and _amount(entry["cost_usd"]) is None:
+                # the run is re-baselined from zero rather than dropped: its next commit is a
+                # total, so keeping the entry with an unknown baseline would under-count
+                entry["cost_usd"] = 0.0
+                broken.append(f"runs.{run_id}.cost_usd")
+    return broken
+
+
 def _add(bucket: dict[str, Any], key: str, delta: float) -> None:
-    bucket[key] = round(float(bucket.get(key) or 0.0) + delta, 10)
+    bucket[key] = round((_amount(bucket.get(key)) or 0.0) + delta, 10)
 
 
 def _state_of(data: dict[str, Any], when: datetime) -> SpendState:
-    days = data.get("days") or {}
-    months = data.get("months") or {}
+    """The totals for ``when``. Never raises: see :meth:`SpendLedger._read`."""
+    days = data.get("days")
+    months = data.get("months")
+    failures = data.get("consecutive_failures")
+    if isinstance(failures, bool) or not isinstance(failures, int):
+        failures = 0
     return SpendState(
-        day_usd=float(days.get(_day_key(when)) or 0.0) if isinstance(days, dict) else 0.0,
-        month_usd=float(months.get(_month_key(when)) or 0.0) if isinstance(months, dict) else 0.0,
-        consecutive_failures=int(data.get("consecutive_failures") or 0),
+        day_usd=(_amount(days.get(_day_key(when))) or 0.0) if isinstance(days, dict) else 0.0,
+        month_usd=(
+            (_amount(months.get(_month_key(when))) or 0.0) if isinstance(months, dict) else 0.0
+        ),
+        consecutive_failures=max(failures, 0),
     )
 
 

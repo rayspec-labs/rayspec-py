@@ -349,6 +349,39 @@ def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tu
     )
 
 
+def _refused_user(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
+    """``user`` is not a label: it is the OS account the provider CLI subprocess runs as.
+
+    The justification this entry shipped with — "a label carried to the vendor; it selects
+    nothing and grants nothing" — was false, and the proof beside it could not see that, because
+    the inert proof asks only whether the key moves the OTHER options the adapter computes. This
+    key's own effect was the whole problem. ``ClaudeAgentOptions.user`` is handed straight to the
+    transport's ``open_process(..., user=...)``, i.e. ``subprocess.Popen(user=...)``, which
+    resolves a name through ``getpwnam()`` and calls ``setuid`` in the child before ``exec``. It
+    chooses an identity for everything the agent then does — the files it may read and write, the
+    credentials on disk it can reach — which is the opposite of inert, and it is the identity
+    every control in force was reasoned about against.
+
+    So under any control the answer is the allow-list's own default: nobody can say what
+    switching identity does to a restriction that was written for this one. ``null`` is the
+    permitted case, because it is what the adapter computes anyway — the run keeps the identity
+    it already had.
+    """
+    if value is None:
+        return ()
+    return (
+        (
+            "",
+            f"{value!r} is not a label: the claude adapter hands it to the SDK, which passes it "
+            "to the transport's open_process(user=...) — the CLI subprocess is started under "
+            "that OS account (getpwnam + setuid before exec). It re-decides which files, "
+            f"credentials and processes the agent can reach, while {controls.named()} "
+            f"{'is' if len(controls.sources) == 1 else 'are'} in force over the identity this "
+            "run already has. Run rayspec as the account the run should use instead",
+        ),
+    )
+
+
 #: ``provider_options`` key paths rayspec has REASONED ABOUT, per provider id and per key path
 #: inside that provider's own block. While any control governs an agent (see
 #: :func:`check_provider_options`) this is an ALLOW-list: a key that is not on it is refused at
@@ -417,8 +450,10 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
             ),
         ),
         ("user",): AllowedOption(
-            "an opaque end-user id forwarded to the API",
-            INERT_BECAUSE("a label carried to the vendor; it selects nothing and grants nothing"),
+            "the OS account the CLI subprocess is started under: the SDK passes it to "
+            "open_process(user=...), which resolves it with getpwnam and calls setuid in the "
+            "child. Under a control only null passes — the identity the run already has",
+            _refused_user,
         ),
     },
     "codex": {

@@ -32,6 +32,12 @@ src/rayspec/
   cli/commands/{init,doctor}.py + cli/templates/<kind>/**
   cli/commands/{new,completion}.py + cli/templates/new/** + the packaged examples corpus
   cli/_docs.py  DOCS_BASE + docs_url(rel) — the only way a hint cites a doc
+  fmt.py        format_duration / humanize_duration — the ONE rendering of a duration, for the
+               listings, the console tree, the approval panel and the cap reasons alike (a leaf
+               module: no rayspec imports). Tokens and costs render through providers/pricing.py
+  resources.py  walk_files(node, *, keep_dir=, keep_file=) — the ONE recursive listing of a
+               packaged data tree (the skill, the init scaffolds, the example corpus); a leaf
+               module over importlib.resources, no rayspec imports
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
   loader/secrets.py  where a `secret: true` input may appear (the placement rules)
@@ -632,6 +638,13 @@ from rayspec.store.file import (
 #   RunRecord.cost_source (additive): "provider" | "table" | "partial" | "none" —
 #       the run-level cost source the engine computes on every final status (see the engine
 #       section: rayspec.engine.context.cost_source_of); older run.json files read as "none"
+#   RunRecord.fail_fast: bool = False (additive): whether --fail-fast was in force
+#       for the run. The failure policy is a blast-radius control and the flag is the operator's
+#       override of defaults.on_step_failure, so it is recorded at launch and RESTORED by every
+#       resume entry (resume / approve / reject / run --resume): without it the second half of a
+#       run silently ran under a looser policy than the first. A resume entry may still TIGHTEN
+#       it (`rayspec resume --fail-fast`), never loosen it, and the tightened value is recorded
+#       in turn; False in older records, which is what those runs did
 #   RunRecord.pid_started_at: str | None = None (additive): start time of the
 #       process behind pid — the `ps -o lstart= -p <pid>` string as printed under LC_ALL=C TZ=UTC
 #       (fixed env, so launch and cancel shells agree; Linux when ps is missing/fails: the
@@ -718,9 +731,12 @@ from rayspec.events import (  # models + protocol + sinks (no JsonlSink: the sto
     #                  emit_stream() for the Live tree
 )
 from rayspec.events.sinks.console import fmt_duration, fmt_tokens, fmt_cost, usage_total, error_text
+# fmt_duration IS rayspec.fmt.format_duration and fmt_tokens IS providers.pricing.format_tokens
+# (names for this sink, not second implementations).
 # fmt_cost(usd, *, approx=False, source=None) -> "$0.12" | "~$0.12" (approx / source "table":
 # price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price); the
-# marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
+# marker is providers.pricing.cost_marker (usd is a cost, never a usage: no input of this
+# helper renders as tokens). The quiet sink reads the OPTIONAL step.finished /
 # run.finished data key cost_source; when run.finished carries none the run line derives it from
 # the step.finished events seen (QuietConsoleSink.derived_cost_source()).
 # format_stream_warning(step, text) -> "⚠ <step>: <warning>": printed by QuietConsoleSink.
@@ -802,7 +818,9 @@ from rayspec.policy import (
     #   access{max: read-only|workspace-write|full|None}, tools{deny: list}, mcp{allow_servers:
     #   list|None}, workspace{protected_paths, max_changed_files, max_changed_lines} (ADVISORY —
     #   parsed and merged, but nothing runs the change guard in this build; validate warns),
-    #   trust{require: bool}, budget{per_run, per_day, per_month, max_consecutive_failures},
+    #   trust{require: bool}, approvals{classes: {name: {allow_yes: bool = True, require_tty:
+    #   bool = False}}} (what may approve an approval gate of that class),
+    #   budget{per_run, per_day, per_month, max_consecutive_failures},
     #   max_consecutive_failures: int|None, max_concurrent_runs: int|{provider: int}|None.
     #   Every block is RESTRICTIVE ONLY — there is no key that grants. The last three belong to
     #   `rayspec.limits`, which reads them off EffectivePolicy; the model is the union of every
@@ -810,6 +828,8 @@ from rayspec.policy import (
     #   rejects a documented key turns that page into a hard load failure
     #   (tests/policy/test_policy_document.py holds both directions)
     BudgetPolicy,  # per_run/per_day/per_month: float|None, max_consecutive_failures: int|None
+    ApprovalsPolicy, ApprovalClassPolicy,  # classes: {name: ApprovalClassPolicy(allow_yes,
+    #   require_tty)} — the block `rayspec.engine.approval_classes` is handed
     apply_policy,  # (resolved, *, capabilities_for=None, policy=None) -> PolicyReport — the ONE
     #   entry point: discovers the layers, runs the checks, folds the denials into the agents.
     #   Anything about to RUN a resolved workflow calls it, validating or not; idempotent.
@@ -820,7 +840,11 @@ from rayspec.policy import (
     EffectivePolicy,  # .layers, .is_empty, .layer(name) + the ACCESSORS consumers code against,
     #   including .budget -> BudgetPolicy, .max_consecutive_failures, .max_concurrent_runs
     #   ({provider: limit}, "*" = every provider) — the operational ceilings, merged
-    #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them
+    #   most-restrictive-wins, under the document key's own name so `rayspec.limits` finds them;
+    #   .approvals -> ApprovalsPolicy (ADDITIVE) is the same shape for the gate rules — the union
+    #   of the class NAMES, with allow_yes AND-ed and require_tty OR-ed per class, under the
+    #   document key's own name so `rules_from_policy` finds them. The provenance of a class
+    #   that HOLDS something is `control_sources()["approvals.classes"]`, like every other key
     PolicyLayer,  # name ("RAYSPEC_POLICY"|"project"|"user"), label, path, policy, lines
     PolicySource,  # layer, label, line, value; .location -> "<label>:<line>"
     PolicyError,  # LoaderError: unreadable/unparsable/invalid policy or trust file
@@ -867,8 +891,9 @@ from rayspec.policy import (
     SAFE_APPROVAL_MODE,  # "deny_all" — the codex approval_mode that grants nothing
     ACCESS_ORDER, access_rank,
     # policy/controls.py — WHAT COUNTS AS A CONTROL, classified rather than listed:
-    CONTROL_TAGS,  # frozenset: access commands mcp model network provider secrets settings spend
-    #   tools trust workspace — the KIND of restriction a control is; guards match on these
+    CONTROL_TAGS,  # frozenset: access approvals commands mcp model network provider secrets
+    #   settings spend tools trust workspace — the KIND of restriction a control is; guards
+    #   match on these
     Control,  # key (how it is spelled), tags, sources: (PolicySource, ...)
     Restriction,  # (why, tags, imposed) — one field of one schema that CONSTRAINS the run;
     #   `.imposed(subject)` -> (Imposed(key, value, tags, servers=None), ...), empty when the
@@ -932,7 +957,9 @@ Accessors (this is the seam consumers code against — never the raw documents; 
 `allowed_providers()`, `allowed_mcp_servers()`, `max_access()`, `denied_tools()`, `change_guard()`,
 `control_sources()` (policy key → the layers restricting it, for checks that only need to know a
 restriction EXISTS; it reports EVERY key any layer sets — `providers.allow`, `models.deny`,
-`access.max`, `tools.deny`, `mcp.allow_servers`, `trust.require`, `workspace.*` — so "is this run
+`access.max`, `tools.deny`, `mcp.allow_servers`, `trust.require`, `approvals.classes` (only for a
+class that HOLDS something), `workspace.*`, `budget.*`, `max_consecutive_failures`,
+`max_concurrent_runs` — so "is this run
 governed" stays a question about the file rather than about a list of interesting keys) and `workspace_sources()`
 for display and injection. `EffectivePolicy.labels` / `.searched` (additive) are the layers in
 force and the paths that were looked at — the searched list is NOT shortened against the project
@@ -1038,7 +1065,10 @@ answers the agent's sandbox escalation requests for it is refused under any cont
 zero) and the turn's cost is derived from that same figure, so a baseline the thread never reaches
 reports no spend at all — in `spend.json`, `run.json` and `rayspec costs` as much as against
 `defaults.budget_usd`; it is guarded under EVERY control, not only a `spend` one, and only zero
-counters pass. None is needed: the adapter carries them.
+counters pass. None is needed: the adapter carries them. Claude `user` is NOT a vendor label: the
+SDK hands it to `open_process(user=...)`, i.e. `subprocess.Popen(user=…)`, which resolves it with
+`getpwnam` and calls `setuid` in the child before `exec`, so it re-decides the OS identity every
+control in force was reasoned about against; under any control only `null` passes.
 
 **A guard is held to what it claims.** `guarded_by` may narrow a guard to KINDS of control, and
 every entry that ships leaves it empty (= under every control). `tests/policy/test_guard_completeness.py`
@@ -1054,7 +1084,10 @@ the number every ceiling is measured against. `AllowedOption.offenders` therefor
 it is a guard or an explicit `INERT_BECAUSE("…")` — and every inert entry is paired in
 `tests/policy/test_provider_options.py` with the test that holds its reason to the code: the key,
 set to an extreme value, has to leave every option the adapter computes byte-identical. An unpaired
-entry fails. A justification the tests do not read is not allowed to exist.
+entry fails. A justification the tests do not read is not allowed to exist — and it has to be the
+RIGHT question: `user` passed that proof while selecting the OS account the CLI runs as, because
+the proof asks whether a key moves the *other* options the adapter computes and this key's own
+value was the whole effect.
 
 Enforcement reads the block the ADAPTER will act on, never a hand-written path: both adapters and
 this check narrow `provider_options` with `schema.provider_option_block`, because a check that walks
@@ -1400,10 +1433,17 @@ from rayspec.engine.context import (
     #   none = no record has a cost; partial = some record has tokens but no cost (the sum is a
     #   lower bound, rendered "≥$"); table = an estimate is in the sum and nothing is unknown
     #   ("~$"); provider = every record with tokens reported a provider cost ("$"). Records
-    #   without tokens and cost (shell/python/skipped) do not count.
+    #   without tokens and cost (shell/python/skipped) do not count. Folds through
+    #   providers.pricing.combine_cost_sources (the one fold); a record that has a cost but
+    #   names no source counts as "provider". `cli._runs_common.run_cost_source` calls it.
     totals_of,  # (records) -> (Usage, cost_usd | None, cost_source); RunContext.run_totals()
     #   applies it to every record of the run (run.json cost_source, run.finished, RunResult),
     #   RunContext.budget_totals() to the accounted ones
+    mark_failed,  # (record, error) -> record  stamps status=failed + ok=False + error, the ONE
+    #   place those three are set together
+    failed_outcome,  # (record, error, *, output=None) -> StepOutcome  mark_failed + the outcome
+    #   (output carried as text when the step produced one before failing); every executor and
+    #   the scheduler fail a step through it
 )
 from rayspec.engine.approval import (
     ApprovalPrompt,  # Protocol: async __call__(ApprovalRequest) -> ApprovalAnswer | None (None = pause)
@@ -1423,6 +1463,9 @@ from rayspec.engine.approval import (
     #   line via format_totals ("steps: 3 · tokens: 12.3k tok · cost: —"; the executor passes
     #   totals {steps, tokens, cost_usd, cost_source}) — never a raw None or raw seconds
     clean_answer, enable_readline, humanize_duration, fmt_cost, format_totals,
+    #   humanize_duration is re-exported from rayspec.fmt (which also owns the compact
+    #   format_duration the listings and the console tree print) — one duration rendering per
+    #   shape, in one module, so a third shape is never added by accident
     git_summary, git_diff,  # (workdir) -> str, best effort, capped; used by the console prompt
 )
 from rayspec.engine.runtime import (
@@ -1471,6 +1514,21 @@ Semantics fixed here (tests in `tests/engine/`):
   paused is `paused`. Control signals raised by several `each:` items concurrently collapse into
   one (first wins, a pause beats a stop; the other items are cancelled with reason
   `stopped`/`paused`) — never a failed composite.
+- A `stop:` declares the RUN's status (`Runner._finalize`) only when nothing genuinely failed, and
+  "genuinely" means anywhere in the graph: `runner.run_failures(run)` is every untolerated
+  `FAILED_LIKE` record at ANY depth, minus what the stop tore down (`runner.stop_collateral`:
+  `interrupted` + `stopped`, the pair the scheduler records for a sibling a `stop:` cancelled)
+  and minus anything an enclosing composite has already answered for
+  (`runner.answered_by_a_composite`: any enclosing container that is NOT itself stop collateral —
+  one that rolled its body up under its own policy, `each.on_failure: continue` or
+  `loop.on_exhausted`, but equally one the run paused at or an outside cancellation interrupted.
+  It is that composite's record the run counts, not the body's, which stays `tolerated=False`
+  whatever the composite decided. A missing container counts the record: nothing settled it). The `interrupted`/`stopped` pair on its own does NOT mean nothing failed: by
+  the bullet above a composite whose body stopped carries it whether or not a body step had
+  already failed, so what settles it is the body's own records. Without that, a `stop: {status:
+  succeeded}` inside an `each:`/`include:` body reported a run holding a failed step as succeeded,
+  exit 0, `outputs:` published. The step that RAISED the stop (`ctx.stopped.step_path` — an
+  `on_reject: cancel` gate is `rejected` *and* stops the run) never counts against its own signal.
 - Wind-down (`scheduler.run_graph`): when a sibling list ends because fail-fast tore down its task
   group or a control signal cancelled it, the steps still PENDING are not blanket-skipped. They are
   decided in dependency order by the same `join_decision(..., draining=True)`, so `join: always`
@@ -1519,7 +1577,13 @@ Semantics fixed here (tests in `tests/engine/`):
   pid that last ran). `run.pause` is cleared when the
   gate that owns it reaches a decision by any path (stored decision, `--yes`, dry run, TTY), so
   `RunResult.pause` is only non-None for a run that is `paused`. `RunRecord.dry_run` (additive)
-  records `--dry-run`.
+  records `--dry-run`, `RunRecord.fail_fast` (additive) `--fail-fast`: a resume continues with
+  the blast radius the run was started with. `RunContext.fail_fast` is `options.fail_fast or
+  run.fail_fast` and is what `fail_fast_for` / `keep_going_for` read; `Runner._prepare_record`
+  OR-s the flag of a resume entry into the record and saves it. A failure policy only ever
+  TIGHTENS, so no entry point can clear a recorded one. The workflow's own
+  `defaults.on_step_failure` is NOT recorded — it is part of the workflow, and the hash guard
+  refuses a resume of a changed one.
 - Declared `artifacts:`: `executors.artifacts.collect_artifacts(step, scope, ctx, outcome)` runs
   in `scheduler._execute` after the executor (`_dispatch`) and before `finish`, for EVERY kind.
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
@@ -1597,7 +1661,7 @@ Semantics fixed here (tests in `tests/engine/`):
   `RunContext.elapsed_s()` is `utcnow() - RunRecord.started_at` (the ORIGINAL start — a resume
   entry keeps it, so the cap measures the run, not the attempt, waiting at an approval gate
   included); `context.time_reason(elapsed_s, defaults)` renders `time limit exceeded (elapsed
-  2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
+  2h 4m > timeout_total 2h 0m)` (`rayspec.fmt.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
   the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
@@ -1670,8 +1734,12 @@ interactive=, prompt=None)` returns `None` (pause at gates) or a `SuspendingAppr
 runs the `ConsoleApprovalPrompt` inside `async with sink.suspended():` for every sink exposing
 `suspended()`; `rayspec run` and `_runs_common.resume_run` (`resume`/`approve`/`reject`;
 additive kwargs `inputs=` (re-supplied secrets), `stub_script: StubScript | None =`,
-`stubs_path=`; the resumed run inherits `dry_run` from the record) both use
-it. `print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
+`stubs_path=`, `fail_fast=` (`resume --fail-fast`, OR-ed into `RunRecord.fail_fast`); the resumed
+run inherits `dry_run` and `fail_fast` from the record) both use
+it. `resume --fail-fast` records the tightening even when the pending-gate short-circuit ends the
+command (exit 3, one extra line naming the flag): a failure policy only ever tightens, so it is
+safe to persist for whoever continues the run, and the flag must not be accepted and dropped.
+`print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
 (never markup: `[stub] think` stays literal) and through
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
@@ -1685,7 +1753,9 @@ treats every directory with a `runs/` child as a store and never descends into i
 `source.git/` or `locks/`; `find_run(ctx, ref)` → `(store, RunRecord)` resolving full ids and unique prefixes in the current
 project first, then every project under the home (`UnknownRunIdError` / `AmbiguousRunIdError`
 with candidates newest first; `lookup_run` prints them with exit 2); `fmt_duration/fmt_tokens/
-fmt_cost` (`providers.pricing.format_cost`: `$0.12`, `~$0.12` for table prices, `-` when no cost
+fmt_cost` (`fmt_duration` IS `rayspec.fmt.format_duration` and `fmt_tokens` IS
+`providers.pricing.format_tokens`; `fmt_cost` renders through `providers.pricing.format_cost`:
+`$0.12`, `~$0.12` for table prices, `-` when no cost
 is known — tokens are never shown in a cost slot; listings have a `tokens` column) / `fmt_when` (relative within 30 days) / `run_duration_ms` /
 `steps_progress(run, *, planned=None)` (done = succeeded, tolerated or skipped; total =
 recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_step_paths(ctx, run, *, cache=None)`
@@ -1693,9 +1763,11 @@ recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_
 resumed: running/paused/interrupted/failed/cancelled; `None` for succeeded runs or when the
 workflow no longer loads — any loader exception is swallowed, a listing never fails on a broken
 workflow; `cache` memoises per (project root, workflow) for one listing) / `unpriced_steps` / `run_cost_source`
-(`provider|table|partial|none` via `combine_cost_sources`) / `pid_command_line(pid)` (`ps -o
+(`provider|table|partial|none` — the engine's `engine.context.cost_source_of` applied to a stored
+record, so a listing prints what the engine wrote into `RunRecord.cost_source`) / `pid_command_line(pid)` (`ps -o
 command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|approve|reject` as whole tokens + run id / workflow name / file as a whole token) /
-`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
+`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`, `fail_fast` — the
+recorded failure policy, next to `dry_run`; `rayspec show` marks both on the run header) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by
 recorded path, then by name) / `check_workflow_unchanged(run, resolved, force=)` (the engine's
 hash rule as a `ResumeError`, applied before anything is persisted) / `record_root(ctx, run)` /
@@ -2299,14 +2371,31 @@ Two new packages and one new loader module; nothing else moved.
   growing. `redact_obj(value)` covers every string inside a JSON-shaped value, mapping KEYS
   included (a structured result or a tool payload can put a secret in the key position), plus a
   **number** whose whole text IS a secret, so a JSON document stays well-formed.
-  `redact_dump(model) -> Any` — a pydantic model's JSON-able dump with the PARSED values
+  `redact_dump(model, *, preserve=()) -> Any` — a pydantic model's JSON-able dump with the
+  PARSED values
   redacted, and any substitution the model cannot hold put back at exactly the field it broke
   (a structural number equal to a secret is a coincidence, not a leak). The record's own
   STRUCTURE is never rewritten — a field name, and the key of a mapping of records (`steps`,
   keyed by step path), names a place in the record rather than carrying a value — while
-  everything free-form inside it goes through `redact_obj`, keys included. The writer serialises
+  everything free-form inside it goes through `redact_obj`, keys included. `preserve` (additive)
+  names the TOP-LEVEL fields that are identity rather than content — the strings the record is
+  looked up BY; both stores pass `store.file.RUN_IDENTITY_FIELDS`, because a secret that collides
+  with one of those used to rewrite it and leave the run permanently unreachable (`unknown
+  workflow '[REDACTED:…]'`). A record one level down declares its own instead, as the ClassVar
+  `redaction_identity` (`redact.IDENTITY_FIELDS_ATTR`), honoured wherever that model appears at
+  whatever depth — `preserve` is the writer's word about the record it is handing over and cannot
+  reach a field the writer does not know is there. `RunRecord.redaction_identity = ("run_id",
+  "workflow_name", "workflow_path", "project_root")` **is** `RUN_IDENTITY_FIELDS` (one list, not
+  two); `StepRecord` declares `("path", "id", "output_ref", "prompt_ref")` — the key its record is
+  already filed under, plus the refs the store built out of it, so `rayspec explain` no longer
+  dies on `invalid step path '[REDACTED:…]'`; `WorkspaceInfo` declares `("workdir",)`, the
+  directory a resumed run runs in (without it the second half failed `cwd does not exist:
+  [REDACTED:…]`). Every other structural string stays redacted. The writer serialises
   that, so a bare-JSON-token secret can never leave an unparseable file behind. `covers(value)`
-  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`) and
+  (True when `redact` would remove it, or when it is shorter than `MIN_REDACTABLE_LEN`),
+  `uncovered(secrets) -> tuple[str, ...]` (additive: the NAMES `redact` would still let through
+  — the read-back a caller installing a redactor checks, so a store that accepts the assignment
+  and drops it is caught) and
   `extend({name: value}) -> Redactor` (same detectors, union of the literals, `self` when there
   is nothing to add AND no new name was skipped, so identity tells a caller whether the redactor
   already knew everything) are how a later caller ADDS a value without discarding one already
@@ -2357,7 +2446,9 @@ Additive changes to existing modules:
   assigns the real one at run start, and the Runner installs what the CLI did not). Every writer
   redacts, and everything JSON-shaped is redacted on the PARSED value rather than on the
   serialised text — a secret that is a bare JSON token would otherwise be swapped for an
-  unquoted marker and leave a file that no longer parses: `save` (`redact_dump(run)`, then
+  unquoted marker and leave a file that no longer parses: `save`
+  (`redact_dump(run, preserve=RUN_IDENTITY_FIELDS)`, plus whatever each nested record declares
+  as its own `redaction_identity`, then
   serialised — byte-identical to `model_dump_json(indent=2)` when there is nothing to redact),
   `write_output_with_sha` (before hashing, so the sha is the file's; `kind="json"` on the parsed
   value), `append_event` (the event's `data`, the only free-form part), `append_stream`
@@ -2379,8 +2470,10 @@ Additive changes to existing modules:
   through `extend`, including values `covers` reports as covered, so a value too short to redact
   lands in `Redactor.skipped`; a name skipped that the caller's redactor did not already list is
   emitted as a `warning` event right after `run.started` — the CLI prints the same fact before
-  the run, an embedder only has events. A store whose `redactor` cannot be assigned raises
-  `EngineError` naming the values, and the run writes nothing. **The boundary is therefore not a
+  the run, an embedder only has events. The assignment is then READ BACK
+  (`Redactor.uncovered`): a store whose `redactor` cannot be assigned — or one whose setter
+  accepts the value and drops it, which raises nothing — raises `EngineError` naming the values,
+  and the run writes nothing. **The boundary is therefore not a
   caller obligation**: an embedder following `docs/extending.md` § Embedding the engine gets it
   by construction.
 - `engine/executors/_process.py`: `process_env` adds `ctx.options.config_secrets` under their own
@@ -2843,13 +2936,16 @@ from rayspec.engine.approval_classes import (
     ClassRules,          # frozen: allow_yes: bool = True, require_tty: bool = False; .named
     DEFAULT_RULES,       # ClassRules() — an unnamed class, or one the rules do not mention
     ApprovalClasses,     # frozen: rules: Mapping[str, ClassRules], pre_approved: frozenset[str],
-                         #   terminal_prompt: bool = True (this process's prompt is the built-in one)
-                         # .policy_in_force (any class defined at all) .rules_for(name)
+                         #   terminal_prompt: bool = True (this process's prompt is the built-in one),
+                         #   policy_loaded: bool = False (ADDITIVE — a policy file is in force,
+                         #   whether or not it defines any class)
+                         # .policy_in_force (policy_loaded or any class defined) .rules_for(name)
                          # .unheld(name)  → the gate names a class nothing in force defines
                          # .may_approve_automatically(name) .may_decide_out_of_band(name)
                          # .may_prompt(name, *, at_a_terminal=True)
     automatic_by,        # (classes, name, *, yes, dry_run) -> "--yes"|"dry-run"|"--approve-class"|None
-    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`
+    rules_from_policy,   # (policy) -> {name: ClassRules}   reads ONLY `policy.classes`; it is
+                         #   handed `EffectivePolicy.approvals`, never the whole document
     unheld_classes,      # ([(step path, class|None)], classes) -> [warning]
     waiver_refused, out_of_band_refused, prompt_not_a_terminal,   # the warning messages
     class_not_held, gate_held, no_terminal,
@@ -2887,15 +2983,28 @@ caller can route around them):
   `--yes | dry-run | --approve-class | auto_if | tty | cli`).
 - `rayspec test` is governed by the same rules: `run_case(..., approval_classes=…)` takes them
   from its caller (the harness reads no policy itself) and `cli/commands/test.py` passes
-  `approval_classes_for(suite.root, ctx.home)`. A case reaching a gate held shut pauses and
-  fails — which is what `--exec-shell` demands, since the gated body really runs.
+  `approval_classes_for(suite.root, ctx.home)`, read once per suite root BEFORE the first case
+  runs. A case reaching a gate held shut pauses and fails — which is what `--exec-shell` demands,
+  since the gated body really runs. A policy file that cannot be read is a usage error for this
+  command (exit 2, `--junit` still written), like a malformed case file.
 
 CLI: `rayspec run` / `rayspec resume` take `--approve-class NAME` (repeatable,
-`run.ApproveClassOption`). `run.operator_policy(project_root, home)` is the ONE seam that reads
-the operator's policy (it returns `None` until `rayspec.policy` exists) and
-`run.policy_class_rules` turns it into `{name: ClassRules}` via `rules_from_policy`;
+`run.ApproveClassOption`). `run.operator_policy(project_root, home) -> EffectivePolicy | None` is
+the ONE seam that reads the operator's policy — `rayspec.policy.load_policy` over the same three
+layers every other consumer reads, `None` only when no layer is in force (a file that exists and
+cannot be read raises `PolicyError`, never `None`, and every command answers a typo in
+`policy.yaml` with `error: …` and exit 2 rather than a traceback: `run` and `validate` through the
+`report.errors` of `validate_workflow`, `resume` through `refuse_policy_violations`, `plan` and
+`test` around the call itself. `approve` and `reject` reach the seam through
+`_runs_common.resume_run`, which is NOT itself inside a boundary — they exit cleanly because
+`guard_workflow_unchanged` reads the policy earlier and fails first. Adding a caller means
+checking which of those two is true for it; a caller with neither answers with a traceback) — and `run.policy_class_rules` turns `.approvals` into `{name: ClassRules}` via
+`rules_from_policy`;
 `run.approval_classes_for(project_root, home, *, pre_approved=(), terminal_prompt=True)` builds
-the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass;
+the `ApprovalClasses` both `run` and `_runs_common.resume_run(..., approve_classes=())` pass, and
+sets `policy_loaded` from that same seam so a warning cannot claim there is no policy while the
+command has just printed its path (`plan` builds the same pair through `plan.policy_class_rules`
+/ `plan.policy_in_force`);
 `terminal_prompt` comes from `run.terminal_prompt_id(extensions, configured)` — true when nothing
 was configured **or** when `extensions.approval` names the builtin (`TERMINAL_PROMPT_ID ==
 "console"`), so naming the terminal prompt explicitly does not read as replacing it.
@@ -2945,7 +3054,8 @@ from rayspec.limits import (
     lock_entries_for,     # (ResolvedWorkflow) -> {agent key: LockEntry} for the agents the
     #                       prompt steps resolve to (the RunRecord.toolchain["models"] keys)
     check_locked,         # (ResolvedWorkflow, Lockfile | None) -> [LockDrift]  (None ⇒ [])
-    load_lockfile,        # (project_root) -> Lockfile | None      (strict YAML; LockfileError)
+    load_lockfile,        # (project_root) -> Lockfile | None  (None ONLY when truly absent; a
+    #                       dangling symlink/loop/directory is LockfileError; strict YAML)
     write_lockfile,       # (project_root, {wf: {key: LockEntry}}) -> Path  (sorted, stable bytes)
     merged_workflows,     # (Lockfile | None, updates) -> dict  (re-locking one keeps the others)
     parse_lockfile,       # (data, *, path=None) -> Lockfile
@@ -2956,13 +3066,19 @@ from rayspec.limits import (
     SpendLedger,          # (path); .read(when=None), .commit(run_id, cost_usd, when=None)
     #                       -> SpendState, .record_outcome(failed=) -> int, .reset_failures(),
     #                       .take_warnings() -> [str]  (drained; e.g. an unreadable file replaced)
+    #                       reading NEVER raises: see "Spend ledger shape" below
     # -- envelopes -------------------------------------------------------------------------
     BudgetEnvelope,       # frozen: per_run, per_day, per_month, max_consecutive_failures;
     #                       .active, .spends
-    RunEnvelope,          # (envelope, ledger, *, run_id, waived=False)
+    RunEnvelope,          # (envelope, ledger, *, run_id, waived_spend=False,
+    #                       waived_failures=False)
     #                       .check(run_usd) -> reason | None, .settle(run_usd) -> reason | None
     #                       (final totals), .commit_final(run_usd), .record_outcome(failed=),
-    #                       .waive(close_breaker=False), .take_warnings(), .active, .waived,
+    #                       .waive(close_breaker=False), .take_warnings(),
+    #                       .waived_spend / .waived_failures — ONE waiver per control, never
+    #                       both; .checks_spend / .checks_failures (still in force),
+    #                       .active = either of them; a waived control is skipped, not the
+    #                       ledger commit — a waived run is still counted
     #                       .pause_kind ∈ {ENVELOPE_PAUSE_REASON, FAILURE_PAUSE_REASON}
     envelope_reason, failure_breaker_reason,
     ENVELOPE_PAUSE_REASON,  # "budget"   FAILURE_PAUSE_REASON  # "failures"
@@ -3005,15 +3121,25 @@ open, `max_concurrent_runs: {claude: 0}` means claude may not run on this host (
 in `LimitsPolicy.warnings`, which the CLI prints before the run — never in silence.
 
 **Lockfile.** `rayspec lock [names...] [--check] [--root] [--json]` (`cli/commands/lock.py`,
-which also owns the shared `LockedOption` + `enforce_lockfile(ctx, resolved, *, locked,
-project_root=None, json_mode=False)` that `run`, `plan`, `validate`, `resume`, `approve` and
-`reject` apply — the last three through `resume.guard_workflow_unchanged(ctx, record, *, force,
-locked=None)`, which re-scopes its context with `_runs_common.record_context(ctx, record)` and
-passes that project). `project_root` is the root the workflow was LOADED from: with `--repo`
-that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
+which also owns the shared `--locked` gate). `lockfile_in_force(ctx, *, locked,
+project_root=None) -> Lockfile | None` is THE gate — it decides whether the lockfile is
+enforced at all, refuses a MISSING one under the flag and prints the CI-default warning — and
+`enforce_lockfile(ctx, resolved, *, locked, project_root=None, json_mode=False)` is that plus
+the drift refusal (exit 2). `run`, `plan`, `resume`, `approve` and `reject` call
+`enforce_lockfile` — the last three through `resume.guard_workflow_unchanged(ctx, record, *,
+force, locked=None)`, which re-scopes its context with `_runs_common.record_context(ctx,
+record)` and passes that project; `validate` calls `lockfile_in_force` because it reports drift
+as an error ROW rather than a refusal. **No command reads the lockfile for the gate itself**:
+one implementation, one caller set, so what "no lockfile" means and how the refusal is worded
+cannot drift between them. `project_root` is the root the workflow was LOADED from: with
+`--repo` that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
 `--locked/--no-locked` defaults to `locked_default(os.environ)` (on under `CI`). An explicit
 `--locked` refuses a MISSING lockfile; the CI default does not — it enforces only a lockfile
-that exists, so setting `CI` cannot break a project that never opted in. `check_locked` also
+that exists, so setting `CI` cannot break a project that never opted in, but it prints one
+`warning:` line on stderr saying nothing is pinned, because a CI log that is silent about the
+lockfile reads like one where it was checked. `lock --check` treats **no lockfile at all** as
+drift (exit 1, one `drift` line): `--check` asserts a fact about the file, and "there is
+nothing to check" is not that fact. `check_locked` also
 reports a pinned agent the workflow no longer has (`field="stale"`), so `lock --check` and
 `lock` never disagree. `write_lockfile` replaces the file whole (temp + `os.replace`).
 `validate --locked` reports drift as an ERROR row (not a warning). The file is YAML, read with
@@ -3041,9 +3167,13 @@ spent. The final spend is committed and the consecutive-failure counter moved in
 or one that had to be replaced, is reported as a `warning` — never silently. A dry run never
 touches the ledger and takes no slot. Any resume entry clears an operational pause
 (`Runner._consume_envelope_decision`) and re-evaluates the ceiling; a recorded
-`pause.decision.approved` additionally WAIVES the ceilings for that run (`rayspec approve
-<run>`), and closes the failure breaker ONLY when the breaker is what paused it — approving a
-spend is not approving a failure streak. A rejecting decision changes nothing.
+`pause.decision.approved` additionally WAIVES, for that run, the ceiling that PAUSED it
+(`rayspec approve <run>`) — and only that one: `RunEnvelope.waive(close_breaker=)` sets
+`waived_failures` (and resets the counter) for a breaker pause, `waived_spend` for a money one.
+Approving a spend is not approving a failure streak, and closing the breaker is not approving a
+spend, so a run approved past the breaker still pauses on `policy.budget` if it reaches it, and
+vice versa; the console names which control the approval covered. A rejecting decision changes
+nothing.
 `RunContext.last_finished_path` is the last record persisted BEFORE the envelope tripped (frozen
 afterwards, so the pause names the step that reached the ceiling, not the drain's last skip).
 
@@ -3066,7 +3196,21 @@ because rejecting a ceiling does nothing.
 `flock` on `spend.json.lock` (a sibling file, because the document itself is replaced). A run
 commits its ABSOLUTE total; the DELTA between two commits is attributed to the day and month the
 commit is MADE in, so a run resumed tomorrow spends tomorrow's money. A per-run entry is kept
-`RETAIN_DAYS` after its LAST commit.
+`RETAIN_DAYS` after its LAST commit. **Reading never raises** — it runs at the start of every
+`run`/`resume`/`approve`, so an exception there bricks the project until somebody deletes the
+file: a document that will not parse, an EMPTY one (rayspec never writes a zero-byte ledger) and
+one whose `version` is newer than `LEDGER_VERSION` are each replaced whole; a day/month total,
+`consecutive_failures` or `runs.<id>.cost_usd` that is not a finite number of the right kind is
+dropped field by field and everything readable is kept. The repaired document is what the next
+commit writes, so the file is fixed rather than re-crashed. Every one of those is a
+`take_warnings()` line, which the engine emits as a `warning` event.
+WRITING may still raise `OSError` (the file is replaced whole, and a caller that swallowed a
+failed `os.replace` would report a total that is not on disk) — so **every engine call that
+writes it is guarded**: `RunContext.check_envelope`, `Runner._settle_envelope`,
+`Runner._refresh_envelope_pause` and the waiver an approval applies. All of them report through
+`RunContext.ledger_unwritable(exc)`, which emits ONE `warning` per run in one wording; the run
+goes on without the accounting, because losing this run's spend is a smaller failure than
+ending it on a traceback — a directory where `spend.json` belongs used to do exactly that.
 
 Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, reason, call_id)`
 + `AgentResult.denials: tuple[Denial, ...] = ()`; `store/model.DenialInfo(tool, reason, call_id)`
@@ -3117,6 +3261,8 @@ recorded — never the tool input.
   stamps now. `StreamRecord.kind` for shell steps: `stdout`, `stderr`, `exit`. A `usage`
   AgentEvent carries `data["usage"]` (this report's delta) and `data["turn_total"]` (cumulative
   usage of the attempt so far) as `{input, cached_input, cache_write, output, reasoning}` dicts
+  (`providers.base.usage_dict(usage)`, additive — the ONE spelling of that mapping, used by the
+  adapters, the scheduler's event data and the CLI's `--json` rows alike)
   — the engine records `turn_total` for an attempt cut off before its result.
 - **RunEvent.data** keys: `step.started {kind, attempt}`, `step.retry {attempt, delay_s, error}`,
   `step.finished {status, duration_ms, usage, cost_usd, error, skip_reason, tolerated}`,

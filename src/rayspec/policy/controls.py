@@ -51,6 +51,7 @@ if TYPE_CHECKING:  # type-only: importing the loader at runtime would close an i
 CONTROL_TAGS: frozenset[str] = frozenset(
     {
         "access",  # how much power the sandbox grants
+        "approvals",  # what may approve a gate, and what may never approve it automatically
         "commands",  # which shell commands may run
         "mcp",  # which MCP servers may be reached
         "model",  # which model answers
@@ -750,12 +751,18 @@ def step_controls(resolved: ResolvedWorkflow) -> dict[str, tuple[Control, ...]]:
 #: ``tools.deny`` is absent on purpose: its kinds depend on the entries, so they are read off the
 #: entries (:data:`POLICY_TAGS_FROM_VALUE`). A key that is missing from BOTH gets EVERY tag rather
 #: than none — an unclassified control must engage every guard, never slip past all of them.
+#:
+#: ``approvals.classes`` is a control for the same reason every other key here is: it takes an
+#: approval path away from a run that would otherwise have it. It is reported only for a class
+#: that actually holds something (``allow_yes: false`` / ``require_tty: true``) — a class an
+#: operator merely named forbids nothing, exactly as ``trust.require: false`` does not.
 POLICY_CONTROL_TAGS: Mapping[str, frozenset[str]] = {
     "models.deny": frozenset({"model"}),
     "access.max": frozenset({"access"}),
     "mcp.allow_servers": frozenset({"mcp"}),
     "providers.allow": frozenset({"provider"}),
     "trust.require": frozenset({"trust"}),
+    "approvals.classes": frozenset({"approvals"}),
     "workspace.protected_paths": frozenset({"workspace"}),
     "workspace.max_changed_files": frozenset({"workspace"}),
     "workspace.max_changed_lines": frozenset({"workspace"}),

@@ -62,6 +62,7 @@ from rayspec.limits import (
 )
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import secret_input_names
+from rayspec.policy import EffectivePolicy, load_policy
 from rayspec.providers.pricing import PriceTable, cost_marker
 from rayspec.redact import MIN_REDACTABLE_LEN, NULL_REDACTOR, RedactingSink, Redactor
 from rayspec.schema import ApproveStep, PromptStep, RunStatus
@@ -158,20 +159,42 @@ ApproveClassOption = Annotated[
 ]
 
 
-def operator_policy(project_root: Path, home: Path | None) -> Any:
-    """The policy in force for this project, or ``None`` when there is none.
+def operator_policy(project_root: Path, home: Path | None) -> EffectivePolicy | None:
+    """Load the operator's policy — ``None`` only when the search found no file at all.
 
     The policy file — its keys, its layering (environment over project over user, most
-    restrictive wins) and its loader — belongs to ``rayspec.policy``. This is the one place
-    ``run``/``resume`` reach for it, so wiring it up is a single line here; until then a run has
-    no policy, which is exactly today's behaviour.
+    restrictive wins) and its loader — belongs to :mod:`rayspec.policy`. This calls the SAME
+    loader every other consumer uses (:mod:`rayspec.limits`, the load-time checks), so an
+    operator cannot end up with a file that caps their spending and is invisible to their gates.
+
+    It is the one seam the CLI reads that policy through for approval purposes, and SIX commands
+    are behind it: ``run`` and ``resume`` via :func:`approval_classes_for`; ``approve`` and
+    ``reject`` through the same call, reached via
+    :func:`~rayspec.cli._runs_common.resume_run`; ``test`` through it as well; and ``plan``
+    through :func:`~rayspec.cli.commands.plan.policy_in_force`. Count them from the callers, not
+    from memory — an enumeration that missed two commands is what left this seam returning
+    ``None`` while the policy file it was supposed to read already existed.
+
+    A file that exists but cannot be read RAISES :class:`~rayspec.policy.PolicyError` rather
+    than returning ``None``: a guardrail that silently disappears is the one failure mode this
+    seam may not have. So ``None`` means "searched and found nothing", never "found something
+    and gave up on it" — and every caller has to stand inside a
+    :class:`~rayspec.errors.RayspecError` boundary that turns the raise into ``error: …`` and
+    exit 2. A caller without one answers a one-character typo in ``policy.yaml`` with a
+    traceback, which reads as rayspec being broken rather than the file.
     """
-    return None
+    effective = load_policy(project_root, home=home)
+    return None if effective.is_empty else effective
 
 
 def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, ClassRules]:
-    """The approval-class rules of that policy — the only part of it a gate reads."""
-    return rules_from_policy(operator_policy(project_root, home))
+    """The approval-class rules of that policy — the only part of it a gate reads.
+
+    ``rules_from_policy`` reads ``.classes`` off what it is handed, so it is handed the merged
+    ``approvals:`` block rather than the whole document.
+    """
+    policy = operator_policy(project_root, home)
+    return rules_from_policy(None if policy is None else policy.approvals)
 
 
 def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
@@ -190,11 +213,19 @@ def approval_classes_for(
     pre_approved: Sequence[str] = (),
     terminal_prompt: bool = True,
 ) -> ApprovalClasses:
-    """The approval-class rules and pre-authorisations one invocation runs under."""
+    """The approval-class rules and pre-authorisations one invocation runs under.
+
+    ``policy_loaded`` is asked separately from the rules because it is a separate question:
+    "there is no operator policy" and "the policy in force says nothing about this class" have
+    different fixes, and a run that printed the path of its policy file must not then report
+    that it has none. It is not derived from the rules — a file holding only ``budget:`` is in
+    force and defines no class.
+    """
     return ApprovalClasses(
         rules=policy_class_rules(project_root, home),
         pre_approved=frozenset(pre_approved),
         terminal_prompt=terminal_prompt,
+        policy_loaded=operator_policy(project_root, home) is not None,
     )
 
 

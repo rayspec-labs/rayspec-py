@@ -84,20 +84,20 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--stubs-from RUN_ID` | replay a stored run's recorded answers instead of a `--stubs` file (run id or unique prefix, resolved in the current project first and then in every project under `RAYSPEC_HOME`) — the in-memory equivalent of `rayspec runs stubs <run> -o f.yaml` followed by `--stubs f.yaml`. Mutually exclusive with `--stubs`; an unknown/ambiguous id or a run with secret inputs is exit 2. The donor run — not a file — is recorded in `run.json` as `stubs_path: "run:<run id>"`, so `resume`/`approve`/`reject` and `run --resume` rebuild the same script from it (a donor that was deleted is exit 2 naming it; an explicit `--stubs`/`--stubs-from` on the resume entry overrides it) |
 | `--stubs-init PATH` | write a stub scaffold (one entry per prompt step) and exit; refuses to overwrite an existing file unless `--force` |
 | `--exec-shell` | run shell/python steps for real inside `--dry-run` (worktree isolation applies again) |
-| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false` (no operator policy is read yet, so today no class is) |
+| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false` in the `approvals:` block of a [policy.yaml](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md#approval-classes) |
 | `--approve-class NAME` | pre-approve gates of one [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class marked `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
 | `--no-interactive` | never prompt; a gate pauses the run (exit 3) |
 | `--json` | JSONL events on stdout followed by **the final summary object as the last stdout line** (shapes below; `rayspec run … --json \| tail -1 \| jq .exit_code`); warnings and errors go to stderr. `--json` does not imply `--no-interactive`: on a terminal an `approve:` step still prompts (on stderr) — pass `--no-interactive` (pause, exit 3) or `--yes` for unattended pipelines |
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
 | `--verbose` | also print `step.started` lines |
 | `--allow-unsupported` | downgrade provider-capability mismatches to warnings |
-| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain) |
-| `--resume RUN_ID` | resume a run (unique prefix accepted) of **this** workflow in the current project's store; inputs come from `run.json` (`--inputs-file` is refused; `--input` only re-supplies secret inputs — exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN` when one is missing); the other flags are **yours**, not the record's — a `--dry-run --stubs` record of a workflow with a non-stub agent needs `--dry-run` again (else exit 2 `run <id> was launched with --dry-run --stubs <path>; its recorded stubs file requires --dry-run …`, hint `pass --dry-run …`; `rayspec resume` inherits the dry run instead); refused when the run belongs to another workflow (always), the workflow hash changed (unless `--force`), the run still has a live pid or is recorded as running on another host (unless `--force`); cannot be combined with `--repo` — use [`rayspec resume`](#rayspec-resume), which finds the run in any project |
+| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain); recorded on the run, so every resume of it keeps the same blast radius |
+| `--resume RUN_ID` | resume a run (unique prefix accepted) of **this** workflow in the current project's store; inputs come from `run.json` (`--inputs-file` is refused; `--input` only re-supplies secret inputs — exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN` when one is missing); the other flags are **yours**, not the record's (except `--fail-fast`, which is recorded on the run and may only be tightened, never dropped) — a `--dry-run --stubs` record of a workflow with a non-stub agent needs `--dry-run` again (else exit 2 `run <id> was launched with --dry-run --stubs <path>; its recorded stubs file requires --dry-run …`, hint `pass --dry-run …`; `rayspec resume` inherits the dry run instead); refused when the run belongs to another workflow (always), the workflow hash changed (unless `--force`), the run still has a live pid or is recorded as running on another host (unless `--force`); cannot be combined with `--repo` — use [`rayspec resume`](#rayspec-resume), which finds the run in any project |
 | `--force` | resume despite a changed workflow (steps whose fingerprint changed re-run) or a recorded live pid; overwrite an existing `--stubs-init` file |
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
 | `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/isolation.md#--repo)) |
-| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is also refused — "nothing to check" must not read as "everything is fine" |
+| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is refused when the **flag** is passed — asking for `--locked` is a promise the models were pinned, and "nothing to check" must not read as "everything is fine". The `CI` **default** may not break a project that never opted in, so it enforces a lockfile that exists and prints one `warning:` line on stderr when there is none — never silence |
 | `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 1h30m`), a bare number of seconds (`--wait-slot 90`), or `forever` — the only spelling that waits indefinitely. `--wait-slot 0` does **not** wait (the default); a negative duration is a usage error. Otherwise exit 2, naming the run that holds the slot. A `--dry-run` takes no slot |
 
 On **stderr**, before the run starts, comes the policy line — `policy: .rayspec/policy.yaml`, or
@@ -162,7 +162,10 @@ errors. A name that is neither a discovered workflow nor a file is `error: unkno
 `rayspec init` hint (exit 0). `--allow-unsupported` turns capability mismatches into warnings.
 `--locked` / `--no-locked` additionally checks each workflow against
 [`.rayspec/rayspec.lock`](#rayspec-lock); a drifted agent is an **error** here, not a warning
-(on by default under `CI`).
+(on by default under `CI`). Whether the lockfile is enforced, what a *missing* one means and how
+that reads is the same gate `run`, `plan`, `resume`, `approve` and `reject` apply — same refusal
+under the flag, same one `warning:` line on stderr under the `CI` default. `validate --locked` is
+the command a CI job is likeliest to run, so it is the last one that may answer differently.
 Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
 ~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
 found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
@@ -194,12 +197,15 @@ lockfile is what makes that visible, and [`run`](#rayspec-run) / [`plan`](#raysp
 
 | Option | Effect |
 |---|---|
-| `--check` | report drift and exit 1; never write the file (what a CI job runs) |
+| `--check` | report drift and exit 1; never write the file (what a CI job runs). **No lockfile at all is drift**: `--check` asserts a fact about the file, and "there is nothing to check" is not that fact |
 | `--json` | `{"path", "workflows": {name: {agent key: {provider, model, effort}}}, "drift": [...], "checked": bool}` |
 | `--root DIR` | project root |
 
 Exit codes: `0` written / in sync · `1` `--check` found drift · `2` usage (unknown workflow, a
-workflow that does not load, an unreadable lockfile).
+workflow that does not load, an unreadable lockfile). A path that is *there* but is not a
+readable file — a dangling symlink, a symlink loop, a directory — is exit 2 naming what it is,
+never "no lockfile": a guardrail that disappears because nobody could `stat` it is worse than
+none, and [`policy.yaml`](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md) makes the same promise.
 
 ```console
 $ rayspec lock
@@ -208,6 +214,10 @@ wrote .rayspec/rayspec.lock (2 workflow(s), 3 agent(s))
 $ rayspec lock --check
 error: review_pr: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
 hint: run `rayspec lock` to re-pin
+
+$ rayspec lock --check          # a repository that pins nothing
+error: no lockfile at .rayspec/rayspec.lock — nothing is pinned
+hint: run `rayspec lock` to write it
 ```
 
 Agents are keyed the way `run.json`'s `toolchain.models` keys them (`agents.reviewer`,
@@ -267,7 +277,10 @@ the pricing table (~$)`, or — for a provider without cost reporting whose mode
 [pricing](providers.md#pricing) entry — the nudge `tokens only — add pricing.<model> for estimates
 (<docs URL>#pricing)`, naming only the unpriced models when some are priced or disabled;
 models disabled with a `null` pricing entry are listed as `pricing disabled (null) for <model>`
-without a nudge). Exit 2 on validation or input errors.
+without a nudge). Exit 2 on validation or input errors, and on a `policy.yaml` the loader
+cannot read — the report is not printed at all in that case, because a plan measured
+against guardrails nobody could read would be a report about restrictions that may or may
+not be in force.
 `--json`: `{workflow, path, hash, isolation, budget_usd, max_tokens, timeout_total, description,
 inputs: {name: {name, type, value, state: ok|missing|invalid|undefined, problem, secret}},
 input_errors, agents: [{name, provider, model,
@@ -433,8 +446,10 @@ status, run_id, run_dir, duration_s, failures: [{field, summary, detail, fix, lo
 
 Exit `0` when every case passed, `1` when any failed, `2` for a usage error — a filter that
 matches nothing (the known `<suite>:<case>` names are listed), no cases at all, a case that needs
-`--exec-shell`, or a malformed case file (`error: <file>:<line>: unknown field 'statuss' for
-expect; did you mean 'status'?`).
+`--exec-shell`, a malformed case file (`error: <file>:<line>: unknown field 'statuss' for
+expect; did you mean 'status'?`), or a `policy.yaml` that cannot be read (the approval classes
+are read once, before the first case runs, so a mistyped key is one message rather than one per
+case).
 
 ### `rayspec workflows`
 
@@ -604,7 +619,7 @@ Options:
 
 - `--all` / `-a` — List runs of every project under RAYSPEC_HOME.
 - `--limit` / `-n` `<int range>` — [x>=1]  Show at most N runs.
-- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, pid, host, workspace{…}, pause{…}|null}]`.
+- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, fail_fast, pid, host, workspace{…}, pause{…}|null}]`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 These are the options of the **listing**. `--root` is the only one a subcommand honours before the
@@ -975,6 +990,7 @@ Resume a paused, failed or interrupted run: the run is re-executed from the top 
 Two things are not in `run.json` and come from the command line again — both are checked **before** anything is written, after the workflow-hash guard and after the pending-gate pointer (a run paused at a gate, non-TTY without `--yes`, exits 3 pointing at `approve`/`reject` first — that is what such a run needs):
 
 - **Secret inputs** (`secret: true`, [schema.md](schema.md#secret-inputs)) are never persisted: every secret that was given at launch must be supplied again with `--input NAME=VALUE` (accepted on resume for secret inputs only — any other name is `inputs are fixed per run`, exit 2) or through `RAYSPEC_INPUT_<NAME>` in the environment; otherwise exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN`. An optional secret that was not given at launch is not required (but may be supplied now — it is then recorded as `<secret>` and exported like the others).
+- **The failure policy**, on the other hand, *is* in `run.json`: `--fail-fast` is recorded on the run, so a resume continues it with the blast radius it started with rather than draining what the first half would have cancelled. The workflow's own `defaults.on_step_failure` needs no recording — it is part of the workflow, and the hash guard above already refuses a resume of a changed one.
 - **The stub script**: a run launched with `--stubs` recorded the file's absolute path (`stubs_path`); `resume` loads it again (a missing/unreadable file is exit 2 with the hint `pass --stubs <path>`), `--stubs PATH` overrides it (and becomes the recorded path). A run launched with `--stubs-from <run>` recorded that donor run instead (`stubs_path: "run:<run id>"`) and rebuilds its answers from the store — a replay that pauses at an approval gate finishes with the recorded answers, never with the stub provider's default. A `--dry-run` record resumes as a dry run (stub providers, shell/python skipped), so its stubs keep applying; the rule holds as on `run` (a non-stub agent may only be scripted in a dry run).
 
 Options:
@@ -983,11 +999,13 @@ Options:
 - `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false`).
 - `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
+- `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again. A run paused at a gate records it on the way out too (`--fail-fast recorded on the run: …`, still exit 3), so the blast radius can be narrowed *before* the gate is decided with `approve`/`reject`. `rayspec runs --json`, `rayspec show` and `rayspec show --json` report the recorded policy (`fail_fast`).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--verbose` — Also show step starts.
 - `--input` / `-i` `NAME=VALUE` — Re-supply a secret input (repeatable; secret inputs only).
 - `--stubs` `<path>` — Stub script for the resumed run (default: the file recorded at launch).
+- `--fail-fast` — Cancel running siblings on failure. The override the run was launched with is recorded (`run.json` `fail_fast`) and restored on every resume entry — `approve` and `reject` included — so the second half of a run never runs under a looser failure policy than the first. This flag may only ever *tighten*: it turns fail-fast on for a run launched without it (and is recorded in turn), and omitting it never turns a recorded one off. The workflow's own `defaults.on_step_failure` is in the file both halves read and needs no such treatment.
 - `--locked` / `--no-locked` — Check the resumed workflow against `.rayspec/rayspec.lock` (see [`rayspec run`](#rayspec-run)); on by default under `CI`. A resume is where an unattended job spends the second half of a run, and the workflow hash does not cover a tier that was re-pointed in `config.yaml` — so the lockfile is checked here too — the one in the run's own project, against the models its own `config.yaml` resolves.
 - `--wait-slot` `DURATION` — Queue for a free host run slot instead of failing (same spellings as [`rayspec run`](#rayspec-run)). A resume takes a slot because it starts the same agents.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
@@ -998,7 +1016,7 @@ Options:
 rayspec approve [OPTIONS] {run} [comment]
 ```
 
-Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. On a run an operational ceiling paused (`pause.reason` `budget` or `failures`) there is no gate to answer: `approve` there means "run it anyway" and **waives** the ceiling for that run — a spending waiver does not touch the failure breaker, and closing the breaker does not waive a spend. `rayspec resume` re-evaluates the ceiling instead, which is usually what an unattended job wants. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
+Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. On a run an operational ceiling paused (`pause.reason` `budget` or `failures`) there is no gate to answer: `approve` there means "run it anyway" and **waives the ceiling it was asked about**, and only that one — a spending waiver does not touch the failure breaker, and closing the breaker does not waive a spend. So a run approved past the breaker still pauses on `policy.budget` if it reaches it: nobody was asked about money, and an operator does not lose a ceiling they were not asked about. `rayspec resume` re-evaluates the ceiling instead, which is usually what an unattended job wants. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
 
 Options:
 

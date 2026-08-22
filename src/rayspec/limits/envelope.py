@@ -11,6 +11,11 @@ this" — exceeding it is a defect, so the run fails. A ceiling in the *policy* 
 saying "not more than this per day without me looking" — reaching it is not a defect, it is the
 moment the machine was supposed to stop and ask. A paused run keeps its work, keeps its
 worktree, and continues where it left off once a person has decided.
+
+The second: the two controls here are separate instruments, and an approval retires exactly the
+one the operator was asked about. A pause on money asks "may this run cost more?"; a pause on the
+breaker asks "is this flakiness worth another try?". Answering either must never spend the answer
+to the other.
 """
 
 from __future__ import annotations
@@ -123,21 +128,41 @@ class RunEnvelope:
         ledger: SpendLedger,
         *,
         run_id: str,
-        waived: bool = False,
+        waived_spend: bool = False,
+        waived_failures: bool = False,
     ) -> None:
         self.envelope = envelope
         self.ledger = ledger
         self.run_id = run_id
-        #: set when an operator approved a paused run: the ceilings no longer stop THIS run
-        self.waived = waived
+        #: set when an operator approved a MONEY pause: the spending ceilings no longer stop
+        #: THIS run. Tracked separately from the breaker because they are separate questions,
+        #: asked one at a time — see :meth:`waive`.
+        self.waived_spend = waived_spend
+        #: set when an operator approved the BREAKER's own pause: the consecutive-failure
+        #: breaker no longer stops THIS run.
+        self.waived_failures = waived_failures
         #: which control produced the last reason — :data:`ENVELOPE_PAUSE_REASON` (money) or
         #: :data:`FAILURE_PAUSE_REASON` (the breaker). They are separate decisions.
         self.pause_kind = ENVELOPE_PAUSE_REASON
 
     @property
+    def checks_spend(self) -> bool:
+        """Whether a money ceiling can still stop this run."""
+        return self.envelope.spends and not self.waived_spend
+
+    @property
+    def checks_failures(self) -> bool:
+        """Whether the consecutive-failure breaker can still stop this run."""
+        return self.envelope.max_consecutive_failures is not None and not self.waived_failures
+
+    @property
     def active(self) -> bool:
-        """Whether this run is subject to any ceiling at all."""
-        return self.envelope.active and not self.waived
+        """Whether any ceiling can still stop this run.
+
+        Not "any ceiling is configured": a waiver retires ONE control, and the other one is
+        still the operator's, still armed, and still the reason to consult the ledger.
+        """
+        return self.checks_spend or self.checks_failures
 
     def take_warnings(self) -> list[str]:
         """Anything the ledger had to paper over since the last call (see the ledger)."""
@@ -175,31 +200,45 @@ class RunEnvelope:
         self.ledger.record_outcome(failed=failed)
 
     def waive(self, *, close_breaker: bool = False) -> None:
-        """An operator approved the paused run: stop stopping it.
+        """An operator approved the paused run: stop stopping it — with the control they answered.
 
-        ``close_breaker`` only when the pause was the BREAKER's own. Approving a run that
-        stopped on a money ceiling says "this one run may cost more"; it does not say "and
-        forget that the last three runs failed" — coupling the two would let the weaker
-        decision reset the stronger control.
+        ``close_breaker`` is the BREAKER's own pause: the breaker stops stopping this run and
+        its counter is reset. Otherwise it is a MONEY pause: the spending ceilings stop stopping
+        this run. **Neither waives the other.** Approving a run that stopped on a money ceiling
+        says "this one run may cost more"; it does not say "and forget that the last three runs
+        failed". Approving one that stopped on the breaker answers a question about flakiness;
+        nobody was asked about money, and an operator must not lose a ceiling they were not
+        asked about.
         """
-        self.waived = True
-        if close_breaker and self.envelope.max_consecutive_failures is not None:
-            self.ledger.reset_failures()
+        if close_breaker:
+            self.waived_failures = True
+            if self.envelope.max_consecutive_failures is not None:
+                self.ledger.reset_failures()
+        else:
+            self.waived_spend = True
 
     def _evaluate(self, run_usd: float | None) -> str | None:
-        """Commit and ask both controls; records which one fired in :attr:`pause_kind`."""
+        """Commit and ask the controls still in force; :attr:`pause_kind` names the one that fired.
+
+        The commit happens whether or not the spending ceilings were waived: a waiver says
+        "this run may cost more", never "this run costs nothing", and the next run's day total
+        has to include what this one spent.
+        """
         if self.envelope.spends:
             state = self.ledger.commit(self.run_id, run_usd)
         else:
             state = self.ledger.read()
-        reason = failure_breaker_reason(self.envelope, state)
-        if reason is not None:
-            self.pause_kind = FAILURE_PAUSE_REASON
-            return reason
-        reason = envelope_reason(self.envelope, state, run_usd)
-        if reason is not None:
-            self.pause_kind = ENVELOPE_PAUSE_REASON
-        return reason
+        if self.checks_failures:
+            reason = failure_breaker_reason(self.envelope, state)
+            if reason is not None:
+                self.pause_kind = FAILURE_PAUSE_REASON
+                return reason
+        if self.checks_spend:
+            reason = envelope_reason(self.envelope, state, run_usd)
+            if reason is not None:
+                self.pause_kind = ENVELOPE_PAUSE_REASON
+                return reason
+        return None
 
 
 __all__ = [
