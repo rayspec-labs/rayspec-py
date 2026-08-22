@@ -103,6 +103,26 @@ _CHUNK_CHARS = 1 << 20  # characters per write while streaming large outputs
 _OUTPUT_FILES = {"text": "output.txt", "json": "output.json"}
 
 RUN_JSON = "run.json"
+#: Fields of a :class:`~rayspec.store.model.RunRecord` that redaction must leave alone: the
+#: strings the record is LOOKED UP by. ``run_id`` names the directory the record lives in;
+#: ``workflow_name`` and ``workflow_path`` are what ``resume``/``approve``/``reject``/``explain``
+#: re-load the workflow by (:func:`rayspec.cli._runs_common.load_resolved_for`); ``project_root``
+#: is the project all of them re-scope to (:func:`rayspec.cli._runs_common.record_root`). A
+#: secret that happens to equal one of them used to rewrite it, and the run was permanently
+#: unreachable (``unknown workflow '[REDACTED:…]'``) — the same class as the field names and
+#: step paths :meth:`~rayspec.redact.Redactor.redact_dump` already leaves alone. Everything else
+#: a record holds stays redacted.
+#:
+#: Leaving them alone discloses nothing: each is derived from the workflow file on disk, the
+#: project directory and the run-id generator, never from an input, so a value that collides
+#: with one of them was already readable in the project. What it prevents is a run that no
+#: command can address again.
+#:
+#: The record declares them (:attr:`rayspec.store.model.RunRecord.redaction_identity`) and this
+#: is the name the store's writers pass them by — one list, so a nested record that protects its
+#: own address (a step's ``path``, the workspace's ``workdir``) is honoured by the same rule
+#: rather than by a second one that has to be kept in step with this.
+RUN_IDENTITY_FIELDS: tuple[str, ...] = RunRecord.redaction_identity
 #: Where a step's declared ``artifacts:`` are copied (``artifacts/<step path>/<declared path>``).
 ARTIFACTS_DIR = "artifacts"
 #: Bytes per read while copying an artifact (constant memory for a large file).
@@ -918,11 +938,12 @@ def _record_json(run: RunRecord, redactor: Redactor) -> str:
     Without a redactor pydantic serialises directly — the fast path a run with no secrets
     takes. With one the JSON-able dump is redacted first and serialised afterwards; see
     :meth:`~rayspec.redact.Redactor.redact_dump` for why the serialised text is never redacted
-    instead.
+    instead, and :data:`RUN_IDENTITY_FIELDS` for the strings it leaves alone.
     """
     if not redactor:
         return run.model_dump_json(indent=2) + "\n"
-    return json.dumps(redactor.redact_dump(run), indent=2, ensure_ascii=False) + "\n"
+    dump = redactor.redact_dump(run, preserve=RUN_IDENTITY_FIELDS)
+    return json.dumps(dump, indent=2, ensure_ascii=False) + "\n"
 
 
 def _event_json(event: RunEvent, redactor: Redactor) -> str:
@@ -1168,6 +1189,7 @@ __all__ = [
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
     "PROMPT_TXT",
+    "RUN_IDENTITY_FIELDS",
     "RUN_JSON",
     "STREAM_JSONL",
     "AmbiguousRunIdError",

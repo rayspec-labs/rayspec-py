@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """`rayspec resume <run> [--force] [--yes] [--approve-class NAME] [--no-interactive] [--json]
-[--quiet]` — continue a run in-process through the engine's resume entry point.
+[--quiet] [--fail-fast]` — continue a run in-process through the engine's resume entry point.
 
 A paused run re-asks its pending gate on a TTY; without a TTY (or with ``--no-interactive``)
 the command points to ``rayspec approve|reject`` and exits 3 (still paused) unless ``--yes``
@@ -8,6 +8,12 @@ auto-approves. Before any of that the workflow is re-loaded and a changed hash i
 (exit 2, ``--force`` hint) — :func:`guard_workflow_unchanged` is the ONE guard every resume
 entry point (``resume``, ``approve``, ``reject``, ``run --resume``) applies first.
 Everything else (reuse cache, live-pid refusal) is the engine's.
+
+A gate this command answers — at the terminal or with ``--yes`` — is recorded against whoever
+ran **this** command, not against the run's actor. The run keeps naming whoever launched it
+(``run.actor`` is resolved once, at its first start), and a resume days later is a second person
+making a decision the first one never made. The identity is resolved at the gate, in the process
+that answers it: see :mod:`rayspec.engine.executors.approve`.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
     RootOption,
+    capability_source,
     err_console,
     error_lines,
     fail,
@@ -158,14 +165,36 @@ def refuse_changed_workflow(record: RunRecord, resolved: ResolvedWorkflow, *, fo
         fail(str(exc), hint=exc.hint)
 
 
+def refuse_policy_violations(resolved: ResolvedWorkflow) -> None:
+    """Put a re-loaded workflow through the policy pass, exactly as ``rayspec run`` does.
+
+    The second half of a run is subject to the ``policy.yaml`` that is in force *now*: a workflow
+    the policy refuses does not become runnable by having paused first. The same call folds the
+    policy's tool denials into the agents, so the steps after a gate reach their provider with
+    the restrictions the steps before it had.
+    """
+    from rayspec.policy import apply_policy, problem_line
+
+    caps = capability_source()
+    try:
+        report = apply_policy(resolved, capabilities_for=caps.capabilities_for)
+    except RayspecError as exc:  # an unreadable or invalid policy file
+        fail(str(exc), hint=exc.hint)
+        return
+    if report.errors:
+        error_lines([problem_line(p) for p in report.errors], kind="policy errors")
+        raise typer.Exit(code=EXIT_USAGE)
+
+
 def guard_workflow_unchanged(
     ctx: common.RunsContext, record: RunRecord, *, force: bool, locked: bool | None = None
 ) -> ResolvedWorkflow:
-    """Re-load ``record``'s workflow, apply :func:`refuse_changed_workflow` and the lock gate.
+    """Re-load ``record``'s workflow, apply the policy, :func:`refuse_changed_workflow` and the
+    lock gate.
 
     The shared first step of ``resume`` / ``approve`` / ``reject``: a CI job polling a paused
     run learns that the workflow drifted (exit 2) instead of "still paused" (exit 3). A workflow
-    that cannot be loaded at all is also exit 2.
+    that cannot be loaded at all is also exit 2, and so is one the policy in force forbids.
 
     The lockfile is checked here too. The workflow hash only covers the workflow's own files, so
     a model that moved because a *tier* was re-pointed leaves it untouched — and a poll-then-
@@ -182,6 +211,7 @@ def guard_workflow_unchanged(
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
+    refuse_policy_violations(resolved)
     refuse_changed_workflow(record, resolved, force=force)
     enforce_lockfile(ctx.loader_context, resolved, locked=locked, project_root=ctx.project_root)
     return resolved
@@ -207,6 +237,13 @@ def register(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", help="Also show step starts.")] = False,
         inputs: SecretInputsOption = None,
         stubs: StubsOption = None,
+        fail_fast: Annotated[
+            bool,
+            typer.Option(
+                "--fail-fast",
+                help="Cancel running siblings on failure (kept from launch; only tightens).",
+            ),
+        ] = False,
         locked: LockedOption = None,
         wait_slot: WaitSlotOption = None,
         root: RootOption = None,
@@ -214,7 +251,9 @@ def register(app: typer.Typer) -> None:
         """Resume a paused/failed/interrupted run (steps that succeeded are reused).
 
         Succeeded and cancelled runs are refused (exit 2) unless --force. Secret inputs must be
-        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused.
+        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused,
+        and so is the failure policy it started with (--fail-fast here can only tighten it
+        further).
         """
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
@@ -259,6 +298,14 @@ def register(app: typer.Typer) -> None:
         ):
             assert record.pause is not None
             out = err_console()
+            # --fail-fast is recorded even though this resume stops here: a failure policy only
+            # ever tightens, so writing it is safe whatever happens next, and the operator who
+            # narrows the blast radius before deciding the gate must not have it silently
+            # dropped. Whoever continues the run (approve/reject/resume) then reads it back.
+            tightened = fail_fast and not record.fail_fast
+            if tightened:
+                record.fail_fast = True
+                store.save(record)
             out.print(
                 Text.assemble(
                     (f"run {record.run_id} is paused", "yellow"),
@@ -266,6 +313,13 @@ def register(app: typer.Typer) -> None:
                 ),
                 highlight=False,
             )
+            if tightened:
+                out.print(
+                    "  --fail-fast recorded on the run: whatever continues it cancels running "
+                    "siblings on failure",
+                    markup=False,
+                    highlight=False,
+                )
             # the hint names only what this gate's approval class accepts: recommending a
             # command the class refuses is how a control teaches people to work around it
             classes = approval_classes_for(ctx.project_root, ctx.home)  # the RUN's policy
@@ -297,6 +351,7 @@ def register(app: typer.Typer) -> None:
             record,
             force=force,
             yes=yes,
+            fail_fast=fail_fast,
             interactive=interactive,
             json_mode=json_,
             quiet=quiet,
@@ -318,6 +373,7 @@ __all__ = [
     "WaitSlotOption",
     "guard_workflow_unchanged",
     "refuse_changed_workflow",
+    "refuse_policy_violations",
     "register",
     "resume_secret_inputs",
     "resume_stub_script",

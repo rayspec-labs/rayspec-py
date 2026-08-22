@@ -80,16 +80,26 @@ class ApprovalClasses:
     ``rules`` come from the operator's policy file, ``pre_approved`` from ``--approve-class``
     on the command line, and ``terminal_prompt`` says whether this process's approval prompt is
     the built-in terminal one (it is false when ``extensions.approval`` replaced it).
+
+    ``policy_loaded`` is the separate question the messages need: whether a policy file is in
+    force *at all*. "No operator policy is in force" and "the policy in force does not define
+    this class" are different problems with different fixes, and a run that printed the path of
+    its policy file two lines earlier must not then claim it has none.
     """
 
     rules: Mapping[str, ClassRules] = field(default_factory=dict)
     pre_approved: frozenset[str] = frozenset()
     terminal_prompt: bool = True
+    policy_loaded: bool = False
 
     @property
     def policy_in_force(self) -> bool:
-        """Whether an operator policy defines any approval class at all."""
-        return bool(self.rules)
+        """Whether an operator policy is in force (whether or not it defines any class).
+
+        Rules imply a policy, so a caller that only knows the rules — the test harness, a
+        hand-built instance — still gets the right answer without setting ``policy_loaded``.
+        """
+        return self.policy_loaded or bool(self.rules)
 
     def rules_for(self, class_name: str | None) -> ClassRules:
         """The rules governing a gate of this class (the permissive default when unknown)."""
@@ -246,10 +256,12 @@ def _entry_rules(entry: Any) -> ClassRules:
 def rules_from_policy(policy: Any) -> dict[str, ClassRules]:
     """The class rules of a loaded policy — the ONE thing this module reads from a policy.
 
-    ``policy`` is whatever :mod:`rayspec.policy` loaded (``None`` when there is no policy file);
-    only its ``classes`` mapping is touched, and only the two keys above are read from each
-    entry. Validating the file, layering the project one over the user one and deciding which
-    of two values is the more restrictive are the policy module's job, not this one's.
+    ``policy`` is the merged ``approvals:`` block :mod:`rayspec.policy` produced
+    (:attr:`~rayspec.policy.EffectivePolicy.approvals`), or ``None`` when no policy file is in
+    force. Only its ``classes`` mapping is touched, and only the two keys above are read from
+    each entry. Validating the file, layering the project one over the user one and deciding
+    which of two values is the more restrictive are the policy module's job, not this one's —
+    which is why this takes ``Any`` and reads one attribute rather than importing that package.
     """
     entries = getattr(policy, "classes", None) if policy is not None else None
     if not isinstance(entries, Mapping):

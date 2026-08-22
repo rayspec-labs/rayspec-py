@@ -1,0 +1,26 @@
+checks:
+  # First scenario: `rayspec init --from review_sweep` prints this one as its first step, so it
+  # is the one that has to be green from a fresh directory.
+  - id: clean
+    workflow: review_sweep
+    inputs: { target: docs/ }
+    stubs: stubs_clean.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { answered: 3, reports: 3 }
+      steps: { digest: succeeded }
+  - id: one_angle_down
+    workflow: review_sweep
+    stubs: stubs.yaml
+    expect:
+      status: failed                  # `continue` is not `allow_failure`: the run still fails
+      exit_code: 1                    # (a failed run renders no `outputs:` — the steps are the claim)
+      steps:
+        api: failed
+        api_report: { status: skipped, skip_reason: upstream_failed }
+        docs: succeeded
+        docs_report: succeeded        # under `drain` this would not have started
+        tests: succeeded
+        tests_report: succeeded
+        digest: succeeded             # join: always

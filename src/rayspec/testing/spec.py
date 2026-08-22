@@ -354,6 +354,9 @@ def discover_suites(root: Path) -> list[Suite]:
 
     * ``examples/<name>/checks.yaml`` — one suite per example, rooted at the example directory
       (each example is a self-contained project);
+    * ``<root>/checks.yaml`` — the project's **own** suite, named ``checks``: the same file at
+      the place it lands when the project *is* the example (``rayspec init --from <name>``, or a
+      copy of ``examples/<name>/``), where there is no ``examples/`` directory to sit under;
     * ``.rayspec/dryrun/checks.yaml`` — the repo's own workflows, suite ``dogfood``;
     * ``.rayspec/tests/<workflow>/<case>.yaml`` — one suite ``tests/<workflow>`` per directory,
       one case per file, plus ``tests/<name>`` for a case file sitting directly in
@@ -380,12 +383,49 @@ def discover_suites(root: Path) -> list[Suite]:
                         _label(checks_path, root),
                     )
                 )
+    own = root / "checks.yaml"
+    if own.is_file() and is_suite_document(own):
+        cases, locations = load_cases(own, root=root)
+        suites.append(Suite("checks", root, own, cases, locations, _label(own, root)))
     dogfood = root / ".rayspec" / "dryrun" / "checks.yaml"
     if dogfood.is_file():
         cases, locations = load_cases(dogfood, root=root)
         suites.append(Suite("dogfood", root, dogfood, cases, locations, _label(dogfood, root)))
     suites.extend(_greenfield_suites(root))
     return suites
+
+
+def is_suite_document(path: Path) -> bool:
+    """Whether ``path`` is positively a rayspec **suite** file: a mapping whose ``checks:`` (or
+    ``cases:``) key holds a non-empty list of mappings, each naming at least one case key.
+
+    The recognition is positive, unlike :func:`is_case_document`'s, and that asymmetry is the
+    point. ``.rayspec/tests/`` is rayspec's own directory, so anything in it is read as a case and
+    its problems are reported. The root of a project is *shared* — a ``checks.yaml`` there may
+    belong to another tool entirely — so only a document that says what it is gets read, and
+    anything else is passed over rather than turned into an error about somebody else's file.
+
+    Which is why the key alone is not enough: ``checks:`` is a word many tools use, and a
+    ``checks: {lint: true}`` or ``checks: [{name: lint, cmd: ruff}]`` read as a suite fails
+    ``rayspec test`` in a project whose own cases are sitting in ``.rayspec/tests/`` — with an
+    error about a file rayspec does not own. The shape below the key is what makes it rayspec's:
+    a list of case mappings. Naming *one* case key is enough, so a suite of this project's with a
+    typo in it is still read, and the typo still reported with its ``file:line``.
+    """
+    try:
+        data, _ = load_yaml_with_lines(path.read_text(encoding="utf-8"), source=str(path))
+    except (OSError, RayspecError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    known = case_keys()
+    return any(
+        isinstance(value := data.get(key), list)
+        and bool(value)
+        and all(isinstance(case, dict) and not known.isdisjoint(case) for case in value)
+        for key in SUITE_KEYS
+        if key in data
+    )
 
 
 def is_case_document(path: Path) -> bool:
@@ -486,6 +526,7 @@ __all__ = [
     "case_keys",
     "discover_suites",
     "is_case_document",
+    "is_suite_document",
     "load_cases",
     "load_checks",
     "unreachable_expect",

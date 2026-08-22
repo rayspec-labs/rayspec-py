@@ -8,6 +8,7 @@
 | [providers.md](providers.md) | the neutral adapter, the generated capability matrix, per-provider mapping tables, access levels, auth, pricing |
 | [cli.md](cli.md) | every command, flags, exit codes, `--json` shapes |
 | [runs-and-resume.md](runs-and-resume.md) | store layout, `run.json`, events, resume and approval flows |
+| [policy.md](policy.md) | `policy.yaml` and its layers, the worktree change guard, trusted workflows, `network:`/`commands:`, and what is only advisory |
 | [isolation.md](isolation.md) | worktrees, `--repo`, registered projects, locks |
 | [extending.md](extending.md) | adding a provider via entry points, the step-kind seam, sinks, stores, embedding |
 | [testing.md](testing.md) | testing workflows offline: `rayspec test`, the case format, `--junit` in CI, the golden corpus and the fault-injecting store |

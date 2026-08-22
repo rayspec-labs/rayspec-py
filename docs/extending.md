@@ -19,8 +19,9 @@ command, store or sink shows up that you did not write.
 
 The rules are the same for every group: **builtin ids can never be overridden**, entry points are
 visited in name order, a programmatic registration wins over an entry point, and anything that
-fails to load, has the wrong type or collides is skipped with a `RuntimeWarning` instead of
-breaking the CLI. An id is first-come: if two installed distributions publish the same one, the
+fails to load, has the wrong type or collides is skipped instead of breaking the CLI — a CLI
+plugin with one rayspec line on stderr (see below), the extension groups with a `RuntimeWarning`
+at the moment they are resolved. An id is first-come: if two installed distributions publish the same one, the
 first keeps it and the second is refused and listed as `skipped` in `rayspec plugins` — nothing
 is ever silently replaced, so an unexpected implementation always has a row explaining itself.
 
@@ -116,6 +117,7 @@ rayspec acme-runs --json        # the new command
 
 The sink is opt-in, because a sink observes every run:
 
+<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 # .rayspec/config.yaml (or ~/.rayspec/config.yaml)
 extensions:
@@ -142,8 +144,7 @@ code as a builtin one, and the same `typer` version is already installed.
 What the loader guarantees, so that an installed plugin can never make rayspec unusable:
 
 - builtin commands are registered first and are never shadowed: a plugin command whose name is
-  already taken is removed again and reported with a `RuntimeWarning` naming the plugin and the
-  name it wanted;
+  already taken is removed again and reported, naming the plugin and the name it wanted;
 - `register()` is handed rayspec's live command table, and the builtin entries in it are
   protected by identity: reordering them is harmless, and a plugin that *removes* one is rolled
   back whole (its own commands go with it) and reported — installing a package can never take a
@@ -154,6 +155,18 @@ What the loader guarantees, so that an installed plugin can never make rayspec u
   replacement dropped, so `--version` and the global help keep working;
 - `rayspec --help` therefore still exits 0 with a broken plugin installed, and `rayspec plugins`
   shows what happened.
+
+A problem is reported as **one rayspec line on stderr**, naming the plugin and pointing at
+`rayspec plugins` for the whole story:
+
+```
+rayspec: CLI plugin 'acme' (acme_plugin:register) failed to load: RuntimeError: boom; skipped — run `rayspec plugins` for the detail
+```
+
+The line is skipped for an invocation that is only reading the CLI — bare `rayspec`, any
+`--help`, `rayspec completion`, a shell-completion request — because a skipped plugin is a
+property of the installation rather than an answer to what was typed, and a command list is not
+where anything can be done about it.
 
 Keep the work in `register()` to registering: it runs on **every** rayspec invocation. Import
 your heavy modules inside the command body, the way the builtin commands do — the scan costs
@@ -391,9 +404,10 @@ The run installs the **redaction boundary** itself: before it writes a byte it m
 `Redactor` cover every `secret: true` input it was given and every value in
 `RunOptions.config_secrets`, so an embedded run cannot persist a secret by forgetting to wire
 one. A redactor you assigned to `store.redactor` yourself is *extended*, never replaced — that is
-how the CLI adds `config.secrets` values and the opt-in detectors on top. A store whose
-`redactor` attribute cannot be assigned makes a workflow with secret inputs refuse to start
-rather than write anything. A value too short to redact (under four characters, which would
+how the CLI adds `config.secrets` values and the opt-in detectors on top. The assignment is
+read back: a store whose `redactor` attribute cannot be assigned — or one whose setter accepts
+the value and quietly drops it — makes a workflow with secret inputs refuse to start rather than
+write anything. A value too short to redact (under four characters, which would
 match everywhere) is named in a `warning` event right after `run.started`, so an embedded run
 hears about it too. Event sinks are a separate surface: they print rather than persist, and a
 sink of your own is yours to wrap (`rayspec.redact.RedactingSink`) if it writes anywhere.

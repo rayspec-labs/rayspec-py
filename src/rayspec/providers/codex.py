@@ -30,7 +30,10 @@ Design (plan §3.1):
   turn is the delta of ``total`` against the last total seen for that thread (never a sum of
   ``last``). ``AgentResult.raw["usage_total"]`` reports the last cumulative total so the engine
   can pass it back as ``provider_options.codex.usage_baseline`` when resuming the thread in a
-  later run. Without a baseline, a thread first seen mid-history uses the **inference**
+  later run. A baseline is SUBTRACTED from the totals, so it sets the number every spend ceiling
+  is measured against rather than noting anything down: an inflated one reports no usage and no
+  cost at all, which is why :mod:`rayspec.policy` refuses a non-zero one under a spend ceiling.
+  Without a baseline, a thread first seen mid-history uses the **inference**
   ``total - last`` of its first update. **Settled 2026-08-21** by a live run against
   ``codex-cli`` 0.147.0 (``tests/providers/test_codex_live.py::
   test_live_codex_resume_usage_inference_matches_server_totals``, ``RAYSPEC_LIVE=1``): a fresh
@@ -46,7 +49,8 @@ thread), ``codex_bin`` (override the bundled runtime), ``pricing`` (model → pr
 :mod:`rayspec.providers.pricing`), ``drain_s`` (seconds to wait for an interrupted turn to
 finish, default 10). Per-request ``provider_options`` (``codex:`` block, or already narrowed)
 accept ``approval_mode``, ``config`` (merged over the settings config), ``ephemeral`` and
-``usage_baseline`` (cumulative usage counters of the resumed thread, see above).
+``usage_baseline`` (cumulative usage counters SUBTRACTED from the resumed thread's totals, see
+above).
 """
 
 from __future__ import annotations
@@ -122,9 +126,11 @@ from rayspec.providers.base import (
     ProviderNotInstalledError,
     ResultStatus,
     Usage,
+    usage_dict,
 )
 from rayspec.providers.capabilities import CODEX_CAPABILITIES
 from rayspec.providers.pricing import PriceTable
+from rayspec.schema import provider_option_block
 
 log = logging.getLogger("rayspec.providers.codex")
 
@@ -143,6 +149,26 @@ _SANDBOX: Mapping[AccessLevel, Sandbox] = {
     AccessLevel.WORKSPACE_WRITE: Sandbox.workspace_write,
     AccessLevel.FULL: Sandbox.full_access,
 }
+
+#: ``provider_options.codex.config`` key paths the adapter computes itself, so a workflow may not
+#: set them (they are dropped with a warning). ``config`` is applied over the adapter's own keys,
+#: which is how a workflow could re-enable web search that ``tools.deny: [web]`` or
+#: ``network: off`` had switched off, raise its own sandbox or swap its own model. The
+#: equivalent for the Claude adapter is :data:`rayspec.providers.claude.ADAPTER_OWNED_OPTIONS`.
+#: ``mcp_servers`` is deliberately absent: it is MERGED under the request's own servers rather
+#: than replacing them, and ``mcp.allow_servers`` is what checks it (at load time, server by
+#: server, so the server a policy ALLOWS may still be added here). Every other ``config`` key —
+#: ``sandbox_workspace_write`` included — is refused at load time once a control governs the
+#: agent: see :data:`rayspec.policy.ALLOWED_PROVIDER_OPTIONS`.
+#: ``providers.codex.config`` in ``config.yaml`` is unaffected — that belongs to the machine
+#: owner, not to the workflow.
+ADAPTER_OWNED_CONFIG: tuple[tuple[str, ...], ...] = (
+    ("model",),
+    ("sandbox_mode",),
+    ("approval_policy",),
+    ("web_search",),
+    ("tools", "web_search"),
+)
 
 #: ``codexErrorInfo`` code → (neutral error kind, transient). Unknown codes → ("unknown", False).
 _ERROR_INFO: Mapping[str, tuple[ErrorKind, bool]] = {
@@ -243,16 +269,6 @@ def usage_delta(current: Usage, previous: Usage) -> Usage:
     )
 
 
-def _usage_dict(usage: Usage) -> dict[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
-
-
 def _env_signature(env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted((str(k), str(v)) for k, v in env.items()))
 
@@ -282,6 +298,42 @@ def _effort(effort: str | None) -> ReasoningEffort | None:
             ),
         )
     return ReasoningEffort(name)
+
+
+def _workflow_config(extra: Mapping[str, Any], warnings: list[str]) -> dict[str, Any]:
+    """``provider_options.codex.config`` minus every path in :data:`ADAPTER_OWNED_CONFIG`.
+
+    A dropped key is warned about rather than silently honoured or silently discarded: the
+    workflow author has to learn that the neutral field — ``model:``, ``access:``, ``tools:``,
+    ``network:`` — is the way to change it, and an operator reading the run has to be able to
+    see that the attempt was made.
+    """
+    config = {str(k): v for k, v in extra.items()}
+    for path in ADAPTER_OWNED_CONFIG:
+        head, *rest = path
+        if head not in config:
+            continue
+        spelled = ".".join(("provider_options", "codex", "config", *path))
+        note = f"{spelled}: computed by the codex adapter from the agent's own fields; ignored"
+        if not rest:
+            del config[head]
+            warnings.append(note)
+            continue
+        nested = config[head]
+        if not isinstance(nested, Mapping):
+            del config[head]  # cannot be narrowed, and it would replace the computed table
+            warnings.append(
+                f"provider_options.codex.config.{head}: must be a mapping to be merged; ignored"
+            )
+            continue
+        trimmed = {str(k): v for k, v in nested.items() if str(k) != rest[0]}
+        if len(trimmed) != len(nested):
+            warnings.append(note)
+        if trimmed:
+            config[head] = trimmed
+        else:
+            del config[head]
+    return config
 
 
 def _mcp_config(req: AgentRequest) -> dict[str, Any]:
@@ -554,12 +606,13 @@ class CodexProvider:
 
     @staticmethod
     def _options(req: AgentRequest) -> Mapping[str, Any]:
-        """``provider_options`` narrowed to codex (accepts ``{codex: {...}}`` or the inner map)."""
-        opts = req.provider_options or {}
-        inner = opts.get("codex")
-        if isinstance(inner, Mapping):
-            return inner
-        return opts
+        """``provider_options`` narrowed to codex (accepts ``{codex: {...}}`` or the inner map).
+
+        The narrowing itself is :func:`rayspec.schema.provider_option_block`, shared with the
+        load-time check in :mod:`rayspec.policy`, so the block this adapter acts on and the block
+        that check inspects are the same object by construction.
+        """
+        return provider_option_block("codex", req.provider_options)
 
     def _approval_mode(self, opts: Mapping[str, Any]) -> ApprovalMode:
         raw = opts.get("approval_mode", self.approval_mode)
@@ -571,7 +624,9 @@ class CodexProvider:
                 hint="use approval_mode: deny_all (default) or auto_review",
             ) from None
 
-    def _thread_kwargs(self, req: AgentRequest, opts: Mapping[str, Any]) -> dict[str, Any]:
+    def _thread_kwargs(
+        self, req: AgentRequest, opts: Mapping[str, Any], warnings: list[str]
+    ) -> dict[str, Any]:
         translation = translate_tools(req.tools.allow, req.tools.deny, self.id, self.capabilities)
         if translation.errors:
             raise ProviderError(
@@ -581,7 +636,7 @@ class CodexProvider:
         extra = opts.get("config") or {}
         if not isinstance(extra, Mapping):
             raise ProviderError("codex: provider_options.config must be a mapping")
-        config: dict[str, Any] = {**self.extra_config, **extra}
+        config: dict[str, Any] = {**self.extra_config, **_workflow_config(extra, warnings)}
         if req.mcp_servers:
             existing = config.get("mcp_servers") or {}
             if not isinstance(existing, Mapping):
@@ -649,7 +704,10 @@ class CodexProvider:
     async def _run(self, req: AgentRequest, emit: EmitFn) -> AgentResult:
         started = time.perf_counter()
         opts = self._options(req)
-        kwargs = self._thread_kwargs(req, opts)
+        option_warnings: list[str] = []
+        kwargs = self._thread_kwargs(req, opts, option_warnings)
+        for warning in option_warnings:
+            await emit(AgentEvent(kind="warning", text=warning, name="provider_options"))
         effort = _effort(req.effort)
         output_schema: dict[str, Any] | None = None
         if req.output_schema is not None:
@@ -1037,9 +1095,9 @@ class CodexProvider:
             AgentEvent(
                 kind="usage",
                 data={
-                    "usage": _usage_dict(delta),
-                    "total": _usage_dict(total),
-                    "turn_total": _usage_dict(state.usage),
+                    "usage": usage_dict(delta),
+                    "total": usage_dict(total),
+                    "turn_total": usage_dict(state.usage),
                     "model_context_window": payload.token_usage.model_context_window,
                 },
             )
@@ -1093,7 +1151,7 @@ class CodexProvider:
             "turn_status": turn_status.value if turn_status is not None else None,
             "turn_error": _jsonable(turn.error) if turn is not None and turn.error else None,
             "timed_out": timed_out,
-            "usage_total": _usage_dict(total) if total is not None else None,
+            "usage_total": usage_dict(total) if total is not None else None,
         }
         if deadline_exceeded:
             raw["deadline_exceeded"] = True
@@ -1197,6 +1255,7 @@ class CodexProvider:
 
 
 __all__ = [
+    "ADAPTER_OWNED_CONFIG",
     "DEFAULT_DRAIN_S",
     "CodexProvider",
     "classify_turn_error",

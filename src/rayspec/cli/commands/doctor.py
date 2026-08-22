@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 import importlib
-import json
 import os
 import platform
 import re
@@ -39,6 +38,8 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    new_table,
+    print_json,
     resolve_output,
 )
 from rayspec.config import (
@@ -895,7 +896,7 @@ def run_doctor(*, root: Path | None, probe: bool, providers: list[str]) -> Repor
 
 def render_table(report: Report) -> Table:
     """The human table: label, status, detail."""
-    table = Table(title="rayspec doctor", show_lines=False)
+    table = new_table(title="rayspec doctor")
     table.add_column("check", style="bold", no_wrap=True)
     table.add_column("status", justify="center", no_wrap=True)
     table.add_column("detail", overflow="fold")
@@ -938,7 +939,7 @@ def register(app: typer.Typer) -> None:
                 fail(str(exc), hint=exc.hint)
         report = run_doctor(root=root, probe=probe, providers=providers)
         if json_:
-            typer.echo(json.dumps(report.to_dict(), indent=2))
+            print_json(report.to_dict())
             raise typer.Exit(code=report.exit_code)
         out = console()
         out.print(render_table(report))

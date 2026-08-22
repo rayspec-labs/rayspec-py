@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-import json
-
 import typer
-from rich.table import Table
 
 from rayspec.cli._docs import docs_url
 from rayspec.cli.commands._loader_common import (
@@ -15,6 +12,8 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     make_context,
+    new_table,
+    print_json,
     resolve_output,
     short_path,
 )
@@ -37,20 +36,17 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         refs = discover_workflows(ctx.project_root, home=ctx.home)
         if json_:
-            typer.echo(
-                json.dumps(
-                    [
-                        {
-                            "name": r.name,
-                            "scope": r.scope,
-                            "description": r.description,
-                            "path": str(r.path),
-                            "error": r.error,
-                        }
-                        for r in refs
-                    ],
-                    indent=2,
-                )
+            print_json(
+                [
+                    {
+                        "name": r.name,
+                        "scope": r.scope,
+                        "description": r.description,
+                        "path": str(r.path),
+                        "error": r.error,
+                    }
+                    for r in refs
+                ]
             )
             return
         out = console()
@@ -61,7 +57,7 @@ def register(app: typer.Typer) -> None:
             )
             out.print(f"[dim]hint: {EMPTY_PROJECT_HINT}[/dim]", highlight=False)
             return
-        table = Table(title=None, show_edge=False, pad_edge=False)
+        table = new_table()
         table.add_column("name", style="bold")
         table.add_column("scope")
         table.add_column("description")

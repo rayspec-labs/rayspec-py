@@ -89,8 +89,10 @@ from rayspec.providers.base import (
     ProviderNotInstalledError,
     ResultStatus,
     Usage,
+    usage_dict,
 )
 from rayspec.providers.capabilities import CLAUDE_CAPABILITIES
+from rayspec.schema import provider_option_block
 
 #: ``claude_agent_sdk.__version__`` (re-exported for ``rayspec doctor``).
 SDK_VERSION: str = claude_agent_sdk.__version__
@@ -143,19 +145,48 @@ _KNOWN_CLI_LOCATIONS: tuple[Path, ...] = (
     Path.home() / ".claude/local/claude",
 )
 _OPTION_FIELDS: frozenset[str] = frozenset(f.name for f in fields(ClaudeAgentOptions))
-#: ``ClaudeAgentOptions`` fields the adapter owns; ``provider_options`` may not override them.
+#: ``ClaudeAgentOptions`` fields the adapter computes itself; ``provider_options`` may not
+#: override them (they are ignored with a warning). The rule is mechanical rather than a taste
+#: judgement: **every** field :func:`build_options` sets is listed here unless it is in
+#: :data:`MERGED_OPTIONS`, so a raw option can never silently replace a value rayspec derived
+#: from the agent's own neutral fields. That matters most for the security-shaped ones —
+#: ``disallowed_tools`` carries ``tools.deny`` and ``network: off``, ``permission_mode`` carries
+#: ``access:``, ``model`` carries ``model:`` — where an override is not a customisation but a
+#: way for a workflow to shed the restrictions placed on it. The neutral field is the way to
+#: change any of them, and it is the field policy and review both look at.
 ADAPTER_OWNED_OPTIONS: frozenset[str] = frozenset(
     {
-        "stderr",
-        "cwd",
+        "allowed_tools",
         "cli_path",
-        "resume",
+        "cwd",
+        "disallowed_tools",
+        "effort",
         "fork_session",
-        "output_format",
         "include_partial_messages",
+        "max_budget_usd",
+        "max_turns",
+        "model",
+        "output_format",
+        "permission_mode",
+        "resume",
+        "setting_sources",
+        "stderr",
+        "strict_mcp_config",
+        "system_prompt",
+        "thinking",
+        "tools",
     }
 )
 #: Dict-valued ``provider_options`` merged *under* the computed value instead of replacing it.
+#: These two are extension points on purpose: an extra environment variable or an extra MCP
+#: server adds to what rayspec computed rather than replacing it, and rayspec's own entries —
+#: and the machine owner's, from ``providers.claude`` in ``config.yaml`` — win on a name
+#: collision. That is what makes them safe to allow-list under a control, so it has to be true
+#: of both: ``env`` is built with the workflow's block underneath, not on top.
+#: ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at load
+#: time, server by server — see :data:`rayspec.policy.ALLOWED_PROVIDER_OPTIONS`, which is also
+#: what refuses every field of this dataclass that rayspec has NOT reasoned about (``extra_args``
+#: re-emits any CLI flag after the ones computed here) once a control governs the agent.
 MERGED_OPTIONS: frozenset[str] = frozenset({"env", "mcp_servers"})
 #: Valid ``providers.claude.setting_sources`` entries.
 VALID_SETTING_SOURCES: frozenset[str] = frozenset({"user", "project", "local"})
@@ -231,11 +262,12 @@ def build_options(
     Claude Code preset prompt; ``replace`` passes the bare string (vanilla Claude: no Claude Code
     system prompt, CLAUDE.md is still loaded through ``setting_sources``).
 
-    ``provider_options``: keys in :data:`ADAPTER_OWNED_OPTIONS` are ignored with a warning (they
-    would break cancellation, env injection or resume); :data:`MERGED_OPTIONS` (``env``,
-    ``mcp_servers``) are merged under the computed mapping (``env`` precedence: CLIENT_APP <
-    settings.env < provider_options.env < open(env) < req.env); every other
-    ``ClaudeAgentOptions`` field is applied verbatim; unknown keys warn.
+    ``provider_options``: keys in :data:`ADAPTER_OWNED_OPTIONS` — every field this function
+    computes — are ignored with a warning; :data:`MERGED_OPTIONS` (``env``, ``mcp_servers``) are
+    merged under the computed mapping (``env`` precedence: provider_options.env < CLIENT_APP <
+    settings.env < open(env) < req.env, so a workflow variable adds to the environment and never
+    displaces one rayspec or the machine owner set); every other ``ClaudeAgentOptions`` field is
+    applied verbatim; unknown keys warn.
     """
     if not Path(req.cwd).is_dir():
         raise ProviderError(
@@ -302,11 +334,18 @@ def build_options(
             warnings.append(f"effort {req.effort!r} is not a Claude effort level; ignored")
             effort = None
 
-    overrides = dict(req.provider_options)
+    # the same narrowing the codex adapter and the load-time check apply, so all three act
+    # on one block (rayspec.schema.provider_option_block)
+    overrides = dict(provider_option_block("claude", req.provider_options))
+    # provider_options.env goes FIRST so it is genuinely merged UNDER everything rayspec and the
+    # machine owner set — the promise MERGED_OPTIONS has always made and mcp_servers already
+    # kept. Merged over them it could displace CLAUDE_AGENT_SDK_CLIENT_APP or a variable the
+    # owner set in providers.claude.env from inside the very workflow those constrain, which is
+    # not "adding a variable"; adding one is still exactly what the escape hatch is for.
     env: dict[str, str] = {
+        **_str_mapping(overrides.pop("env", None), "provider_options.env", warnings),
         "CLAUDE_AGENT_SDK_CLIENT_APP": f"rayspec/{__version__}",
         **provider.settings_env,
-        **_str_mapping(overrides.pop("env", None), "provider_options.env", warnings),
         **(run_env or {}),
         **req.env,
     }
@@ -347,7 +386,10 @@ def build_options(
     )
     for key, value in overrides.items():
         if key in ADAPTER_OWNED_OPTIONS:
-            warnings.append(f"provider_options.{key}: owned by the claude adapter; ignored")
+            warnings.append(
+                f"provider_options.{key}: computed by the claude adapter from the agent's own "
+                "fields; ignored"
+            )
         elif key in _OPTION_FIELDS:
             setattr(options, key, value)
         else:
@@ -579,8 +621,8 @@ class _Mapper:
             AgentEvent(
                 kind="usage",
                 data={
-                    "usage": _usage_dict(usage),
-                    "turn_total": _usage_dict(total),
+                    "usage": usage_dict(usage),
+                    "turn_total": usage_dict(total),
                     "message_id": message.message_id,
                 },
                 nested=message.parent_tool_use_id is not None,
@@ -626,16 +668,6 @@ def _usage_from(raw: Mapping[str, Any] | None) -> Usage:
         cache_write=cache_write,
         output=num("output_tokens"),
     )
-
-
-def _usage_dict(usage: Usage) -> dict[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 def _model_from_usage(model_usage: Mapping[str, Any] | None) -> str | None:

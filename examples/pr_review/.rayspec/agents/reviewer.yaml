@@ -15,4 +15,4 @@ mcp:
     command: github-mcp-server      # https://github.com/github/github-mcp-server (needs a token in env)
     args: [stdio]
 provider_options:                   # raw pass-through, replaces wholesale on override
-  claude: { setting_sources: [project] }
+  claude: { max_thinking_tokens: 8000 }   # a knob rayspec has no neutral field for

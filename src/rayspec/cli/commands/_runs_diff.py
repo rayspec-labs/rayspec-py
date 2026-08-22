@@ -19,10 +19,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from rich.console import Console
-from rich.table import Table
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
+from rayspec.cli.commands._loader_common import new_table
 from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord, StepRecord
 from rayspec.textsafe import safe_text
@@ -275,7 +275,7 @@ def _signed(value: float | None, unit: str = "") -> str:
 def render(diff: RunDiff, out: Console, *, show_steps: bool, show_outputs: bool) -> None:
     """Print the human report: header, changed steps, loop counts, outputs, optional diffs."""
     out.print(f"runs diff — workflow {safe_text(diff.workflow)}", markup=False, highlight=False)
-    header = Table(show_edge=False, pad_edge=False, box=None, header_style="bold")
+    header = new_table()
     header.add_column("")
     header.add_column(f"a: {diff.run_a.run_id}")
     header.add_column(f"b: {diff.run_b.run_id}")
@@ -327,14 +327,7 @@ def render(diff: RunDiff, out: Console, *, show_steps: bool, show_outputs: bool)
 
     shown = [s for s in diff.steps if show_steps or s.change != "same"]
     if shown:
-        table = Table(
-            show_edge=False,
-            pad_edge=False,
-            box=None,
-            header_style="bold",
-            title="steps",
-            title_justify="left",
-        )
+        table = new_table(title="steps")
         table.add_column("path")
         table.add_column("a")
         table.add_column("b")
@@ -354,14 +347,7 @@ def render(diff: RunDiff, out: Console, *, show_steps: bool, show_outputs: bool)
 
     loops = [loop for loop in diff.loops if loop.changed or show_steps]
     if loops:
-        table = Table(
-            show_edge=False,
-            pad_edge=False,
-            box=None,
-            header_style="bold",
-            title="loops / each",
-            title_justify="left",
-        )
+        table = new_table(title="loops / each")
         table.add_column("path")
         table.add_column("a")
         table.add_column("b")
@@ -379,14 +365,7 @@ def render(diff: RunDiff, out: Console, *, show_steps: bool, show_outputs: bool)
         if entry["changed"] or show_outputs or show_steps
     }
     if outputs:
-        table = Table(
-            show_edge=False,
-            pad_edge=False,
-            box=None,
-            header_style="bold",
-            title="outputs",
-            title_justify="left",
-        )
+        table = new_table(title="outputs")
         table.add_column("name")
         table.add_column("a")
         table.add_column("b")

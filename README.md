@@ -17,6 +17,7 @@ A workflow says *what runs, in what order, under which gates, with which agent*.
 hand judgement to an agent; the engine runs the DAG, fans out, loops, pauses for humans, keeps
 every step's output as a file and resumes from it.
 
+<!-- rayspec:run issue=123 -->
 ```yaml
 # .rayspec/workflows/fix_issue.yaml
 rayspec: 1
@@ -177,6 +178,7 @@ after upgrading rayspec.
 - [docs/providers.md](docs/providers.md) — the neutral adapter, the generated capability matrix, Claude/Codex mapping, auth, pricing
 - [docs/cli.md](docs/cli.md) — every command, flag and `--json` shape
 - [docs/runs-and-resume.md](docs/runs-and-resume.md) — the run directory, `run.json`, events, resume, approval gates
+- [docs/policy.md](docs/policy.md) — `policy.yaml`, the worktree change guard, trusted workflows, and what is only advisory
 - [docs/isolation.md](docs/isolation.md) — worktrees, `--repo`, registered projects, locks
 - [docs/extending.md](docs/extending.md) — adding a provider via entry points, sinks, stores, embedding
 - [docs/examples.md](docs/examples.md) — the example projects and what each one shows
@@ -202,7 +204,8 @@ prompts, the packaged Claude Code skill, and the `examples/` gallery.
 
 Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
 `plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `lock`, `workflows`,
-`agents`, `providers`, `plugins`, `projects`, `worktrees`, `schema`, `skill`, `completion`,
+`agents`, `providers`, `plugins`, `projects`, `worktrees`, `trust`, `schema`, `skill`,
+`completion`,
 `version`.
 
 Not in this build: a PyPI release — the `rayspec` name on PyPI currently holds a placeholder, so

@@ -144,6 +144,36 @@ def stringify_text(value: Any) -> str:
     )
 
 
+def jsonable_for_tojson(value: Any) -> Any:
+    """``value`` as plain JSON data for ``| tojson`` — strict about undefined.
+
+    The context roots are not plain containers (``Namespace``, ``StepsNamespace``,
+    :class:`~rayspec.templating.scope.StepView`), so the stock serialiser refused the documented
+    ``{{ inputs | tojson }}`` with a raw ``TypeError: Object of type Namespace is not JSON
+    serializable`` — at run time, after ``rayspec validate`` had passed. Everything is converted
+    the way ``RAYSPEC_CONTEXT`` converts it (:func:`~rayspec.templating.scope.to_jsonable`), so
+    a script reads the same shape whichever of the two it was handed.
+
+    An undefined reached while walking is an ERROR, not ``null``: ``to_jsonable`` maps one to
+    ``null`` because a context FILE has to be writable whatever the run did, but a template that
+    names something that is not there must fail the way every other rendering path fails. (The
+    one place a null still appears is inside a step view, where ``StepView.to_json`` decides it
+    — ``ok`` on a skipped step — and that is the view's own answer, not a typo.)
+    """
+    if isinstance(value, Undefined):
+        value._fail_with_undefined_error()
+    if isinstance(value, Mapping):
+        return {str(k): jsonable_for_tojson(v) for k, v in value.items()}
+    if isinstance(value, list | tuple | set | frozenset):
+        return [jsonable_for_tojson(v) for v in value]
+    return to_jsonable(value)
+
+
+def _tojson_dumps(value: Any, **kwargs: Any) -> str:
+    """The environments' ``json.dumps_function`` policy — what ``| tojson`` serialises through."""
+    return json.dumps(jsonable_for_tojson(value), **kwargs)
+
+
 def _describe_callable(value: Any) -> str:
     name = getattr(value, "__name__", None)
     kind = "method" if hasattr(value, "__self__") else "function"
@@ -340,6 +370,9 @@ def _make_env(kind: TemplateKind) -> _RayspecEnvironment:
     env = _RayspecEnvironment(**kwargs)
     env.filters.update(FILTERS)
     env.tests.update(TESTS)
+    # ``| tojson`` goes through the same converter ``RAYSPEC_CONTEXT`` uses, so the context
+    # roots (``inputs``, ``steps``, ``run`` …) serialise instead of raising a bare TypeError.
+    env.policies["json.dumps_function"] = _tojson_dumps
     return env
 
 
@@ -669,5 +702,6 @@ __all__ = [
     "RenderedScript",
     "TemplateEngine",
     "TemplateKind",
+    "jsonable_for_tojson",
     "stringify_text",
 ]

@@ -11,7 +11,7 @@ an `approve:` message — is a load-time error.
 examples/notify_webhook/
 ├── .rayspec/workflows/notify_webhook.yaml   # the workflow (inputs.webhook_url is secret: true)
 ├── stubs.yaml                               # scripted answer for --dry-run
-├── checks.yaml                              # what scripts/check_examples.py asserts
+├── checks.yaml                              # the cases `rayspec test` runs here
 └── README.md
 ```
 

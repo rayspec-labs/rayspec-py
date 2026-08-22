@@ -7,6 +7,15 @@ engine, providers or the store.
 """
 
 from rayspec.workspace.errors import GitError, WorkdirLockedError, WorkspaceError
+from rayspec.workspace.guard import (
+    ChangedFile,
+    ChangeGuardReport,
+    ChangeSummary,
+    GuardViolation,
+    check_change_guard,
+    diff_since,
+    match_path,
+)
 from rayspec.workspace.lock import LockHolder, PathLock, lock_path, read_lock_holder
 from rayspec.workspace.prepare import (
     Isolation,
@@ -18,7 +27,6 @@ from rayspec.workspace.prepare import (
 from rayspec.workspace.project import (
     Project,
     discover_project,
-    find_project_root,
     normalize_remote_url,
     project_dir,
     project_from_root,
@@ -38,8 +46,12 @@ from rayspec.workspace.worktrees import (
 )
 
 __all__ = [
+    "ChangeGuardReport",
+    "ChangeSummary",
+    "ChangedFile",
     "CleanReport",
     "GitError",
+    "GuardViolation",
     "Isolation",
     "LockHolder",
     "PathLock",
@@ -50,14 +62,16 @@ __all__ = [
     "WorkspaceError",
     "Worktree",
     "WorktreeInfo",
+    "check_change_guard",
     "clean_worktrees",
     "create_worktree",
+    "diff_since",
     "discover_project",
     "ensure_bare_source",
-    "find_project_root",
     "is_git_url",
     "list_worktrees",
     "lock_path",
+    "match_path",
     "normalize_remote_url",
     "parse_age",
     "prepare_workspace",

@@ -9,6 +9,7 @@ produce, and a README (what it shows, how to run it for real, expected output).
 |---|---|
 | [`hello_review`](hello_review/) | single `prompt:`, string + enum inputs, `outputs:`, tier model, `validate`/`plan`, `--dry-run --stubs` |
 | [`fix_issue`](fix_issue/) | shell → structured output → `when:` + `stop:` → `loop:` self-heal (`until`/`has_signal`, `iteration.prev`, `session:`, `allow_failure`, `on_exhausted`) → `approve:` → PR step; worktree default |
+| [`review_sweep`](review_sweep/) | `defaults.on_step_failure: continue` (independent branches finish when one fails), declared `artifacts:`, `join: always` |
 | [`triage_fanout`](triage_fanout/) | `each:` fan-out (`max_parallel`, `on_failure: continue`, `items`), `join: any`/`always`, per-item structured output, `retry:` on a prompt, `python:` with `deps` + `env:` |
 | [`pr_review`](pr_review/) (`review_block` + `pr_review`) | `include:` with `with:`/`outputs:`, named agents in `.rayspec/agents/`, `instructions_file`, `tools` policy, `access: read-only`, Claude **and** Codex agents, `provider_options`, pricing (`~$`), `@alias` |
 | [`unsupported_demo`](unsupported_demo/) | the capability error (`max_turns`/`tools` on a Codex agent), `--allow-unsupported` and `defaults.on_unsupported: warn` (`unsupported_warn`) |
@@ -85,6 +86,7 @@ named example must back at least one token of its row (comment-only YAML lines d
 | `retry:` | `release_check`, `triage_fanout`, `dogfood` | `{attempts, delay, on_error}`; `classify` retries a stubbed transient `429` |
 | `always_run:` | `release_check`, `dogfood` | `cleanup` |
 | `allow_failure:` | `fix_issue`, `release_check`, `dogfood` | `check`, `last_tag`, `gate` |
+| `artifacts:` | `review_sweep` | the three report steps; a promise checked on a real run, then copied into the run dir with a sha256 |
 | `env:` (shell / python / prompt) | `release_check`, `triage_fanout` | `tests` (shell), `summarize` (python), `notes` (prompt) |
 | `output_schema:` (prompt, shell) | `fix_issue`, `release_check`, `triage_fanout` | `assess`, `meta`, `classify` |
 | `interpreter:` | `release_check` | `last_tag` uses `sh` |
@@ -103,7 +105,7 @@ named example must back at least one token of its row (comment-only YAML lines d
 | `defaults.timeout` | `fix_issue`, `release_check`, `dogfood` | per-step default |
 | `defaults.max_parallel` | `fix_issue`, `triage_fanout` | run-wide leaf cap |
 | `defaults.on_unsupported` | `unsupported_demo` | `unsupported_warn.yaml` (`warn`), checked without `--allow-unsupported` |
-| `defaults.on_step_failure` | `release_check` | `drain` (default) · `fail_fast` · `continue` (`--fail-fast` overrides, and may only tighten) |
+| `defaults.on_step_failure` | `release_check`, `review_sweep` | `drain` (default, `release_check`) · `continue` (`review_sweep`: the branches beside a failed one still finish, and the run still fails) · `fail_fast` (`--fail-fast` overrides, and may only tighten) |
 | `isolation: none` | `hello_review`, `release_check`, `pr_review` | run in place |
 | `isolation: worktree` (default) | `fix_issue`, `dogfood` | branch `rayspec/<wf>-<shortid>` |
 
@@ -170,7 +172,7 @@ named example must back at least one token of its row (comment-only YAML lines d
 | `tools.deny` | `fix_issue`, `pr_review`, `unsupported_demo` | `[web]` works on Codex too |
 | `thinking` | `pr_review`, `dogfood` | |
 | `mcp` | `pr_review` | GitHub MCP over stdio |
-| `provider_options` | `pr_review`, `dogfood` | `claude.setting_sources`, `codex.config` |
+| `provider_options` | `pr_review` | `claude.max_thinking_tokens`, `codex.config` |
 | `agent: {extends: …}` | `pr_review` | `judge` |
 | inline agent mapping | `triage_fanout` | `classify` |
 | named agents in `.rayspec/agents/` | `pr_review`, `dogfood` | |

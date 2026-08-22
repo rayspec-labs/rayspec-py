@@ -35,6 +35,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    json_line,
     resolve_output,
 )
 from rayspec.engine.paths import StepPath
@@ -383,10 +384,7 @@ class StreamRenderer:
 def _json_line(source: str, item: LogItem) -> str:
     if isinstance(item, RunEvent):
         return item.to_json()
-    return json.dumps(
-        {"type": "stream", "step_path": source, "record": json.loads(item.to_json())},
-        ensure_ascii=False,
-    )
+    return json_line({"type": "stream", "step_path": source, "record": json.loads(item.to_json())})
 
 
 def make_emitter(

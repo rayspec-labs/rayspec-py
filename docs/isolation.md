@@ -95,6 +95,7 @@ rayspec projects remove myapp                          # clones and worktrees ar
 
 stored in `~/.rayspec/config.yaml`:
 
+<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 projects:
   - { name: myapp, source: git@github.com:me/myapp.git, base: main }

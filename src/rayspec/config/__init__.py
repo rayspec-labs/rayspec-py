@@ -22,6 +22,7 @@ from rayspec.config.paths import rayspec_home
 from rayspec.config.settings import (
     ConfigError,
     ProjectEnvInfo,
+    config_layers,
     env_paths,
     load_config,
     load_env,
@@ -43,6 +44,7 @@ __all__ = [
     "RedactSpec",
     "SecretSourceSpec",
     "TierSpec",
+    "config_layers",
     "env_paths",
     "load_config",
     "load_env",

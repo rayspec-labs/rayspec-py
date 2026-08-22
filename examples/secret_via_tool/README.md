@@ -10,7 +10,7 @@ examples/secret_via_tool/
 ├── .rayspec/config.yaml                       # secrets: GITHUB_TOKEN ← env RAYSPEC_EXAMPLE_GITHUB_TOKEN
 ├── .rayspec/workflows/secret_via_tool.yaml    # the tool step + the agent step
 ├── stubs.yaml                                 # scripted answer for --dry-run
-├── checks.yaml                                # what scripts/check_examples.py asserts
+├── checks.yaml                                # the cases `rayspec test` runs here
 └── README.md
 ```
 
@@ -57,12 +57,12 @@ secrets:
 
 Because a prompt is *stored*. rayspec refuses it at load time: naming a `secret: true` input in
 a prompt body, an expression, `outputs:` or a prompt step's `env:` is a validation error, not a
-warning. See [docs/schema.md § Secret inputs](../../docs/schema.md#secret-inputs).
+warning. See [docs/schema.md § Secret inputs](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/schema.md#secret-inputs).
 
 And a `prompt:` step's `env:` is refused for secrets even though the schema allows `env:` there,
 because one of the two supported CLIs writes the child's environment to a `0644` file outside
 the run store — the verification and its evidence are in
-[docs/providers.md § Giving an agent a secret](../../docs/providers.md#giving-an-agent-a-secret-tools-not-prompts).
+[docs/providers.md § Giving an agent a secret](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md#giving-an-agent-a-secret-tools-not-prompts).
 
 ## The MCP variant
 

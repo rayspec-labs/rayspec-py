@@ -49,13 +49,19 @@ def _fenced_blocks(readme: Path) -> list[str]:
 
 
 def _step_lines(text: str) -> list[tuple[str, str, str]]:
-    """``(symbol, path, status)`` of every console step line in ``text`` (durations dropped)."""
+    """``(symbol, path, status)`` of every console step line in ``text``, sorted; durations dropped.
+
+    Sorted because an ``each:`` fans its items out concurrently and they finish in whatever order
+    the event loop wakes them, so the console prints them in a different order from one run to the
+    next — a README cannot pin that, and comparing it made this test fail under load while passing
+    on its own. What the block still promises is every step, once, with the status it ended in.
+    """
     out: list[tuple[str, str, str]] = []
     for raw in text.splitlines():
         m = _STEP_LINE_RE.match(raw.strip())
         if m and m.group("symbol") not in "●■":
             out.append((m.group("symbol"), m.group("path"), m.group("status")))
-    return out
+    return sorted(out, key=lambda line: line[1])
 
 
 def _expected_block(readme: Path, *, containing: str) -> str:
@@ -204,3 +210,191 @@ def test_dogfood_release_check_notes_range_uses_a_single_root_commit() -> None:
     text = twin.read_text(encoding="utf-8")
     assert "--max-parents=0 HEAD" in text
     assert "--max-parents=0 HEAD | tail -1" in text
+
+
+# --------------------------------------------------------------------------------------------
+# review_sweep: what `artifacts:` puts in front of the reader, and when
+# --------------------------------------------------------------------------------------------
+
+
+REVIEW_SWEEP = EXAMPLES_DIR / "review_sweep"
+
+
+def _run_id(inv: Any) -> str:
+    summary = check_examples._summary_from_json(inv.stdout)
+    assert summary is not None, inv.output
+    return str(summary["run_id"])
+
+
+def _shown(run_id: str, root: Path, home: Path) -> Any:
+    inv = _invoke(["show", run_id, "--json", "--root", str(root)], home)
+    assert inv.exit_code == 0, inv.output
+    return json.loads(inv.stdout)
+
+
+def test_review_sweep_dry_run_records_no_artifacts(home: Path) -> None:
+    """The README's credential-free walkthrough. A dry run executes no shell step, so no report
+    is written and there is no artifact to check, copy or record — `rayspec show` has nothing to
+    list, and a README sentence promising otherwise sends the reader looking for a table."""
+    inv = _invoke(
+        ["run", "review_sweep", "--dry-run", "--stubs", str(REVIEW_SWEEP / "stubs.yaml"),
+         "--root", str(REVIEW_SWEEP), "--json"],
+        home,
+    )  # fmt: skip
+    assert inv.exit_code == 1, inv.output  # one angle is scripted to fail
+    shown = _shown(_run_id(inv), REVIEW_SWEEP, home)
+    assert shown["artifacts"] == []
+    assert all(step["artifacts"] == [] for step in shown["steps"]), shown["steps"]
+    assert not (REVIEW_SWEEP / "reports").exists()  # nor did it write into the checkout
+
+
+@pytest.fixture
+def review_sweep_project(tmp_path: Path) -> Path:
+    """``examples/review_sweep`` as a project of its own, with the reviewer switched to the stub
+    provider: the shell steps, the artifact check and the copy into the run directory are the
+    real path, only the three angles' answers are scripted instead of bought."""
+    root = tmp_path / "review_sweep"
+    shutil.copytree(REVIEW_SWEEP, root)
+    workflow = root / ".rayspec" / "workflows" / "review_sweep.yaml"
+    text = workflow.read_text(encoding="utf-8").replace("provider: claude", "provider: stub")
+    workflow.write_text(text, encoding="utf-8")
+    return root
+
+
+def test_review_sweep_keeps_the_reports_of_a_run_that_really_ran(
+    review_sweep_project: Path, home: Path
+) -> None:
+    """The other half of the same sentence: this is where `rayspec show` does list them, with
+    their size and sha256, because a real run wrote three files and the store copied them."""
+    inv = _invoke(
+        ["run", "review_sweep", "-i", "target=stubs.yaml",
+         "--stubs", str(review_sweep_project / "stubs_clean.yaml"),
+         "--root", str(review_sweep_project), "--json"],
+        home,
+    )  # fmt: skip
+    assert inv.exit_code == 0, inv.output
+    shown = _shown(_run_id(inv), review_sweep_project, home)
+    assert [a["path"] for a in shown["artifacts"]] == [
+        "reports/api.md",
+        "reports/docs.md",
+        "reports/tests.md",
+    ]
+    for artifact in shown["artifacts"]:
+        assert artifact["size"] > 0 and len(artifact["sha256"]) == 64
+        assert (Path(shown["run_dir"]) / artifact["ref"]).is_file()
+
+
+def _sections(readme: Path) -> dict[str, str]:
+    """The README's `## ` sections by heading."""
+    out: dict[str, str] = {}
+    heading = ""
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            heading = line[3:].strip()
+            out[heading] = ""
+        elif heading:
+            out[heading] += line + "\n"
+    return out
+
+
+def test_review_sweep_readme_puts_the_artifacts_claim_where_it_holds() -> None:
+    """`rayspec show` lists artifacts for a run that produced files, and only there."""
+    sections = _sections(REVIEW_SWEEP / "README.md")
+    dry, real = sections["Try it without credentials"], sections["Run it for real"]
+    assert "under `artifacts:`" in real and "sha256" in real
+    assert "sha256" not in dry
+    assert "no `artifacts:` section" in dry  # the dry-run half states the absence, not a table
+
+
+# --------------------------------------------------------------------------------------------
+# an example is scaffolded into a project of its own: what it names, it must ship
+# --------------------------------------------------------------------------------------------
+
+
+def _example_names() -> list[str]:
+    from rayspec.cli.commands.init import example_names
+
+    return sorted(example_names())
+
+
+#: Any link into this repository's `docs/` from a file that lands in somebody else's project.
+_REPO_DOC_URL_RE = re.compile(r"https://github\.com/rayspec-labs/rayspec-py/\S*?docs/[^\s)\]]*")
+
+_TREE_ENTRY_RE = re.compile(r"^(?:[├└]──|\|--)\s*(?P<name>\S+)")
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _tree_blocks(readme: Path) -> list[tuple[str, list[str]]]:
+    """``(root line, entry names)`` for every ASCII tree diagram in ``readme``."""
+    found: list[tuple[str, list[str]]] = []
+    for body in _fenced_blocks(readme):
+        lines = [line for line in body.splitlines() if line.strip()]
+        if len(lines) < 2 or not lines[0].rstrip().endswith("/"):
+            continue
+        entries = [m.group("name") for line in lines[1:] if (m := _TREE_ENTRY_RE.match(line))]
+        if entries:
+            found.append((lines[0].strip(), entries))
+    return found
+
+
+def _expand(entry: str) -> list[str]:
+    """``workflows/{a,b}.yaml`` -> the two paths it stands for."""
+    match = _BRACE_RE.search(entry)
+    if match is None:
+        return [entry]
+    return [
+        expanded
+        for option in match.group(1).split(",")
+        for expanded in _expand(entry[: match.start()] + option.strip() + entry[match.end() :])
+    ]
+
+
+@pytest.mark.parametrize("name", _example_names())
+def test_every_file_a_readme_tree_lists_is_actually_scaffolded(name: str) -> None:
+    """`rayspec init --from <name>` writes a project; its README describes THAT project. A tree
+    diagram naming a file the scaffold does not write sends a wheel user after nothing."""
+    from rayspec.cli.commands.init import example_files
+
+    shipped = {rel for rel, _ in example_files(name)}
+    readme = EXAMPLES_DIR / name / "README.md"
+    for root_line, entries in _tree_blocks(readme):
+        prefix = root_line.removeprefix(f"examples/{name}/")
+        for entry in entries:
+            for path in _expand(entry):
+                assert f"{prefix}{path}" in shipped, (
+                    f"{readme}: the tree lists {prefix}{path}, which `init --from {name}` "
+                    f"does not write (it ships {sorted(shipped)})"
+                )
+
+
+def test_the_readme_trees_are_actually_being_checked() -> None:
+    """Not every example draws one; the ones that do must not all have been parsed away."""
+    with_trees = [n for n in _example_names() if _tree_blocks(EXAMPLES_DIR / n / "README.md")]
+    assert len(with_trees) >= 4, with_trees
+
+
+@pytest.mark.parametrize("name", _example_names())
+def test_no_scaffolded_file_points_outside_the_project_it_scaffolds(name: str) -> None:
+    """A scaffolded file may cite a doc only by URL — `docs/cli.md` explains why for hints, and a
+    file that lands in somebody's project is in exactly the same position: there is no checkout
+    above it to resolve `../../docs/schema.md` or `examples/README.md` against."""
+    from rayspec.cli._docs import DOCS_BASE
+    from rayspec.cli.commands.init import example_files
+
+    for rel, node in example_files(name):
+        if not rel.endswith((".md", ".yaml", ".yml")):
+            continue
+        text = node.read_text(encoding="utf-8")
+        assert "](../" not in text, f"{name}/{rel} links outside the scaffolded project"
+        assert "examples/README.md" not in text, (
+            f"{name}/{rel} cites examples/README.md, which `init --from` never writes"
+        )
+        assert "scripts/" not in text, (
+            f"{name}/{rel} names something under scripts/, which only exists in a checkout of "
+            f"the repository — a scaffolded project has `rayspec test` and nothing else"
+        )
+        for url in _REPO_DOC_URL_RE.findall(text):
+            assert url.startswith(DOCS_BASE), (
+                f"{name}/{rel} cites {url}, which does not start with `_docs.DOCS_BASE` "
+                f"({DOCS_BASE}) — that constant is where the location of the docs is decided"
+            )

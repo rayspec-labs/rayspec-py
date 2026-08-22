@@ -104,6 +104,65 @@ All notable changes to rayspec are documented here. The format follows
   section linking the new pages.
 - **`docs/extending.md`** rewritten around the extension points, with a complete copy-pasteable
   example package that the test suite installs and runs.
+- **`.rayspec/policy.yaml` — an operator's guardrails as a file.** Project and user layers plus
+  `$RAYSPEC_POLICY`, combining most-restrictive-wins: allow-lists intersect, deny-lists unite, caps
+  take the minimum, so a layer can only ever tighten a run. `providers.allow`, `models.deny`,
+  `access.max`, `tools.deny`, `mcp.allow_servers`, `workspace.*`, `trust.*`, and the operational
+  ceilings `budget:` / `max_consecutive_failures:` / `max_concurrent_runs:`. Violations are
+  **load-time** errors naming the workflow field and the policy file and line that denies it — not a
+  surprise halfway through a paid run — and the same check runs for `validate`, `plan`, `run`,
+  `test`, `resume`, `approve` and `reject`. A policy file that cannot be read is never treated as an
+  empty policy: a dangling symlink, a loop, a directory or an unreadable parent is an error naming
+  the path. `validate`, `plan` and `run` print which layers are in force, or the paths they searched.
+- **`provider_options` is an allow-list while any control is in force.** It is a raw pass-through
+  applied over the options rayspec computed, so a workflow could otherwise put back the tools, the
+  access level, the model or the MCP server a control just removed — and naming the dangerous keys
+  cannot close that, because Claude's `extra_args` re-emits any CLI flag *after* the computed ones,
+  where the last wins. Now every key of an agent's provider block must be one rayspec has written
+  down the effect of; anything else is a load-time error naming the key, the control, the file and
+  line that imposed it, and the keys that are permitted. Five permitted keys are checked by **value**
+  rather than admitted outright. With no control in force the block is untouched.
+- **"Any control" means any — from any source, in any schema.** The agent's own security-shaped
+  fields; the workflow's `isolation:` and `defaults:` caps and a `secret: true` input; a step's
+  `timeout:` over everything nested under it; every policy key; the `.rayspec/rayspec.lock` model
+  lockfile; the machine owner's `providers:` block; and `run --worktree`. A restrictive *default* is
+  a restriction: `isolation: worktree` is the default, so a workflow that does not say
+  `isolation: none` is governed.
+- **Approval classes.** `approve: {class: …}`, `--approve-class NAME`, and policy rules per class.
+  `allow_yes: false` means the gate is **never** approved automatically — not by `--yes`,
+  `--dry-run`, `--approve-class`, `auto_if`, or any combination; `require_tty: true` is stricter
+  still. Rejecting a gate is never constrained by its class.
+- `approve: {auto_if: <expression>}` — approves a gate when a condition holds. Checked at load time
+  like `when:`, and it can only ever add an approval the gate's class already permits.
+- **`rayspec plan --risk`** — a static report of what a run would be allowed to do: `access: full`
+  agents, MCP servers started as a command or reached over the network, bodies that push, merge,
+  force, delete, publish, escalate or install, steps working outside the workspace,
+  `isolation: none`, and gates anything could waive. Worst first. It executes nothing.
+- **`rayspec audit <run> [--commands]`** — a read-only ledger over one run: the actor, the steps,
+  every command an agent ran, every tool it called, every file it changed, and every approval with
+  the identity and the door behind it, in time order. `RAYSPEC_AUDIT_LOG=1` also writes it to
+  `audit.jsonl` through the run store, so the redactor applies.
+- **`RunRecord.actor` and `Decision.actor`** — who launched a run and who answered a gate, from
+  `RAYSPEC_ACTOR` or the OS user, plus the CI system and any provider account the environment names.
+  Every source is one the audited run **cannot write**: not git configuration in any scope, and not
+  a `RAYSPEC_ACTOR` loaded from `$RAYSPEC_HOME/.env` or a checkout's `.rayspec/.env`. A `.env`-supplied
+  actor is kept as `declared_id` — refused as the identity, recorded as a claim, so the refusal is
+  visible rather than silent. An identity, never a credential.
+- **`rayspec lock`** → `.rayspec/rayspec.lock`, pinning the literal model id and effort every agent
+  resolves to; `--locked` refuses drift and is on by default under `CI`.
+- **Cross-run spending envelopes and a failure breaker** (`policy.budget`,
+  `policy.max_consecutive_failures`). Reaching a ceiling **pauses** the run (exit 3) rather than
+  failing it, so the work is kept and `rayspec resume` continues once the ceiling allows. State is a
+  flock-guarded file per user, per machine — nothing shared.
+- **Host-level run slots** — `policy.max_concurrent_runs` per provider as `flock` files, with
+  `--wait-slot`. A slot held by a process that died is free immediately.
+- **Denied tool calls are recorded and can fail the step** — `StepRecord.denials`,
+  `steps.<id>.denials`, and the agent field `on_denial: warn|fail`.
+- **Trusted-workflow allowlist by resolved hash**, a **worktree change guard** (protected paths and
+  a diff budget checked after every prompt step), an **agent command policy**, and **`network: off`**
+  as a neutral agent field.
+- **Push the run branch on pause or finish** — opt-in, and failing soft: a push failure is a warning
+  on a finished run, never a change to its status.
 
 ### Changed
 - **Upgrade note — `defaults.on_step_failure: fail_fast` now takes effect.** In 1.0.0 the field was
@@ -125,6 +184,15 @@ All notable changes to rayspec are documented here. The format follows
 - Docs: `README` Status reflects the released 1.0.0 and lists the `skill` command group; the
   packaged `SKILL.md` drops its pre-tag "v1.0.0 final" hedges; `docs/schema.md` documents
   `on_step_failure` as the working field it now is.
+- **`resume`, `approve` and `reject` read the project the RUN belongs to** for everything
+  project-scoped — its workflow, the models its agents resolve to, its lockfile, `secrets:`,
+  `providers:`, `pricing:`, `extensions:` and the policy — instead of the project the command was
+  typed in.
+- **Nesting can only tighten `defaults.on_step_failure`** (`continue` < `drain` < `fail_fast`). An
+  included block cannot relax a policy the including workflow stated. `--fail-fast` still tightens
+  every scope at once and may only ever tighten.
+- The run-level circuit breaker **names every cap that is over**, not just the first: a run that blew
+  its cost cap and then ran out of time reported only the money, so the wrong knob got raised.
 
 ### Fixed
 - Unresolved merge-conflict markers were committed in the CLI reference and copied by the skill
@@ -157,6 +225,27 @@ All notable changes to rayspec are documented here. The format follows
 - **A human veto always drains.** Rejecting a gate with `on_reject: fail` now halts new work even
   under `on_step_failure: continue`. `continue` is for triaging machine failures, not for
   overriding an operator's "no".
+- **`join: always` now runs when a sibling list is torn down.** Under `--fail-fast` and after a
+  `stop:`, cancelling the task group blanket-skipped every pending step — the cleanup step included —
+  so a cancelled run never reached its cleanup. It only ever misbehaved with two or more steps in
+  flight, which is why no example-based test caught it.
+- **A cleanup step that pauses no longer wedges the run.** A `join: always` gate reached while a
+  `stop:` was tearing the list down ended the run `failed — engine error`, and every resume hit the
+  same crash.
+- **`defaults.on_step_failure` in an `include:`d workflow is no longer ignored.** The policy is
+  lexically scoped: an included workflow that states one governs its own body; one that says nothing
+  inherits the including run's.
+- **A `secret: true` value that is not a plain string no longer breaks the run it was protecting.**
+  `run.json` was redacted as serialised *text*, so a bare JSON token rewrote `"budget": 4242` into an
+  unquoted marker and the checkpoint stopped parsing. Records, events and stream records are redacted
+  on their parsed values now.
+- **The streaming buffer no longer releases half a value**, and **a secret in a key position is
+  redacted**.
+- **Redaction no longer depends on the caller wiring it.** A run installs a redactor covering its own
+  secret inputs before it writes a byte, so an embedded run cannot persist a secret by omission; a
+  store that will not accept one makes the workflow refuse to start rather than write anything.
+- **`rayspec explain` names the cap that actually fired** for a step skipped by the wall-clock cap,
+  instead of reporting the budget.
 
 ## [1.0.0] — 2026-08-20
 
