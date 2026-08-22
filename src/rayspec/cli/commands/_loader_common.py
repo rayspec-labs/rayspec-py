@@ -675,10 +675,16 @@ def filesystem_failure(exc: OSError) -> tuple[str, str | None]:
 def error_boundary() -> Iterator[None]:
     """Turn what escapes a command into the documented refusal: ``error: …`` on stderr, exit 2.
 
-    Two kinds of failure end a command without a result and neither may reach a user as a
+    Three kinds of failure end a command without a result and none may reach a user as a
     traceback: a :class:`~rayspec.errors.RayspecError` — what rayspec raises about a workflow, a
-    run store, a workspace — and an :class:`OSError` from the filesystem underneath it. Commands
+    run store, a workspace — an :class:`OSError` from the filesystem underneath it, and a
+    :class:`UnicodeDecodeError` from a file that is not the text it was expected to be. Commands
     handle the cases they expect; this is the boundary for the ones they do not.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so it escaped a boundary that
+    named only the other two — and a workflow file holding a stray byte is an ordinary thing to
+    find in a checkout, not a bug in rayspec. It is caught by name rather than by widening to
+    ``Exception``, which would swallow the failures that ARE bugs and should still be seen.
 
     It is deliberately not a per-command decision. ``rayspec run`` mapped a store error to exit 2
     on the path that takes a lock and left the ``--dry-run`` path — the one ``rayspec init``
@@ -694,6 +700,14 @@ def error_boundary() -> Iterator[None]:
             raise
         message, hint = filesystem_failure(exc)
         fail(message, hint=hint)
+    except UnicodeDecodeError as exc:
+        # the offending bytes are deliberately not echoed: they are not text, and printing them
+        # is how a terminal ends up interpreting a stray escape sequence out of somebody's file
+        fail(
+            f"a file rayspec read is not valid UTF-8 text: {exc.reason} at byte {exc.start}",
+            hint="workflows, agents, prompts, stub scripts and config files are all UTF-8 text — "
+            "check the file the command was reading",
+        )
 
 
 class ErrorBoundaryGroup(typer.core.TyperGroup):

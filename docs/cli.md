@@ -6,9 +6,9 @@ directory containing `.rayspec/`; default: walk up from the cwd to the first `.r
 `.git`, else the cwd). **A `--root` that is not an existing directory is a usage error — exit 2,
 `error: --root '<path>' is not a directory` — on every command that takes the option**, the ones
 that *write* a root (`init`, `skill install`) included: a mistyped path is never created and
-never scaffolded into. The one exception is `rayspec completion --values …`, whose `--root` feeds
-the candidate list a shell asks for and which is silent by contract (an error line there would be
-offered as a completion candidate). `RAYSPEC_HOME`
+never scaffolded into. The one exception is `rayspec completion`, whose `--root`
+feeds the candidate list a shell asks for and which is silent by contract (an error line there
+would be offered as a completion candidate) — the whole command, not only `--values`. `RAYSPEC_HOME`
 (default `~/.rayspec`) holds user-level workflows/agents, `config.yaml`, `.env` and every
 project's runs and worktrees. The commands that read a project (`run`, `validate`, `plan`,
 `workflows`, `agents`, `doctor`) and the run-management commands (`runs`, `costs`, `show`, `logs`,

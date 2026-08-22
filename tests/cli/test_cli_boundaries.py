@@ -239,3 +239,26 @@ def test_a_root_that_is_a_file_is_a_usage_error(cli: CliRunner, home: Path, tmp_
         assert result.exit_code == 2, result.output
         assert "is not a directory" in result.output
     assert a_file.read_text(encoding="utf-8") == ""
+
+
+def test_a_file_that_is_not_utf8_is_a_usage_error_not_a_traceback(
+    cli: CliRunner, home: Path, tmp_path: Path
+) -> None:
+    """A stray byte in a checked-in file must read as "your file is wrong", not as a crash.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, so it escaped a boundary that named ``RayspecError``
+    and ``OSError`` — and `docs/cli.md` promises in bold that no rayspec command ends in a
+    traceback. A workflow with a stray byte is an ordinary thing to find in a repository; a
+    traceback tells the reader rayspec is broken rather than their file.
+    """
+    project = tmp_path / "proj"
+    (project / ".rayspec" / "workflows").mkdir(parents=True)
+    (project / ".rayspec" / "workflows" / "binary.yaml").write_bytes(b"\xff\xfe\x00\x01")
+
+    result = cli.invoke(app, ["validate", "--root", str(project)])
+
+    assert result.exit_code == 2, result.output
+    assert "not valid UTF-8" in result.output
+    assert "Traceback" not in result.output
+    # the bytes themselves are never echoed back into a terminal
+    assert "\\xff" not in result.output and "\xff" not in result.output
