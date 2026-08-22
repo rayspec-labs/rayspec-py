@@ -28,6 +28,7 @@ rayspec ships the check as a reusable workflow. It installs the published packag
 one dry run and reports the result — as a pull-request comment that is edited in place on every
 push, and always into the run's job summary.
 
+<!-- rayspec:skip a GitHub Actions workflow, not a rayspec one -->
 ```yaml
 # .github/workflows/rayspec.yml
 name: rayspec

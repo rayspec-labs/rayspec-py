@@ -85,6 +85,7 @@ nav:
   - Use:
       - CLI reference: cli.md
       - Runs and resume: runs-and-resume.md
+      - Policy: policy.md
       - Isolation: isolation.md
       - Testing workflows: testing.md
       - Continuous integration: ci.md
