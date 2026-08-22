@@ -59,7 +59,7 @@ runs/<run-id>/
              "provider_accounts": {}, "declared_id": null},        // RAYSPEC_ACTOR, else the OS user. A
                                                                    // RAYSPEC_ACTOR from a .env is refused
                                                                    // and kept as declared_id (see below)
-  "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
+  "resume_count": 0, "pid": null, "pid_started_at": null, "host": "<host>",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
                 "branch": "rayspec/review-ikd7", "base_branch": "main", "base_sha": "…", "head_sha": "…"},   // last record write (pause/end/resume)
