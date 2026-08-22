@@ -18,7 +18,9 @@ persists anything and never raises into the engine.
   The pure renderer (:meth:`ConsoleSink.render`, :meth:`ConsoleSink.render_summary`) is
   deterministic given the model + an injectable clock, so tests need no timers.
 
-Formatting helpers (``fmt_duration``/``fmt_tokens``/``fmt_cost``) are shared.
+The formatting helpers (``fmt_duration``/``fmt_tokens``/``fmt_cost``) are the shared ones:
+:mod:`rayspec.fmt` renders the duration, :mod:`rayspec.providers.pricing` the tokens and the
+cost. This module names them, it does not define how they look.
 """
 
 from __future__ import annotations
@@ -44,7 +46,9 @@ from rich.tree import Tree
 from rayspec.engine.paths import StepPath
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.events.sinks._log import log
-from rayspec.providers.pricing import combine_cost_sources, cost_marker
+from rayspec.fmt import format_duration
+from rayspec.providers.base import Usage
+from rayspec.providers.pricing import combine_cost_sources, format_cost, format_tokens
 from rayspec.textsafe import safe_text
 
 _STATUS_STYLE: dict[str, tuple[str, str]] = {
@@ -62,35 +66,20 @@ _STATUS_STYLE: dict[str, tuple[str, str]] = {
 _DEFAULT_STYLE = ("·", "")
 
 
-def fmt_duration(ms: float) -> str:
-    """``850ms`` · ``1.2s`` · ``2m05s`` · ``1h02m``."""
-    if ms < 1000:
-        return f"{int(ms)}ms"
-    seconds = ms / 1000
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, sec = divmod(round(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m{sec:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
+#: ``850ms`` · ``1.2s`` · ``2m05s`` · ``1h02m`` (:mod:`rayspec.fmt`).
+fmt_duration = format_duration
 
-
-def fmt_tokens(total: int) -> str:
-    """``999 tok`` · ``1.2k tok`` · ``1.3M tok``."""
-    if total < 1000:
-        return f"{total} tok"
-    if total < 1_000_000:
-        return f"{total / 1000:.1f}k tok"
-    return f"{total / 1_000_000:.1f}M tok"
+#: ``999 tok`` · ``1.2k tok`` · ``1.3M tok`` (``providers.pricing.format_tokens``).
+fmt_tokens = format_tokens
 
 
 def fmt_cost(usd: float, *, approx: bool = False, source: str | None = None) -> str:
     """``$0.12`` — two decimals; ``~$0.12`` when ``approx`` or ``source == "table"`` (a price-table
     estimate); ``≥$0.12`` when ``source == "partial"`` (some steps have tokens but no price). The
-    marker comes from :func:`rayspec.providers.pricing.cost_marker` (the one formatting rule)."""
-    marker = "~" if approx and source != "partial" else cost_marker(source)
-    return f"{marker}${usd:.2f}"
+    rendering is :func:`rayspec.providers.pricing.format_cost` (the one formatting rule);
+    ``approx`` is this sink's way of saying "table" for a total it estimated itself."""
+    estimated = approx and source != "partial"
+    return format_cost(usd, "table" if estimated else (source or "none"), Usage())
 
 
 def usage_total(usage: Any) -> int | None:

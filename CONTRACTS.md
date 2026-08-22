@@ -29,6 +29,9 @@ src/rayspec/
   cli/commands/{init,doctor}.py + cli/templates/<kind>/**
   cli/commands/{new,completion}.py + cli/templates/new/** + the packaged examples corpus
   cli/_docs.py  DOCS_BASE + docs_url(rel) — the only way a hint cites a doc
+  fmt.py        format_duration / humanize_duration — the ONE rendering of a duration, for the
+               listings, the console tree, the approval panel and the cap reasons alike (a leaf
+               module: no rayspec imports). Tokens and costs render through providers/pricing.py
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
   loader/secrets.py  where a `secret: true` input may appear (the placement rules)
@@ -701,9 +704,11 @@ from rayspec.events import (  # models + protocol + sinks (no JsonlSink: the sto
     #                  emit_stream() for the Live tree
 )
 from rayspec.events.sinks.console import fmt_duration, fmt_tokens, fmt_cost, usage_total, error_text
+# fmt_duration IS rayspec.fmt.format_duration and fmt_tokens IS providers.pricing.format_tokens
+# (names for this sink, not second implementations).
 # fmt_cost(usd, *, approx=False, source=None) -> "$0.12" | "~$0.12" (approx / source "table":
-# price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price); the
-# marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
+# price-table estimate) | "≥$0.12" (source "partial": some steps have tokens but no price);
+# rendered by providers.pricing.format_cost, so the marker is providers.pricing.cost_marker. The quiet sink reads the OPTIONAL step.finished /
 # run.finished data key cost_source; when run.finished carries none the run line derives it from
 # the step.finished events seen (QuietConsoleSink.derived_cost_source()).
 # format_stream_warning(step, text) -> "⚠ <step>: <warning>": printed by QuietConsoleSink.
@@ -1064,6 +1069,9 @@ from rayspec.engine.approval import (
     #   line via format_totals ("steps: 3 · tokens: 12.3k tok · cost: —"; the executor passes
     #   totals {steps, tokens, cost_usd, cost_source}) — never a raw None or raw seconds
     clean_answer, enable_readline, humanize_duration, fmt_cost, format_totals,
+    #   humanize_duration is re-exported from rayspec.fmt (which also owns the compact
+    #   format_duration the listings and the console tree print) — one duration rendering per
+    #   shape, in one module, so a third shape is never added by accident
     git_summary, git_diff,  # (workdir) -> str, best effort, capped; used by the console prompt
 )
 from rayspec.engine.runtime import (
@@ -1238,7 +1246,7 @@ Semantics fixed here (tests in `tests/engine/`):
   `RunContext.elapsed_s()` is `utcnow() - RunRecord.started_at` (the ORIGINAL start — a resume
   entry keeps it, so the cap measures the run, not the attempt, waiting at an approval gate
   included); `context.time_reason(elapsed_s, defaults)` renders `time limit exceeded (elapsed
-  2h 4m > timeout_total 2h 0m)` (`engine.approval.humanize_duration` for both sides, strictly
+  2h 4m > timeout_total 2h 0m)` (`rayspec.fmt.humanize_duration` for both sides, strictly
   greater trips). `check_budget` evaluates the cost/token caps first and the clock second, so
   one reason wins and everything downstream (`ctx.budget_exceeded`, `BUDGET_SKIP_REASON`,
   the loop/each drain, `Runner._finalize` → `failed` + exit 1) is unchanged. The reason now names
@@ -1326,7 +1334,9 @@ treats every directory with a `runs/` child as a store and never descends into i
 `source.git/` or `locks/`; `find_run(ctx, ref)` → `(store, RunRecord)` resolving full ids and unique prefixes in the current
 project first, then every project under the home (`UnknownRunIdError` / `AmbiguousRunIdError`
 with candidates newest first; `lookup_run` prints them with exit 2); `fmt_duration/fmt_tokens/
-fmt_cost` (`providers.pricing.format_cost`: `$0.12`, `~$0.12` for table prices, `-` when no cost
+fmt_cost` (`fmt_duration` IS `rayspec.fmt.format_duration` and `fmt_tokens` IS
+`providers.pricing.format_tokens`; `fmt_cost` renders through `providers.pricing.format_cost`:
+`$0.12`, `~$0.12` for table prices, `-` when no cost
 is known — tokens are never shown in a cost slot; listings have a `tokens` column) / `fmt_when` (relative within 30 days) / `run_duration_ms` /
 `steps_progress(run, *, planned=None)` (done = succeeded, tolerated or skipped; total =
 recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_step_paths(ctx, run, *, cache=None)`
@@ -2714,6 +2724,8 @@ recorded — never the tool input.
   stamps now. `StreamRecord.kind` for shell steps: `stdout`, `stderr`, `exit`. A `usage`
   AgentEvent carries `data["usage"]` (this report's delta) and `data["turn_total"]` (cumulative
   usage of the attempt so far) as `{input, cached_input, cache_write, output, reasoning}` dicts
+  (`providers.base.usage_dict(usage)`, additive — the ONE spelling of that mapping, used by the
+  adapters, the scheduler's event data and the CLI's `--json` rows alike)
   — the engine records `turn_total` for an attempt cut off before its result.
 - **RunEvent.data** keys: `step.started {kind, attempt}`, `step.retry {attempt, delay_s, error}`,
   `step.finished {status, duration_ms, usage, cost_usd, error, skip_reason, tolerated}`,

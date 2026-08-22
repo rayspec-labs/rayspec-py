@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-from collections.abc import Mapping
 from typing import Any
 
 import anyio
@@ -53,7 +52,7 @@ from rayspec.engine.executors.artifacts import collect_artifacts
 from rayspec.engine.graph import FAILED_LIKE, StepGraph, join_decision
 from rayspec.engine.retry import TIMEOUT_ERROR_TYPE, delay_for, policy_for, should_retry
 from rayspec.events.model import EventType
-from rayspec.providers.base import Usage
+from rayspec.providers.base import Usage, usage_dict
 from rayspec.schema import ApproveStep, StepModel, StepStatus
 from rayspec.store.model import ErrorInfo, StepRecord
 from rayspec.templating import TemplateRenderError
@@ -605,7 +604,7 @@ async def finish(outcome: StepOutcome, step: StepModel, scope: ExecScope, ctx: R
     data: dict[str, Any] = {
         "status": str(rec.status.value),
         "duration_ms": rec.duration_ms,
-        "usage": _usage_dict(rec.usage),
+        "usage": usage_dict(rec.usage),
         "cost_usd": rec.cost_usd,
         "error": rec.error.model_dump() if rec.error is not None else None,
         "skip_reason": rec.skip_reason,
@@ -624,16 +623,6 @@ async def _finish_quietly(
 ) -> None:
     with contextlib.suppress(Exception):  # the run is unwinding; nothing better to do
         await finish(outcome, step, scope, ctx)
-
-
-def _usage_dict(usage: Any) -> Mapping[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 __all__ = [

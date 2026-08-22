@@ -34,13 +34,14 @@ from typing import Any
 import anyio
 from anyio import to_thread
 
-from rayspec.engine.approval import ApprovalPrompt, humanize_duration
+from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType, RunEvent, StreamRecord
+from rayspec.fmt import humanize_duration
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
 from rayspec.providers.pricing import combine_cost_sources

@@ -31,8 +31,9 @@ from rayspec.cli.commands._loader_common import Context, fail, make_context
 from rayspec.config import Config
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
+from rayspec.fmt import format_duration
 from rayspec.loader import ResolvedWorkflow
-from rayspec.providers.base import Usage
+from rayspec.providers.base import Usage, usage_dict
 from rayspec.providers.pricing import format_cost, format_tokens
 from rayspec.schema import RunStatus, StepStatus
 from rayspec.store.file import (
@@ -183,25 +184,11 @@ def lookup_run(ctx: RunsContext, ref: str) -> tuple[FileRunStore, RunRecord]:
 # --------------------------------------------------------------------------------------------------
 
 
-def fmt_duration(ms: float | None) -> str:
-    """``850ms`` · ``12.3s`` · ``1m35s`` · ``1h02m``; ``-`` when unknown."""
-    if ms is None:
-        return "-"
-    if ms < 1000:
-        return f"{int(ms)}ms"
-    seconds = ms / 1000
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, sec = divmod(round(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m{sec:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h{minutes:02d}m"
+#: ``850ms`` · ``12.3s`` · ``1m35s`` · ``1h02m``; ``-`` when unknown (:mod:`rayspec.fmt`).
+fmt_duration = format_duration
 
-
-def fmt_tokens(total: int) -> str:
-    """``850 tok`` / ``12.3k tok`` / ``1.5M tok`` (see ``providers.pricing.format_tokens``)."""
-    return format_tokens(total)
+#: ``850 tok`` / ``12.3k tok`` / ``1.5M tok`` (``providers.pricing.format_tokens``).
+fmt_tokens = format_tokens
 
 
 def fmt_cost(cost_usd: float | None, cost_source: str, usage: Usage) -> str:
@@ -361,17 +348,6 @@ def status_style(status: str) -> str:
         "skipped": "dim",
         "pending": "dim",
     }.get(status, "red")
-
-
-def usage_dict(usage: Usage) -> dict[str, int]:
-    """The ``--json`` shape of a :class:`Usage`."""
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
 
 
 def run_row(
