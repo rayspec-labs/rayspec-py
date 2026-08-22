@@ -680,6 +680,58 @@ def test_a_failed_scaffold_leaves_an_existing_project_alone(tmp_path: Path, home
     assert (target / ".rayspec" / "workflows").is_dir()
 
 
+def test_force_keeps_the_permissions_of_the_file_it_overwrites(target: Path, home: Path) -> None:
+    """A scaffold replaces the CONTENT of a file the user hardened, not its mode. Writing
+    through a temporary file makes the new inode the file, so its mode has to be carried over —
+    a `config.yaml` the user made private must not come back world-readable."""
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    config.chmod(0o600)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--force", "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert "overwrote" in res.output
+
+
+def test_force_refuses_to_write_through_a_symlink(target: Path, home: Path) -> None:
+    """A scaffolded file names a path inside the project. Replacing a symlinked target would
+    swap it for a regular file (`os.replace` replaces the LINK), and writing through it would
+    change a file outside the project — so it is refused before anything is written, the way a
+    directory in the way is."""
+    shared = target.parent / "shared.yaml"
+    shared.write_text("shared: true\n", encoding="utf-8")
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    before = config.read_text(encoding="utf-8")
+    config.unlink()
+    config.symlink_to(shared)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--force", "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    assert "config.yaml" in res.output and "symbolic link" in res.output
+    assert config.is_symlink()  # untouched, and so is what it points at
+    assert shared.read_text(encoding="utf-8") == "shared: true\n"
+    # whole or not at all: the rest of the scaffold was not written either
+    assert (target / ".rayspec" / "workflows" / "example.yaml").read_text(encoding="utf-8")
+    assert before  # the original content is still what the link's target does not hold
+    with pytest.raises(OSError, match="symbolic link"):
+        scaffold(target, kind="code", force=True)
+
+
+def test_a_symlinked_file_is_still_skipped_without_force(target: Path, home: Path) -> None:
+    """Without `--force` nothing is written over it, so there is nothing to refuse."""
+    shared = target.parent / "shared.yaml"
+    shared.write_text("shared: true\n", encoding="utf-8")
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    config.unlink()
+    config.symlink_to(shared)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert config.is_symlink()
+    assert shared.read_text(encoding="utf-8") == "shared: true\n"
+
+
 def test_a_failed_scaffold_leaves_no_temporary_files(tmp_path: Path, home: Path) -> None:
     target = tmp_path / "proj"
     target.mkdir()

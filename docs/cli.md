@@ -1008,14 +1008,19 @@ out), then print the next steps (`doctor`, `validate`, `plan example`, `run exam
 the skill loads automatically"). `--root DIR` is the directory that receives `.rayspec/` and
 `.claude/skills/rayspec/` (default: the cwd — `init` does **not** walk up to an enclosing
 project). Files that already exist — scaffold and skill alike — are kept and listed as
-`exists … (skipped; use --force to overwrite)`; `--force` overwrites them. When every file
+`exists … (skipped; use --force to overwrite)`; `--force` overwrites them — keeping the mode of
+the file it replaces (a `config.yaml` you chmodded to `0600` stays `0600`) and refusing a target
+that is a *symbolic link*, which is an error like a directory in the way: a scaffold writes files
+inside the project it scaffolds, and replacing a link (or writing through it) would do neither.
+When every file
 already exists (nothing written) a `warning: nothing written …` line goes to stderr, but the
 exit code stays 0. The default `code` scaffold's `files` step runs
 `git ls-files`, so when the target is not inside a git checkout (no `.git` at or above it) `init`
 prints `warning: <dir> is not a git repository — … run \`git init\` here or use \`rayspec init
 --kind content\`` on stderr and still exits 0; `--kind content` needs no git and stays silent. Exit 2 (`error: cannot write the scaffold: …` on
 stderr, no traceback) for an unknown `--kind`, a `--root` that is not a directory, a *directory*
-where a template file goes (e.g. `.rayspec/config.yaml/`), or any other filesystem error
+where a template file goes (e.g. `.rayspec/config.yaml/`), a symlink where `--force` would
+write, or any other filesystem error
 (`error: cannot write the skill: … (the .rayspec/ scaffold was written; re-run with --no-skill
 to skip the skill)` for the skill files — the scaffold is complete at that point). Nothing is
 written outside `.rayspec/` and `.claude/skills/rayspec/`; runs live under `RAYSPEC_HOME`.

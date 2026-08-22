@@ -368,8 +368,9 @@ def scaffold(root: Path, *, kind: str = "code", force: bool = False) -> list[Sca
 
     Raises :class:`NotADirectoryError` when ``root`` exists but is not a directory,
     :class:`IsADirectoryError` when a *directory* sits where a template file goes (with or
-    without ``force``), and any other :class:`OSError` of the filesystem unchanged — the CLI
-    maps them to ``error: …`` + exit 2.
+    without ``force``), :class:`OSError` when a file it would overwrite is a symbolic link, and
+    any other :class:`OSError` of the filesystem unchanged — the CLI maps them to ``error: …``
+    + exit 2.
     """
     return _place(root, template_files(kind), force=force)
 
@@ -390,40 +391,58 @@ def _place(root: Path, files: list[tuple[str, Traversable]], *, force: bool) -> 
     the temporaries are removed and so are the directories this call created. Refusing was
     already atomic (:func:`example_conflicts` runs before anything is written); this is the
     error path catching up.
+
+    Two consequences of the rename, both decided here rather than left to the umask. The target
+    becomes a NEW inode, so the mode of the file being replaced is copied onto the temporary
+    first: overwriting a ``config.yaml`` somebody chmodded to ``0600`` changes its content, not
+    who may read it. And a symbolic link is refused (before anything is written, like a
+    directory in the way): ``os.replace`` would silently swap the link for a regular file, while
+    writing through it would change a file outside the project the scaffold is writing.
     """
     if root.exists() and not root.is_dir():
         raise NotADirectoryError(f"{root} is not a directory")
-    planned: list[tuple[ScaffoldFile, bytes]] = []
+    planned: list[tuple[ScaffoldFile, bytes, int | None]] = []
     for rel, node in files:
         target = root / rel
         if target.is_dir():
             raise IsADirectoryError(f"{target} is a directory, expected a file (or nothing)")
         existed = target.exists()
         if existed and not force:
-            planned.append((ScaffoldFile(rel, target, "skipped"), b""))
+            planned.append((ScaffoldFile(rel, target, "skipped"), b"", None))
             continue
+        if target.is_symlink():
+            raise OSError(
+                f"{target} is a symbolic link, expected a file (or nothing) — a scaffold writes "
+                f"files inside the project it scaffolds; remove the link and re-run"
+            )
         # read before writing anything: an unreadable source is then not half a scaffold either
         planned.append(
-            (ScaffoldFile(rel, target, "overwritten" if existed else "created"), node.read_bytes())
+            (
+                ScaffoldFile(rel, target, "overwritten" if existed else "created"),
+                node.read_bytes(),
+                target.stat().st_mode & 0o7777 if existed else None,
+            )
         )
     created_dirs: list[Path] = []
     staged: list[tuple[Path, Path]] = []
     try:
         for sub in ALWAYS_DIRS:
             _mkdir_p(root / PROJECT_DIR / sub, created_dirs)
-        for item, data in planned:
+        for item, data, mode in planned:
             if item.action == "skipped":
                 continue
             _mkdir_p(item.path.parent, created_dirs)
             tmp = item.path.with_name(f".{item.path.name}.rayspec-{os.getpid()}")
             tmp.write_bytes(data)
+            if mode is not None:  # the replaced file's mode, not the umask's
+                os.chmod(tmp, mode)
             staged.append((tmp, item.path))
         for tmp, target in staged:
             os.replace(tmp, target)
     except BaseException:
         _undo(staged, created_dirs)
         raise
-    return [item for item, _ in planned]
+    return [item for item, _, _ in planned]
 
 
 def _mkdir_p(path: Path, created: list[Path]) -> None:

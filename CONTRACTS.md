@@ -1655,7 +1655,8 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   `content` kind has `isolation: none` and no shell/python steps. Python surface:
   `TEMPLATE_KINDS`, `SCAFFOLD_FILES: {kind: (".rayspec/…", …)}`, `scaffold(root, *, kind="code",
   force=False) -> list[ScaffoldFile(relative, path, action ∈ created|overwritten|skipped)]`
-  (raises `NotADirectoryError`/`IsADirectoryError`/`OSError`), `template_files(kind)`,
+  (raises `NotADirectoryError`/`IsADirectoryError`/`OSError`, the last also for a symlinked
+  target under `--force`), `template_files(kind)`,
   `detect_kind(root) -> kind | None`, `orphan_files(old_kind, new_kind)`, `next_steps(kind, *,
   skill=True)` (additive keyword);
   `in_git_checkout(path) -> bool` (a `.git` dir *or* file at or above `path`),
@@ -1680,6 +1681,13 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   created (deepest first, only while empty), so an `OSError` — a directory where a file goes, a
   full disk, a read-only tree — leaves the target exactly as it was, `.rayspec/` included. A
   half-written scaffold would otherwise also be a rayspec *project* that did not exist before.
+  The rename makes the target a new inode, so `_place()` decides two things the umask would
+  otherwise decide for it: the mode of an overwritten file is copied onto the temporary before
+  the replace (`--force` changes a file's content, never who may read it), and a target that is
+  a SYMLINK is refused with an `OSError` naming it — before anything is written, like a directory
+  in the way — because `os.replace` would swap the link for a regular file and writing through
+  it would change a file outside the project being scaffolded. Without `--force` a symlinked
+  target is `skipped` as before: nothing is written over it, so there is nothing to refuse.
 - For `--from` the refusal is the other half of the same rule. Before anything is written,
   `example_conflicts(root, name)` lists the files the target already holds with *different*
   content; a non-empty list without `--force` is exit 2 naming them, because writing the rest
