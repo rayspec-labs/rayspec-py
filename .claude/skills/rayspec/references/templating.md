@@ -85,14 +85,24 @@ gh pr create --base "${RAYSPEC_V1}" --title "fix: #${RAYSPEC_V2}" \
   --body "${RAYSPEC_V3}"
 ```
 
-with `RAYSPEC_V1=main`, `RAYSPEC_V2=123`, `RAYSPEC_V3=<the review text>` exported.
+with `RAYSPEC_V1=main`, `RAYSPEC_V2=123`, `RAYSPEC_V3=<the review text>` exported — except
+for values over 64 KiB, which the script assigns to itself instead (see below).
 
 Consequences:
 
 - **Quote them**: `"{{ x }}"` is one word even when the value has spaces; bare `{{ x }}` splits.
 - Single quotes and quoted heredocs (`<<'EOF'`) do **not** expand: `echo '{{ x }}'` prints the
   literal `${RAYSPEC_V1}`. Use double quotes or an unquoted heredoc.
-- Values over 64 KiB spill to a file under the run's `tmp/` and render as `$(cat '<path>')`.
+- Values over 64 KiB spill to a file under the run's `tmp/`. The body still reads
+  `${RAYSPEC_V<n>}`: a preamble line prepended to the script assigns the slot from that
+  file, so quoting, trailing newlines and everything else behave the same either side of
+  the threshold, and the scratch path never reaches the body. The one difference that
+  remains: a spilled slot is a **shell** variable, not an exported one, so a child process
+  the body starts finds a small slot in its own environment but not a spilled one — pass it
+  on (`cmd "${RAYSPEC_V1}"`, or on stdin). Exporting it would put a value larger than the
+  threshold back into the environment block that spilling exists to keep it out of.
+- A value holding a NUL byte cannot reach a step at all: an environment has no room for it
+  and a command substitution drops it. Keep NUL out of `{{ }}` values.
 - Lists and mappings render as JSON text — pipe them to `jq`.
 - Comment delimiters are `{{# ... #}}`, so `${#VAR}` is plain bash.
 - Literal `{{` (Go templates, `printf '{{'`) → `{% raw %}docker ps --format '{{.ID}}'{% endraw %}`.
