@@ -396,20 +396,36 @@ def discover_suites(root: Path) -> list[Suite]:
 
 
 def is_suite_document(path: Path) -> bool:
-    """Whether ``path`` is positively a rayspec **suite** file: a mapping with a
-    ``checks:`` (or ``cases:``) list.
+    """Whether ``path`` is positively a rayspec **suite** file: a mapping whose ``checks:`` (or
+    ``cases:``) key holds a non-empty list of mappings, each naming at least one case key.
 
     The recognition is positive, unlike :func:`is_case_document`'s, and that asymmetry is the
     point. ``.rayspec/tests/`` is rayspec's own directory, so anything in it is read as a case and
     its problems are reported. The root of a project is *shared* — a ``checks.yaml`` there may
     belong to another tool entirely — so only a document that says what it is gets read, and
     anything else is passed over rather than turned into an error about somebody else's file.
+
+    Which is why the key alone is not enough: ``checks:`` is a word many tools use, and a
+    ``checks: {lint: true}`` or ``checks: [{name: lint, cmd: ruff}]`` read as a suite fails
+    ``rayspec test`` in a project whose own cases are sitting in ``.rayspec/tests/`` — with an
+    error about a file rayspec does not own. The shape below the key is what makes it rayspec's:
+    a list of case mappings. Naming *one* case key is enough, so a suite of this project's with a
+    typo in it is still read, and the typo still reported with its ``file:line``.
     """
     try:
         data, _ = load_yaml_with_lines(path.read_text(encoding="utf-8"), source=str(path))
     except (OSError, RayspecError):
         return False
-    return isinstance(data, dict) and any(key in data for key in SUITE_KEYS)
+    if not isinstance(data, dict):
+        return False
+    known = case_keys()
+    return any(
+        isinstance(value := data.get(key), list)
+        and bool(value)
+        and all(isinstance(case, dict) and not known.isdisjoint(case) for case in value)
+        for key in SUITE_KEYS
+        if key in data
+    )
 
 
 def is_case_document(path: Path) -> bool:

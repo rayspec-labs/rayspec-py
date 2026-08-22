@@ -214,6 +214,42 @@ def test_a_root_document_that_is_not_a_case_file_is_left_alone(tmp_path: Path) -
     assert discover_suites(tmp_path) == []
 
 
+#: ``checks.yaml`` documents of other tools that happen to carry a key rayspec also uses. Every
+#: one of them parses as YAML, so only the SHAPE below the key tells them apart from a suite.
+FOREIGN_ROOT_DOCUMENTS = [
+    pytest.param("checks:\n  lint: true\n  format: true\n", id="mapping-of-flags"),
+    pytest.param("checks:\n  - lint\n  - format\n", id="list-of-names"),
+    pytest.param("checks:\n  - name: lint\n    cmd: ruff\n", id="list-of-foreign-mappings"),
+    pytest.param("cases: 3\n", id="a-count"),
+    pytest.param("checks: []\n", id="empty-list"),
+]
+
+
+@pytest.mark.parametrize("text", FOREIGN_ROOT_DOCUMENTS)
+def test_a_root_document_that_only_shares_the_key_is_left_alone(tmp_path: Path, text: str) -> None:
+    """Recognition is about the shape, not the key: a `checks:` that is not a list of cases
+    belongs to whoever wrote it, and reading it turns `rayspec test` into an error about
+    somebody else's file — in a project whose own cases are sitting right there."""
+    (tmp_path / "checks.yaml").write_text(text, encoding="utf-8")
+    own = tmp_path / ".rayspec" / "tests" / "wf"
+    own.mkdir(parents=True)
+    (own / "happy.yaml").write_text("inputs: {a: 1}\n", encoding="utf-8")
+    suites = discover_suites(tmp_path)
+    assert [s.name for s in suites] == ["tests/wf"]
+
+
+def test_a_root_suite_with_a_typo_is_still_read_and_reported(tmp_path: Path) -> None:
+    """The other half of the rule: a document that names a case key IS rayspec's, so a typo in
+    it is a located error rather than a file that quietly disappears from the suite."""
+    (tmp_path / "checks.yaml").write_text(
+        "checks:\n  - workflow: wf\n    expct: {status: succeeded}\n", encoding="utf-8"
+    )
+    with pytest.raises(CaseFileError) as excinfo:
+        discover_suites(tmp_path)
+    (error,) = excinfo.value.errors
+    assert "checks.yaml:3" in error and "expct" in error, error
+
+
 def test_greenfield_case_workflow_defaults_to_the_directory(tmp_path: Path) -> None:
     tests_dir = tmp_path / ".rayspec" / "tests" / "release"
     tests_dir.mkdir(parents=True)

@@ -383,8 +383,9 @@ for the file format):
   and the file stem names the case. Suite name: `tests/<workflow>`.
 - `checks.yaml` at the **project root** — the project's own suite, and where the file lands when
   the project is a scaffolded example (`rayspec init --from <name>` writes it). Suite name:
-  `checks`. It is read only when it is a mapping with a `checks:` list, so a `checks.yaml` that
-  belongs to another tool is passed over instead of reported as broken.
+  `checks`. It is read only when it is a mapping whose `checks:` key holds a list of case
+  mappings, so a `checks.yaml` that belongs to another tool — `checks: {lint: true}`,
+  `checks: [{name: lint, cmd: ruff}]` — is passed over instead of reported as broken.
 - `examples/<name>/checks.yaml` (each example being a self-contained project) and
   `.rayspec/dryrun/checks.yaml` for the project's own workflows — a mapping with a `checks:`
   list. Suite names: the example directory / `dogfood`.

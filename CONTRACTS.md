@@ -2814,8 +2814,11 @@ store; nothing depends on it.
   `examples/<name>/checks.yaml` (rooted at the example), `<root>/checks.yaml` (`checks`, rooted at
   the project — the same file at the place it lands when the project *is* the example, i.e. after
   `rayspec init --from <name>`; read only when `is_suite_document()` recognises it positively as a
-  mapping with a `checks:`/`cases:` list, because the project root is shared ground and a
-  `checks.yaml` of another tool must be passed over rather than reported as broken),
+  mapping whose `checks:`/`cases:` key holds a NON-EMPTY LIST OF MAPPINGS, each naming at least
+  one case key, because the project root is shared ground and a `checks.yaml` of another tool —
+  `checks: {lint: true}`, `checks: [{name: lint, cmd: ruff}]` — must be passed over rather than
+  reported as broken; one case key is enough, so a suite of the project's own with a typo in it
+  is still read and the typo still located),
   `.rayspec/dryrun/checks.yaml` (`dogfood`,
   rooted at the project) and `.rayspec/tests/<workflow>/<case>.yaml` (`tests/<workflow>`, rooted at
   the project; the directory names the workflow, the file stem the case). Discovery of a

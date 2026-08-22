@@ -38,8 +38,10 @@ first-class and both run under `rayspec test`.
 The root `checks.yaml` is the same file at the place it lands when the project *is* the example:
 `rayspec init --from hello_review` scaffolds the example's `checks.yaml` along with everything
 else, and `rayspec test` in that directory runs it. A root `checks.yaml` is only read when it
-says what it is (a mapping with a `checks:` list) — the root of a project is shared ground, and a
-file of that name belonging to another tool is passed over rather than turned into an error.
+says what it is — a mapping whose `checks:` key holds a list of case mappings, each naming at
+least one case key. The root of a project is shared ground: a file of that name belonging to
+another tool is passed over rather than turned into an error. (Naming one case key is enough, so
+a suite of yours with a typo in it is still read, and the typo still reported.)
 
 ## The case format
 
