@@ -27,7 +27,9 @@ import random
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +37,24 @@ import pytest
 
 from rayspec.templating import TemplateEngine, TemplateRenderError
 
-from .generate import forall, json_value, shrink_json, shrink_seq, shrink_text, text
+from .generate import (
+    Discard,
+    forall,
+    json_value,
+    raises,
+    shrink_json,
+    shrink_seq,
+    shrink_text,
+    text,
+)
 
-needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
+#: The bash every shell property runs, resolved ONCE. ``subprocess`` resolves argv[0] through
+#: ``os.get_exec_path(env)`` — the env the call passes, not the real ``PATH`` — so a skip marker
+#: keyed off ``shutil.which`` and a call keyed off ``"bash"`` can disagree: on a host whose bash
+#: is outside the minimal ``PATH`` below, the marker would not fire and the properties would die
+#: with ``FileNotFoundError`` instead of skipping.
+BASH: str | None = shutil.which("bash")
+needs_bash = pytest.mark.skipif(BASH is None, reason="bash required")
 
 #: Values that are the whole point of the property: they look like the machinery itself, or like
 #: an injection. Drawn deliberately so they appear in every run, not only when the RNG is kind.
@@ -45,8 +62,8 @@ LANDMINES: tuple[str, ...] = (
     "${RAYSPEC_V1}",
     "${RAYSPEC_V2} ${RAYSPEC_V1}",
     "$(cat /etc/passwd)",
-    "'; rm -rf / ;'",
-    '"; rm -rf / ;"',
+    "'; id ;'",
+    '"; id ;"',
     "`id`",
     "\\",
     "\\\\",
@@ -83,20 +100,30 @@ def body_of(values: Sequence[str], *, quote: str = '"') -> str:
     )
 
 
-def run_bash(script: str, env: dict[str, str], out: Path) -> list[bytes]:
-    """Run ``script`` with only the slot env plus ``PATH``/``OUT``; return ``$OUT/<i>`` as bytes.
+def run_bash(script: str, env: dict[str, str], out: Path, count: int) -> list[bytes]:
+    """Run ``script``; return ``$OUT/0`` … ``$OUT/<count-1>`` as bytes.
+
+    Only the slot env plus ``PATH``/``OUT`` reaches the script. ``count`` is what the CALLER
+    expects, not what the script happened to write: inferring it from the directory listing
+    turns "output 3 was never written" into a length mismatch, and hands any caller that reuses
+    a directory a silently wrong answer.
 
     Bytes, never text: ``text=True`` would translate ``\\r`` on the way back and hide exactly
     the kind of mangling these properties exist to catch.
     """
+    assert BASH is not None, "guarded by needs_bash"
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", script],
+        [BASH, "-euo", "pipefail", "-c", script],
         env={**env, "PATH": "/usr/bin:/bin", "OUT": str(out)},
         check=True,
         capture_output=True,
     )
-    return [(out / str(i)).read_bytes() for i in range(len(list(out.iterdir())))]
+    written = sorted(entry.name for entry in out.iterdir())
+    assert written == [str(i) for i in range(count)], (
+        f"the script wrote {written}, expected {count} output file(s)"
+    )
+    return [(out / str(i)).read_bytes() for i in range(count)]
 
 
 @pytest.fixture
@@ -110,23 +137,199 @@ def engine() -> TemplateEngine:
 # --------------------------------------------------------------------------------------------------
 
 
-def test_every_expression_becomes_one_numbered_slot(engine: TemplateEngine, tmp_path: Path) -> None:
-    """``{{ }}`` → ``${RAYSPEC_V<n>}``, numbered from 1 in source order, value only in the env.
+@dataclass(frozen=True)
+class Chunk:
+    """One generated piece of a shell body: the template text and what it must render to.
 
-    Asserting the *whole* script (not a substring) is what makes this a non-splicing property:
-    a value that leaked into the script would change the text no matter what it contained.
+    ``parts`` is the rendered text split at the slots, so ``len(parts) == len(values) + 1`` and
+    the chunk renders to ``parts[0] + slot + parts[1] + …``. Split rather than formatted: the
+    rendered script is full of ``${…}`` and a format string would need every brace escaped.
     """
 
-    def prop(values: list[str]) -> None:
-        rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
-        expected = "\n".join(
-            f'printf %s "${{RAYSPEC_V{i + 1}}}" > "$OUT/{i}"' for i in range(len(values))
-        )
-        assert rendered.script == expected
-        assert rendered.env == {f"RAYSPEC_V{i + 1}": v for i, v in enumerate(values)}
-        assert rendered.spills == []
+    kind: str
+    source: str
+    parts: tuple[str, ...]
+    values: tuple[str, ...]
 
-    forall("shell-slot-structure", shell_values, prop, shrink=shrink_seq)
+    def __post_init__(self) -> None:
+        assert len(self.parts) == len(self.values) + 1, self
+
+
+@dataclass(frozen=True)
+class BodyCase:
+    """A whole generated body: its chunks, the values bound to ``inputs``, and the expectation.
+
+    The expectation is derived from the number of EVALUATIONS, never from the number of source
+    occurrences — that difference is the entire content of a ``{% for %}`` and a
+    ``{% if false %}``, and it is what the flat one-expression-per-line body never asked about.
+    """
+
+    chunks: tuple[Chunk, ...]
+    values: tuple[str, ...]
+    many: tuple[str, ...]
+
+    @property
+    def source(self) -> str:
+        """The body as written."""
+        return "".join(chunk.source for chunk in self.chunks)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """``inputs.v0`` … plus ``inputs.many``, the list the ``{% for %}`` chunks iterate."""
+        context = ctx_of(self.values)
+        context["inputs"]["many"] = list(self.many)
+        return context
+
+    @property
+    def slot_values(self) -> tuple[str, ...]:
+        """The value of ``RAYSPEC_V1``, ``V2`` … in slot order."""
+        return tuple(value for chunk in self.chunks for value in chunk.values)
+
+    @property
+    def expected(self) -> str:
+        """The script the body must render to, with the slots numbered from 1."""
+        out: list[str] = []
+        slot = 0
+        for chunk in self.chunks:
+            out.append(chunk.parts[0])
+            for index in range(len(chunk.values)):
+                slot += 1
+                out.append(f"${{RAYSPEC_V{slot}}}")
+                out.append(chunk.parts[index + 1])
+        return "".join(out)
+
+    def __str__(self) -> str:
+        return repr(self.source)
+
+
+def _one_expression(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """``printf %s "{{ inputs.vN }}"`` in a random quoting context — one slot."""
+    index = rng.randrange(len(values))
+    quote = rng.choice(['"', "'", ""])
+    return Chunk(
+        kind="one",
+        source=f"printf %s {quote}{{{{ inputs.v{index} }}}}{quote}\n",
+        parts=(f"printf %s {quote}", f"{quote}\n"),
+        values=(values[index],),
+    )
+
+
+def _repeated_expression(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """The same expression twice: two evaluations, so two slots — never one reused."""
+    index = rng.randrange(len(values))
+    expression = f"{{{{ inputs.v{index} }}}}"
+    return Chunk(
+        kind="repeated",
+        source=f'printf %s "{expression}{expression}"\n',
+        parts=('printf %s "', "", '"\n'),
+        values=(values[index], values[index]),
+    )
+
+
+def _heredoc(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """A quoted or unquoted heredoc — the other context the documentation talks about."""
+    index = rng.randrange(len(values))
+    quote = rng.choice(["'", ""])
+    return Chunk(
+        kind="heredoc",
+        source=f"cat <<{quote}EOF{quote}\n{{{{ inputs.v{index} }}}}\nEOF\n",
+        parts=(f"cat <<{quote}EOF{quote}\n", "\nEOF\n"),
+        values=(values[index],),
+    )
+
+
+def _loop(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """``{% for %}`` over ``inputs.many``: one slot per ITERATION, none for an empty list."""
+    count = len(many)
+    inner = ('printf %s "', *['"\nprintf %s "'] * max(0, count - 1), '"\n')
+    return Chunk(
+        kind=f"loop{min(count, 2)}",
+        source='{% for item in inputs.many %}\nprintf %s "{{ item }}"\n{% endfor %}\n',
+        parts=inner if count else ("",),
+        values=tuple(many),
+    )
+
+
+def _conditional(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """``{% if %}``: the untaken branch consumes no slot number and leaves no env entry."""
+    index = rng.randrange(len(values))
+    taken = rng.random() < 0.5
+    source = (
+        f"{{% if {'true' if taken else 'false'} %}}\n"
+        f'printf %s "{{{{ inputs.v{index} }}}}"\n'
+        "{% endif %}\n"
+    )
+    if taken:
+        return Chunk(
+            kind="if_true", source=source, parts=('printf %s "', '"\n'), values=(values[index],)
+        )
+    return Chunk(kind="if_false", source=source, parts=("",), values=())
+
+
+def _literal(rng: random.Random, values: Sequence[str], many: Sequence[str]) -> Chunk:
+    """A line with no expression at all: it must not disturb the numbering around it."""
+    return Chunk(kind="literal", source="echo plain\n", parts=("echo plain\n",), values=())
+
+
+#: The chunk builders a generated body is assembled from.
+CHUNKS = (
+    _one_expression,
+    _one_expression,
+    _repeated_expression,
+    _heredoc,
+    _loop,
+    _conditional,
+    _literal,
+)
+
+
+def body_case(rng: random.Random) -> BodyCase:
+    """A body of one to five chunks over one to four values and a list of zero to three."""
+    values = shell_values(rng)
+    many = tuple(shell_value(rng) for _ in range(rng.randint(0, 3)))
+    chunks = tuple(rng.choice(CHUNKS)(rng, values, many) for _ in range(rng.randint(1, 5)))
+    return BodyCase(chunks=chunks, values=tuple(values), many=many)
+
+
+def shrink_body(case: BodyCase) -> Iterator[BodyCase]:
+    """Fewer chunks, then a shorter list for the ``{% for %}`` chunks to iterate."""
+    for smaller in shrink_seq(case.chunks):
+        yield replace(case, chunks=tuple(smaller))
+    if case.many:
+        yield replace(case, many=(), chunks=tuple(_relist(c, ()) for c in case.chunks))
+
+
+def _relist(chunk: Chunk, many: tuple[str, ...]) -> Chunk:
+    """Rebuild a ``{% for %}`` chunk for a different list; other chunks are returned unchanged."""
+    return _loop(random.Random(0), (), many) if "{% for" in chunk.source else chunk
+
+
+def test_every_evaluated_expression_becomes_one_numbered_slot(
+    engine: TemplateEngine, tmp_path: Path
+) -> None:
+    """``{{ }}`` → ``${RAYSPEC_V<n>}``, numbered from 1 per EVALUATION, value only in the env.
+
+    Asserting the *whole* script (not a substring) is what makes this a non-splicing property:
+    a value that leaked into the script would change the text no matter what it contained. The
+    body is generated too, not only the values — repeated expressions, ``{% for %}`` over zero
+    to three items, a taken and an untaken ``{% if %}``, quoted, unquoted and heredoc contexts —
+    because "exactly one slot per ``{{ }}``" is a claim about bodies, and a flat body of
+    distinct expressions is the one shape where source order and evaluation order agree.
+    """
+
+    seen: Counter[str] = Counter()
+
+    def prop(case: BodyCase) -> None:
+        rendered = engine.render_shell(case.source, case.context, spill_dir=tmp_path)
+        assert rendered.script == case.expected
+        expected_env = {f"RAYSPEC_V{i + 1}": value for i, value in enumerate(case.slot_values)}
+        assert rendered.env == expected_env
+        assert rendered.spills == []
+        seen.update(chunk.kind for chunk in case.chunks)
+
+    forall("shell-body-structure", body_case, prop, shrink=shrink_body, show=str)
+    for kind in ("one", "repeated", "heredoc", "loop0", "loop2", "if_true", "if_false", "literal"):
+        assert seen[kind] > 0, f"the generator drew no {kind} chunk: {seen}"
 
 
 def test_a_slot_is_never_both_an_env_value_and_a_spill(tmp_path: Path) -> None:
@@ -160,7 +363,7 @@ def test_shell_values_arrive_verbatim(engine: TemplateEngine, tmp_path: Path) ->
     def prop(values: list[str]) -> None:
         rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
         out = tmp_path / f"out{next(counter)}"
-        got = run_bash(rendered.script, rendered.env, out)
+        got = run_bash(rendered.script, rendered.env, out, len(values))
         assert got == [v.encode("utf-8") for v in values]
 
     forall("shell-verbatim", shell_values, prop, cases=40, shrink=shrink_seq)
@@ -181,7 +384,7 @@ def test_a_value_that_looks_like_a_slot_is_not_expanded_again(
         decoys = [f"${{RAYSPEC_V{i + 1}}}" for i in range(len(values))]
         both = [*decoys, *values]
         rendered = engine.render_shell(body_of(both), ctx_of(both), spill_dir=tmp_path)
-        got = run_bash(rendered.script, rendered.env, tmp_path / f"decoy{next(counter)}")
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"decoy{next(counter)}", len(both))
         assert got == [v.encode("utf-8") for v in both]
 
     forall("shell-slot-decoy", shell_values, prop, cases=25, shrink=shrink_seq)
@@ -215,7 +418,7 @@ def test_a_single_quoted_slot_stays_literal(engine: TemplateEngine, tmp_path: Pa
         rendered = engine.render_shell(
             body_of(values, quote="'"), ctx_of(values), spill_dir=tmp_path
         )
-        got = run_bash(rendered.script, rendered.env, tmp_path / f"sq{next(counter)}")
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"sq{next(counter)}", len(values))
         assert got == [f"${{RAYSPEC_V{i + 1}}}".encode() for i in range(len(values))]
 
     forall("shell-single-quote", shell_values, prop, cases=25, shrink=shrink_seq)
@@ -234,7 +437,9 @@ def test_a_value_never_runs_a_command(engine: TemplateEngine, tmp_path: Path) ->
     def prop(values: list[str]) -> None:
         payloads = [f"$(touch {canary}){v}`touch {canary}`" for v in values]
         rendered = engine.render_shell(body_of(payloads), ctx_of(payloads), spill_dir=tmp_path)
-        got = run_bash(rendered.script, rendered.env, tmp_path / f"inert{next(counter)}")
+        got = run_bash(
+            rendered.script, rendered.env, tmp_path / f"inert{next(counter)}", len(payloads)
+        )
         assert got == [p.encode("utf-8") for p in payloads]
         assert not canary.exists(), "a value was spliced into the script"
 
@@ -337,7 +542,7 @@ def test_a_non_json_value_is_refused_rather_than_repred(
     """``python:`` never emits something that is not a literal — the failure is loud."""
 
     def prop(value: Any) -> None:
-        with pytest.raises(TemplateRenderError):
+        with raises(TemplateRenderError):
             engine.render_python(
                 "v = {{ inputs.v0 }}", {"inputs": {"v0": {"k": value}}}, spill_dir=tmp_path
             )
@@ -380,13 +585,20 @@ def test_a_spilled_shell_value_arrives_verbatim(tmp_path: Path) -> None:
     counter = iter(range(10_000))
 
     def prop(value: str) -> None:
-        values = [value + "\n"]
+        values = [value]
         rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
-        assert rendered.spills, "the case must be over the threshold"
-        got = run_bash(rendered.script, rendered.env, tmp_path / f"spill{next(counter)}")
+        if not rendered.spills:
+            raise Discard("the property is about values over the threshold")
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"spill{next(counter)}", 1)
         assert got == [values[0].encode("utf-8")]
 
-    forall("shell-spill-verbatim", spilled_text, prop, cases=5, shrink=shrink_text)
+    forall(
+        "shell-spill-verbatim",
+        lambda rng: spilled_text(rng) + "\n",
+        prop,
+        cases=5,
+        shrink=shrink_text,
+    )
 
 
 @needs_bash
@@ -397,7 +609,7 @@ def test_today_a_spilled_shell_value_loses_its_trailing_newlines(tmp_path: Path)
     rendered = engine.render_shell(body_of([value]), ctx_of([value]), spill_dir=tmp_path)
     assert rendered.spills and rendered.env == {}
     assert rendered.spills[0].read_bytes() == value.encode(), "the file itself is verbatim"
-    assert run_bash(rendered.script, rendered.env, tmp_path / "pin") == [b"abcdefghij"]
+    assert run_bash(rendered.script, rendered.env, tmp_path / "pin", 1) == [b"abcdefghij"]
 
 
 @needs_bash
@@ -419,8 +631,9 @@ def test_a_single_quoted_spilled_slot_stays_literal(tmp_path: Path) -> None:
         rendered = engine.render_shell(
             body_of(values, quote="'"), ctx_of(values), spill_dir=tmp_path
         )
-        assert rendered.spills, "the case must be over the threshold"
-        got = run_bash(rendered.script, rendered.env, tmp_path / f"sqspill{next(counter)}")
+        if not rendered.spills:
+            raise Discard("the property is about values over the threshold")
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"sqspill{next(counter)}", 1)
         assert got == [b"${RAYSPEC_V1}"]
 
     forall("shell-spill-single-quote", spilled_text, prop, cases=5, shrink=shrink_text)
@@ -433,7 +646,7 @@ def test_today_a_single_quoted_spilled_slot_prints_the_spill_path(tmp_path: Path
     values = ["abcdefghij"]
     rendered = engine.render_shell(body_of(values, quote="'"), ctx_of(values), spill_dir=tmp_path)
     assert rendered.spills
-    got = run_bash(rendered.script, rendered.env, tmp_path / "sqpin")
+    got = run_bash(rendered.script, rendered.env, tmp_path / "sqpin", 1)
     assert got == [f"$(cat {rendered.spills[0]})".encode()]
 
 
@@ -485,8 +698,8 @@ def test_a_quoted_heredoc_keeps_the_slot_literal(engine: TemplateEngine, tmp_pat
         context = ctx_of([value])
         literal = engine.render_shell(quoted, context, spill_dir=tmp_path)
         expanded = engine.render_shell(plain, context, spill_dir=tmp_path)
-        got_literal = run_bash(literal.script, literal.env, tmp_path / f"hd{next(counter)}")
-        got_expanded = run_bash(expanded.script, expanded.env, tmp_path / f"hd{next(counter)}")
+        got_literal = run_bash(literal.script, literal.env, tmp_path / f"hd{next(counter)}", 1)
+        got_expanded = run_bash(expanded.script, expanded.env, tmp_path / f"hd{next(counter)}", 1)
         assert got_literal == [b"${RAYSPEC_V1}\n"]
         assert got_expanded == [value.encode("utf-8") + b"\n"]
 
@@ -513,10 +726,18 @@ def test_a_nul_byte_is_carried_into_the_slot_and_fails_at_the_step(
         'printf %s "{{ inputs.v0 }}"', ctx_of(["a\x00b"]), spill_dir=tmp_path
     )
     assert rendered.env == {"RAYSPEC_V1": "a\x00b"}
+    assert BASH is not None, "guarded by needs_bash"
     with pytest.raises(ValueError, match="null byte"):
         subprocess.run(
-            ["bash", "-c", rendered.script],
+            [BASH, "-c", rendered.script],
             env={**rendered.env, "PATH": "/usr/bin:/bin"},
             check=False,
             capture_output=True,
         )
+
+
+@needs_bash
+def test_the_bash_helper_names_an_output_the_script_never_wrote(tmp_path: Path) -> None:
+    """A missing output must read as a missing FILE, not as a list one entry too short."""
+    with pytest.raises(AssertionError, match=r"wrote \['0'\], expected 2"):
+        run_bash('printf %s a > "$OUT/0"', {}, tmp_path / "short", 2)
