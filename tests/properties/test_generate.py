@@ -7,16 +7,20 @@ those two promises get their own tests. Without them a red property test is a ru
 
 from __future__ import annotations
 
+import ast
 import random
 from collections.abc import Iterator
 
 import pytest
 
 from .generate import (
+    Discard,
     Falsified,
+    NoCases,
     aforall,
     forall,
     json_value,
+    raises,
     rng_for,
     seed_key,
     shrink_json,
@@ -117,3 +121,72 @@ def test_shrinkers_only_produce_simpler_values() -> None:
         jvalue = json_value(rng)
         for candidate in shrink_json(jvalue):
             assert candidate != jvalue
+
+
+def _minimal(message: str) -> object:
+    """The case the report calls minimal, parsed back out of the message."""
+    return ast.literal_eval(message.split("minimal case: ")[1].split("\n")[0])
+
+
+def test_a_discarded_candidate_is_never_reported_as_the_minimal_case() -> None:
+    """Shrinking past a precondition would report a case the property does not even cover."""
+
+    def prop(value: str) -> None:
+        if len(value) < 3:
+            raise Discard("the generator never draws anything shorter")
+        assert "\n" not in value, "newlines are not allowed"
+
+    with pytest.raises(Falsified) as info:
+        forall("discard", lambda rng: text(rng, max_parts=4), prop, cases=200, shrink=shrink_text)
+    message = str(info.value)
+    assert "newlines are not allowed" in message, message
+    assert "the generator never draws anything shorter" not in message, message
+    minimal = _minimal(message)
+    assert isinstance(minimal, str) and len(minimal) >= 3, message
+
+
+def test_a_property_that_discards_every_case_is_an_error() -> None:
+    """A precondition no drawn case satisfies is a broken generator, not a green property."""
+
+    def prop(value: int) -> None:
+        raise Discard("never applicable")
+
+    with pytest.raises(NoCases, match="discarded all 5"):
+        forall("all-discarded", lambda rng: 1, prop, cases=5)
+
+
+async def test_the_async_driver_discards_the_same_way() -> None:
+    """``aforall`` shares the rule: a discard is not a counter-example and not a pass."""
+
+    async def prop(value: int) -> None:
+        raise Discard("never applicable")
+
+    with pytest.raises(NoCases, match="discarded all 4"):
+        await aforall("async-discarded", lambda rng: 1, prop, cases=4)
+
+
+def test_raises_keeps_the_exception_and_fails_as_an_assertion() -> None:
+    """The property-body form of ``pytest.raises``: the miss is an ordinary ``AssertionError``.
+
+    ``pytest.raises`` fails with ``Failed``, which derives from ``BaseException`` and therefore
+    travels straight past the driver — unshrunk, and without the seed key.
+    """
+    with raises(ValueError) as caught:
+        raise ValueError("boom")
+    assert str(caught.value) == "boom"
+    with pytest.raises(AssertionError, match="expected ValueError"):
+        with raises(ValueError):
+            pass
+
+
+def test_a_missing_exception_inside_a_property_is_shrunk_and_reported() -> None:
+    """Which is the whole point: the miss reaches the report with a seed key and a minimal case."""
+
+    def prop(value: str) -> None:
+        with raises(ValueError):
+            if "\n" in value:
+                raise ValueError(value)
+
+    with pytest.raises(Falsified) as info:
+        forall("raises-shrink", text, prop, cases=50, shrink=shrink_text)
+    assert _minimal(str(info.value)) == "", str(info.value)

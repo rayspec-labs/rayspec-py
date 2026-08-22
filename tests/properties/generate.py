@@ -25,12 +25,14 @@ Raise ``RAYSPEC_PROP_SEED`` locally to go looking for new counter-examples.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import random
 from collections.abc import Awaitable, Callable, Generator, Iterator, Sequence
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
+E = TypeVar("E", bound=BaseException)
 
 #: Base seed for every property; override with ``RAYSPEC_PROP_SEED`` to draw different cases.
 BASE_SEED = int(os.environ.get("RAYSPEC_PROP_SEED", "0"))
@@ -42,6 +44,21 @@ DEFAULT_SHRINK_BUDGET = 300
 
 class Falsified(AssertionError):
     """A property that a generated case falsified; the message names the seed and the case."""
+
+
+class Discard(Exception):
+    """Raised by a property body to say "this case is outside what the property covers".
+
+    A precondition written as ``assert`` is indistinguishable from a falsified property, and the
+    shrinker then does the worst possible thing with it: it "simplifies" a real counter-example
+    into a case the property does not even apply to and reports *that*, with the precondition's
+    own message as the failure. ``Discard`` keeps the two apart — the driver treats the case as
+    not drawn, and shrinking walks past the candidate rather than adopting it.
+    """
+
+
+class NoCases(AssertionError):
+    """Every drawn case was discarded — the generator and the precondition disagree."""
 
 
 def seed_key(label: str, index: int, *, seed: int = BASE_SEED) -> str:
@@ -68,16 +85,22 @@ def forall(
     """Draw ``cases`` values from ``gen`` and assert ``prop`` of each; shrink the first failure.
 
     ``prop`` fails by raising (an ``assert`` is the normal way). The raised error is kept and
-    re-reported with the minimal case ``shrink`` could reach.
+    re-reported with the minimal case ``shrink`` could reach. A :class:`Discard` says the case
+    is outside the property's precondition; if every case discards, that is an error.
     """
+    discarded = 0
     for index in range(cases):
         value = gen(rng_for(label, index, seed=seed))
         failure = _attempt(prop, value)
+        if isinstance(failure, Discard):
+            discarded += 1
+            continue
         if failure is None:
             continue
         plan = _shrink_plan(value, failure, shrink, budget)
         minimal, failure = _drive(plan, lambda candidate: _attempt(prop, candidate))
         raise _report(label, index, seed, minimal, failure, show, index + 1)
+    _refuse_an_empty_run(label, discarded, cases)
 
 
 async def aforall(
@@ -92,14 +115,19 @@ async def aforall(
     budget: int = DEFAULT_SHRINK_BUDGET,
 ) -> None:
     """:func:`forall` for an async property (the scheduler ones); same seeding and reporting."""
+    discarded = 0
     for index in range(cases):
         value = gen(rng_for(label, index, seed=seed))
         failure = await _aattempt(prop, value)
+        if isinstance(failure, Discard):
+            discarded += 1
+            continue
         if failure is None:
             continue
         plan = _shrink_plan(value, failure, shrink, budget)
         minimal, failure = await _adrive(plan, lambda candidate: _aattempt(prop, candidate))
         raise _report(label, index, seed, minimal, failure, show, index + 1)
+    _refuse_an_empty_run(label, discarded, cases)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -107,14 +135,25 @@ async def aforall(
 # --------------------------------------------------------------------------------------------------
 
 
+def _refuse_an_empty_run(label: str, discarded: int, cases: int) -> None:
+    """A property whose precondition rejected every drawn case checked nothing at all."""
+    if cases and discarded == cases:
+        raise NoCases(
+            f"property {label!r} discarded all {cases} case(s): the generator never produced "
+            "a case the property applies to"
+        )
+
+
 def _attempt(prop: Callable[[T], Any], value: T) -> BaseException | None:
     """Run one case; the raised error, or ``None`` when the property held.
 
     A property signals failure by raising an ordinary exception — ``assert`` is the intended
-    way. ``Exception`` only, deliberately: a cancellation or a ``KeyboardInterrupt`` must never
-    be mistaken for a falsified property (shrinking it would run the property hundreds more
-    times). ``pytest.fail()`` derives from ``BaseException`` and therefore escapes the driver
-    unshrunk — the test still fails, just without the seed report, so use ``assert``.
+    way — or a :class:`Discard`, which is returned like any other exception and which the
+    callers then tell apart. ``Exception`` only, deliberately: a cancellation or a
+    ``KeyboardInterrupt`` must never be mistaken for a falsified property (shrinking it would
+    run the property hundreds more times). ``pytest.fail()`` / ``pytest.raises()`` derive from
+    ``BaseException`` and therefore escape the driver unshrunk — use ``assert`` and
+    :func:`raises`.
     """
     try:
         prop(value)
@@ -129,6 +168,11 @@ async def _aattempt(prop: Callable[[T], Awaitable[Any]], value: T) -> BaseExcept
     except Exception as exc:
         return exc
     return None
+
+
+def _counter_example(failure: BaseException | None) -> BaseException | None:
+    """``None`` for a case that held OR was discarded; the error for a real counter-example."""
+    return None if isinstance(failure, Discard) else failure
 
 
 #: A shrink plan yields candidates and is told (via ``send``) whether each one still fails.
@@ -171,7 +215,7 @@ def _drive(
     try:
         candidate = next(plan)
         while True:
-            candidate = plan.send(attempt(candidate))
+            candidate = plan.send(_counter_example(attempt(candidate)))
     except StopIteration as stop:
         return stop.value
 
@@ -182,9 +226,40 @@ async def _adrive(
     try:
         candidate = next(plan)
         while True:
-            candidate = plan.send(await attempt(candidate))
+            candidate = plan.send(_counter_example(await attempt(candidate)))
     except StopIteration as stop:
         return stop.value
+
+
+class Raised(Generic[E]):
+    """The exception a :func:`raises` block caught, readable after the block."""
+
+    def __init__(self) -> None:
+        self.caught: tuple[E, ...] = ()
+
+    @property
+    def value(self) -> E:
+        """The caught exception; defined once the block has exited."""
+        if not self.caught:
+            raise AssertionError("nothing was raised")
+        return self.caught[0]
+
+
+@contextlib.contextmanager
+def raises(expected: type[E]) -> Iterator[Raised[E]]:
+    """``pytest.raises`` for a property body: a miss is an ordinary ``AssertionError``.
+
+    ``pytest.raises`` reports a miss as ``Failed``, which derives from ``BaseException`` and
+    therefore travels straight past :func:`_attempt` — the property fails without a seed key and
+    without a minimal case, which is exactly what this driver exists to prevent.
+    """
+    box: Raised[E] = Raised()
+    try:
+        yield box
+    except expected as exc:
+        box.caught = (exc,)
+        return
+    raise AssertionError(f"expected {expected.__name__} to be raised, nothing was")
 
 
 def _report(
@@ -216,6 +291,12 @@ def _report(
 #: the substitution rayspec itself performs (``${RAYSPEC_V1}``) so a value that looks like a slot
 #: is generated too. NUL is deliberately absent — it cannot travel in a process environment at
 #: all, so it is not a round-trip question (see ``test_templating_slots.py``).
+#:
+#: The command substitutions here are deliberately INERT (``$(id)``, ``` `id` ```): these
+#: fragments are spliced into values fed to a real bash on every run, and the one moment a
+#: destructive payload could fire is the moment the property exists to detect — a regression to
+#: splicing. Destructive intent belongs in the canary property, which wraps every value in
+#: ``$(touch <canary>)`` and asserts the canary was never created, not in the payload.
 FRAGMENTS: tuple[str, ...] = (
     "a",
     "z",
@@ -232,7 +313,7 @@ FRAGMENTS: tuple[str, ...] = (
     "`",
     "${RAYSPEC_V1}",
     "${RAYSPEC_V2}",
-    "$(rm -rf /)",
+    "$(id)",
     "`id`",
     "$HOME",
     "${#x}",
@@ -357,10 +438,14 @@ __all__ = [
     "DEFAULT_CASES",
     "DEFAULT_SHRINK_BUDGET",
     "FRAGMENTS",
+    "Discard",
     "Falsified",
+    "NoCases",
+    "Raised",
     "aforall",
     "forall",
     "json_value",
+    "raises",
     "rng_for",
     "seed_key",
     "shrink_json",
