@@ -240,7 +240,9 @@ rayspec plan <workflow> --render [--step PATH] [--stubs FILE] [--json | --output
 rayspec plan <workflow> --risk [--json | --output FORMAT]
 ```
 
-Show what a run would do without executing: the workflow hash and isolation, inputs with their
+Show what a run would do without executing: the workflow hash and isolation, the run-level caps the
+workflow set (`budget_usd $1.50  max_tokens 500,000  timeout_total 2h 0m` — all three or none: they
+are one circuit breaker, and naming two of them reads as "there is no third"), inputs with their
 resolved values — each input on its own line: the value, `missing (required)`, `undefined`
 (optional without a default) or `'<raw>' (invalid: <why>)`; one problem per input (a required
 input whose value was rejected is `invalid`, never also `missing`) and one bad input never hides
@@ -254,12 +256,14 @@ the pricing table (~$)`, or — for a provider without cost reporting whose mode
 (<docs URL>#pricing)`, naming only the unpriced models when some are priced or disabled;
 models disabled with a `null` pricing entry are listed as `pricing disabled (null) for <model>`
 without a nudge). Exit 2 on validation or input errors.
-`--json`: `{workflow, path, hash, isolation, description, inputs: {name: {name, type, value,
-state: ok|missing|invalid|undefined, problem, secret}}, input_errors, agents: [{name, provider, model,
+`--json`: `{workflow, path, hash, isolation, budget_usd, max_tokens, timeout_total, description,
+inputs: {name: {name, type, value, state: ok|missing|invalid|undefined, problem, secret}},
+input_errors, agents: [{name, provider, model,
 effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
 providers: {id: {structured_output, cost_reporting, cost: provider|table|none, priced_models,
 unpriced_models, disabled_models, pricing_error?}}, errors, warnings, unsupported}` (a secret
-input's `value` is `"<secret>"`, `secret: true`).
+input's `value` is `"<secret>"`, `secret: true`; the three cap keys are always present, `null` when
+the cap is unset, and `timeout_total` is in seconds).
 
 #### `--render`: see what the agent will receive
 
