@@ -24,7 +24,7 @@ import typer
 import yaml
 from rich.markup import escape
 
-from rayspec.cli.commands._loader_common import console, err_console, fail
+from rayspec.cli.commands._loader_common import checked_root, console, err_console, fail
 from rayspec.cli.commands._skill_common import print_install_result
 from rayspec.resources import walk_files
 from rayspec.schema.base import suggest
@@ -583,7 +583,8 @@ def register(app: typer.Typer) -> None:
             Path | None,
             typer.Option(
                 "--root",
-                help="Directory to initialise (the one that gets `.rayspec/`). Default: the cwd.",
+                help="Directory to initialise (the one that gets `.rayspec/`); it must "
+                "already exist. Default: the cwd.",
                 show_default=False,
             ),
         ] = None,
@@ -608,7 +609,7 @@ def register(app: typer.Typer) -> None:
                 if match is not None:
                     message += f"; did you mean {match!r}?"
                 fail(message, hint=unknown_example_hint())
-        target = (root or Path.cwd()).resolve()
+        target = (checked_root(root) or Path.cwd()).resolve()
         if from_ is not None and not force:
             conflicts = example_conflicts(target, from_)
             if conflicts:

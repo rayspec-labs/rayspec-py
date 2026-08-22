@@ -285,6 +285,10 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     payload. Progress events (loop iterations, ``each`` items) are deliberately dropped — they
     say how far a run got, not what it did.
 
+    A step a resume replayed from the reuse cache (``data["reused"]``) says so in its ``detail``:
+    its row stands next to the row of the attempt that really ran it, and two identical
+    ``succeeded`` lines would read as the step having been executed twice.
+
     The row is **raw**: pass it through :func:`finish_audit_row` before writing or printing it.
     """
     kind = _AUDIT_EVENT_KINDS.get(event.type)
@@ -297,6 +301,12 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
         detail = _raw_detail(data.get("message") or data.get("warning"))
     elif event.type is EventType.STEP_FINISHED:
         detail = _raw_detail(data.get("status") or "finished")
+        if data.get("reused"):
+            # A resume replays a reusable record instead of executing the step again: the shell
+            # body did not run, the provider was not called. Left as a plain "succeeded" the
+            # ledger shows that work twice — once where it happened and once where it did not,
+            # which is the one thing a record of what a run did must never do.
+            detail += " (reused from the previous attempt — not re-executed)"
     elif event.type is EventType.STEP_STARTED:
         detail = _raw_detail(f"started ({data.get('kind') or 'step'})")
     elif event.type is EventType.STEP_RETRY:

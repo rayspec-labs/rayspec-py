@@ -36,6 +36,7 @@ from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
     RootOption,
+    checked_root,
     console,
     fail,
     new_table,
@@ -282,21 +283,58 @@ def _project_check(start: Path, project_root: Path, home: Path) -> Check:
     return Check("project", "project", "ok", detail)
 
 
+def env_var_count(path: Path) -> int | str:
+    """The number of variables ``path`` defines, or the reason it could not be read.
+
+    A ``str`` is a failure: a mode nobody can read, a directory where the file goes, bytes that
+    are not UTF-8. Every rayspec command refuses with exit 2 on such a file
+    (:func:`rayspec.config.load_env`), so the one command whose job is to say what is wrong must
+    not count it as zero variables and print an ``info`` row.
+    """
+    if path.exists() and not path.is_file():
+        return "not a regular file"
+    try:
+        return len(parse_env_text(path.read_text(encoding="utf-8")))
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    except UnicodeDecodeError:
+        return "not valid UTF-8"
+
+
+def _unreadable_env_check(check_id: str, label: str, path: Path, reason: str, *, who: str) -> Check:
+    """The ``fail`` row for a ``.env`` that exists and cannot be read.
+
+    ``required`` because it is: the file is applied before anything else happens, so until it is
+    readable ``who`` refuses with exit 2 — a green report there would send somebody looking for
+    the problem everywhere except at the file that is causing it.
+    """
+    return Check(
+        check_id,
+        label,
+        "fail",
+        f"{path} cannot be read: {reason} — {who} refuses with exit 2 until it can be",
+        required=True,
+        hint="fix the file's permissions or encoding, or delete it",
+    )
+
+
 def _home_env_check(home: Path) -> Check | None:
     """``home .env`` row: ``$RAYSPEC_HOME/.env`` exists and is applied by EVERY command.
 
     That is the point of the row. This file is loaded by every rayspec invocation, and
     ``$RAYSPEC_HOME`` is exported into every workflow step — so a step that writes it changes the
     environment of your later commands, and until you look, nothing says it is there. ``None``
-    when the file is absent.
+    when the file is absent; a ``fail`` row when it is there and unreadable, which is the state
+    every OTHER command already refuses to run in.
     """
     path = home / ".env"
-    if not path.is_file():
+    if not path.exists():
         return None
-    try:
-        count = len(parse_env_text(path.read_text(encoding="utf-8")))
-    except (OSError, UnicodeDecodeError):
-        count = 0
+    count = env_var_count(path)
+    if isinstance(count, str):
+        return _unreadable_env_check(
+            "home.env", "home .env", path, count, who="every rayspec command"
+        )
     detail = f"{path} ({count} var{'s' if count != 1 else ''}, applied by every command)"
     hint = None
     if env_file_origin(ACTOR_ENV) == str(path):
@@ -309,9 +347,18 @@ def _home_env_check(home: Path) -> Check | None:
 def _project_env_check(project_root: Path) -> Check | None:
     """``project .env`` row: the checkout's ``.rayspec/.env`` exists — it is NOT loaded by
     ``doctor`` (or any inspection command); only ``run``/``resume``/``approve``/``reject`` apply
-    it. ``None`` when the file is absent."""
+    it. ``None`` when the file is absent, a ``fail`` row when it is there and unreadable: those
+    four commands cannot start at all while it is, and this row is where that shows."""
+    path = project_root / ".rayspec" / ".env"
+    if not path.exists():
+        return None
+    count = env_var_count(path)
+    if isinstance(count, str):
+        return _unreadable_env_check(
+            "project.env", "project .env", path, count, who="run/resume/approve/reject"
+        )
     info = project_env_info(project_root)
-    if info is None:
+    if info is None:  # pragma: no cover - the file is a regular readable file here
         return None
     detail = (
         f"{info.path} ({info.count} var{'s' if info.count != 1 else ''}, applied only by "
@@ -931,6 +978,10 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         """Check the environment: Python, RAYSPEC_HOME, git/uv, SDKs, CLIs, auth (+ --probe)."""
         json_ = resolve_output(output, json_)
+        # the same rule as every other command: a --root that is not a directory is a usage
+        # error. Diagnosing the cwd's project after being handed a typo is the worst answer
+        # this command can give — it is the one people run to find out what is wrong.
+        checked_root(root)
         providers = list(provider or [])
         for pid in providers:
             try:
@@ -970,6 +1021,7 @@ __all__ = [
     "claude_login_source",
     "codex_checks",
     "codex_login_hint",
+    "env_var_count",
     "environment_checks",
     "find_claude_cli",
     "find_codex_cli",

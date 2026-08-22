@@ -385,7 +385,10 @@ Resume re-executes the workflow **from the top** with a reuse cache:
 
 - a `prompt`/`shell`/`python`/`approve` record is **replayed** (event `step.finished` with
   `reused: true`) iff it is `succeeded` (or `failed` + `tolerated`), its output file exists and the
-  step is not `always_run: true`;
+  step is not `always_run: true`. A replay executes nothing — no shell body, no provider call —
+  and [`rayspec audit`](cli.md#rayspec-audit) says so on the row (`succeeded (reused from the
+  previous attempt — not re-executed)`), so the ledger of a resumed run never shows one step's
+  work twice;
 - `failed`, `interrupted`, `running`, `paused`, `skipped` records re-run; `attempts` keep counting;
 - composites (`loop`, `each`, `include`) always re-run their bodies, which replay naturally
   (`until` is re-evaluated from stored outputs; an `each` item whose `item_sha256` changed is

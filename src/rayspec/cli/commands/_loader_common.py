@@ -11,6 +11,8 @@ stay lazy, so a command still answers when one of those modules is not installed
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import importlib
 import json
 import os
@@ -288,12 +290,29 @@ def invoked_command() -> str | None:
     return None
 
 
+def checked_root(root: Path | None) -> Path | None:
+    """Apply the one ``--root`` rule and hand the option back unchanged.
+
+    An explicit ``--root`` that is not an existing directory is a usage error (exit 2). That
+    holds for the commands that WRITE a root (``init``, ``skill install``) exactly as for the
+    ones that read one: a mistyped path must not quietly become a new directory tree nobody
+    named, reported as a success — which is what ``rayspec init --root /typo`` used to do while
+    ``rayspec validate --root /typo`` refused.
+
+    Commands that resolve their root without :func:`make_context` call this first, so the rule
+    lives in one place instead of being re-decided per command.
+    """
+    if root is not None and not root.is_dir():
+        fail(f"--root {str(root)!r} is not a directory")
+    return root
+
+
 def make_context(root: Path | None, *, project_env: bool | None = None) -> Context:
     """Resolve the project root / home, load config and ``.env`` files.
 
-    An explicit ``--root`` that is not a directory is a usage error (exit 2) — a typo must not
-    look like an empty project. A malformed ``config.yaml``/``.env`` (either layer) is printed
-    as ``error: <path>:<line>: …`` with exit 2 — never a traceback.
+    An explicit ``--root`` that is not a directory is a usage error (exit 2, :func:`checked_root`)
+    — a typo must not look like an empty project. A malformed ``config.yaml``/``.env`` (either
+    layer) is printed as ``error: <path>:<line>: …`` with exit 2 — never a traceback.
 
     ``project_env`` decides whether the checkout's ``.rayspec/.env`` is applied to the process
     environment: ``None`` (default) applies it only for the execution commands
@@ -306,8 +325,7 @@ def make_context(root: Path | None, *, project_env: bool | None = None) -> Conte
     A ``RAYSPEC_ACTOR`` from either file gets a real warning, because it is the one variable
     these files may not decide: see :func:`warn_about_declared_actor`.
     """
-    if root is not None and not root.is_dir():
-        fail(f"--root {str(root)!r} is not a directory")
+    checked_root(root)
     project_root = find_project_root(root)
     home = rayspec_home()
     if project_env is None:
@@ -606,6 +624,91 @@ def error_lines(items: list[str], *, json_mode: bool = False, kind: str = "error
             out.print(f"       {escape(line)}", highlight=False)
 
 
+#: ``errno`` values that mean "whoever was reading stopped", not "the filesystem said no".
+#: ``rayspec runs | head -1`` ends this way, and click's own ``main()`` already exits quietly
+#: for it — :func:`error_boundary` must therefore let them past untouched.
+_PIPE_ERRNOS: frozenset[int] = frozenset({errno.EPIPE, errno.ESHUTDOWN})
+
+
+def _home_or_none() -> Path | None:
+    """``RAYSPEC_HOME`` as a path, or ``None`` when it cannot be resolved at all."""
+    try:
+        return rayspec_home()
+    except (OSError, RayspecError):  # pragma: no cover - it reads one environment variable
+        return None
+
+
+def _within(path: Path, home: Path) -> bool:
+    """Whether ``path`` is ``home`` or lies below it — a symlinked home (``/tmp`` →
+    ``/private/tmp`` on macOS) included."""
+    if path == home or path.is_relative_to(home):
+        return True
+    try:
+        return path.resolve().is_relative_to(home.resolve())
+    except OSError:  # pragma: no cover - resolve() is non-strict
+        return False
+
+
+def filesystem_failure(exc: OSError) -> tuple[str, str | None]:
+    """The ``(message, hint)`` an :class:`OSError` that reached the boundary is reported as.
+
+    A path under ``RAYSPEC_HOME`` is named as what it is. Every run's record, events, outputs,
+    locks and worktrees live there, and a bare ``Permission denied: /…/projects/local/x`` only
+    becomes an answer once the line says which directory the reader is expected to fix.
+    """
+    reason = exc.strerror or str(exc)
+    raw = exc.filename or exc.filename2
+    path = Path(str(raw)) if raw else None
+    home = _home_or_none()
+    if path is not None and home is not None and _within(path, home):
+        where = "" if path == home else f" ({path})"
+        return (
+            f"cannot use the rayspec home {home}: {reason}{where}",
+            f"every run is recorded under it — check that {home} exists and is writable "
+            "(RAYSPEC_HOME names it)",
+        )
+    detail = f"{reason}: {path}" if path is not None else reason
+    return (detail, "check that the path exists and that you may read and write it")
+
+
+@contextlib.contextmanager
+def error_boundary() -> Iterator[None]:
+    """Turn what escapes a command into the documented refusal: ``error: …`` on stderr, exit 2.
+
+    Two kinds of failure end a command without a result and neither may reach a user as a
+    traceback: a :class:`~rayspec.errors.RayspecError` — what rayspec raises about a workflow, a
+    run store, a workspace — and an :class:`OSError` from the filesystem underneath it. Commands
+    handle the cases they expect; this is the boundary for the ones they do not.
+
+    It is deliberately not a per-command decision. ``rayspec run`` mapped a store error to exit 2
+    on the path that takes a lock and left the ``--dry-run`` path — the one ``rayspec init``
+    tells a new user to run first — to end in a traceback and exit 1, which is the code that
+    means "the workflow failed" for a run that was never created.
+    """
+    try:
+        yield
+    except RayspecError as exc:
+        fail(str(exc), hint=exc.hint)
+    except OSError as exc:
+        if exc.errno in _PIPE_ERRNOS:
+            raise
+        message, hint = filesystem_failure(exc)
+        fail(message, hint=hint)
+
+
+class ErrorBoundaryGroup(typer.core.TyperGroup):
+    """The ``rayspec`` root group, with :func:`error_boundary` around everything it invokes.
+
+    Click runs every command from inside the root group's ``invoke`` — sub-groups (``rayspec new
+    workflow``, ``rayspec runs diff``) and installed CLI plugins included — so this one class is
+    the whole boundary, and a command added later is covered without having to remember it.
+    """
+
+    def invoke(self, ctx: Any) -> Any:
+        with error_boundary():
+            return super().invoke(ctx)
+
+
 def report_lines(
     title: str, items: list[str], *, style: str, printer: Callable[[str], None]
 ) -> None:
@@ -631,17 +734,21 @@ __all__ = [
     "AllowUnsupportedOption",
     "CapabilitySource",
     "Context",
+    "ErrorBoundaryGroup",
     "JsonOption",
     "OutputFormat",
     "OutputOption",
     "RootOption",
     "capability_source",
+    "checked_root",
     "console",
     "err_console",
+    "error_boundary",
     "error_entries",
     "error_lines",
     "error_problems",
     "fail",
+    "filesystem_failure",
     "invoked_command",
     "json_line",
     "json_text",

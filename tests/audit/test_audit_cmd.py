@@ -350,3 +350,85 @@ def test_a_step_that_is_not_a_command_keeps_neither_row(
     run_id, _store = finished
     rows = _commands(cli, run_id, work_project)
     assert not [r for r in rows if r["kind"] == "step" and r["step"] in {"ask", "gate"}], rows
+
+
+# --------------------------------------------------------------------------------------------------
+# a resume replays what it can: the ledger has to say which rows are replays
+# --------------------------------------------------------------------------------------------------
+
+RESUMABLE = """
+rayspec: 1
+name: work
+isolation: none
+steps:
+  - id: build
+    shell: 'echo built'
+  - id: gate
+    needs: [build]
+    approve: "ship?"
+  - id: after
+    needs: [gate]
+    shell: 'echo after'
+"""
+
+
+@pytest.fixture
+def resumed(cli: CliRunner, tmp_path: Path, home: Path) -> tuple[str, Path, FileRunStore]:
+    """A run paused at a gate and then resumed — ``build`` is replayed, not executed again."""
+    root = tmp_path / "resumable"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "work.yaml").write_text(textwrap.dedent(RESUMABLE))
+    paused = cli.invoke(app, ["run", "work", "--no-interactive", "--root", str(root)])
+    assert paused.exit_code == 3, paused.output
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    done = cli.invoke(app, ["resume", run_id, "--yes", "--root", str(root)])
+    assert done.exit_code == 0, done.output
+    assert "reused 1 step(s)" in done.output
+    return run_id, root, store
+
+
+def test_a_replayed_step_is_not_reported_as_a_second_execution(
+    cli: CliRunner, resumed: tuple[str, Path, FileRunStore]
+) -> None:
+    """``build`` ran once. Its resume row said ``succeeded`` too, which read as twice."""
+    run_id, root, _store = resumed
+    result = cli.invoke(app, ["audit", run_id, "--json", "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)["rows"]
+    build = [r for r in rows if r["step"] == "build" and r["kind"] == "step"]
+    finished_rows = [r for r in build if r["detail"].startswith("succeeded")]
+    assert len(finished_rows) == 2, build  # the execution and the replay
+    executed = [r for r in finished_rows if not r["data"].get("reused")]
+    replayed = [r for r in finished_rows if r["data"].get("reused")]
+    assert len(executed) == len(replayed) == 1
+    assert executed[0]["detail"] == "succeeded"
+    assert "not re-executed" in replayed[0]["detail"]
+    assert "reused" in replayed[0]["detail"]
+
+
+def test_the_replay_marker_is_visible_in_the_table(
+    cli: CliRunner, resumed: tuple[str, Path, FileRunStore]
+) -> None:
+    """The table is what a person reads; the marker must not live only in ``--json`` data."""
+    run_id, root, _store = resumed
+    result = cli.invoke(app, ["audit", run_id, "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    assert "not re-executed" in result.output
+
+
+def test_the_stored_ledger_and_the_rendered_one_still_agree(
+    cli: CliRunner, resumed: tuple[str, Path, FileRunStore], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker comes from the store's own row derivation, so ``audit.jsonl`` carries it too."""
+    from rayspec.cli.commands.audit import collect_rows
+    from rayspec.store.file import audit_entry_for_event, finish_audit_row
+
+    run_id, _root, store = resumed
+    rendered = collect_rows(store, store.load(run_id))
+    replayed = [
+        finish_audit_row(entry)
+        for event in store.read_events(run_id)
+        if (entry := audit_entry_for_event(event)) is not None and entry["data"].get("reused")
+    ]
+    assert replayed and all(row in rendered for row in replayed)

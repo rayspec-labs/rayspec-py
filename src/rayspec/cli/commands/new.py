@@ -18,7 +18,7 @@ import typer
 import yaml
 from rich.markup import escape
 
-from rayspec.cli.commands._loader_common import RootOption, console, fail
+from rayspec.cli.commands._loader_common import RootOption, checked_root, console, fail
 from rayspec.loader import discover_agents, find_project_root
 from rayspec.schema.base import suggest
 from rayspec.schema.common import validate_identifier, validate_name
@@ -121,8 +121,7 @@ def project_root_for(root: Path | None) -> Path:
     A directory without ``.rayspec/`` is a usage error rather than a silent scaffold either way:
     creating a project is ``rayspec init``'s job.
     """
-    if root is not None and not root.is_dir():
-        fail(f"--root {str(root)!r} is not a directory")
+    checked_root(root)
     resolved = root.resolve() if root is not None else find_project_root(None)
     if not (resolved / PROJECT_DIR).is_dir():
         fail(

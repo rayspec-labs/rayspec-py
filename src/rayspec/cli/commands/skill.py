@@ -19,6 +19,7 @@ from rayspec import __version__
 from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
+    checked_root,
     console,
     err_console,
     fail,
@@ -42,16 +43,22 @@ RootOption = Annotated[
     Path | None,
     typer.Option(
         "--root",
-        help="Project root (the directory that gets `.claude/skills/rayspec/`). Default: the "
-        "nearest directory with `.rayspec/`, then `.git`, else the cwd. Not with --global.",
+        help="Project root (the existing directory that gets `.claude/skills/rayspec/`). "
+        "Default: the nearest directory with `.rayspec/`, then `.git`, else the cwd. "
+        "Not with --global.",
         show_default=False,
     ),
 ]
 
 
 def resolve_root(root: Path | None) -> Path:
-    """The project root an install targets: ``--root`` or :func:`find_project_root` from the cwd."""
-    return (root or find_project_root(Path.cwd())).resolve()
+    """The project root an install targets: ``--root`` or :func:`find_project_root` from the cwd.
+
+    ``--root`` goes through :func:`~rayspec.cli.commands._loader_common.checked_root` like
+    everywhere else: a path that is not an existing directory is a usage error, not a directory
+    tree this command creates on the way to reporting success.
+    """
+    return (checked_root(root) or find_project_root(Path.cwd())).resolve()
 
 
 def _state_line(label: str, state: InstalledState) -> str:
