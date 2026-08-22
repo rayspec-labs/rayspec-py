@@ -452,7 +452,7 @@ def json_text(payload: Any) -> str:
 
     Indented by two spaces when stdout is a terminal (a person is reading it), compact when it is
     redirected or piped (a program is). Nothing else varies: non-ASCII is written as itself
-    (``ä``, not ``\u00e4``), key order is the payload's, and a value the payload builder left
+    (``ä``, not ``\\u00e4``), key order is the payload's, and a value the payload builder left
     unserialisable is rendered as its ``str()`` rather than taking the command down after it has
     already done its work.
 
