@@ -9,12 +9,10 @@ workflow stops the schedule instead of running unreviewed.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.table import Table
 
 from rayspec.cli.commands._loader_common import (
     Context,
@@ -25,6 +23,8 @@ from rayspec.cli.commands._loader_common import (
     error_entries,
     fail,
     make_context,
+    new_table,
+    print_json,
     resolve_output,
     short_path,
 )
@@ -112,7 +112,7 @@ def register(app: typer.Typer) -> None:
             for entry in store.entries
         ]
         if json_:
-            typer.echo(json.dumps(rows, indent=2))
+            print_json(rows)
             return
         out = console()
         if not rows:
@@ -121,7 +121,7 @@ def register(app: typer.Typer) -> None:
                 "rayspec trust add <workflow>)"
             )
             return
-        table = Table(show_edge=False, pad_edge=False)
+        table = new_table()
         table.add_column("workflow", style="bold")
         table.add_column("hash")
         table.add_column("added")
@@ -212,7 +212,7 @@ def register(app: typer.Typer) -> None:
                 }
             )
         if json_:
-            typer.echo(json.dumps(rows, indent=2))
+            print_json(rows)
         else:
             out = console()
             for row in rows:

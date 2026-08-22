@@ -307,7 +307,58 @@ DOCUMENTS = [
     ("plugins", []),
     ("doctor", []),
     ("costs", []),
+    ("trust list", []),
 ]
+
+#: `--json` commands the parametrisation does not reach: they need a run that already happened
+#: (`show`, `logs`, `audit`, `eval`, `explain`, `lock`, `runs diff`), they start or steer one
+#: (`run`, `resume`, `approve`, `reject`, `cancel`, `test`), or they change state
+#: (`worktrees clean`, `trust check`). Each is covered by its own command's tests. Naming them
+#: here is what makes the list above total: a *new* `--json` command has to appear in one list or
+#: the other, and the one that renders a document in a fresh project belongs in the first.
+NOT_A_FRESH_PROJECT_DOCUMENT = {
+    "approve",
+    "audit",
+    "cancel",
+    "eval",
+    "explain",
+    "lock",
+    "logs",
+    "reject",
+    "resume",
+    "run",
+    "runs diff",
+    "show",
+    "test",
+    "trust check",
+    "worktrees clean",
+}
+
+
+def _json_commands() -> set[str]:
+    """Every command (leaf or group) that takes ``--json``."""
+    found: set[str] = set()
+
+    def walk(group: Any, prefix: str) -> None:
+        for name in sorted(group.commands):
+            command = group.commands[name]
+            full = f"{prefix}{name}"
+            if "--json" in {opt for param in command.params for opt in param.opts}:
+                found.add(full)
+            if hasattr(command, "commands"):
+                walk(command, f"{full} ")
+
+    walk(get_command(app), "")
+    return found
+
+
+def test_every_json_command_is_listed() -> None:
+    """The two lists above cover every ``--json`` command, so a new one cannot slip past both."""
+    listed = {command for command, _ in DOCUMENTS} | NOT_A_FRESH_PROJECT_DOCUMENT
+    assert _json_commands() == listed, (
+        "add the command to DOCUMENTS if it renders a document in a fresh project, "
+        f"else to NOT_A_FRESH_PROJECT_DOCUMENT: {sorted(_json_commands() ^ listed)}"
+    )
 
 
 def _flags(command: str) -> set[str]:
@@ -397,6 +448,7 @@ TABLES = [
     ("plugins", []),
     ("doctor", []),
     ("runs", []),
+    ("trust list", []),
 ]
 
 
