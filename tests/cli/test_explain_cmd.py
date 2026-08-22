@@ -307,8 +307,13 @@ def test_a_value_over_the_spill_threshold_still_shows_the_script(cli, big) -> No
     data = json.loads(result.output)
     assert data["rendered"]["error"] is None
     text = data["rendered"]["text"]
-    assert text is not None and text.startswith("printf ") and "wc -c" in text
-    assert "spill_dir" not in text and "70000 bytes" in text
+    assert text is not None
+    lines = text.splitlines()
+    assert lines[-1].startswith("printf ") and "wc -c" in lines[-1], "the body is shown as written"
+    # above it, the preamble that reads the spilled value back — with the scratch path it would
+    # read replaced by the placeholder, because an explain output is pasted into bug reports
+    assert lines[0].startswith("unset RAYSPEC_V1; ") and "70000 bytes" in lines[0]
+    assert "spill_dir" not in text and "/v1-" not in text
     human = cli.invoke(app, ["explain", run_id, "consume", "--full", "--root", str(project)])
     assert human.exit_code == 0 and "70000 bytes" in human.output
 
