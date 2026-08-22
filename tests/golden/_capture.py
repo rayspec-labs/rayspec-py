@@ -8,7 +8,8 @@ object or ``run.json`` are invisible to unit tests and break scripts, sinks and 
 Each case of every example (and of the repo's own workflows) is driven through the real Typer app
 as ``rayspec run <wf> --dry-run --json --stubs …`` and three files are written:
 
-``events.jsonl``   every stdout line but the last (events + stream records), masked, one per line
+``events.jsonl``   every stdout line but the last (events + stream records), masked, grouped by
+                   step (see :func:`canonical_order`), one per line
 ``summary.json``   the last stdout line (the ``--json`` summary object), masked, pretty-printed
 ``run.json``       the record the store wrote, masked, pretty-printed
 
@@ -133,6 +134,28 @@ def mask(value: Any, subs: list[tuple[re.Pattern[str], str]]) -> Any:
     return value
 
 
+def canonical_order(events: list[Any]) -> list[Any]:
+    """``events`` grouped by ``step_path``, so the corpus does not pin what the scheduler chose.
+
+    The order *within* one step is the engine's, is deterministic and is compared: a step emits
+    its own records from its own task, in sequence. The order *between* steps that run at the
+    same time is a coin toss — three sibling prompt steps under ``max_parallel: 3`` finish in
+    whatever order the event loop happens to wake them, so a corpus that pinned the interleaving
+    would be red at random on a machine that scheduled them differently, and the diff would say
+    nothing about the change under review. Grouping by step is what makes the file reproducible.
+
+    The run envelope keeps its place: every run-level event (no ``step_path``) that came before
+    the first step stays at the front and the rest stay at the back — ``run.started`` opens the
+    stream and ``run.finished`` closes it, which *is* deterministic and worth pinning.
+    """
+    first = next((i for i, event in enumerate(events) if event.get("step_path")), len(events))
+    head, rest = events[:first], events[first:]
+    scoped = [event for event in rest if event.get("step_path")]
+    unscoped = [event for event in rest if not event.get("step_path")]
+    # a stable sort: the records of one step keep the order the engine emitted them in
+    return [*head, *sorted(scoped, key=lambda event: str(event["step_path"])), *unscoped]
+
+
 def cli_args(suite: Suite, case: Case, *, inputs_file: Path) -> list[str]:
     """``rayspec run`` command line for ``case`` — the same one ``rayspec test`` simulates."""
     args = ["run", case.workflow, "--root", str(suite.root), "--dry-run", "--json"]
@@ -174,7 +197,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
     record_path = Path(summary["run_dir"]) / "run.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     subs = text_substitutions(home=home, root=suite.root)
-    events = [mask(json.loads(line), subs) for line in lines[:-1]]
+    events = canonical_order([mask(json.loads(line), subs) for line in lines[:-1]])
     return {
         "events.jsonl": "".join(json.dumps(e, sort_keys=True) + "\n" for e in events),
         "summary.json": json.dumps(mask(summary, subs), indent=2, sort_keys=True) + "\n",
@@ -185,6 +208,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
 __all__ = [
     "MASKED_KEYS",
     "USAGE_KEYS",
+    "canonical_order",
     "capture",
     "cli_args",
     "invoke",

@@ -2871,9 +2871,15 @@ included, because `workspace.branch` is null on a detached-HEAD checkout) and by
 over every string. `USAGE_KEYS` (`input`/`output`/`cached_input`/`cache_write`/`reasoning`) are
 masked to `0` wherever a `usage:` mapping appears: the stub derives its default counts from the
 prompt (`len(req.prompt) // 4`) and a prompt may embed `{{ run.workdir }}`, so an unmasked count
-is a function of the checkout path's length. **The corpus must capture byte-identically from two
-differently-named checkouts, detached HEAD included** — that is the acceptance test for a change
-to the masking. A case with no committed corpus *skips*; a
+is a function of the checkout path's length. `events.jsonl` is written in
+`_capture.canonical_order`: grouped by `step_path`, run-level events keeping the envelope
+(`run.started` first, `run.finished` last). The order WITHIN a step is the engine's and is
+compared; the order BETWEEN steps that ran at the same time is the scheduler's and is not —
+sibling prompt steps under `max_parallel:` interleave differently from one run to the next on one
+machine, so pinning that makes the corpus red at random. **The corpus must capture
+byte-identically from two differently-named checkouts, detached HEAD included, and from two runs
+that scheduled the same concurrent steps differently** — that is the acceptance test for a change
+to the masking or to the ordering. A case with no committed corpus *skips*; a
 deleted one is red (`MINIMUM_COVERED`), and a malformed case file anywhere in the repo is one
 failing test, never a collection error.
 `RAYSPEC_UPDATE_GOLDEN=1 uv run pytest tests/golden` regenerates. **A change to the `--json` event
