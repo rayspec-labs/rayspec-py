@@ -1336,7 +1336,10 @@ runs the `ConsoleApprovalPrompt` inside `async with sink.suspended():` for every
 additive kwargs `inputs=` (re-supplied secrets), `stub_script: StubScript | None =`,
 `stubs_path=`, `fail_fast=` (`resume --fail-fast`, OR-ed into `RunRecord.fail_fast`); the resumed
 run inherits `dry_run` and `fail_fast` from the record) both use
-it. `print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
+it. `resume --fail-fast` records the tightening even when the pending-gate short-circuit ends the
+command (exit 3, one extra line naming the flag): a failure policy only ever tightens, so it is
+safe to persist for whoever continues the run, and the flag must not be accepted and dropped.
+`print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
 (never markup: `[stub] think` stays literal) and through
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
@@ -1363,7 +1366,8 @@ workflow; `cache` memoises per (project root, workflow) for one listing) / `unpr
 (`provider|table|partial|none` — the engine's `engine.context.cost_source_of` applied to a stored
 record, so a listing prints what the engine wrote into `RunRecord.cost_source`) / `pid_command_line(pid)` (`ps -o
 command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|approve|reject` as whole tokens + run id / workflow name / file as a whole token) /
-`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
+`run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`, `fail_fast` — the
+recorded failure policy, next to `dry_run`; `rayspec show` marks both on the run header) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by
 recorded path, then by name) / `check_workflow_unchanged(run, resolved, force=)` (the engine's
 hash rule as a `ResumeError`, applied before anything is persisted) / `record_root(ctx, run)` /

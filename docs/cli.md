@@ -540,7 +540,7 @@ Options:
 
 - `--all` / `-a` — List runs of every project under RAYSPEC_HOME.
 - `--limit` / `-n` `<int range>` — [x>=1]  Show at most N runs.
-- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, pid, host, workspace{…}, pause{…}|null}]`.
+- `--json` / `--output json` — Machine-readable output: `[{run_id, workflow, status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done, steps_total, steps_ok, steps_skipped, tokens, usage{input, cached_input, cache_write, output, reasoning}, cost_usd, cost_source ("provider" | "table" | "partial" | "none"), resume_count, dry_run, fail_fast, pid, host, workspace{…}, pause{…}|null}]`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
 These are the options of the **listing**. `--root` is the only one a subcommand honours before the
@@ -899,7 +899,7 @@ Options:
 - `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
 - `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
-- `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again.
+- `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again. A run paused at a gate records it on the way out too (`--fail-fast recorded on the run: …`, still exit 3), so the blast radius can be narrowed *before* the gate is decided with `approve`/`reject`. `rayspec runs --json`, `rayspec show` and `rayspec show --json` report the recorded policy (`fail_fast`).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.
 - `--verbose` — Also show step starts.

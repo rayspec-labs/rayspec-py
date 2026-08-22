@@ -372,7 +372,10 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   continues with it: the second half of a run cancels the siblings the first half would have
   cancelled. `rayspec resume --fail-fast` (and `run --resume --fail-fast`) *adds* the policy to a
   run that started without it, and the tightened value is recorded — a failure policy is a
-  blast-radius control, so it only ever tightens and no later entry point can drop it. The
+  blast-radius control, so it only ever tightens and no later entry point can drop it. A run
+  paused at an approval gate records the tightening even though the resume stops at the gate
+  (exit 3), so `--fail-fast` first and `approve`/`reject` second is a usable order; `rayspec
+  runs --json`, `rayspec show` and `rayspec show --json` report what was recorded. The
   workflow's own `defaults.on_step_failure` is not recorded: it is part of the workflow, which the
   hash guard below already pins;
 - the workflow hash must match; otherwise the resume is **refused** (exit 2, `pass --force`)

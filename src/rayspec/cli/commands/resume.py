@@ -264,6 +264,14 @@ def register(app: typer.Typer) -> None:
         ):
             assert record.pause is not None
             out = err_console()
+            # --fail-fast is recorded even though this resume stops here: a failure policy only
+            # ever tightens, so writing it is safe whatever happens next, and the operator who
+            # narrows the blast radius before deciding the gate must not have it silently
+            # dropped. Whoever continues the run (approve/reject/resume) then reads it back.
+            tightened = fail_fast and not record.fail_fast
+            if tightened:
+                record.fail_fast = True
+                store.save(record)
             out.print(
                 Text.assemble(
                     (f"run {record.run_id} is paused", "yellow"),
@@ -271,6 +279,13 @@ def register(app: typer.Typer) -> None:
                 ),
                 highlight=False,
             )
+            if tightened:
+                out.print(
+                    "  --fail-fast recorded on the run: whatever continues it cancels running "
+                    "siblings on failure",
+                    markup=False,
+                    highlight=False,
+                )
             # the hint names only what this gate's approval class accepts: recommending a
             # command the class refuses is how a control teaches people to work around it
             classes = approval_classes_for(ctx.project_root, ctx.home)  # the RUN's policy

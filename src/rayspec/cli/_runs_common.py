@@ -375,6 +375,7 @@ def run_row(
         "cost_source": run_cost_source(run),
         "resume_count": run.resume_count,
         "dry_run": run.dry_run,
+        "fail_fast": run.fail_fast,
         "pid": run.pid,
         "host": run.host,
         "workspace": run.workspace.model_dump(mode="json"),
