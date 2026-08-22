@@ -152,7 +152,7 @@ step's timeout. Auth is inherited from the machine: a `claude` login, or `ANTHRO
 | `output_schema` | `output_format={"type": "json_schema", "schema": ...}`; the engine validates `structured_output` |
 | `session:` | `resume=<session id>` |
 | `env:` | merged into the subprocess environment (`CLAUDE_AGENT_SDK_CLIENT_APP=rayspec/<version>` is always set) |
-| `provider_options.claude` | any other `ClaudeAgentOptions` field, verbatim. `env` and `mcp_servers` are merged *under* the computed values; `stderr cwd cli_path resume fork_session output_format include_partial_messages` are adapter-owned and ignored with a warning; unknown keys warn |
+| `provider_options.claude` | any other `ClaudeAgentOptions` field, verbatim. `env` and `mcp_servers` are merged *under* the computed values; **every field the adapter computes** — `tools allowed_tools disallowed_tools permission_mode model system_prompt setting_sources strict_mcp_config effort thinking max_turns max_budget_usd output_format resume fork_session cwd cli_path stderr include_partial_messages` — is adapter-owned and ignored with a warning (change it through the neutral field instead); unknown keys warn. **While any control governs the agent** the block becomes an allow-list — `env` (every variable is refused: a name is read inside the process rayspec starts, so rayspec cannot say which computed option it overrides — set it in `providers.claude.env` in `config.yaml`, in the `env:` of the `mcp:` server that needs it, or in the `env:` of the shell/python step that needs it), `mcp_servers` (only a server the controls in force NAME — the agent's own `mcp:` set or a policy `mcp.allow_servers`), `max_thinking_tokens`, `max_buffer_size`, `load_timeout_ms`, `user` — and every other key is a load-time error, because `extra_args` and `settings` reach past anything rayspec computed. "Any control" means any, wherever it is spelled: the agent's own `access:`, `tools:`, `network:`, `commands:`, `mcp:`, `max_turns`, `budget_usd` or `on_denial: fail`, the workflow's `isolation:`, its `defaults:` caps, a `secret:` input or a step `timeout:`, any policy key, the model lockfile, or a `providers:` block in `config.yaml`; see [policy.md](policy.md#provider_options-is-an-allow-list-while-a-control-is-in-force) |
 
 Result mapping: `aborted_*` → interrupted, `error_max_turns` → max_turns, `error_max_budget_usd`
 → budget, `is_error` → error; HTTP 408/409/429/5xx/529 and synthetic rate-limit/server errors
@@ -185,7 +185,7 @@ against the bundled `codex` runtime. Auth is inherited: `codex login` (ChatGPT) 
 | `session:` | `thread_resume(<thread id>)` |
 | `env:` | the app-server client is created per environment signature (pooled per run) |
 | `max_turns`, `budget_usd`, `thinking`, raw tool names, tool groups other than `web` | **unsupported** (validation error). With `--allow-unsupported` the check becomes a warning: `max_turns`/`budget_usd`/`thinking` are then silently ignored by the adapter, while an unsupported `tools` entry still fails the step at run time (`ProviderError` naming the capability) |
-| `provider_options.codex` | `approval_mode` (`deny_all` default, `auto_review`), `config` (extra Codex config merged into every thread), `ephemeral`, `usage_baseline` |
+| `provider_options.codex` | `approval_mode` (`deny_all` default, `auto_review`), `config` (extra Codex config merged into every thread; `model`, `sandbox_mode`, `approval_policy`, `web_search` and `tools.web_search` are computed by the adapter and ignored with a warning), `ephemeral`, `usage_baseline` (usage counters **subtracted** from a resumed thread's totals — see Usage above; it sets the number every spend ceiling is measured against, so an inflated one reports no spend at all). **While any control governs the agent** the block becomes an allow-list — `config.mcp_servers` (only a server the controls in force NAME), `config.model_reasoning_summary`, `approval_mode` (`deny_all` only), `ephemeral`, `usage_baseline` (every counter zero — the baseline sets what `spend.json`, `run.json` and `rayspec costs` report, not only what a ceiling measures) — and every other `config` key is a load-time error; see [policy.md](policy.md#provider_options-is-an-allow-list-while-a-control-is-in-force) |
 
 Result mapping: `completed` → success; `interrupted` → timeout (when rayspec's deadline fired) else
 interrupted; `failed` → error classified by the Codex error code (transient: `serverOverloaded`,
@@ -216,6 +216,11 @@ provider_options:
         writable_roots: ["~/.cache/uv"]   # Codex expands ~; absolute paths work too
 ```
 
+`sandbox_workspace_write` widens the sandbox, so it is refused on an agent a control governs (a
+`policy.yaml` key, or `network: off` on the agent itself) — it is a machine-owner decision, and
+`providers.codex.config` in `config.yaml` is where a machine owner makes it. On a project with no
+policy the agent-file form above is fine.
+
 ```yaml
 # …or keep the cache inside the workspace: `env:` on the prompt step (works for every access level)
 - id: implement
@@ -224,8 +229,14 @@ provider_options:
   env: { UV_CACHE_DIR: "{{ run.workdir }}/.uv-cache" }   # add .uv-cache to .gitignore
 ```
 
-`config:` is forwarded verbatim as the app-server's per-thread config overrides (the same keys
-as `codex -c key=value` / `~/.codex/config.toml`; nested mappings are TOML tables), so
+`config:` is forwarded as the app-server's per-thread config overrides (the same keys
+as `codex -c key=value` / `~/.codex/config.toml`; nested mappings are TOML tables) — except for
+the keys the adapter computes from the agent's own fields, which a workflow may not overwrite: a
+`provider_options.codex.config` naming `model`, `sandbox_mode`, `approval_policy`, `web_search`
+or `tools.web_search` is dropped with a warning, because otherwise a workflow could undo the
+`model:`, `access:`, `tools:` and `network:` it was given (`config.mcp_servers` is *merged* under
+the agent's own servers rather than replaced). `providers.codex.config` in `config.yaml` belongs
+to the machine owner and is not filtered. So
 `writable_roots` can also live under `providers.codex.config` in `config.yaml` for every Codex
 agent of a project, and `network_access: true` under the same key allows package downloads when
 the sandbox blocks the network. The key and the `~` expansion were checked offline with the

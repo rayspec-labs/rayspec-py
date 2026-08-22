@@ -505,6 +505,28 @@ async def test_provider_options_already_narrowed_to_codex_are_accepted(world: Fa
     await provider.aclose()
 
 
+def test_the_block_the_adapter_reads_is_the_block_policy_checks() -> None:
+    """One narrowing for both, so a nesting variant cannot reach a thread unexamined.
+
+    ``provider_options.codex.codex.config`` is a shape this adapter honours. While the load-time
+    check walked a hand-written path instead, that shape was an unguarded pass-through — the
+    policy said "no such server" and the thread got the server.
+    """
+    from rayspec.schema import provider_option_block
+
+    shapes: list[dict[str, Any]] = [
+        {"codex": {"config": {"mcp_servers": {"evil": {"command": "/bin/sh"}}}}},
+        {"config": {"mcp_servers": {"evil": {"command": "/bin/sh"}}}},
+        {"approval_mode": "auto_review"},
+        {"codex": {}},
+        {},
+    ]
+    for options in shapes:
+        assert CodexProvider._options(_req(provider_options=options)) == provider_option_block(
+            "codex", options
+        )
+
+
 async def test_invalid_approval_mode_is_a_provider_error(world: FakeWorld):
     provider = await _open({"approval_mode": "yolo"})
     with pytest.raises(ProviderError) as info:
@@ -533,6 +555,66 @@ async def test_mcp_servers_and_web_deny_land_in_config(world: FakeWorld):
         "gh": {"command": "gh-mcp", "args": ["--x"], "env": {"T": "1"}},
         "docs": {"url": "https://d.example", "http_headers": {"A": "b"}},
     }
+    await provider.aclose()
+
+
+async def test_provider_options_cannot_widen_the_computed_config(world: FakeWorld):
+    """``provider_options.codex.config`` may not name a key the adapter computes itself.
+
+    ``config`` is a raw pass-through applied over the adapter's own keys, so without this the
+    workflow re-enables web search, raises the sandbox or swaps the model from inside itself.
+    """
+    provider = await _open()
+    collector = Collector()
+    await provider.run(
+        _req(
+            tools=ToolPolicy(deny=("web",)),
+            model="gpt-5.6",
+            access=AccessLevel.READ_ONLY,
+            provider_options={
+                "codex": {
+                    "config": {
+                        "tools": {"web_search": True, "view_image": True},
+                        "web_search": "enabled",
+                        "model": "gpt-5.6-pro",
+                        "sandbox_mode": "danger-full-access",
+                        "model_reasoning_effort": "high",
+                    }
+                }
+            },
+        ),
+        collector,
+    )
+    call = world.clients[0].thread_start_calls[0]
+    config = call["config"]
+    assert config["web_search"] == "disabled"
+    assert config["tools"] == {"view_image": True}
+    assert "model" not in config and "sandbox_mode" not in config
+    assert config["model_reasoning_effort"] == "high"  # not a key the adapter computes
+    assert call["model"] == "gpt-5.6" and call["sandbox"] == "read-only"
+    warned = "\n".join(e.text or "" for e in collector.of("warning"))
+    for key in (
+        "config.tools.web_search",
+        "config.web_search",
+        "config.model",
+        "config.sandbox_mode",
+    ):
+        assert f"provider_options.codex.{key}" in warned
+    await provider.aclose()
+
+
+async def test_provider_options_mcp_servers_still_merge(world: FakeWorld):
+    """The merged keys stay merged: only the computed ones are refused."""
+    provider = await _open()
+    await provider.run(
+        _req(
+            mcp_servers=(McpServerSpec(name="gh", command="gh-mcp"),),
+            provider_options={"codex": {"config": {"mcp_servers": {"docs": {"command": "d"}}}}},
+        ),
+        Collector(),
+    )
+    config = world.clients[0].thread_start_calls[0]["config"]
+    assert set(config["mcp_servers"]) == {"gh", "docs"}
     await provider.aclose()
 
 
@@ -1332,6 +1414,42 @@ async def test_usage_baseline_option_makes_resumed_usage_exact_and_raw_reports_t
         "output": 105,
         "reasoning": 0,
     }
+    await provider.aclose()
+
+
+async def test_a_usage_baseline_above_the_server_totals_reports_no_usage_at_all(
+    world: FakeWorld,
+):
+    """The baseline is the number a turn's usage is measured against, not a note in a ledger.
+
+    ``usage_delta`` is field-wise ``total - baseline`` clamped at zero, so a baseline above
+    anything the thread will reach reports zero tokens for every turn on it. ``CodexProvider``
+    derives the turn's cost from that same figure and the engine sums it, so a resumed step
+    reports zero spend however much it actually costs — which is what ``policy`` refuses under a
+    spend ceiling (``tests/policy/test_provider_options.py``).
+    """
+    world.script(
+        lambda t, u: [
+            token_usage(t, u, last=breakdown(400_000, 120_000), total=breakdown(400_000, 120_000)),
+            turn_completed(t, u),
+        ]
+    )
+    provider = await _open()
+    honest = await provider.run(_req(resume_session="thr-a"), Collector())
+    assert honest.usage.input + honest.usage.output == 520_000
+
+    await provider.aclose()
+    provider = await _open()
+    silenced = await provider.run(
+        _req(
+            resume_session="thr-a",
+            provider_options={
+                "codex": {"usage_baseline": {"input": 999_999_999, "output": 999_999_999}}
+            },
+        ),
+        Collector(),
+    )
+    assert silenced.usage.input + silenced.usage.output == 0
     await provider.aclose()
 
 
