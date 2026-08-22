@@ -181,6 +181,7 @@ after upgrading rayspec.
 - [docs/extending.md](docs/extending.md) — adding a provider via entry points, sinks, stores, embedding
 - [docs/examples.md](docs/examples.md) — the example projects and what each one shows
 - [docs/testing.md](docs/testing.md) — `rayspec test`: declarative cases, `--junit` in CI, the golden corpus
+- [docs/ci.md](docs/ci.md) — rayspec in CI: the dry-run check as a reusable workflow, and how rayspec is released
 - [docs/constitution.md](docs/constitution.md) — why the schema is narrow (admissibility test, case law)
 - [docs/agent-skill.md](docs/agent-skill.md) — the Claude Code skill: what it contains, `rayspec skill install|show|path`, how it is generated
 - [docs/README.md](docs/README.md) — index of the above

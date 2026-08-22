@@ -1,0 +1,262 @@
+# Reusable workflow: dry-run a rayspec workflow on a pull request and report the result.
+#
+# It is meant to be called from any repository that keeps a rayspec project — this one is not
+# special. A dry run replaces every provider with the scripted stub, so the check costs nothing,
+# needs no provider credential and never waits for a person.
+#
+#   # .github/workflows/rayspec.yml in your repository
+#   on: [pull_request]
+#   jobs:
+#     dry-run:
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#       uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
+#       with:
+#         workflow: review_pr
+#         stubs: .rayspec/dryrun/review_pr.stubs.yaml
+#         rayspec-version: "1.0.0"
+#
+# The caller's token has to carry `pull-requests: write` for the comment. Without it the run
+# still reports — into the job summary — and says why the comment is missing.
+name: rayspec dry run
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        description: The workflow to dry-run (a discovered name or a path).
+        required: true
+        type: string
+      project-dir:
+        description: Directory holding the rayspec project (where `.rayspec/` lives).
+        default: "."
+        type: string
+      stubs:
+        description: Stub script supplying the agents' answers, relative to `project-dir`.
+        default: ""
+        type: string
+      inputs-file:
+        description: YAML/JSON file of workflow inputs, relative to `project-dir`.
+        default: ""
+        type: string
+      rayspec-version:
+        description: Version to install from PyPI. Empty means the latest release — pin it.
+        default: ""
+        type: string
+      python-version:
+        description: Interpreter rayspec runs on.
+        default: "3.12"
+        type: string
+      comment:
+        description: Post the result as a pull-request comment (edited in place on every push).
+        default: true
+        type: boolean
+      comment-tag:
+        description: Distinguishes the comments of several calls in one pull request.
+        default: "default"
+        type: string
+      fail-on-error:
+        description: Fail the check when the dry run did not succeed.
+        default: true
+        type: boolean
+    outputs:
+      status:
+        description: succeeded · failed · paused · cancelled · not started (usage error)
+        value: ${{ jobs.dry-run.outputs.status }}
+      exit-code:
+        description: The exit code rayspec returned.
+        value: ${{ jobs.dry-run.outputs.exit-code }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dry-run:
+    name: rayspec dry run
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.run.outputs.status }}
+      exit-code: ${{ steps.run.outputs.exit-code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: ${{ inputs.python-version }}
+          enable-cache: false
+
+      - name: Install rayspec
+        env:
+          VERSION: ${{ inputs.rayspec-version }}
+        run: |
+          set -euo pipefail
+          uv tool install "rayspec${VERSION:+==$VERSION}"
+          uv tool dir --bin >> "$GITHUB_PATH"
+
+      - name: Dry-run the workflow
+        id: run
+        working-directory: ${{ inputs.project-dir }}
+        env:
+          WORKFLOW: ${{ inputs.workflow }}
+          STUBS: ${{ inputs.stubs }}
+          INPUTS_FILE: ${{ inputs.inputs-file }}
+        run: |
+          set -uo pipefail
+          args=("$WORKFLOW" --dry-run --no-interactive --json)
+          if [ -n "$STUBS" ]; then args+=(--stubs "$STUBS"); fi
+          if [ -n "$INPUTS_FILE" ]; then args+=(--inputs-file "$INPUTS_FILE"); fi
+          rayspec version
+          rayspec run "${args[@]}" \
+            > "$RUNNER_TEMP/rayspec-events.jsonl" \
+            2> "$RUNNER_TEMP/rayspec-errors.txt"
+          code=$?
+          case "$code" in
+            0) status=succeeded ;;
+            1) status=failed ;;
+            2) status="not started (usage error)" ;;
+            3) status=paused ;;
+            4) status=cancelled ;;
+            *) status="exit $code" ;;
+          esac
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          tail -c 4000 "$RUNNER_TEMP/rayspec-errors.txt" || true
+
+      - name: Render the result
+        id: render
+        env:
+          RAYSPEC_EVENTS: ${{ runner.temp }}/rayspec-events.jsonl
+          RAYSPEC_ERRORS: ${{ runner.temp }}/rayspec-errors.txt
+          RAYSPEC_OUTPUT: ${{ runner.temp }}/rayspec-comment.md
+          RAYSPEC_EXIT: ${{ steps.run.outputs.exit-code }}
+          RAYSPEC_WORKFLOW: ${{ inputs.workflow }}
+          RAYSPEC_MARKER: "<!-- rayspec-dry-run: ${{ inputs.comment-tag }} -->"
+          RAYSPEC_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          MAX = 60000  # a comment holds 65536 characters; leave room for the marker and footer
+          BY_CODE = {
+              0: "succeeded",
+              1: "failed",
+              2: "not started (usage error)",
+              3: "paused",
+              4: "cancelled",
+          }
+          ICON = {
+              "succeeded": "white_check_mark",
+              "failed": "x",
+              "paused": "hourglass",
+              "cancelled": "no_entry_sign",
+          }
+
+
+          def read(name: str) -> str:
+              path = os.environ.get(name, "")
+              try:
+                  return pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
+              except OSError:
+                  return ""
+
+
+          exit_code = int(os.environ.get("RAYSPEC_EXIT") or 0)
+          workflow = os.environ.get("RAYSPEC_WORKFLOW", "?")
+
+          records = []
+          for line in read("RAYSPEC_EVENTS").splitlines():
+              if line.strip():
+                  try:
+                      records.append(json.loads(line))
+                  except ValueError:
+                      pass  # a stream cut off mid-line is still worth reporting on
+
+          summary = records[-1] if records and "exit_code" in records[-1] else {}
+          status = summary.get("status") or BY_CODE.get(exit_code, f"exit {exit_code}")
+
+          body = [os.environ.get("RAYSPEC_MARKER", ""), ""]
+          icon = ICON.get(status, "x" if exit_code else "grey_question")
+          body += [f"### :{icon}: rayspec dry run — `{workflow}` {status}", ""]
+
+          steps = [r for r in records if r.get("type") == "step.finished"]
+          if steps:
+              body += ["| Step | Result | Time |", "| --- | --- | --- |"]
+              for record in steps:
+                  data = record.get("data") or {}
+                  result = str(data.get("status", "?"))
+                  if data.get("tolerated"):
+                      result += " (tolerated)"
+                  if data.get("skip_reason"):
+                      result += f" ({data['skip_reason']})"
+                  path = record.get("step_path", "?")
+                  body.append(f"| `{path}` | {result} | {data.get('duration_ms', '?')} ms |")
+              body.append("")
+
+          outputs = summary.get("outputs") or {}
+          if outputs:
+              rendered = json.dumps(outputs, indent=2, ensure_ascii=False, sort_keys=True)
+              body += ["<details><summary>Outputs</summary>", "", "```json", rendered, "```"]
+              body += ["", "</details>", ""]
+
+          errors = read("RAYSPEC_ERRORS").strip()
+          if errors and status != "succeeded":
+              body += ["```", errors[-4000:], "```", ""]
+
+          footer = [f"exit code `{exit_code}`"]
+          if summary.get("run_id"):
+              footer.append(f"run `{summary['run_id']}`")
+          if summary.get("reason"):
+              footer.append(str(summary["reason"]))
+          footer.append(
+              "no agent was called: `--dry-run` answers every prompt from the scripted stub"
+          )
+          if os.environ.get("RAYSPEC_RUN_URL"):
+              footer.append(f"[workflow run]({os.environ['RAYSPEC_RUN_URL']})")
+          body.append("<sub>" + " · ".join(footer) + "</sub>")
+
+          text = "\n".join(body).rstrip() + "\n"
+          if len(text) > MAX:
+              text = text[:MAX] + "\n\n<sub>…truncated.</sub>\n"
+          pathlib.Path(os.environ["RAYSPEC_OUTPUT"]).write_text(text, encoding="utf-8")
+          PY
+          cat "$RAYSPEC_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on the pull request
+        id: comment
+        # A pull request from a fork gets a read-only token: the report is in the job summary
+        # either way, and a missing comment must not read as a failed check.
+        if: >-
+          inputs.comment
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BODY: ${{ runner.temp }}/rayspec-comment.md
+          MARKER: "<!-- rayspec-dry-run: ${{ inputs.comment-tag }} -->"
+        run: |
+          set -uo pipefail
+          post() {
+            existing=$(gh api "repos/$REPO/issues/$NUMBER/comments" --paginate \
+              --jq "[.[] | select(.body | contains(\"$MARKER\"))] | last | .id // empty") || return 1
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$BODY" --silent
+            else
+              gh api -X POST "repos/$REPO/issues/$NUMBER/comments" -F "body=@$BODY" --silent
+            fi
+          }
+          post || echo "::warning::could not post the comment — the calling job needs
+          permissions: pull-requests: write. The result is in this run's job summary."
+
+      - name: Fail the check when the dry run did not succeed
+        if: inputs.fail-on-error && steps.run.outputs.status != 'succeeded'
+        env:
+          STATUS: ${{ steps.run.outputs.status }}
+          WORKFLOW: ${{ inputs.workflow }}
+        run: |
+          echo "::error::rayspec dry run of '$WORKFLOW' ended: $STATUS"
+          exit 1

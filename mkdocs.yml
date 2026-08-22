@@ -1,0 +1,96 @@
+# The published docs site (https://rayspec-labs.github.io/rayspec-py/).
+#
+# It publishes `docs/*.md` as they are — the same files GitHub renders — plus two generated
+# pages (the project README as the front page, CHANGELOG.md as the changelog). Links that only
+# make sense in a checkout are repaired at build time by scripts/mkdocs_hooks.py.
+#
+#   uv run --group docs mkdocs serve     # live preview on http://127.0.0.1:8000
+#   uv run --group docs mkdocs build     # strict build into site/ (also run by the test suite)
+site_name: rayspec
+site_description: >-
+  Declarative agent workflows for coding agents — a YAML DSL on the Claude Agent SDK and the
+  OpenAI Codex SDK. CLI only.
+site_url: https://rayspec-labs.github.io/rayspec-py/
+repo_url: https://github.com/rayspec-labs/rayspec-py
+repo_name: rayspec-labs/rayspec-py
+edit_uri: edit/main/docs/
+copyright: Apache-2.0 — rayspec-labs
+
+docs_dir: docs
+site_dir: site
+strict: true
+use_directory_urls: true
+
+# docs/README.md is the index GitHub shows in that directory; the site's front page is the
+# project README instead, so publishing both would be two competing index pages.
+exclude_docs: |
+  README.md
+
+# A link that does not resolve is a build failure, not a log line — that is the whole point of
+# checking the site: the docs have to be correct in both renderings.
+# `strict: true` turns every one of these warnings into a failed build.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - content.code.copy
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  # GitHub's heading slugs, so `#--repo` and `#record--replay` mean the same thing in both
+  # renderings of the same page.
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify { kwds: { case: lower } }
+  - pymdownx.details
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Learn:
+      - Concepts: concepts.md
+      - Schema reference: schema.md
+      - Templating: templating.md
+      - Providers: providers.md
+  - Use:
+      - CLI reference: cli.md
+      - Runs and resume: runs-and-resume.md
+      - Isolation: isolation.md
+      - Testing workflows: testing.md
+      - Continuous integration: ci.md
+      - Examples: examples.md
+  - Extend:
+      - Extending rayspec: extending.md
+      - Agent skill: agent-skill.md
+      - Design constitution: constitution.md
+  - Changelog: changelog.md

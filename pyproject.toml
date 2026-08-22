@@ -53,6 +53,15 @@ dev = [
   "types-jsonschema",
   "hatchling>=1.27",  # dev-only: tests/cli/test_init_cmd.py builds a wheel in-process
 ]
+# dev-only: the published docs site is these same `docs/*.md`. `uv run --group docs mkdocs serve`
+# previews them; `tests/release/test_docs_site.py` builds them with `--strict`, which is what
+# proves every internal link resolves in the site as well as on GitHub.
+docs = [
+  # Upper bounds on purpose: MkDocs 2.0 drops the plugin and theming systems Material builds on,
+  # so an unpinned resolve would break the docs build on a day nobody was touching the docs.
+  "mkdocs>=1.6,<2",
+  "mkdocs-material>=9.5,<10",
+]
 
 [build-system]
 requires = ["hatchling>=1.27"]  # PEP 639 list-form `license-files` (metadata 2.4+)
