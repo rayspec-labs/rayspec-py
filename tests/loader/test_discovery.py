@@ -1,7 +1,11 @@
 """Workflow / agent discovery: project overrides user by name."""
 
+import importlib
+import pkgutil
 from pathlib import Path
 
+import rayspec
+import rayspec.workspace
 from rayspec.loader import discover_agents, discover_workflows, find_project_root
 
 WF = "rayspec: 1\nname: {name}\ndescription: {desc}\nsteps:\n  - id: a\n    shell: echo\n"
@@ -65,7 +69,9 @@ def test_find_project_root_is_the_only_one() -> None:
 
     A second ``find_project_root`` used to live in ``rayspec.workspace``: it returned the git
     top level, so in a repository whose project sits at ``packages/foo/.rayspec`` the two
-    disagreed about what "the project" is. This scan keeps the duplicate from coming back.
+    disagreed about what "the project" is. Two checks, because the source scan below only sees
+    a second ``def``: an alias (``find_project_root = _toplevel_root``) restores exactly the
+    same ambiguity without one, so the *exported names* are checked as well.
     """
     src = Path(__file__).resolve().parents[2] / "src" / "rayspec"
     defining = sorted(
@@ -74,6 +80,19 @@ def test_find_project_root_is_the_only_one() -> None:
         if "def find_project_root(" in path.read_text(encoding="utf-8")
     )
     assert defining == ["loader/discovery.py"]
+
+    exported = {}
+    for info in pkgutil.walk_packages(rayspec.__path__, "rayspec."):
+        exposed = getattr(importlib.import_module(info.name), "find_project_root", None)
+        if exposed is not None:
+            exported[info.name] = exposed
+    assert "rayspec.loader" in exported, "the scan imported nothing — it has stopped working"
+    assert not hasattr(rayspec.workspace, "find_project_root"), (
+        "rayspec.workspace answers a different question: discover_project(cwd).root"
+    )
+    assert len({id(f) for f in exported.values()}) == 1, (
+        f"one function under two names: {[(m, getattr(f, '__module__', None)) for m, f in exported.items()]}"
+    )
 
 
 def test_find_project_root_walks_up(tmp_path: Path):

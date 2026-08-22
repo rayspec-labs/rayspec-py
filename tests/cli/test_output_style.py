@@ -25,31 +25,123 @@ from rayspec.cli.commands import _loader_common as common
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "rayspec" / "cli"
 
-#: The one module that renders a JSON *document* itself: `rayspec schema` prints a published
-#: JSON Schema, which must stay byte-identical to the checked-in `schemas/*.schema.json` and is
+#: The two modules that render a JSON *document* themselves: `_loader_common` is the house
+#: renderer every other command goes through, and `rayspec schema` prints a published JSON
+#: Schema, which must stay byte-identical to the checked-in `schemas/*.schema.json` and is
 #: therefore not a presentation choice at all.
-JSON_DUMPS_EXCEPTIONS = {"commands/schema.py"}
+JSON_DUMPS_EXCEPTIONS = {"commands/_loader_common.py", "commands/schema.py"}
+
+#: Every call that turns a payload into JSON text. The house renderers (`json_text`,
+#: `json_line`, `print_json`) are deliberately not among them: going through those is the point.
+SERIALISER_NAMES = {"dumps", "model_dump_json"}
+
+#: Calls that put a string on stdout. `write`/`writelines` count only when the receiver names
+#: stdout — `rayspec runs stubs` legitimately writes a generated script to a file handle.
+PRINTER_NAMES = {"print", "echo", "secho"}
+
+
+def _dotted(node: ast.expr) -> str:
+    """``rich.table.Table`` for a name/attribute chain, ``""`` for anything else.
+
+    A base the scan cannot name becomes ``?``, so ``console().print(...)`` reads as ``?.print``
+    and still counts: the receiver is not what makes a call a print.
+    """
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not parts and not isinstance(node, ast.Name):
+        return ""
+    parts.append(node.id if isinstance(node, ast.Name) else "?")
+    return ".".join(reversed(parts))
+
+
+def _last(dotted: str) -> str:
+    return dotted.rsplit(".", 1)[-1]
+
+
+def _json_aliases(tree: ast.Module) -> set[str]:
+    """Local names bound by ``from json import dumps [as x]`` — `json.` is not the only spelling."""
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "json"
+        for alias in node.names
+        if alias.name in SERIALISER_NAMES
+    }
+
+
+def _is_serialiser(node: ast.expr | None, names: set[str]) -> bool:
+    """Whether ``node`` is a call that produces a JSON document as text."""
+    if not isinstance(node, ast.Call):
+        return False
+    dotted = _dotted(node.func)
+    return bool(dotted) and (_last(dotted) in SERIALISER_NAMES or dotted in names)
+
+
+def _is_printer(call: ast.Call) -> bool:
+    dotted = _dotted(call.func)
+    if not dotted:
+        return False
+    last = _last(dotted)
+    return last in PRINTER_NAMES or (last in {"write", "writelines"} and "stdout" in dotted)
+
+
+def _serialising_names(tree: ast.Module) -> set[str]:
+    """Module-local names that hold, or return, a serialised document.
+
+    Grown to a fixed point so a chain of one-line helpers is not a way around the scan.
+    """
+    names = _json_aliases(tree)
+    while True:
+        grown = set(names)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and _is_serialiser(node.value, grown):
+                grown |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+            elif isinstance(node, ast.AnnAssign) and _is_serialiser(node.value, grown):
+                if isinstance(node.target, ast.Name):
+                    grown.add(node.target.id)
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and any(
+                isinstance(child, ast.Return)
+                and (
+                    _is_serialiser(child.value, grown)
+                    or (isinstance(child.value, ast.Name) and child.value.id in grown)
+                )
+                for child in ast.walk(node)
+            ):
+                grown.add(node.name)
+        if grown == names:
+            return names
+        names = grown
 
 
 def _printing_dumps(path: Path) -> list[int]:
-    """Lines of ``path`` where a ``json.dumps(...)`` call is printed straight to stdout."""
+    """Lines of ``path`` that print a self-serialised JSON document on stdout.
+
+    Three spellings, because the assign-then-print one is what several of the call sites this
+    scan replaced actually looked like: the serialiser inside the print (``print(json.dumps(x))``,
+    ``sys.stdout.write(json.dumps(x))``), a local bound to one and printed bare (``text =
+    json.dumps(x)`` … ``typer.echo(text)``), and a helper that returns one (``def _doc(x): return
+    json.dumps(x)`` … ``out.print(_doc(x))``). ``from json import dumps`` and any alias of it
+    count, and so does pydantic's ``model_dump_json``.
+
+    A serialised *value* embedded in a line (``out.print(f"usage {json.dumps(u)}")``) renders one
+    field of a human view rather than a document, and is left alone.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = _serialising_names(tree)
     found: list[int] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-        if name not in {"print", "echo"}:
+        if not isinstance(node, ast.Call) or not _is_printer(node):
             continue
         for arg in node.args:
             if (
-                isinstance(arg, ast.Call)
-                and isinstance(arg.func, ast.Attribute)
-                and arg.func.attr == "dumps"
+                _is_serialiser(arg, names)
+                or (isinstance(arg, ast.Name) and arg.id in names)
+                or (isinstance(arg, ast.Call) and _dotted(arg.func) in names)
             ):
                 found.append(node.lineno)
-    return found
+    return sorted(set(found))
 
 
 def test_no_command_serialises_its_own_json_output() -> None:
@@ -61,6 +153,9 @@ def test_no_command_serialises_its_own_json_output() -> None:
     unexpected = {k: v for k, v in offenders.items() if k not in JSON_DUMPS_EXCEPTIONS}
     assert not unexpected, (
         f"print json_text(...)/print_json(...) instead of json.dumps: {unexpected}"
+    )
+    assert set(offenders) >= JSON_DUMPS_EXCEPTIONS, (
+        "the scan no longer sees the modules it is meant to see — it has stopped working"
     )
 
 
@@ -134,14 +229,36 @@ def test_json_prints_on_a_stdout_that_cannot_encode_it(project: Path, home: Path
     assert json.loads(utf8.stdout) == json.loads(ascii_.stdout), "same document either way"
 
 
+def _table_names(tree: ast.Module) -> set[str]:
+    """``Table`` plus every local name bound to it (``from rich.table import Table as T``)."""
+    names = {"Table"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("rich"):
+            names |= {alias.asname or alias.name for alias in node.names if alias.name == "Table"}
+    return names
+
+
 def _table_calls(path: Path) -> list[int]:
-    """Lines of ``path`` that construct a ``rich.table.Table`` directly."""
+    """Lines of ``path`` that build a ``rich.table.Table`` — under any of its spellings.
+
+    The constructor by any dotted path (``Table(...)``, ``rich.table.Table(...)``) or alias, the
+    ``Table.grid(...)`` shortcut, and a subclass. ``PriceTable(...)`` is a different class and is
+    not caught: the last segment of the dotted name has to *be* ``Table``, not end with it.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    return [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Table"
-    ]
+    names = _table_names(tree)
+    found: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            if any(_last(_dotted(base)) in names for base in node.bases):
+                found.append(node.lineno)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        parts = _dotted(node.func).split(".")
+        if parts[-1] in names or (len(parts) > 1 and parts[-2] in names):
+            found.append(node.lineno)
+    return sorted(set(found))
 
 
 #: The one module that constructs a ``Table``: it is the factory every listing goes through.
@@ -157,6 +274,9 @@ def test_no_command_builds_its_own_table() -> None:
         if lines and rel not in TABLE_EXCEPTIONS:
             offenders[rel] = lines
     assert not offenders, f"build tables with _loader_common.new_table(): {offenders}"
+    assert all(_table_calls(SRC / rel) for rel in TABLE_EXCEPTIONS), (
+        "the scan no longer sees the factory itself — it has stopped working"
+    )
 
 
 #: Box drawing, block elements and the shaded blocks Rich borders are made of.
@@ -200,15 +320,35 @@ def _flags(command: str) -> set[str]:
 
 @pytest.mark.parametrize(("command", "extra"), DOCUMENTS, ids=lambda case: str(case))
 def test_json_documents_share_one_rendering(
-    command: str, extra: list[str], project: Path, home: Path
+    command: str, extra: list[str], project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """One rendering, and a payload that is JSON without help.
+
+    ``json_text`` passes ``default=str`` so a value the builder left unserialisable does not take
+    the command down after it has already done its work — but that also turns a stray ``Path``
+    into ``"PosixPath('/x')"`` where nobody notices. The stand-in below re-renders every payload
+    without a ``default=``, so the suite still fails on one; and it counts the calls, so a command
+    that prints its document some other way fails here rather than escaping the check.
+    """
+    render = common.json_text
+    payloads: list[Any] = []
+
+    def _strict(payload: Any) -> str:
+        payloads.append(payload)
+        json.dumps(payload, ensure_ascii=False)
+        return render(payload)
+
+    monkeypatch.setattr(common, "json_text", _strict)
     argv = [*command.split(), *extra, "--json"]
     if "--root" in _flags(command):
         argv += ["--root", str(project)]
     res = CliRunner().invoke(app, argv)
+    if res.exception is not None and not isinstance(res.exception, SystemExit):
+        raise res.exception
     assert res.stdout, res.output
+    assert len(payloads) == 1, f"{command} --json did not render through print_json: {payloads}"
     payload = json.loads(res.stdout)
-    assert res.stdout == common.json_text(payload) + "\n"
+    assert res.stdout == render(payload) + "\n"
 
 
 #: Commands whose default (table) rendering is a listing.

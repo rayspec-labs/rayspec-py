@@ -1823,14 +1823,19 @@ it inside a string) and `json_line(payload)` renders one record of a **line-deli
 (`run|resume|approve|reject --json`'s summary line, `logs --json`), which stays compact on a
 terminal too so `… | tail -1 | jq` reads a whole record. The compact form is byte-for-byte
 pydantic's `model_dump_json`, i.e. what `run.json` and every JSONL line already were. No command
-serialises its own `--json` output: the one `json.dumps` printed straight to stdout under `cli/`
-is `rayspec schema`'s published schema document, and `tests/cli/test_output_style.py` fails on the
-next one (an AST scan) as well as asserting that every command's `--json` document is exactly
-`json_text` of its payload.
+serialises its own `--json` output: the two modules that print a serialised document under `cli/`
+are `_loader_common` itself and `rayspec schema`'s published schema document, and
+`tests/cli/test_output_style.py` fails on the next one (an AST scan covering the serialiser inside
+the print, a local bound to one and printed bare, a helper that returns one, `sys.stdout.write`,
+`from json import dumps` under any alias, and `model_dump_json`; the scan also asserts it still
+sees those two modules, so a scan that has stopped working fails too). The same file asserts that
+every command's `--json` document is exactly `json_text` of its payload, and that the payload is
+serialisable without `default=`.
 
 `new_table(title=None, show_header=True) -> rich.table.Table` is the same story for listings: no
 box, no edges, bold header, left-justified title — the only knobs are the two arguments, and no
-module under `cli/` may construct a `Table` itself (same test file, same kind of scan). Commands
+module under `cli/` may construct a `Table` itself (same test file, same kind of scan: any dotted
+path or import alias, `Table.grid`, and a subclass). Commands
 print through `console()`/`err_console()` so a redirected listing is rendered at a fixed width
 instead of the 80 columns a bare `rich.console.Console()` assumes.
 
