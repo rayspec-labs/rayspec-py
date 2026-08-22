@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.cli.commands._loader_common import Context, fail, make_context
 from rayspec.config import Config
+from rayspec.engine.context import cost_source_of
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.fmt import format_duration
@@ -330,11 +331,8 @@ def run_cost_source(run: RunRecord) -> str:
     The engine's rule (:func:`~rayspec.engine.context.cost_source_of`), applied to a stored
     record: what a listing prints for a run must be what the engine wrote into
     ``RunRecord.cost_source`` for it, and a second copy of the rule is a second answer waiting
-    to happen. Imported here rather than at module level so listing runs does not drag the
-    engine into a command that never starts one.
+    to happen.
     """
-    from rayspec.engine.context import cost_source_of
-
     return cost_source_of(run.steps.values())
 
 
