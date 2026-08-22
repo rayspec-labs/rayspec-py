@@ -36,18 +36,19 @@ import pytest
 
 from rayspec.engine.context import RunOptions
 from rayspec.engine.errors import RunStopped
-from rayspec.engine.graph import FAILED_LIKE, classify
 from rayspec.engine.scheduler import run_graph
 from rayspec.schema import StepStatus
 from rayspec.store.model import StepRecord
 
 from .conftest import Harness, make_graph_harness
-from .generate import DEFAULT_CASES, aforall, shrink_seq
+from .generate import DEFAULT_CASES, aforall, raises, shrink_seq
 
 pytestmark = pytest.mark.anyio
 
 #: Statuses a step can only have because it was actually dispatched.
 RAN = frozenset({StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.INTERRUPTED})
+#: Terminal statuses the join table counts as a failure — restated here, see :func:`classify_row`.
+FAILED_STATUSES = frozenset({StepStatus.FAILED, StepStatus.INTERRUPTED, StepStatus.REJECTED})
 #: ``skip_reason`` values that mean "the graph ended", not "this step's needs decided it".
 DRAIN_REASONS = frozenset({"run_failed", "stopped"})
 #: Leaf bodies the fake executor understands; the sleeps put siblings in flight concurrently,
@@ -178,7 +179,14 @@ def owner_of(case: Case, path: str) -> Gen | None:
 
 
 def gen_steps(rng: random.Random, counter: list[int], *, depth: int, size: int) -> tuple[Gen, ...]:
-    """A sibling list of ``size`` steps in shuffled (non-topological) declaration order."""
+    """A sibling list of ``size`` steps in shuffled (non-topological) declaration order.
+
+    ``when:`` is drawn independently of ``needs``, which is what makes the two shapes the flat
+    generator could not reach appear here: a step that is SKIPPED while its siblings succeed
+    (so a downstream ``join: any`` sees a mixed ``needs`` — the one row where ``any`` differs
+    from ``all``, and the entire reason ``join: any`` exists), and a ``join: always`` step
+    carrying a ``when:``, which is the only way into the teardown's own ``when:`` branch.
+    """
     steps: list[Gen] = []
     for _ in range(size):
         counter[0] += 1
@@ -199,10 +207,10 @@ def gen_steps(rng: random.Random, counter: list[int], *, depth: int, size: int) 
                 id=sid,
                 kind=kind,
                 needs=needs,
-                join=rng.choice(["all", "any", "always"]) if needs else "all",
+                join=rng.choice(["all", "any", "any", "always"]) if needs else "all",
                 body=rng.choice(BODIES),
                 allow_failure=rng.random() < 0.15,
-                when_false=not needs and rng.random() < 0.15,
+                when_false=rng.random() < 0.2,
                 children=children,
                 iterations=rng.randint(1, 2),
                 items=rng.choice([0, 1, 2, 2]),
@@ -226,23 +234,34 @@ def case_for(mode: str):
 
 
 def with_a_stop(rng: random.Random, steps: tuple[Gen, ...]) -> tuple[Gen, ...]:
-    """Turn one generated leaf — at any depth — into a ``stop:``.
+    """Turn one generated leaf — at any depth — into a ``stop:``, and give it a cleanup sibling.
 
     A ``stop:`` inside a body is the interesting placement: the signal has to travel out of the
     composite and tear down the list ABOVE it, which is the path a flat generator never reaches.
+
+    The cleanup sibling is a ``join: always`` step carrying ``when: "false"`` that needs the
+    ``stop:``. Nothing else can decide it — its need is only terminal once the stop has fired,
+    and the stop tears the list down in the same breath — so it is always the WIND-DOWN that
+    evaluates its ``when:``, which is a branch of its own and not the ready-set check it is
+    copied from.
     """
     leaves = [s.id for s in walk(steps) if s.kind == "leaf" and not s.when_false]
     if not leaves:
         return steps
     target = rng.choice(leaves)
+    cleanup = Gen(
+        id=f"{target}_cleanup", kind="leaf", needs=(target,), join="always", when_false=True
+    )
 
     def rewrite(items: tuple[Gen, ...]) -> tuple[Gen, ...]:
-        return tuple(
-            replace(s, kind="stop", children=())
-            if s.id == target
-            else replace(s, children=rewrite(s.children))
-            for s in items
-        )
+        out: list[Gen] = []
+        for s in items:
+            if s.id == target:
+                out.append(replace(s, kind="stop", children=()))
+                out.append(cleanup)
+            else:
+                out.append(replace(s, children=rewrite(s.children)))
+        return tuple(out)
 
     return rewrite(steps)
 
@@ -250,28 +269,59 @@ def with_a_stop(rng: random.Random, steps: tuple[Gen, ...]) -> tuple[Gen, ...]:
 def shrink_case(case: Case):
     """Simpler cases: fewer root steps, then composites collapsed to leaves.
 
-    Dropping a step also drops every ``needs`` that named it, so a shrunk case still loads.
+    Dropping a step also drops every ``needs`` that named it, so a shrunk case still loads. A
+    list is never emptied: ``steps:`` is required, and an empty one is a schema error rather
+    than a simpler counter-example.
     """
     for smaller in shrink_seq(case.steps):
-        yield replace(case, steps=repair(tuple(smaller)))
+        if smaller:
+            yield replace(case, steps=repair(tuple(smaller)))
     for index, step in enumerate(case.steps):
         if step.children:
             flat = replace(step, kind="leaf", children=(), body="ok")
             yield replace(case, steps=(*case.steps[:index], flat, *case.steps[index + 1 :]))
         for smaller in shrink_seq(step.children):
+            if not smaller:
+                continue
             trimmed = replace(step, children=repair(tuple(smaller)))
             yield replace(case, steps=(*case.steps[:index], trimmed, *case.steps[index + 1 :]))
 
 
 def repair(steps: tuple[Gen, ...]) -> tuple[Gen, ...]:
-    """Drop ``needs`` that no longer name a sibling (the shrinker removed the step)."""
+    """Drop ``needs`` that no longer name a sibling (the shrinker removed the step).
+
+    A ``join`` left without ``needs`` goes with them: it has no effect, and the loader says so
+    as a warning that a shrunk case has no reason to carry.
+    """
     known = {s.id for s in steps}
-    return tuple(replace(s, needs=tuple(n for n in s.needs if n in known)) for s in steps)
+    kept = tuple(replace(s, needs=tuple(n for n in s.needs if n in known)) for s in steps)
+    return tuple(s if s.needs else replace(s, join="all") for s in kept)
 
 
 # --------------------------------------------------------------------------------------------------
 # the invariants
 # --------------------------------------------------------------------------------------------------
+
+
+def classify_row(record: StepRecord) -> str:
+    """One need's recorded outcome, classified as the join table's own docstring classifies it.
+
+    Written out here rather than imported from ``rayspec.engine.graph``: an oracle that asks the
+    module under test what the right answer is agrees with it by construction. A change inside
+    ``classify`` would move the expectation and the behaviour together, and this property — the
+    one whose whole job is the truth table — could not see it. (Measured: with ``classify``
+    imported, mutating ``FAILED and tolerated`` to ``FAILED or tolerated``, which classifies
+    every untolerated failure as a success, left this file green.)
+    """
+    if record.status is StepStatus.SUCCEEDED:
+        return "succeeded"
+    if record.status is StepStatus.FAILED and record.tolerated:
+        return "succeeded"
+    if record.status is StepStatus.SKIPPED:
+        return "skipped"
+    if record.status in FAILED_STATUSES:
+        return "failed"
+    raise AssertionError(f"the join table only classifies terminal outcomes, got {record.status}")
 
 
 def table_verdict(step: Gen, needs: list[StepRecord]) -> tuple[str, str | None]:
@@ -280,7 +330,7 @@ def table_verdict(step: Gen, needs: list[StepRecord]) -> tuple[str, str | None]:
     ``drain`` is the row that runs unless the list happened to be draining when the step became
     ready — which no recorded outcome can pin down, so both outcomes are accepted for it.
     """
-    classes = [classify(record) for record in needs]
+    classes = [classify_row(record) for record in needs]
     if step.join == "always":
         return "run", None
     if any(c == "failed" for c in classes):
@@ -325,18 +375,34 @@ def check_join_table(
 
     A step whose needs are not all recorded is not checked: a body torn down mid-flight leaves
     part of its list undecided, and the table has nothing to say about a step nobody decided.
+
     The counters are what the tests then assert on — a generator that quietly stopped producing
-    nested lists or ``join: always`` rows would otherwise leave a green suite checking nothing.
+    nested lists, skip rows or ``join: always`` rows would otherwise leave a green suite
+    checking nothing. Every one of them is counted BEFORE the branches decide what to assert:
+    counting inside a branch means the half of the table that ``continue``s is invisible to the
+    guards, and "no skip row was drawn on this run" then reads exactly like a full table.
     """
     seen: Counter[str] = Counter()
     for prefix, steps, entries in sibling_lists(case, records):
+        depth = prefix.count("/") + bool(prefix)
         for step in steps:
             record = entries.get(step.id)
             if record is None or any(need not in entries for need in step.needs):
                 continue
             needs = [entries[need] for need in step.needs]
+            classes = {classify_row(need) for need in needs}
             verdict, reason = table_verdict(step, needs)
             where = f"{prefix}/{step.id} (join {step.join}, needs {list(step.needs)})"
+            seen["rows"] += 1
+            seen[f"verdict:{verdict}"] += 1
+            seen[f"depth:{depth}"] += 1
+            seen["nested"] += bool(prefix)
+            if step.join == "any" and classes == {"skipped", "succeeded"}:
+                # the one row where the ``any`` column differs from the ``all`` column, and
+                # therefore the only row that says what ``join: any`` is for
+                seen["any_mixed"] += 1
+            if step.join == "always" and step.when_false and cancelled:
+                seen["always_when"] += 1
             if verdict == "skip":
                 assert record.status is StepStatus.SKIPPED, f"{where}: expected skip, got {record}"
                 allowed = {reason, "stopped"} if cancelled else {reason}
@@ -346,8 +412,6 @@ def check_join_table(
                 assert record.status is StepStatus.SKIPPED, where
                 assert record.skip_reason == "when_false" or record.skip_reason in DRAIN_REASONS
                 continue
-            seen["rows"] += 1
-            seen["nested"] += bool(prefix)
             if verdict == "run":
                 seen["always"] += 1
                 assert record.status in RAN, f"{where}: join always must run, got {record}"
@@ -357,8 +421,31 @@ def check_join_table(
 
 
 def failing(record: StepRecord) -> bool:
-    """What a composite counts as a body failure (``scheduler``'s ``failed_body_step``)."""
-    return record.status in FAILED_LIKE and not record.tolerated
+    """What a composite counts as a body failure (``scheduler``'s ``failed_body_step``).
+
+    Spelled out over :data:`FAILED_STATUSES` for the same reason :func:`classify_row` is: the
+    expectation must not move when the module under test does.
+    """
+    return record.status in FAILED_STATUSES and not record.tolerated
+
+
+def body_records(path: str, kind: str, records: dict[str, StepRecord]) -> list[StepRecord]:
+    """The composite's OWN sibling list: its direct body steps, over every iteration or item.
+
+    Direct, never every descendant. A composite derives its status from the list it ran, and
+    the composites in THAT list have already decided what their own bodies mean — an
+    ``allow_failure: true`` include absorbs the failure below it, and a grandparent that
+    re-counted the same record would contradict the run it just recorded.
+    """
+    out: list[StepRecord] = []
+    for other, record in records.items():
+        parent = other.rpartition("/")[0]
+        if kind == "include":
+            if parent == path:
+                out.append(record)
+        elif parent.startswith(f"{path}[") and "/" not in parent[len(path) :]:
+            out.append(record)
+    return out
 
 
 def check_composites(case: Case, records: dict[str, StepRecord]) -> Counter[str]:
@@ -375,20 +462,10 @@ def check_composites(case: Case, records: dict[str, StepRecord]) -> Counter[str]
             continue
         if record.status not in {StepStatus.SUCCEEDED, StepStatus.FAILED}:
             continue
+        checked["nested"] += "/" in path
+        bad = any(failing(rec) for rec in body_records(path, step.kind, records))
         if step.kind == "each":
-            items = {
-                other.rsplit("/", 1)[0]
-                for other in records
-                if other.startswith(f"{path}[") and "/" in other
-            }
-            bad = any(
-                any(failing(rec) for p, rec in records.items() if p.startswith(f"{item}/"))
-                for item in items
-            )
             bad = bad and step.on_failure == "fail"
-        else:
-            prefix = f"{path}[" if step.kind == "loop" else f"{path}/"
-            bad = any(failing(rec) for p, rec in records.items() if p.startswith(prefix))
         expected = StepStatus.FAILED if bad else StepStatus.SUCCEEDED
         assert record.status is expected, (
             f"{path} ({step.kind}) is {record.status.value}; its body says {expected.value}"
@@ -461,8 +538,18 @@ async def test_the_join_table_holds_inside_composites(harness: Harness, mode: st
     await aforall(
         f"join-table-{mode}", case_for(mode), prop, cases=CASES, shrink=shrink_case, show=str
     )
-    assert seen["always"] > 0, "the generator produced no join: always row to check"
-    assert seen["nested"] > 0, "every checked row was at the root — composites went unchecked"
+    assert seen["always"] > 0, f"the generator produced no join: always row to check: {seen}"
+    assert seen["nested"] > 0, f"every checked row was at the root: {seen}"
+    assert seen["depth:2"] > 0, f"no sibling list two levels down was checked: {seen}"
+    assert seen["verdict:skip"] > 0, f"no row of the table's skip half was drawn: {seen}"
+    assert seen["any_mixed"] > 0, (
+        f"no join: any step ever saw a mix of skipped and succeeded needs — the row that is "
+        f"the whole reason join: any exists went unchecked: {seen}"
+    )
+    if mode == "stop":
+        assert seen["always_when"] > 0, (
+            f"no join: always step carrying a when: was decided by the wind-down: {seen}"
+        )
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -478,7 +565,8 @@ async def test_a_composite_reports_what_its_body_did(harness: Harness, mode: str
         f"composite-status-{mode}", case_for(mode), prop, cases=CASES, shrink=shrink_case, show=str
     )
     for kind in ("loop", "each", "include"):
-        assert seen[kind] > 0, f"the generator produced no {kind}: step that ran"
+        assert seen[kind] > 0, f"the generator produced no {kind}: step that ran: {seen}"
+    assert seen["nested"] > 0, f"every checked composite was at the root: {seen}"
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -495,10 +583,13 @@ async def test_teardown_discipline(harness: Harness, mode: str) -> None:
         seen["interrupted"] += sum(
             1 for r in records.values() if r.status is StepStatus.INTERRUPTED
         )
+        for path in records:
+            seen[f"depth:{path.count('/')}"] += 1
 
     await aforall(
         f"teardown-{mode}", case_for(mode), prop, cases=CASES, shrink=shrink_case, show=str
     )
+    assert seen["depth:2"] > 0, f"nothing two levels down was ever recorded: {seen}"
     if mode == "stop":
         assert seen["stopped"] > 0, "no generated stop: step ever fired"
     if mode in {"stop", "fail_fast"}:
@@ -599,7 +690,7 @@ async def test_a_gate_that_pauses_ends_the_wind_down(harness: Harness) -> None:
         harness.workflow("t", case.workflow_yaml())
         g = make_graph_harness(harness, harness.load("t"), options=RunOptions(interactive=False))
         with anyio.fail_after(30):
-            with pytest.raises(RunPaused) as info:
+            with raises(RunPaused) as info:
                 await run_graph(g.graph, g.scope, g.ctx)
         records = harness.record(g.run.run_id).steps
         assert info.value.token.startswith("gate"), info.value.token
