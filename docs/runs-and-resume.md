@@ -268,6 +268,7 @@ so you get the ledger whether or not the file was enabled.
 
 A step can name the files it promises to write:
 
+<!-- rayspec:run -->
 ```yaml
 - id: report
   shell: "mkdir -p build && ./scripts/report.sh > build/report.md"
@@ -280,6 +281,7 @@ A step can name the files it promises to write:
   literal file name, **not a template**. When the name varies per `each:` item, keep the file
   name fixed and template the step's `cwd:` instead (that one *is* rendered per item):
 
+  <!-- rayspec:run -->
   ```yaml
   - id: fan
     each: "['api', 'web']"
@@ -418,6 +420,7 @@ An `approve:` step is a human gate. Flow per gate (`steps/<path>`, attempt `n`):
 
 A gate can name a **class**; what that class permits is decided outside the workflow:
 
+<!-- rayspec:skip fragment: `needs:` names a step defined elsewhere -->
 ```yaml
 - id: publish
   needs: [build]
@@ -483,6 +486,7 @@ instead of publishing.
 
 `auto_if:` approves a gate without asking when its expression is true:
 
+<!-- rayspec:skip fragment: `needs:` names a step defined elsewhere -->
 ```yaml
 - id: gate
   needs: [tests]
@@ -564,6 +568,7 @@ cancelled run (`rayspec cancel`, `stop:`, reject) is not resumable without `--fo
 
 `defaults.budget_usd` and `defaults.max_tokens` cap a **whole run** ([schema.md](schema.md#defaults)):
 
+<!-- rayspec:run -->
 ```yaml
 defaults:
   budget_usd: 5          # or "$5.00"
@@ -602,6 +607,7 @@ defaults:
 
 `defaults.timeout_total` is the same breaker measured in time instead of money or tokens:
 
+<!-- rayspec:run -->
 ```yaml
 defaults:
   timeout_total: 2h        # or "90m" / 5400
@@ -641,6 +647,7 @@ environment variable, never a prompt.
 
 ### Spending envelopes and the failure breaker
 
+<!-- rayspec:skip a policy file, not a workflow -->
 ```yaml
 # policy file
 budget:
@@ -688,6 +695,7 @@ max_consecutive_failures: 3
 
 ### Host run slots
 
+<!-- rayspec:skip a policy file, not a workflow -->
 ```yaml
 # policy file
 max_concurrent_runs:

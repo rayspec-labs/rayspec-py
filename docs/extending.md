@@ -116,6 +116,7 @@ rayspec acme-runs --json        # the new command
 
 The sink is opt-in, because a sink observes every run:
 
+<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 # .rayspec/config.yaml (or ~/.rayspec/config.yaml)
 extensions:

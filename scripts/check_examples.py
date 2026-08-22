@@ -10,13 +10,17 @@ themselves, their format and their execution live in :mod:`rayspec.testing` — 
   occur in the named examples' trees;
 * a **CLI contract smoke** over one case per suite: the engine-level runner behind ``rayspec test``
   never touches ``rayspec run``'s own plumbing, so one case of every suite is additionally driven
-  through the Typer app with ``--json`` and its stdout checked against the JSONL contract.
+  through the Typer app with ``--json`` and its stdout checked against the JSONL contract;
+* the **docs-as-tests marker convention** (``--docs``): a fenced YAML block of ``README.md`` or
+  ``docs/*.md`` whose fence carries ``rayspec:validate`` / ``rayspec:run`` is extracted and really
+  checked, and a block that carries neither must explain itself in a one-line
+  ``<!-- rayspec:skip … -->`` comment (see :func:`find_doc_blocks`).
 
 The case format is documented in ``docs/testing.md``; a ``checks.yaml`` next to each example (and
 ``.rayspec/dryrun/checks.yaml`` for the repo's own workflows) is discovered automatically.
 
-Usage: ``uv run python scripts/check_examples.py [--verbose] [--only NAME] [--matrix]``; exit 1 on
-any failed check, 2 on usage errors (unknown ``--only`` suite).
+Usage: ``uv run python scripts/check_examples.py [--verbose] [--only NAME] [--matrix] [--docs]``;
+exit 1 on any failed check, 2 on usage errors (unknown ``--only`` suite).
 """
 
 from __future__ import annotations
@@ -27,7 +31,8 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Iterator, Mapping
+import textwrap
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -49,6 +54,7 @@ from rayspec.testing.spec import discover_suites as _discover_suites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
+DOCS_DIR = REPO_ROOT / "docs"
 DOGFOOD_CHECKS = REPO_ROOT / ".rayspec" / "dryrun" / "checks.yaml"
 EXIT_USAGE = 2
 
@@ -58,15 +64,25 @@ Check = Case
 CheckResult = CaseResult
 
 __all__ = [
+    "DOC_MARKERS",
+    "DOC_RUN_STATUSES",
     "Check",
     "CheckFileError",
     "CheckResult",
+    "DocBlock",
     "Expect",
     "Invocation",
     "StepExpect",
     "Suite",
+    "check_doc_block",
     "cli_contract_check",
     "discover_suites",
+    "doc_block_problems",
+    "doc_problems",
+    "doc_sources",
+    "doc_workflow",
+    "doc_workflow_name",
+    "find_doc_blocks",
     "json_stream_problems",
     "load_checks",
     "main",
@@ -74,6 +90,7 @@ __all__ = [
     "parse_coverage_matrix",
     "run_check",
     "smoke_case",
+    "stray_doc_markers",
     "unbacked_claims",
     "yaml",
 ]
@@ -396,6 +413,259 @@ def unbacked_claims(rows: Mapping[str, list[str]], suites: list[Suite]) -> list[
 
 
 # --------------------------------------------------------------------------------------------------
+# Docs-as-tests (the marker convention)
+# --------------------------------------------------------------------------------------------------
+
+#: Every fenced ``yaml`` block of ``README.md`` / ``docs/*.md`` carries exactly one marker on the
+#: line above it, and the marker says what happens to the block:
+#:
+#: * ``<!-- rayspec:validate -->`` — loaded and validated the way ``rayspec validate`` does;
+#: * ``<!-- rayspec:run [k=v …] -->`` — additionally driven through ``rayspec run --dry-run``
+#:   (every agent becomes the scripted stub, shell/python bodies are skipped), with ``k=v`` as its
+#:   ``--input`` pairs. This is where a snippet that parses but cannot run shows up;
+#: * ``<!-- rayspec:skip <why> -->`` — deliberately illustrative, with the one-line reason.
+#:
+#: The marker is an HTML comment rather than a fence token so that it stays invisible in the
+#: rendered page and the fence keeps saying plain ``yaml`` to every other reader of the docs.
+DOC_MARKERS: tuple[str, ...] = ("rayspec:validate", "rayspec:run", "rayspec:skip")
+
+#: Terminal statuses a ``rayspec:run`` block may reach: ``cancelled`` is a ``stop:`` step doing its
+#: job, ``failed`` is the drift this convention exists to catch.
+DOC_RUN_STATUSES: frozenset[str] = frozenset({"succeeded", "cancelled"})
+
+_DOC_FENCE = re.compile(r"^(?P<indent>[ \t]*)```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
+_DOC_MARKER = re.compile(
+    r"^\s*<!--\s*rayspec:(?P<kind>validate|run|skip)(?P<rest>\s[^\n]*?)?\s*-->\s*$"
+)
+_DOC_LANGS = frozenset({"yaml", "yml"})
+_DOC_PAIR = re.compile(r"^(?P<key>[a-z][a-z0-9_]*)=(?P<value>.*)$")
+_DOC_IS_DOCUMENT = re.compile(r"^rayspec:\s*1\s*(?:#.*)?$", re.MULTILINE)
+_DOC_DECLARED_NAME = re.compile(r"^name:\s*(?P<name>[a-z][a-z0-9_]*)\s*(?:#.*)?$", re.MULTILINE)
+_DOC_HAS_STEPS = re.compile(r"^steps:", re.MULTILINE)
+_DOC_NOOP_STEP = 'steps:\n  - id: noop\n    shell: "true"\n'
+
+
+@dataclass(frozen=True)
+class DocBlock:
+    """One fenced YAML block of a documentation page and the marker above it.
+
+    ``marker`` is ``"validate"``, ``"run"`` or ``None``; ``inputs`` are the ``k=v`` pairs of a
+    ``rayspec:run`` marker; ``reason`` is the text of a ``rayspec:skip`` marker; ``unknown`` holds
+    marker words that are neither (a typo — reported, never ignored). ``text`` is the block body,
+    dedented to column 0.
+    """
+
+    source: str
+    line: int
+    marker: str | None
+    inputs: tuple[tuple[str, str], ...] = ()
+    reason: str | None = None
+    text: str = ""
+    unknown: tuple[str, ...] = ()
+
+    @property
+    def id(self) -> str:
+        """``docs/schema.md:60`` — the file and the line of the opening fence (a pytest id)."""
+        return f"{self.source}:{self.line}"
+
+    def __str__(self) -> str:
+        return self.id
+
+
+def doc_sources(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Every user-facing markdown page whose YAML blocks the convention covers."""
+    return [repo_root / "README.md", *sorted((repo_root / "docs").glob("*.md"))]
+
+
+def _parse_marker(match: re.Match[str]) -> dict[str, Any]:
+    """One ``<!-- rayspec:… -->`` comment → the ``DocBlock`` fields it contributes."""
+    kind, rest = match.group("kind"), (match.group("rest") or "").strip()
+    if kind == "skip":
+        return {"marker": None, "reason": rest, "inputs": (), "unknown": ()}
+    inputs: list[tuple[str, str]] = []
+    unknown: list[str] = []
+    for word in rest.split():
+        pair = _DOC_PAIR.match(word)
+        if pair is None:
+            unknown.append(word)
+        else:
+            inputs.append((pair.group("key"), pair.group("value")))
+    return {"marker": kind, "reason": None, "inputs": tuple(inputs), "unknown": tuple(unknown)}
+
+
+def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
+    """``(blocks, stray markers)`` of one markdown page.
+
+    A stray marker is one that does not sit directly above a fenced YAML block — a typo, a moved
+    snippet or a fence whose language changed. It is reported rather than ignored, because a
+    marker nobody reads is a check nobody runs.
+    """
+    blocks: list[DocBlock] = []
+    strays: list[str] = []
+    pending: dict[str, Any] | None = None
+    pending_line = 0
+    indent: str | None = None
+    start, lang = 0, ""
+    body: list[str] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if indent is not None:
+            if line.strip() == "```":
+                if lang in _DOC_LANGS:
+                    text = textwrap.dedent("\n".join(body)).rstrip()
+                    fields = pending or {"marker": None}
+                    blocks.append(DocBlock(source, start, text=text + "\n", **fields))
+                elif pending is not None:
+                    strays.append(
+                        f"{source}:{pending_line}: rayspec marker above a ```{lang} block"
+                    )
+                indent, pending = None, None
+                continue
+            body.append(line[len(indent) :] if line.startswith(indent) else line)
+            continue
+        fence = _DOC_FENCE.match(line)
+        if fence is not None:
+            indent, start, lang, body = fence.group("indent"), number, fence.group("lang"), []
+            continue
+        marker = _DOC_MARKER.match(line)
+        if marker is not None:
+            if pending is not None:
+                strays.append(f"{source}:{pending_line}: two rayspec markers above one block")
+            pending, pending_line = _parse_marker(marker), number
+        elif line.strip() and pending is not None:
+            strays.append(f"{source}:{pending_line}: rayspec marker is not above a fenced block")
+            pending = None
+    if pending is not None:
+        strays.append(f"{source}:{pending_line}: rayspec marker is not above a fenced block")
+    return blocks, strays
+
+
+def find_doc_blocks(repo_root: Path = REPO_ROOT) -> list[DocBlock]:
+    """Every fenced ``yaml``/``yml`` block of :func:`doc_sources`, in file and line order.
+
+    Indented fences (a block inside a list item) are found and dedented; the marker above such a
+    block is indented with it.
+    """
+    blocks: list[DocBlock] = []
+    for path in doc_sources(repo_root):
+        if path.is_file():
+            blocks.extend(_scan_page(path, path.relative_to(repo_root).as_posix())[0])
+    return blocks
+
+
+def stray_doc_markers(repo_root: Path = REPO_ROOT) -> list[str]:
+    """Markers that sit above no fenced YAML block (see :func:`_scan_page`)."""
+    strays: list[str] = []
+    for path in doc_sources(repo_root):
+        if path.is_file():
+            strays.extend(_scan_page(path, path.relative_to(repo_root).as_posix())[1])
+    return strays
+
+
+def doc_block_problems(blocks: Iterable[DocBlock]) -> list[str]:
+    """Totality of the convention: one message per block that is neither checked nor explained.
+
+    An unmarked block must carry a non-empty ``rayspec:skip`` reason; ``k=v`` inputs only mean
+    something for a ``rayspec:run`` block; an unrecognised marker word is always a problem.
+    """
+    problems: list[str] = []
+    for block in blocks:
+        if block.marker is None and not block.reason:
+            problems.append(
+                f"{block.id}: fenced yaml block is neither checked nor explained — put one of "
+                f"{', '.join(DOC_MARKERS)} on the line above it "
+                f"(`<!-- rayspec:skip <why> -->` for a snippet that is only illustrative)"
+            )
+        if block.inputs and block.marker != "run":
+            problems.append(f"{block.id}: `k=v` only applies to a `<!-- rayspec:run … -->` marker")
+        for word in block.unknown:
+            problems.append(
+                f"{block.id}: unknown marker word {word!r} (expected `<input>=<value>`)"
+            )
+    return problems
+
+
+def doc_workflow_name(block: DocBlock) -> str:
+    """The workflow name a block is checked under: the one it declares, else one from its id."""
+    complete = _DOC_IS_DOCUMENT.search(block.text) is not None
+    declared = _DOC_DECLARED_NAME.search(block.text) if complete else None
+    if declared is not None:
+        return declared.group("name")
+    stem = re.sub(r"[^a-z0-9]+", "_", Path(block.source).stem.lower()).strip("_")
+    return f"doc_{stem}_{block.line}"
+
+
+def doc_workflow(block: DocBlock) -> str:
+    """The workflow document a block is checked as — the block itself, or a minimal wrapper.
+
+    A complete document (it says ``rayspec: 1``) is used verbatim, with a ``name:`` added when it
+    declares none. A fragment is wrapped: a step list becomes the ``steps:`` of a minimal
+    workflow, any other mapping is spliced into one (and gets a trivial step when it has none), so
+    an ``inputs:``, ``agents:`` or ``defaults:`` fragment is checked exactly as written.
+    """
+    text = block.text
+    name = doc_workflow_name(block)
+    if _DOC_IS_DOCUMENT.search(text):
+        head = "" if _DOC_DECLARED_NAME.search(text) else f"name: {name}\n"
+        return head + text
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    if lines and lines[0].startswith("- "):
+        return f"rayspec: 1\nname: {name}\nsteps:\n" + textwrap.indent(text, "  ")
+    body = f"rayspec: 1\nname: {name}\n" + text
+    if not _DOC_HAS_STEPS.search(text):
+        body += _DOC_NOOP_STEP
+    return body
+
+
+def check_doc_block(block: DocBlock, *, home: Path) -> list[str]:
+    """Load, validate and (for ``rayspec:run``) dry-run one marked block; problems as messages.
+
+    Unmarked blocks are not checked at all — they are covered by :func:`doc_block_problems`.
+    Everything happens in a throwaway project under a temporary directory: no network, no
+    provider, no worktree (a dry run is ``isolation: none``).
+    """
+    if block.marker is None:
+        return []
+    problems: list[str] = []
+    name = doc_workflow_name(block)
+    with tempfile.TemporaryDirectory(prefix="rayspec-docs-") as tmp:
+        root = Path(tmp) / "project"
+        (root / ".rayspec" / "workflows").mkdir(parents=True)
+        (root / ".rayspec" / "workflows" / f"{name}.yaml").write_text(
+            doc_workflow(block), encoding="utf-8"
+        )
+        inv = _invoke(["validate", name, "--root", str(root), "--json"], home=home)
+        rows = json.loads(inv.stdout) if inv.stdout.strip().startswith("[") else []
+        row = rows[0] if rows else {}
+        problems += [f"{block.id}: {m}" for m in [*row.get("errors", []), *row.get("warnings", [])]]
+        if inv.exit_code != 0 and not problems:
+            problems.append(f"{block.id}: rayspec validate exited {inv.exit_code}\n{inv}")
+        if problems or block.marker != "run":
+            return problems
+        args = ["run", name, "--root", str(root), "--dry-run", "--json"]
+        for key, value in block.inputs:
+            args += ["--input", f"{key}={value}"]
+        inv = _invoke(args, home=home)
+        summary = _summary_from_json(inv.output)
+        if summary is None:
+            problems.append(f"{block.id}: the documented workflow did not run\n{inv}")
+        elif summary.get("status") not in DOC_RUN_STATUSES:
+            problems.append(
+                f"{block.id}: `rayspec run --dry-run` ended {summary.get('status')!r}"
+                f" — {summary.get('reason') or 'no reason recorded'}\n{inv}"
+            )
+    return problems
+
+
+def doc_problems(repo_root: Path = REPO_ROOT, *, home: Path) -> list[str]:
+    """Every docs-as-tests problem: stray/missing markers plus each marked block's own checks."""
+    blocks = find_doc_blocks(repo_root)
+    problems = [*stray_doc_markers(repo_root), *doc_block_problems(blocks)]
+    for block in blocks:
+        problems.extend(check_doc_block(block, home=home))
+    return problems
+
+
+# --------------------------------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------------------------------
 
@@ -420,6 +690,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", help="restrict to one suite (example dir name or 'dogfood')")
     parser.add_argument("--verbose", action="store_true", help="print every check that passed")
     parser.add_argument("--matrix", action="store_true", help="also verify the coverage matrix")
+    parser.add_argument(
+        "--docs", action="store_true", help="also check the marked yaml blocks of README/docs"
+    )
     ns = parser.parse_args(argv)
 
     try:
@@ -445,6 +718,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(result.report())
             else:
                 print(result.report().splitlines()[0])
+    if ns.docs:
+        with tempfile.TemporaryDirectory(prefix="rayspec-docs-home-") as tmp:
+            problems = doc_problems(REPO_ROOT, home=Path(tmp))
+        for problem in problems:
+            failed += 1
+            print(f"[docs] {problem}")
+        print(f"[docs] {len(find_doc_blocks(REPO_ROOT))} yaml blocks")
     if ns.matrix:
         rows = parse_coverage_matrix(EXAMPLES_DIR / "README.md")
         known_names = {suite.name for suite in suites}

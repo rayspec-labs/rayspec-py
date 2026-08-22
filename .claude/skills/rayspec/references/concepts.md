@@ -31,6 +31,7 @@ The top-level `steps:` list is a DAG. A step declares its upstream siblings with
 `needs: [ids]`; everything whose needs are satisfied runs concurrently (bounded by
 `defaults.max_parallel`, default 4). No `needs` means "ready at start".
 
+<!-- rayspec:run -->
 ```yaml
 steps:
   - id: fetch

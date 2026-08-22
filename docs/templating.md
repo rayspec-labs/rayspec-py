@@ -67,6 +67,7 @@ Every `{{ expr }}` in a `shell:` body renders to an **environment-variable refer
 `${RAYSPEC_V<n>}`; the value is placed in the step's environment, never spliced into the script.
 Bash's own quoting rules therefore apply, and a value such as `$(rm -rf /)` stays inert.
 
+<!-- rayspec:skip fragment: `inputs` and `build` are defined elsewhere -->
 ```yaml
 - id: pr
   shell: |
@@ -159,6 +160,7 @@ Anything else is a `python:` step.
 | `RAYSPEC_V<n>` | the `{{ }}` slots of a shell body |
 | plus | the process environment and the step's own `env:` (templated, str-coerced) |
 
+<!-- rayspec:run -->
 ```yaml
 - id: summary
   shell: jq -r '.steps.review.output.summary' "$RAYSPEC_CONTEXT"

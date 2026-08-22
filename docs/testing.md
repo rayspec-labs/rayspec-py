@@ -36,6 +36,7 @@ first-class and both run under `rayspec test`.
 
 ## The case format
 
+<!-- rayspec:skip a test case file, not a workflow -->
 ```yaml
 # .rayspec/tests/fix_issue/duplicate.yaml
 workflow: fix_issue            # optional here (the directory says so); required in a checks: list
@@ -73,6 +74,7 @@ never sends a value anywhere, so a throwaway value is enough even for a `secret:
 
 A suite file wraps the same mappings in a list:
 
+<!-- rayspec:skip a checks.yaml, not a workflow -->
 ```yaml
 checks:
   - id: happy                  # optional (default: <workflow>-<n>)
@@ -139,6 +141,7 @@ transcript. Passing cases delete their run, so a suite does not bury the project
 
 ## In CI
 
+<!-- rayspec:skip a GitHub Actions step, not a workflow -->
 ```yaml
 - run: rayspec test --junit test-results.xml
 ```
