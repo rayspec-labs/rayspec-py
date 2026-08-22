@@ -99,13 +99,6 @@ def stored_decision(ctx: RunContext, path: str, attempt: int) -> Decision | None
     return pause.decision
 
 
-def run_cost_source(ctx: RunContext) -> str:
-    """The run-level cost source the panel renders (``provider`` → ``$``, ``table`` → ``~$``,
-    ``partial`` → ``≥$``, ``none``); the engine's :func:`~rayspec.engine.context.cost_source_of`
-    rule."""
-    return cost_source_of(ctx.run.steps.values())
-
-
 def _needs_summary(step: ApproveStep, scope: ExecScope, ctx: RunContext) -> list[ApprovalNeed]:
     needs: list[ApprovalNeed] = []
     for need in step.needs:
@@ -301,7 +294,7 @@ async def _ask(
                 "steps": len(ctx.run.steps),
                 "tokens": ctx.run.total_usage().total,
                 "cost_usd": ctx.run.total_cost_usd(),
-                "cost_source": run_cost_source(ctx),
+                "cost_source": cost_source_of(ctx.run.steps.values()),
             },
         )
         try:
@@ -341,4 +334,4 @@ async def _pause(ctx: RunContext, record: StepRecord, message: str) -> StepOutco
     return StepOutcome(record=record, control=control)
 
 
-__all__ = ["at_a_terminal", "gate_token", "run_approve", "run_cost_source", "stored_decision"]
+__all__ = ["at_a_terminal", "gate_token", "run_approve", "stored_decision"]

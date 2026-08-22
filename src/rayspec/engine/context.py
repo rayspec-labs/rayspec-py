@@ -28,7 +28,6 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +43,11 @@ from rayspec.events.base import EventSink
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
+from rayspec.providers.pricing import combine_cost_sources
 from rayspec.redact import Redactor
 from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord
+from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord, utcnow
 from rayspec.templating import (
     Scope,
     StepView,
@@ -174,10 +174,6 @@ def time_reason(elapsed_s: float | None, defaults: Defaults) -> str | None:
     )
 
 
-def utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
 def cost_source_of(records: Iterable[StepRecord]) -> str:
     """Run-level cost source over ``records`` (pinned seam):
 
@@ -188,21 +184,21 @@ def cost_source_of(records: Iterable[StepRecord]) -> str:
     * ``provider`` — every record with tokens reported a provider cost (``$``).
 
     Records without tokens and without cost (shell/python, skipped steps) do not count.
+
+    The fold itself is :func:`~rayspec.providers.pricing.combine_cost_sources` — the one place
+    the four sources are combined; this function only says which records take part. A record
+    that HAS a cost but names no source is read as ``provider``: a cost that was reported is
+    never an estimate.
     """
-    sources: set[str] = set()
-    unknown = False
-    for rec in records:
-        if rec.cost_usd is not None:
-            sources.add(rec.cost_source if rec.cost_source != "none" else "provider")
-        elif rec.usage.total:
-            unknown = True
-    if not sources:
-        return "none"
-    if unknown:
-        return "partial"
-    if "table" in sources:
-        return "table"
-    return "provider"
+    records = list(records)
+    return combine_cost_sources(
+        [
+            rec.cost_source if rec.cost_source and rec.cost_source != "none" else "provider"
+            for rec in records
+            if rec.cost_usd is not None
+        ],
+        unpriced=any(rec.cost_usd is None and rec.usage.total for rec in records),
+    )
 
 
 def totals_of(records: Iterable[StepRecord]) -> tuple[Usage, float | None, str]:

@@ -33,7 +33,7 @@ from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Usage
-from rayspec.providers.pricing import combine_cost_sources, format_cost, format_tokens
+from rayspec.providers.pricing import format_cost, format_tokens
 from rayspec.schema import RunStatus, StepStatus
 from rayspec.store.file import (
     AmbiguousRunIdError,
@@ -338,9 +338,17 @@ def unpriced_steps(run: RunRecord) -> int:
 
 def run_cost_source(run: RunRecord) -> str:
     """Run-level cost source: ``provider`` · ``table`` (any estimate) · ``partial`` (some
-    steps have tokens but no cost) · ``none`` — see ``providers.pricing.combine_cost_sources``."""
-    sources = [rec.cost_source for rec in run.steps.values() if rec.cost_usd is not None]
-    return combine_cost_sources(sources, unpriced=unpriced_steps(run) > 0)
+    steps have tokens but no cost) · ``none``.
+
+    The engine's rule (:func:`~rayspec.engine.context.cost_source_of`), applied to a stored
+    record: what a listing prints for a run must be what the engine wrote into
+    ``RunRecord.cost_source`` for it, and a second copy of the rule is a second answer waiting
+    to happen. Imported here rather than at module level so listing runs does not drag the
+    engine into a command that never starts one.
+    """
+    from rayspec.engine.context import cost_source_of
+
+    return cost_source_of(run.steps.values())
 
 
 def status_style(status: str) -> str:

@@ -1039,7 +1039,9 @@ from rayspec.engine.context import (
     #   none = no record has a cost; partial = some record has tokens but no cost (the sum is a
     #   lower bound, rendered "≥$"); table = an estimate is in the sum and nothing is unknown
     #   ("~$"); provider = every record with tokens reported a provider cost ("$"). Records
-    #   without tokens and cost (shell/python/skipped) do not count.
+    #   without tokens and cost (shell/python/skipped) do not count. Folds through
+    #   providers.pricing.combine_cost_sources (the one fold); a record that has a cost but
+    #   names no source counts as "provider". `cli._runs_common.run_cost_source` calls it.
     totals_of,  # (records) -> (Usage, cost_usd | None, cost_source); RunContext.run_totals()
     #   applies it to every record of the run (run.json cost_source, run.finished, RunResult),
     #   RunContext.budget_totals() to the accounted ones
@@ -1332,7 +1334,8 @@ recorded paths ∪ `planned`) / `steps_detail` (`n ok · m skipped`) / `planned_
 resumed: running/paused/interrupted/failed/cancelled; `None` for succeeded runs or when the
 workflow no longer loads — any loader exception is swallowed, a listing never fails on a broken
 workflow; `cache` memoises per (project root, workflow) for one listing) / `unpriced_steps` / `run_cost_source`
-(`provider|table|partial|none` via `combine_cost_sources`) / `pid_command_line(pid)` (`ps -o
+(`provider|table|partial|none` — the engine's `engine.context.cost_source_of` applied to a stored
+record, so a listing prints what the engine wrote into `RunRecord.cost_source`) / `pid_command_line(pid)` (`ps -o
 command=`) / `pid_is_rayspec_run(run)` (command line has `rayspec run|resume|approve|reject` as whole tokens + run id / workflow name / file as a whole token) /
 `run_row(run, *, planned=None)` (additive keys `steps_ok`, `steps_skipped`) / `step_row` / `output_preview`
 (first line, JSON outputs compacted, `…` when cut) / `load_resolved_for(ctx, run)` (workflow by

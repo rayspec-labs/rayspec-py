@@ -25,6 +25,7 @@ def new_run_id() -> str:
 
 
 def utcnow() -> datetime:
+    """Now, as an aware UTC datetime — the one clock every record timestamp is stamped from."""
     return datetime.now(UTC)
 
 
