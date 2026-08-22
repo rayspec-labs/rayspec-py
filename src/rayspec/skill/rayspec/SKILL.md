@@ -93,7 +93,7 @@ agents:
     model: large
     access: read-only
     max_turns: 40                       # claude only (capability max_turns); codex would fail validate
-    provider_options: { claude: { setting_sources: [project] } }   # raw pass-through per provider
+    provider_options: { claude: { max_thinking_tokens: 8000 } }   # raw pass-through per provider
 steps:
   - id: fetch                           # ids: ^[a-z][a-z0-9_]*$, unique in the whole file
     shell: gh issue view "$RAYSPEC_INPUT_ISSUE" --json title,body   # inputs also as env vars

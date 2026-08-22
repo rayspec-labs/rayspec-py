@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from rayspec.schema.base import StrictModel
 from rayspec.schema.common import AccessLevelName, EffortName, InstructionsModeName, Name
+
+#: ``network:`` — whether the agent may reach the network through its provider's own tools.
+NetworkModeName = Literal["on", "off"]
 
 #: What a refused tool call does to the step (agent-level, see :attr:`AgentDef.on_denial`).
 DenialPolicy = Literal["warn", "fail"]
@@ -23,6 +28,37 @@ class ToolsSpec(StrictModel):
 
     allow: list[str] = Field(default_factory=list)
     deny: list[str] = Field(default_factory=list)
+
+
+class CommandsSpec(StrictModel):
+    """``commands:`` — which shell commands an agent may run, as regular expressions.
+
+    Both lists are Python regular expressions matched against the command line a provider is
+    about to run; ``deny`` is checked first, and a non-empty ``allow`` means "nothing else".
+    They are validated (and compiled) at load time so a broken pattern is a file-and-line error
+    rather than a control that quietly matches nothing.
+
+    Enforcement needs the provider to hand rayspec its tool calls before they run. A provider
+    that can do that declares ``command_policy`` in its capabilities; on every other provider
+    ``rayspec validate`` warns that the block is advisory. See ``docs/policy.md``.
+    """
+
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "commands policy"
+
+    @field_validator("allow", "deny")
+    @classmethod
+    def _compilable(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"{pattern!r} is not a valid regular expression: {exc}") from None
+        return value
 
 
 class McpServerDef(StrictModel):
@@ -61,6 +97,8 @@ class AgentDef(StrictModel):
     max_turns: int | None = Field(default=None, ge=1)
     budget_usd: float | None = Field(default=None, gt=0)
     tools: ToolsSpec = Field(default_factory=ToolsSpec)
+    network: NetworkModeName | None = None
+    commands: CommandsSpec | None = None
     thinking: bool | None = None
     #: What a refused tool call does to the step. ``warn`` (the default) records the denials on
     #: the step record and lets it stand; ``fail`` fails the step. An agent that is denied a
@@ -90,6 +128,28 @@ class AgentOverride(AgentDef):
         return "agent override"
 
 
+def provider_option_block(provider: str, options: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    """The block one provider adapter reads out of a ``provider_options`` value.
+
+    ``provider_options:`` is keyed by provider id and the engine narrows it to the running
+    provider's block before an adapter sees it — but a request built by hand may carry either
+    shape, so both are understood: a block whose only key is the provider id and whose value is a
+    mapping unwraps to that inner mapping; anything else is the block itself.
+
+    It lives next to the field, in the one package the adapters and :mod:`rayspec.policy` both
+    import, because those two MUST narrow a block identically. A check that walks one shape while
+    an adapter accepts two leaves the shape the check does not walk as an unguarded pass-through:
+    that is exactly how ``provider_options.codex.codex.config`` reached a thread unexamined. One
+    function, and no room for a nesting variant to diverge.
+    """
+    if not options:
+        return {}
+    inner = options.get(provider)
+    if len(options) == 1 and isinstance(inner, Mapping):
+        return inner
+    return options
+
+
 def parse_agent_def(data: Any, *, source: str | None = None) -> AgentDef:
     return AgentDef.parse(data, source=source)
 
@@ -97,8 +157,11 @@ def parse_agent_def(data: Any, *, source: str | None = None) -> AgentDef:
 __all__ = [
     "AgentDef",
     "AgentOverride",
+    "CommandsSpec",
     "DenialPolicy",
     "McpServerDef",
+    "NetworkModeName",
     "ToolsSpec",
     "parse_agent_def",
+    "provider_option_block",
 ]

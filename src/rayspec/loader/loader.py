@@ -33,6 +33,7 @@ from rayspec.loader.yaml import LineMap, load_yaml_with_lines
 from rayspec.schema import (
     AgentDef,
     AgentOverride,
+    CommandsSpec,
     Defaults,
     EachStep,
     IncludeStep,
@@ -106,6 +107,8 @@ class ResolvedAgent:
     max_turns: int | None
     budget_usd: float | None
     tools: ToolsSpec
+    network: str | None
+    commands: CommandsSpec | None
     thinking: bool | None
     #: ``warn`` (record them) or ``fail`` (a refused tool call fails the step)
     on_denial: str
@@ -172,6 +175,11 @@ class ResolvedWorkflow:
     source_files: list[Path]
     warnings: list[str]
     step_locations: dict[str, StepLocation]
+    #: the roots the document was loaded from — what the policy layers are discovered against
+    #: (``None`` for a ``ResolvedWorkflow`` built by hand; the validator then falls back to
+    #: ``base_dir`` and ``$RAYSPEC_HOME``)
+    project_root: Path | None = None
+    home: Path | None = None
 
     # -- navigation ---------------------------------------------------------------------------
 
@@ -706,6 +714,8 @@ class _Loader:
             max_turns=definition.max_turns,
             budget_usd=definition.budget_usd,
             tools=definition.tools,
+            network=definition.network,
+            commands=definition.commands,
             thinking=definition.thinking,
             on_denial=definition.on_denial,
             mcp=dict(definition.mcp),
@@ -789,6 +799,8 @@ def load_workflow(
         source_files=sorted(loader.source_files, key=loader.label),
         warnings=loader.warnings,
         step_locations=loader.step_locations,
+        project_root=project_root,
+        home=home,
     )
 
 
