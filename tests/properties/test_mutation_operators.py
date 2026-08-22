@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,9 +30,11 @@ from .mutation.mutate import (
     OPERATORS,
     REPO,
     TARGETS,
+    Result,
     main,
     mutate,
     null_mutant,
+    report,
     sites,
 )
 
@@ -131,7 +132,7 @@ def test_a_mutated_join_table_really_decides_differently() -> None:
     assert join_decision(step, [failed], draining=False) != JoinDecision.go()
 
 
-def test_the_round_trip_preserves_every_target(tmp_path: Path) -> None:
+def test_the_round_trip_preserves_every_target() -> None:
     """``ast.unparse(ast.parse(src))`` re-parses to the same tree for every module we mutate."""
     for target in TARGETS.values():
         source = target.path.read_text(encoding="utf-8")
@@ -208,3 +209,23 @@ def _always_step() -> _Step:
 
 def _record(status: StepStatus) -> _Record:
     return _Record(status)
+
+
+def test_the_score_line_separates_the_three_kinds_of_kill() -> None:
+    """ "Killed by its own tests" and "killed elsewhere" are different claims about coverage.
+
+    Folding them into one percentage compares two targets under two different denominators
+    depending on how many survivors the confirm phase reclassified — and the report's own prose
+    is careful about exactly that distinction.
+    """
+    site = sites(SAMPLE)[0]
+    text = report(
+        [
+            Result(target="graph", site=site, status=status)
+            for status in ("killed", "killed-elsewhere", "timeout", "survived", "error")
+        ]
+    )
+    assert "1 killed by its own tests" in text, text
+    assert "1 killed elsewhere" in text, text
+    assert "1 timed out" in text, text
+    assert "1 survived" in text, text

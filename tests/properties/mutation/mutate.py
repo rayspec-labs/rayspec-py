@@ -646,6 +646,11 @@ def report(results: Sequence[Result], *, confirmed: bool = True) -> str:
     ``confirmed`` is False when phase 2 was skipped, and the survivors are then labelled
     ``UNCONFIRMED``: they survived the module's OWN tests, which is a weaker claim than the one
     the report otherwise makes.
+
+    The three ways a mutant dies are counted separately, and only their sum is a percentage.
+    "Killed by its own tests" and "killed elsewhere" are different claims about the module's
+    coverage, and folding them into one number compares two targets under two denominators
+    depending on how many survivors phase 2 happened to reclassify.
     """
     lines = ["", "=" * 96, "MUTATION REPORT", "=" * 96]
     label = "SURVIVOR" if confirmed else "UNCONFIRMED"
@@ -653,14 +658,17 @@ def report(results: Sequence[Result], *, confirmed: bool = True) -> str:
         mine = [r for r in results if r.target == name]
         if not mine:
             continue
-        killed = sum(1 for r in mine if r.status in {"killed", "timeout", "killed-elsewhere"})
+        own = sum(1 for r in mine if r.status == "killed")
+        elsewhere = sum(1 for r in mine if r.status == "killed-elsewhere")
+        timeouts = sum(1 for r in mine if r.status == "timeout")
         survivors = [r for r in mine if r.status == "survived"]
         errors = [r for r in mine if r.status == "error"]
-        score = 100.0 * killed / max(1, len(mine) - len(errors))
+        score = 100.0 * (own + elsewhere + timeouts) / max(1, len(mine) - len(errors))
         lines.append("")
         lines.append(
-            f"{name} ({target.module}): {len(mine)} mutants, {killed} killed, "
-            f"{len(survivors)} survived  ({score:.0f}% killed)"
+            f"{name} ({target.module}): {len(mine)} mutant(s), "
+            f"{own} killed by its own tests, {elsewhere} killed elsewhere, "
+            f"{timeouts} timed out, {len(survivors)} survived  ({score:.0f}% killed in total)"
         )
         for result in sorted(survivors, key=lambda r: r.site.line):
             lines.append(f"  {label} {result.site.describe(target)}")
