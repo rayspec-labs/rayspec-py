@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Helpers shared by the read-only loader commands (workflows, agents, validate, plan).
+"""Helpers shared by the commands: roots and config, the ``--output`` flag, one JSON rendering.
 
-Private module (underscore → not auto-registered). Keeps provider-registry and templating imports
-lazy so these commands work while those scopes land separately.
+Private module (underscore → not auto-registered). It began as the helpers of the read-only
+loader commands (``workflows``, ``agents``, ``validate``, ``plan``) and is now where the CLI's
+shared presentation lives: the two Rich consoles, ``fail``/``error_lines``, and the single place
+that decides what a ``--json`` document and one line of a ``--json`` stream look like. Everything
+imports it, so nothing here may import a command module. Provider-registry and templating imports
+stay lazy, so a command still answers when one of those modules is not installed.
 """
 
 from __future__ import annotations
@@ -413,15 +417,71 @@ def template_checker() -> TemplateChecker | None:
     return None
 
 
+def stdout_is_tty() -> bool:
+    """Whether stdout is a terminal — the one probe every renderer here asks.
+
+    A closed or replaced stdout (a test runner's, a broken pipe) counts as "not a terminal": the
+    machine-readable rendering is the safe answer when nobody can say who is reading.
+    """
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):  # detached / closed stdout
+        return False
+
+
 def console() -> Console:
     """A Rich console on the *current* stdout (CliRunner-safe), wide when not a terminal."""
-    is_tty = sys.stdout.isatty()
+    is_tty = stdout_is_tty()
     width = shutil.get_terminal_size().columns if is_tty else 200
     return Console(file=sys.stdout, width=width, highlight=False, soft_wrap=True)
 
 
 def err_console() -> Console:
     return Console(file=sys.stderr, highlight=False, soft_wrap=True, width=200)
+
+
+#: Separators of the piped rendering: no spaces at all. This is what pydantic's
+#: ``model_dump_json`` writes, so ``run.json``, ``events.jsonl`` and every ``--json`` document
+#: rayspec prints are one format rather than three that happen to parse the same.
+_COMPACT: tuple[str, str] = (",", ":")
+
+
+def json_text(payload: Any) -> str:
+    """Render one ``--json`` / ``--output json`` **document** — the single rule, for every command.
+
+    Indented by two spaces when stdout is a terminal (a person is reading it), compact when it is
+    redirected or piped (a program is). Nothing else varies: non-ASCII is written as itself
+    (``ä``, not ``\u00e4``), key order is the payload's, and a value the payload builder left
+    unserialisable is rendered as its ``str()`` rather than taking the command down after it has
+    already done its work.
+
+    The rule is deliberately not per command: ``rayspec workflows --json | jq`` and ``rayspec
+    runs --json | jq`` used to disagree about whether they emit one line or twenty, which makes
+    every shell pipeline around them a command-specific special case.
+    """
+    if stdout_is_tty():
+        return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+    return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
+
+
+def print_json(payload: Any) -> None:
+    """Print one ``--json`` document on stdout in the house rendering (:func:`json_text`).
+
+    ``soft_wrap`` is not optional here: Rich would otherwise fold a long line to the console
+    width, and a compact document has no spaces to fold at — the break lands inside a string
+    and the document stops being JSON.
+    """
+    console().print(json_text(payload), markup=False, highlight=False, soft_wrap=True)
+
+
+def json_line(payload: Any) -> str:
+    """Render one record of a line-delimited stream (``run --json``, ``logs --json``).
+
+    Always compact, terminal or not: the format's promise is one object per line, and
+    ``rayspec run … --json | tail -1 | jq .exit_code`` reads a fragment as soon as a record is
+    allowed to wrap. Otherwise identical to :func:`json_text`.
+    """
+    return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
 
 
 def fail(message: str, *, code: int = 2, hint: str | None = None) -> None:
@@ -445,9 +505,7 @@ def error_lines(items: list[str], *, json_mode: bool = False, kind: str = "error
     is escaped so Rich never reads it as markup.
     """
     if json_mode:
-        console().print(
-            json.dumps({"error": kind, "errors": list(items)}), markup=False, highlight=False
-        )
+        print_json({"error": kind, "errors": list(items)})
         return
     out = err_console()
     for item in items:
@@ -494,12 +552,16 @@ __all__ = [
     "error_problems",
     "fail",
     "invoked_command",
+    "json_line",
+    "json_text",
     "looks_like_path",
     "make_context",
     "message_problems",
+    "print_json",
     "report_lines",
     "resolve_output",
     "short_path",
+    "stdout_is_tty",
     "template_checker",
     "workflow_label",
 ]

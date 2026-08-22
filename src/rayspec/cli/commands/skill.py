@@ -9,7 +9,6 @@ Boundary: CLI presentation only; the data and the copy/compare helpers live in
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -23,6 +22,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.cli.commands._skill_common import print_install_result, session_hint
@@ -132,20 +132,17 @@ def register(app: typer.Typer) -> None:
         project_state = installed_state(project_skill_dir(project_root))
         global_state = installed_state(global_skill_dir())
         if json_:
-            typer.echo(
-                json.dumps(
-                    {
-                        "packaged": {
-                            "path": str(packaged),
-                            "rayspec_version": __version__,
-                            "digest": digest,
-                            "files": [rel for rel, _ in skill_files()],
-                        },
-                        "project": _state_dict(project_state),
-                        "global": _state_dict(global_state),
+            print_json(
+                {
+                    "packaged": {
+                        "path": str(packaged),
+                        "rayspec_version": __version__,
+                        "digest": digest,
+                        "files": [rel for rel, _ in skill_files()],
                     },
-                    indent=2,
-                )
+                    "project": _state_dict(project_state),
+                    "global": _state_dict(global_state),
+                }
             )
             return
         out = console()

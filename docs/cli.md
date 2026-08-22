@@ -54,6 +54,17 @@ usage error — `error: --json and --output table disagree`, exit 2 — rather t
 silently winning. (`rayspec runs stubs -o/--output PATH` predates the flag and still means "write
 the script to this file"; that command has no `--json`.)
 
+The JSON itself is rendered the same way whatever printed it: **indented by two spaces when
+stdout is a terminal, compact — no spaces at all — when it is redirected or piped**, non-ASCII
+written as itself (`ä`, not `\u00e4`) and keys in the payload's own order. `rayspec <cmd> --json |
+jq` therefore behaves identically whichever command produced the stream, and `rayspec <cmd> --json
+> file` writes a file that diffs against the next one. The two **line-delimited** outputs are the
+exception that keeps the promise of their format: `rayspec run|resume|approve|reject --json` and
+`rayspec logs --json` write one object per line and stay compact on a terminal too, because
+`rayspec run … --json | tail -1 | jq .exit_code` has to read a whole record off the last line.
+(`rayspec schema` is not a listing at all: it prints a published JSON Schema document, always the
+same bytes as the checked-in `schemas/*.schema.json`.)
+
 ## Commands
 
 ### `rayspec run`

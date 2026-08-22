@@ -17,7 +17,6 @@ live in :mod:`rayspec.cli._runs_common`, the stub-script shape in
 from __future__ import annotations
 
 import contextlib
-import json
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,6 +33,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.errors import RayspecError
@@ -127,14 +127,13 @@ def list_runs(*, all_: bool, limit: int | None, root: Path | None, json_: bool) 
             highlight=False,
         )
         if json_:
-            out.print("[]", markup=False, highlight=False)
+            print_json([])
         return
     records = collect_runs(ctx, all_projects=all_, limit=limit)
     cache: dict[tuple[str, str], set[str] | None] = {}
     planned = {r.run_id: common.planned_step_paths(ctx, r, cache=cache) for r in records}
     if json_:
-        rows = [common.run_row(r, planned=planned.get(r.run_id)) for r in records]
-        out.print(json.dumps(rows, ensure_ascii=False), markup=False, highlight=False)
+        print_json([common.run_row(r, planned=planned.get(r.run_id)) for r in records])
         return
     if not records:
         scope = "any project" if all_ else f"project {ctx.slug}"
@@ -356,9 +355,7 @@ def register(app: typer.Typer) -> None:
         result = _runs_diff.build_diff(store_a, record_a, store_b, record_b)
         out = console()
         if json_:
-            out.print(
-                json.dumps(result.to_json(), ensure_ascii=False), markup=False, highlight=False
-            )
+            print_json(result.to_json())
         else:
             if outputs:
                 for record in (record_a, record_b):

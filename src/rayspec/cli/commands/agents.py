@@ -9,7 +9,6 @@ provider an agent will actually run on.
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -24,6 +23,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     make_context,
+    print_json,
     resolve_output,
     short_path,
 )
@@ -151,7 +151,7 @@ def register(app: typer.Typer) -> None:
             for r in refs
         ]
         if json_:
-            typer.echo(json.dumps(rows, indent=2))
+            print_json(rows)
             return
         out = console()
         if not rows:

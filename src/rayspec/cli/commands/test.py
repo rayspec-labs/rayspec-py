@@ -39,7 +39,6 @@ from rayspec.cli.commands.run import approval_classes_for
 from rayspec.testing import discover_suites, run_case
 from rayspec.testing.report import (
     CaseResult,
-    json_line,
     junit_error_xml,
     junit_xml,
     results_json,
@@ -204,9 +203,7 @@ def register(app: typer.Typer) -> None:
             junit.write_text(junit_xml(results, elapsed_s=elapsed), encoding="utf-8")
         failed = [r for r in results if not r.ok]
         if json_:
-            common.console().print(
-                json_line(results_json(results, elapsed_s=elapsed)), markup=False, highlight=False
-            )
+            common.print_json(results_json(results, elapsed_s=elapsed))
         else:
             for result in failed:
                 out.print("")

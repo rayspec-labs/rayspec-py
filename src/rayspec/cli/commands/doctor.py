@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 import importlib
-import json
 import os
 import platform
 import re
@@ -39,6 +38,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.config import (
@@ -938,7 +938,7 @@ def register(app: typer.Typer) -> None:
                 fail(str(exc), hint=exc.hint)
         report = run_doctor(root=root, probe=probe, providers=providers)
         if json_:
-            typer.echo(json.dumps(report.to_dict(), indent=2))
+            print_json(report.to_dict())
             raise typer.Exit(code=report.exit_code)
         out = console()
         out.print(render_table(report))

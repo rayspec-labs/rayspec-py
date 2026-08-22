@@ -37,6 +37,7 @@ from rayspec.cli.commands._loader_common import (
     error_lines,
     fail,
     make_context,
+    print_json,
     report_lines,
     resolve_output,
 )
@@ -598,7 +599,7 @@ def register(app: typer.Typer) -> None:
                 payload["stubs"] = str(stubs) if stubs is not None else None
             if risk:
                 payload["risk"] = risk_report.to_json(findings)
-            out.print(json.dumps(payload, ensure_ascii=False), markup=False, highlight=False)
+            print_json(payload)
             if report.errors or input_errors:
                 raise typer.Exit(code=2)
             return

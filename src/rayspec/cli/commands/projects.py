@@ -6,7 +6,6 @@ Boundary: CLI presentation only; logic lives in :mod:`rayspec.workspace.registry
 
 from __future__ import annotations
 
-import json
 from typing import Annotated
 
 import typer
@@ -17,6 +16,7 @@ from rayspec.cli.commands._loader_common import (
     OutputOption,
     console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.config import rayspec_home
@@ -60,12 +60,7 @@ def register(app: typer.Typer) -> None:
             fail(str(exc), hint=exc.hint)
             return
         if json_:
-            typer.echo(
-                json.dumps(
-                    [{"name": p.name, "source": p.source, "base": p.base} for p in specs],
-                    indent=2,
-                )
-            )
+            print_json([{"name": p.name, "source": p.source, "base": p.base} for p in specs])
             return
         out = console()
         if not specs:

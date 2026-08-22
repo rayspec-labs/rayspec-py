@@ -17,7 +17,6 @@ workflow, a workflow that does not load, an unreadable lockfile).
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -34,6 +33,7 @@ from rayspec.cli.commands._loader_common import (
     error_lines,
     fail,
     make_context,
+    print_json,
     resolve_output,
     short_path,
     workflow_label,
@@ -195,7 +195,7 @@ def register(app: typer.Typer) -> None:
                 "checked": True,
             }
             if json_:
-                out.print(json.dumps(payload, ensure_ascii=False), markup=False, highlight=False)
+                print_json(payload)
             elif drifts:
                 error_lines(drifts, kind="lockfile drift")
                 out.print("[dim]hint: run `rayspec lock` to re-pin[/dim]")
@@ -207,18 +207,13 @@ def register(app: typer.Typer) -> None:
         path = write_lockfile(ctx.project_root, merged)
         agents = sum(len(entries) for entries in merged.values())
         if json_:
-            out.print(
-                json.dumps(
-                    {
-                        "path": str(path),
-                        "workflows": {n: _entries_json(e) for n, e in sorted(merged.items())},
-                        "drift": [],
-                        "checked": False,
-                    },
-                    ensure_ascii=False,
-                ),
-                markup=False,
-                highlight=False,
+            print_json(
+                {
+                    "path": str(path),
+                    "workflows": {n: _entries_json(e) for n, e in sorted(merged.items())},
+                    "drift": [],
+                    "checked": False,
+                }
             )
             return
         out.print(f"wrote {short_path(path, ctx)} ({len(merged)} workflow(s), {agents} agent(s))")

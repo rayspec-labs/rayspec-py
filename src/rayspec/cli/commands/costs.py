@@ -27,7 +27,6 @@ the one thing a total may never hide.
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -48,6 +47,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.providers.base import Usage
@@ -484,15 +484,8 @@ def register(app: typer.Typer) -> None:
             )
             if json_:
                 empty = build_report([])
-                out.print(
-                    json.dumps(
-                        # no slug is minted for this directory, so none is reported either
-                        costs_payload(empty, project=None, since=cutoff, workflow=workflow),
-                        ensure_ascii=False,
-                    ),
-                    markup=False,
-                    highlight=False,
-                )
+                # no slug is minted for this directory, so none is reported either
+                print_json(costs_payload(empty, project=None, since=cutoff, workflow=workflow))
             return
         # list_runs() drops a run.json it cannot parse (a log warning the CLI suppresses); the
         # id listing is the only place the shortfall is still visible, and a total may not hide it
@@ -501,14 +494,7 @@ def register(app: typer.Typer) -> None:
         records = select_runs(loaded, since=cutoff, workflow=workflow)
         report = build_report(records, unreadable=max(known - len(loaded), 0))
         if json_:
-            out.print(
-                json.dumps(
-                    costs_payload(report, project=ctx.slug, since=cutoff, workflow=workflow),
-                    ensure_ascii=False,
-                ),
-                markup=False,
-                highlight=False,
-            )
+            print_json(costs_payload(report, project=ctx.slug, since=cutoff, workflow=workflow))
             return
         if not records:
             out.print(

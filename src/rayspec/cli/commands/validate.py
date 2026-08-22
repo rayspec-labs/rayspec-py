@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Any
 
 import typer
@@ -22,6 +21,7 @@ from rayspec.cli.commands._loader_common import (
     fail,
     make_context,
     message_problems,
+    print_json,
     report_lines,
     resolve_output,
     workflow_label,
@@ -167,7 +167,7 @@ def register(app: typer.Typer) -> None:
             total_errors += errors
             failed += 1 if errors else 0
         if json_:
-            out.print(json.dumps(rows, ensure_ascii=False), markup=False, highlight=False)
+            print_json(rows)
             if failed:
                 raise typer.Exit(code=2)
             return

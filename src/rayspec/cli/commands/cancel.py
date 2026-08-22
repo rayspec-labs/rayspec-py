@@ -16,7 +16,6 @@ probed from here and is refused unless ``--force``. Step records are left as the
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Any
 
 import typer
@@ -29,6 +28,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.events.model import EventType, RunEvent
@@ -121,7 +121,7 @@ def register(app: typer.Typer) -> None:
                 "lock_released": released,
             }
             if json_:
-                out.print(json.dumps(payload), markup=False, highlight=False)
+                print_json(payload)
             else:
                 out.print(
                     Text.assemble(
@@ -165,7 +165,7 @@ def register(app: typer.Typer) -> None:
                 "status": record.status.value,
             }
             if json_:
-                out.print(json.dumps(payload), markup=False, highlight=False)
+                print_json(payload)
             else:
                 out.print(
                     f"sent SIGINT to pid {record.pid} — run {record.run_id} is shutting down "
@@ -196,7 +196,7 @@ def register(app: typer.Typer) -> None:
             "lock_released": released,
         }
         if json_:
-            out.print(json.dumps(payload), markup=False, highlight=False)
+            print_json(payload)
         else:
             out.print(Text.assemble((f"run {record.run_id} cancelled", "yellow"), f" — {reason}"))
 

@@ -31,6 +31,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     error_lines,
     fail,
+    json_line,
     make_context,
     report_lines,
     resolve_output,
@@ -541,7 +542,7 @@ def print_summary(
             "pause": result.pause.model_dump(mode="json") if result.pause else None,
         }
         assert set(payload) == SUMMARY_KEYS, "SUMMARY_KEYS drifted from the payload"
-        out.print(json.dumps(payload), markup=False, highlight=False)
+        out.print(json_line(payload), markup=False, highlight=False, soft_wrap=True)
         return
     if result.outputs:
         table = Table(show_edge=False, pad_edge=False, title="outputs", title_justify="left")

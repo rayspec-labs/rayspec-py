@@ -34,6 +34,7 @@ from rayspec.cli.commands._loader_common import (
     OutputOption,
     RootOption,
     console,
+    print_json,
     resolve_output,
 )
 from rayspec.cli.commands.run import pause_actions
@@ -417,11 +418,7 @@ def register(app: typer.Typer) -> None:
         out = console()
         planned = common.planned_step_paths(ctx, record)
         if json_:
-            out.print(
-                json.dumps(show_payload(store, record, planned=planned), ensure_ascii=False),
-                markup=False,
-                highlight=False,
-            )
+            print_json(show_payload(store, record, planned=planned))
             return
         print_show(
             out, store, record, planned=planned, configured_secrets=tuple(ctx.config.secrets)

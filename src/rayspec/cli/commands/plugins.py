@@ -8,7 +8,6 @@ to answer "why is there a command/store/sink I did not write?" without running a
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import typer
@@ -16,7 +15,12 @@ from rich.console import Console
 from rich.table import Table
 
 from rayspec.cli._docs import docs_url
-from rayspec.cli.commands._loader_common import JsonOption, OutputOption, resolve_output
+from rayspec.cli.commands._loader_common import (
+    JsonOption,
+    OutputOption,
+    print_json,
+    resolve_output,
+)
 from rayspec.cli.plugins import CLI_ENTRY_POINT_GROUP, InstalledPlugin, installed_plugins
 
 #: Where a reader is sent to write one of these.
@@ -89,7 +93,7 @@ def register(app: typer.Typer) -> None:
                 "plugins": [plugin_to_dict(plugin) for plugin in installed],
                 "registered": builtins,
             }
-            typer.echo(json.dumps(payload, indent=2))
+            print_json(payload)
             return
         console = Console()
         if installed:

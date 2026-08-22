@@ -20,7 +20,6 @@ other runs, other projects or other people.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -35,6 +34,7 @@ from rayspec.cli.commands._loader_common import (
     OutputOption,
     RootOption,
     console,
+    print_json,
     resolve_output,
 )
 from rayspec.store.file import (
@@ -251,10 +251,7 @@ def register(app: typer.Typer) -> None:
         store, record = common.lookup_run(ctx, run)
         out = console()
         if json_:
-            payload = audit_payload(store, record, commands=commands)
-            out.print(
-                json.dumps(payload, ensure_ascii=False, default=str), markup=False, highlight=False
-            )
+            print_json(audit_payload(store, record, commands=commands))
             return
         print_audit(out, store, record, commands=commands)
 

@@ -1805,11 +1805,24 @@ documented as the older spelling of `--output json`. `--output` alone decides; `
 decides; both together are fine while they agree and exit 2
 (`error: --json and --output table disagree`) when they do not — one of them silently winning
 would print a table into a pipe that asked for JSON. `rayspec runs` counts `--output` with
-`--json`/`--all`/`--limit` as a listing flag that a subcommand refuses. Two knowingly-open points:
-`rayspec show` still takes `--json` alone, and `rayspec runs stubs -o/--output PATH` predates the
-flag and keeps its own meaning (that command has no `--json`, so nothing is ambiguous).
+`--json`/`--all`/`--limit` as a listing flag that a subcommand refuses. One knowingly-open point:
+`rayspec runs stubs -o/--output PATH` predates the flag and keeps its own meaning (that command
+has no `--json`, so nothing is ambiguous).
 `tests/cli/test_output_option.py` holds the gap list and asserts `--json` and `--output json` are
 byte-identical per command.
+
+**One rendering, one place.** `_loader_common` also owns how the JSON looks: `stdout_is_tty()` is
+the single probe, `json_text(payload)` renders a **document** (`indent=2` on a terminal, compact
+`separators=(",", ":")` when redirected; `ensure_ascii=False`, `default=str`, payload key order),
+`print_json(payload)` prints one on stdout (soft-wrapped — Rich folding a compact line would break
+it inside a string) and `json_line(payload)` renders one record of a **line-delimited** stream
+(`run|resume|approve|reject --json`'s summary line, `logs --json`), which stays compact on a
+terminal too so `… | tail -1 | jq` reads a whole record. The compact form is byte-for-byte
+pydantic's `model_dump_json`, i.e. what `run.json` and every JSONL line already were. No command
+serialises its own `--json` output: the one `json.dumps` printed straight to stdout under `cli/`
+is `rayspec schema`'s published schema document, and `tests/cli/test_output_style.py` fails on the
+next one (an AST scan) as well as asserting that every command's `--json` document is exactly
+`json_text` of its payload.
 
 ### rayspec.skill + CLI `skill`
 The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`

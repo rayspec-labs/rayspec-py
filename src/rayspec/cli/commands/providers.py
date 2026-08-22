@@ -6,7 +6,6 @@ Boundary: CLI presentation only. Reads the registry (no SDK import, no provider 
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -14,7 +13,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from rayspec.cli.commands._loader_common import OutputOption, resolve_output
+from rayspec.cli.commands._loader_common import OutputOption, print_json, resolve_output
 from rayspec.providers.base import ProviderCapabilities, ProviderRegistration
 from rayspec.providers.registry import BUILTIN_REGISTRATIONS, list_registrations
 
@@ -112,7 +111,7 @@ def register(app: typer.Typer) -> None:
         json_ = resolve_output(output, json_)
         regs = list_registrations()
         if json_:
-            typer.echo(json.dumps([registration_to_dict(r) for r in regs], indent=2))
+            print_json([registration_to_dict(r) for r in regs])
             return
         console = Console()  # terminal width / COLUMNS; Rich folds cells on narrow terminals
         listing, matrix = render_tables(regs)
