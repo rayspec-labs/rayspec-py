@@ -367,8 +367,13 @@ def policy_paths(
     return tuple(out)
 
 
-def _label(path: Path, project_root: Path | None, home: Path) -> str:
-    """Short display path: project-relative, ``~/.rayspec/…`` or the absolute path."""
+def short_path(path: Path, project_root: Path | None, home: Path) -> str:
+    """Short display path: project-relative, ``~/.rayspec/…`` or the absolute path.
+
+    Every location this package prints goes through it, policy layer or not: a refusal that
+    names one file as ``.rayspec/policy.yaml`` and the next as a 90-character absolute path
+    reads as two different kinds of thing.
+    """
     if project_root is not None:
         try:
             return path.relative_to(project_root).as_posix()
@@ -464,9 +469,9 @@ def load_policy(
     candidates = policy_paths(root, home, env)
     # the searched list is deliberately NOT shortened against the project root: "which root was
     # this discovered against" is exactly the question it exists to answer.
-    searched = tuple(_label(c.path, None, Path(home)) for c in candidates)
+    searched = tuple(short_path(c.path, None, Path(home)) for c in candidates)
     for candidate in candidates:
-        label = _label(candidate.path, root, Path(home))
+        label = short_path(candidate.path, root, Path(home))
         unusable = _unusable(candidate.path)
         if unusable == "missing":
             if candidate.name == POLICY_ENV:
@@ -527,5 +532,6 @@ __all__ = [
     "load_policy",
     "policy_note",
     "policy_paths",
+    "short_path",
     "sources_text",
 ]

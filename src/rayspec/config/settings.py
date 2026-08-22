@@ -110,6 +110,19 @@ def config_paths(project_root: Path, home: Path) -> tuple[Path, Path]:
     return home / "config.yaml", project_root / ".rayspec" / "config.yaml"
 
 
+def config_layers(project_root: Path, home: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Each ``config.yaml`` that exists, in merge order (user first), with its parsed contents.
+
+    :func:`load_config` returns the merge, which is what almost everything wants — but a caller
+    that has to name the FILE a setting came from cannot recover it from the merged document.
+    ``rayspec.policy`` needs exactly that: the machine owner's ``providers:`` block is a control
+    a workflow must not shed, and a refusal that cannot quote the file imposing it is useless to
+    the person who has to edit it.
+    """
+    user_path, project_path = config_paths(project_root, home)
+    return [(path, _read_config_file(path)) for path in (user_path, project_path)]
+
+
 def load_config(project_root: Path | None, *, home: Path | None = None) -> Config:
     """Load ``<home>/config.yaml`` then ``<project_root>/.rayspec/config.yaml`` (project wins).
 
@@ -239,6 +252,7 @@ def load_env(
 __all__ = [
     "ConfigError",
     "ProjectEnvInfo",
+    "config_layers",
     "config_paths",
     "env_paths",
     "load_config",

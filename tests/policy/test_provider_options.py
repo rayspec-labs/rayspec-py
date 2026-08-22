@@ -71,8 +71,30 @@ def test_a_provider_option_the_policy_does_not_control_is_fine(tree: Tree) -> No
     assert report.ok, report.errors
 
 
-def test_provider_options_are_untouched_without_a_policy(tree: Tree) -> None:
-    _, report = validated(tree, wf("allowed_tools: [Bash]\nmodel: claude-opus-4-1\n"))
+def test_provider_options_are_untouched_when_nothing_constrains_the_agent(tree: Tree) -> None:
+    """No policy file AND no control of any kind — ``access: full``, no tools, no caps.
+
+    ``wf()`` is not that agent: it sets ``access: read-only``, which is a control in its own
+    right (``tests/policy/test_control_trigger.py``). The carve-out is for an agent with nothing
+    to bypass, and it has to be spelled out to stay one.
+    """
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: claude
+      model: claude-sonnet-4-5
+      access: full
+      provider_options:
+        claude:
+          allowed_tools: [Bash]
+          model: claude-opus-4-1
+    prompt: hello
+""",
+    )
     assert report.ok, report.errors
 
 
@@ -434,7 +456,23 @@ def test_codex_deny_all_stays_permitted_under_an_access_cap(tree: Tree) -> None:
 
 def test_the_escape_hatch_is_untouched_when_no_control_is_in_force(tree: Tree) -> None:
     """No policy file and no self-imposed control: `provider_options` passes through as before."""
-    _, report = validated(tree, wf("extra_args: {disallowedTools: ''}\nadd_dirs: [/]\n"))
+    _, report = validated(
+        tree,
+        """rayspec: 1
+name: wf
+steps:
+  - id: think
+    agent:
+      provider: claude
+      model: claude-sonnet-4-5
+      access: full
+      provider_options:
+        claude:
+          extra_args: {disallowedTools: ''}
+          add_dirs: [/]
+    prompt: hello
+""",
+    )
     assert report.ok, report.errors
 
 
@@ -499,7 +537,7 @@ def test_an_allow_listed_claude_option_really_reaches_the_sdk(tmp_path) -> None:
     assert isinstance(options, ClaudeAgentOptions)
     for name in names:
         got = getattr(options, name)
-        if name in {"env", "mcp_servers"}:  # merged under rayspec's own entries
+        if name in {"env", "mcp_servers"}:  # merged UNDER rayspec's own and the owner's entries
             assert set(values[name]) <= set(got)  # type: ignore[arg-type]
         else:
             assert got == values[name]

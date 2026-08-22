@@ -21,6 +21,14 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from rayspec.policy.controls import (
+    CONTROL_TAGS,
+    Control,
+    ExternalControls,
+    agent_controls,
+    merged_controls,
+    policy_controls,
+)
 from rayspec.policy.layers import EffectivePolicy, PolicySource, sources_text
 from rayspec.policy.trust import TrustStore
 from rayspec.schema import provider_option_block
@@ -44,30 +52,59 @@ SAFE_APPROVAL_MODE = "deny_all"
 
 @dataclass(frozen=True, slots=True)
 class ControlsInForce:
-    """The controls governing one agent: which ones, and where each of them came from.
+    """The controls governing one agent: which ones, of what kind, and where each came from.
 
-    ``sources`` is keyed the way the policy file spells the key (``tools.deny``, ``access.max``)
-    plus the workflow's own controls (``network: off``), and carries the layer lines that impose
-    each one, so a refusal can always quote the file a person has to edit. ``effective`` is the
-    policy those layers came from, or ``None`` when the agent's own fields are the only controls
-    — a value-level check consults it and treats its absence as "that policy key restricts
-    nothing here".
+    ``sources`` is keyed the way each control is spelled — the policy file's own keys
+    (``tools.deny``, ``access.max``), the agent's own fields (``access: read-only``,
+    ``network: off``, ``max_turns: 2``) and the external ones (``lockfile``,
+    ``providers.claude``) — and carries the lines that impose each one, so a refusal can always
+    quote the file a person has to edit. ``tags`` says which KIND of restriction each control is
+    (:data:`~rayspec.policy.controls.CONTROL_TAGS`); a value guard matches on those rather than
+    on a spelling. ``effective`` is the policy the layers came from, or ``None`` when nothing
+    outside the workflow governs the agent — a value-level check consults it and treats its
+    absence as "that policy key restricts nothing here".
     """
 
     sources: Mapping[str, tuple[PolicySource, ...]] = field(default_factory=dict)
     effective: EffectivePolicy | None = None
+    tags: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+    @classmethod
+    def of(
+        cls, controls: Iterable[Control], *, effective: EffectivePolicy | None = None
+    ) -> ControlsInForce:
+        """Fold every control governing one agent into one view of them."""
+        sources, tags = merged_controls(tuple(controls))
+        return cls(sources=sources, effective=effective, tags=tags)
 
     @property
     def governed(self) -> bool:
         """True when the agent is subject to any control at all."""
         return bool(self.sources)
 
-    def named(self, keys: Iterable[str] | None = None) -> str:
-        """``access.max and network: off (.rayspec/policy.yaml:2, agents/a.yaml:4)``."""
+    @property
+    def kinds(self) -> frozenset[str]:
+        """Every kind of restriction in force, as tags. Unclassified controls cover them all."""
+        return frozenset().union(*self.tags.values()) if self.tags else frozenset()
+
+    def covering(self, tags: Iterable[str]) -> tuple[str, ...]:
+        """The controls whose kind is one of ``tags`` — what a guard names in its refusal."""
+        wanted = frozenset(tags)
+        return tuple(sorted(key for key, kind in self.tags.items() if kind & wanted))
+
+    def named(self, keys: Iterable[str] | None = None, *, limit: int = 4) -> str:
+        """``access.max and network: off (.rayspec/policy.yaml:2, agents/a.yaml:4)``.
+
+        A hardened agent can be under a dozen controls at once and a refusal that recites all of
+        them stops being read. Past ``limit`` the rest are counted rather than listed — the
+        message still names files a person can open, and the count says there are more.
+        """
         chosen = sorted(set(self.sources) & set(keys)) if keys is not None else sorted(self.sources)
-        sources = [source for key in chosen for source in self.sources[key]]
+        shown = chosen[:limit]
+        rest = len(chosen) - len(shown)
+        sources = [source for key in shown for source in self.sources[key]]
         where = sources_text(sources)
-        joined = " and ".join(chosen)
+        joined = ", ".join(shown) + f" and {rest} more" if rest else " and ".join(shown)
         return f"{joined} ({where})" if where else joined
 
     def mcp_denied(self, server: str) -> tuple[PolicySource, ...]:
@@ -95,16 +132,26 @@ class AllowedOption:
 
     ``summary`` is that statement, in one line — the reasoning that earned the key its place on
     the allow-list, kept next to the entry so the next reader can check it rather than trust it.
-    ``guarded_by`` names the controls whose value has to be consulted before the key is let
-    through and ``offenders`` performs that consultation; a key with neither is inert under every
-    control. A guard exists so the check can refuse the *value* a control refuses instead of the
-    key: refusing ``mcp_servers`` outright would block the server ``mcp.allow_servers`` allows,
-    and a control that blocks the permitted case teaches people to switch the control off.
+    ``offenders`` inspects the requested VALUE and reports the parts a control refuses;
+    ``guarded_by`` narrows when that runs to the KINDS of control it is about
+    (:data:`~rayspec.policy.controls.CONTROL_TAGS`), empty meaning "under every control". Tags
+    rather than spellings: ``access.max`` in a policy file and ``access: read-only`` on the agent
+    withhold the same thing, and a guard that knew only the first is how a bypass gets written.
+    A key with no ``offenders`` is inert under every control.
+
+    A guard exists so the check can refuse the *value* a control refuses instead of the key:
+    refusing ``mcp_servers`` outright would block the server ``mcp.allow_servers`` allows, and a
+    control that blocks the permitted case teaches people to switch the control off.
     """
 
     summary: str
     guarded_by: frozenset[str] = frozenset()
     offenders: OptionCheck | None = None
+
+    def __post_init__(self) -> None:
+        unknown = self.guarded_by - CONTROL_TAGS
+        if unknown:  # pragma: no cover - a typo here would silently disable the guard
+            raise ValueError(f"unknown control tags: {sorted(unknown)}")
 
 
 def _refused_mcp_servers(value: object, controls: ControlsInForce) -> tuple[tuple[str, str], ...]:
@@ -151,7 +198,7 @@ def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tu
     """``auto_review`` grants the sandbox escalations the access control exists to withhold."""
     if str(value) == SAFE_APPROVAL_MODE:
         return ()
-    named = controls.named(("access.max", "network: off"))
+    named = controls.named(controls.covering(("access", "network")))
     return (
         (
             "",
@@ -177,18 +224,24 @@ def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tu
 #: ships, and the list only grows when someone can write down what a key does.
 #:
 #: A control-free agent is untouched — the escape hatch is still an escape hatch when nothing is
-#: being escaped. What turns the allow-list on is a control: a ``policy.yaml`` key
-#: (:meth:`EffectivePolicy.control_sources`) or one the agent imposes on itself
-#: (:func:`agent_control_sources`, ``network: off``).
+#: being escaped. What turns the allow-list on is a control OF ANY KIND, from any source: a
+#: ``policy.yaml`` key (:meth:`EffectivePolicy.control_sources`), a security-shaped field the
+#: agent sets on itself (:data:`~rayspec.policy.controls.AGENT_CONTROLS` — ``access``,
+#: ``tools``, ``network``, ``commands``, ``mcp``, ``max_turns``, ``budget_usd``, ``on_denial``)
+#: or an external one (:data:`~rayspec.policy.controls.EXTERNAL_CONTROLS` — the model lockfile,
+#: the machine owner's ``providers:`` settings). That trigger is classified rather than listed,
+#: and proved total against the real schema, for the same reason this list is: an enumeration in
+#: the trigger is worth exactly as much as an enumeration in the allow-list.
 ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] = {
     "claude": {
         ("env",): AllowedOption(
-            "extra environment variables for the CLI subprocess, merged UNDER the ones rayspec "
-            "computed — an added variable cannot displace one rayspec set"
+            "extra environment variables for the CLI subprocess, merged UNDER both the variables "
+            "rayspec computes and the machine owner's providers.claude.env, so a workflow can "
+            "add one but never displace one of theirs (build_options builds env in that order)"
         ),
         ("mcp_servers",): AllowedOption(
             "extra MCP servers, merged under the agent's own mcp: block",
-            guarded_by=frozenset({"mcp.allow_servers", "tools.deny"}),
+            guarded_by=frozenset({"mcp", "tools"}),
             offenders=_refused_mcp_servers,
         ),
         ("max_thinking_tokens",): AllowedOption(
@@ -203,13 +256,17 @@ ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] 
     "codex": {
         ("config", "mcp_servers"): AllowedOption(
             "extra MCP servers, merged under the agent's own mcp: block",
-            guarded_by=frozenset({"mcp.allow_servers", "tools.deny"}),
+            guarded_by=frozenset({"mcp", "tools"}),
             offenders=_refused_mcp_servers,
+        ),
+        ("config", "model_reasoning_summary"): AllowedOption(
+            "how much of the model's reasoning is summarised into the stream: transcript "
+            "verbosity, which grants no capability and withholds none"
         ),
         ("approval_mode",): AllowedOption(
             "how a sandbox escalation request is answered: deny_all (the default) refuses every "
             "one of them, auto_review grants them",
-            guarded_by=frozenset({"access.max", "network: off"}),
+            guarded_by=frozenset({"access", "network"}),
             offenders=_refused_approval_mode,
         ),
         ("ephemeral",): AllowedOption(
@@ -393,42 +450,50 @@ def check_policy(
 def agent_control_sources(agent: ResolvedAgent) -> dict[str, tuple[PolicySource, ...]]:
     """The controls one agent sets on *itself*, in the shape :meth:`control_sources` returns.
 
-    ``network: off`` is a security claim a reviewer reads off the agent file, and it is enforced
-    by folding ``web`` into ``tools.deny`` — the same field ``provider_options`` can overwrite.
-    It comes with no policy file, which is the common case, so the escape-hatch check has to see
-    it from here rather than from a layer.
+    Every security-shaped field of the agent schema, not a chosen few: ``access: read-only`` is
+    as real a restriction as ``network: off``, and so is ``tools.deny``, a turn or money cap, a
+    ``commands:`` block and a declared ``mcp:`` set. See
+    :data:`~rayspec.policy.controls.AGENT_CONTROLS`, where each field carries the line that
+    earned it its place, and its sibling ``AGENT_NON_CONTROLS`` for the fields that restrict
+    nothing and why. These come with no policy file, which is the common case and the case where
+    an unprotected control does the most damage.
     """
-    if agent.network != "off":
-        return {}
-    where = _location(agent, "network") or agent.field_path("network")
-    return {"network: off": (PolicySource(layer="workflow", label=where, line=None, value="off"),)}
+    sources, _tags = merged_controls(agent_controls(agent))
+    return sources
 
 
 def check_provider_options(
-    resolved: ResolvedWorkflow, effective: EffectivePolicy | None = None
+    resolved: ResolvedWorkflow,
+    effective: EffectivePolicy | None = None,
+    *,
+    external: ExternalControls | None = None,
 ) -> PolicyReport:
     """Read every governed agent's ``provider_options`` block as an ALLOW-list.
 
-    An agent is governed when any control applies to it: a ``policy.yaml`` key
-    (:meth:`EffectivePolicy.control_sources`) or one it imposes on itself
-    (:func:`agent_control_sources`, ``network: off``) — so this runs whether or not a policy file
-    exists, because a control a workflow sets on itself is still a control it must not be able to
-    shed. For such an agent every key of its own provider's block must appear in
-    :data:`ALLOWED_PROVIDER_OPTIONS`, and a key that does not is refused at load time.
+    An agent is governed when ANY control applies to it, whatever its source: a ``policy.yaml``
+    key (:meth:`EffectivePolicy.control_sources`), a security-shaped field the agent sets on
+    itself (:func:`agent_control_sources`) or an external one — the model lockfile, the machine
+    owner's ``providers:`` settings — which the caller discovers and passes as ``external``,
+    because this function performs no IO of its own. So this runs whether or not a policy file
+    exists: a control a workflow sets on itself is still a control it must not be able to shed,
+    and a control imposed from outside it even more so.
 
-    An agent no control applies to is left exactly as it was: the escape hatch is still an escape
-    hatch when nothing is being escaped.
+    For a governed agent every key of its own provider's block must appear in
+    :data:`ALLOWED_PROVIDER_OPTIONS`, and a key that does not is refused at load time. An agent
+    NO control applies to is left exactly as it was: the escape hatch is still an escape hatch
+    when nothing is being escaped.
 
     The block is narrowed with :func:`~rayspec.schema.provider_option_block` — the same function
     the adapters narrow it with — so this check reads the block the adapter will act on rather
     than a shape a hand-written path walk assumed.
     """
     report = PolicyReport()
-    from_policy = {} if effective is None else effective.control_sources()
+    from_policy = policy_controls(effective)
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
-        controls = ControlsInForce(
-            sources={**from_policy, **agent_control_sources(agent)}, effective=effective
+        outside = () if external is None else external.of(agent.provider)
+        controls = ControlsInForce.of(
+            (*from_policy, *agent_controls(agent), *outside), effective=effective
         )
         _check_provider_options(agent, controls, report)
     return report
@@ -531,7 +596,9 @@ def _check_option_value(
     report: PolicyReport,
 ) -> None:
     """An allow-listed key: permitted outright, or permitted for the values its guard allows."""
-    if rule.offenders is None or not (rule.guarded_by & set(controls.sources)):
+    if rule.offenders is None:
+        return
+    if rule.guarded_by and not (rule.guarded_by & controls.kinds):
         return
     for suffix, message in rule.offenders(value, controls):
         spelled = _spelled(agent.provider, (*path, suffix) if suffix else path)

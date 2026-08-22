@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rayspec.policy.controls import discover_external_controls
 from rayspec.policy.enforce import (
     PolicyProblem,
     PolicyReport,
@@ -62,14 +63,19 @@ def apply_policy(
 
     The per-agent controls (``network:``, ``commands:``) are part of the workflow rather than of
     a policy file, so they are always applied — and so is the ``provider_options`` check, because
-    a workflow field is a control the workflow must not be able to remove either. Returns the
-    problems to report; nothing is raised, and the caller decides whether an error refuses the
-    run. Calling it twice is harmless: a denial already present on an agent is not added again.
+    a workflow field is a control the workflow must not be able to remove either. This is also
+    where the EXTERNAL controls are discovered (the model lockfile, the machine owner's
+    ``providers:`` settings): :func:`~rayspec.policy.enforce.check_provider_options` is a pure
+    check and will not go looking for files on its own, so the one function that already knows
+    the project root hands them to it. Returns the problems to report; nothing is raised, and the
+    caller decides whether an error refuses the run. Calling it twice is harmless: a denial
+    already present on an agent is not added again.
     """
     root = policy_root(resolved)
     report = _fold(resolved, check_agent_controls(resolved, capabilities_for=capabilities_for))
     effective = policy if policy is not None else load_policy(root, home=resolved.home)
-    report = _merge(report, check_provider_options(resolved, effective))
+    external = discover_external_controls(root, home=resolved.home)
+    report = _merge(report, check_provider_options(resolved, effective, external=external))
     if not effective.is_empty:
         trusted = TrustStore.load(root) if effective.trust_required() else None
         outcome = _fold(
