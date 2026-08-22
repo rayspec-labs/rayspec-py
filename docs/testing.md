@@ -25,6 +25,7 @@ Two layouts are discovered, and they parse into exactly the same case:
 |---|---|---|
 | `.rayspec/tests/<workflow>/<case>.yaml` — one case per file | `tests/<workflow>` | the project |
 | `.rayspec/tests/<case>.yaml` — loose case files | `tests` | the project |
+| `checks.yaml` at the project root — a `checks:` list | `checks` | the project |
 | `examples/<name>/checks.yaml` — a `checks:` list | `<name>` | `examples/<name>/` |
 | `.rayspec/dryrun/checks.yaml` — a `checks:` list | `dogfood` | the project |
 
@@ -33,6 +34,14 @@ case, so `.rayspec/tests/fix_issue/duplicate_issue.yaml` needs no `workflow:` an
 suite form exists because each rayspec example is a self-contained project with its own
 `.rayspec/`, and one file per example is easier to read than a directory of stubs — both are
 first-class and both run under `rayspec test`.
+
+The root `checks.yaml` is the same file at the place it lands when the project *is* the example:
+`rayspec init --from hello_review` scaffolds the example's `checks.yaml` along with everything
+else, and `rayspec test` in that directory runs it. A root `checks.yaml` is only read when it
+says what it is — a mapping whose `checks:` key holds a list of case mappings, each naming at
+least one case key. The root of a project is shared ground: a file of that name belonging to
+another tool is passed over rather than turned into an error. (Naming one case key is enough, so
+a suite of yours with a typo in it is still read, and the typo still reported.)
 
 ## The case format
 

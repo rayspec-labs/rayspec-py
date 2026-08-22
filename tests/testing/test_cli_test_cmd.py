@@ -232,3 +232,24 @@ def test_junit_is_written_when_a_case_file_is_malformed(
     result = invoke(["--junit", str(out)], cases, home)
     assert result.exit_code == 2, result.output
     assert out.is_file()
+
+
+def test_the_no_cases_hint_offers_a_placement_that_works(tmp_path: Path) -> None:
+    """A wheel user has no ``examples/`` directory: the hint may only name places `rayspec test`
+    actually discovers from the project root it was given."""
+    from rayspec.cli.commands.test import NO_CASES_HINT
+
+    # "next to an example" is the repository's own layout: `examples/<name>/checks.yaml` is
+    # discovered relative to the project root, which a scaffolded project has no `examples/` in
+    assert "next to an example" not in NO_CASES_HINT
+    assert "checks.yaml at the project root" in NO_CASES_HINT
+    (tmp_path / ".rayspec" / "workflows").mkdir(parents=True)
+    (tmp_path / ".rayspec" / "workflows" / "wf.yaml").write_text(
+        'rayspec: 1\nname: wf\nsteps:\n  - {id: a, shell: "true"}\n', encoding="utf-8"
+    )
+    (tmp_path / "checks.yaml").write_text(
+        "checks:\n  - {id: smoke, workflow: wf}\n", encoding="utf-8"
+    )
+    from rayspec.testing import discover_suites
+
+    assert [s.name for s in discover_suites(tmp_path)] == ["checks"]

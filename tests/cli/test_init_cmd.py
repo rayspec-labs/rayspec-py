@@ -621,3 +621,137 @@ def test_init_from_keeps_an_existing_readme_and_drops_the_step_that_names_it(
     monkeypatch.chdir(target)
     command = _printed_dry_run(res.output)
     assert CliRunner().invoke(app, command[1:]).exit_code == 0
+
+
+# --------------------------------------------------------------------------------------------
+# whole or not at all
+# --------------------------------------------------------------------------------------------
+
+
+def _blocked(target: Path, relative: str) -> None:
+    """Put a directory where the scaffold's ``relative`` file goes, so writing it raises."""
+    path = target / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+
+
+def test_init_from_writes_nothing_when_one_file_cannot_be_written(
+    tmp_path: Path, home: Path
+) -> None:
+    """`--from` is documented as applied whole or not at all. The refusal path already was;
+    the *error* path wrote every file it got to before the one that failed."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, "stubs.yaml")  # sorts after the .rayspec/ tree and README.md
+    res = CliRunner().invoke(
+        app, ["init", "--from", "hello_review", "--root", str(target), "--no-skill"]
+    )
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    assert "stubs.yaml" in res.output and "directory" in res.output
+    left = sorted(p.name for p in target.iterdir())
+    assert left == ["stubs.yaml"]  # only the directory that was already there
+    assert not (target / ".rayspec").exists()  # not even an empty project directory
+    assert not (target / "README.md").exists()
+
+
+def test_init_writes_nothing_when_one_template_file_cannot_be_written(
+    tmp_path: Path, home: Path
+) -> None:
+    """The same for the generic scaffold: both paths go through one writer."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, ".rayspec/stubs/example.yaml")
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert not (target / ".rayspec" / "workflows" / "example.yaml").exists()
+    assert not (target / ".rayspec" / "config.yaml").exists()
+
+
+def test_a_failed_scaffold_leaves_an_existing_project_alone(tmp_path: Path, home: Path) -> None:
+    """Rolling back may not take a directory that was already there with it."""
+    target = tmp_path / "proj"
+    (target / ".rayspec" / "workflows").mkdir(parents=True)
+    (target / ".rayspec" / "notes.txt").write_text("mine", encoding="utf-8")
+    _blocked(target, ".rayspec/stubs/example.yaml")
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert (target / ".rayspec" / "notes.txt").read_text(encoding="utf-8") == "mine"
+    assert (target / ".rayspec" / "workflows").is_dir()
+
+
+def test_force_keeps_the_permissions_of_the_file_it_overwrites(target: Path, home: Path) -> None:
+    """A scaffold replaces the CONTENT of a file the user hardened, not its mode. Writing
+    through a temporary file makes the new inode the file, so its mode has to be carried over —
+    a `config.yaml` the user made private must not come back world-readable."""
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    config.chmod(0o600)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--force", "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert config.stat().st_mode & 0o777 == 0o600
+    assert "overwrote" in res.output
+
+
+def test_force_refuses_to_write_through_a_symlink(target: Path, home: Path) -> None:
+    """A scaffolded file names a path inside the project. Replacing a symlinked target would
+    swap it for a regular file (`os.replace` replaces the LINK), and writing through it would
+    change a file outside the project — so it is refused before anything is written, the way a
+    directory in the way is."""
+    shared = target.parent / "shared.yaml"
+    shared.write_text("shared: true\n", encoding="utf-8")
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    before = config.read_text(encoding="utf-8")
+    config.unlink()
+    config.symlink_to(shared)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--force", "--no-skill"])
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    assert "config.yaml" in res.output and "symbolic link" in res.output
+    assert config.is_symlink()  # untouched, and so is what it points at
+    assert shared.read_text(encoding="utf-8") == "shared: true\n"
+    # whole or not at all: the rest of the scaffold was not written either
+    assert (target / ".rayspec" / "workflows" / "example.yaml").read_text(encoding="utf-8")
+    assert before  # the original content is still what the link's target does not hold
+    with pytest.raises(OSError, match="symbolic link"):
+        scaffold(target, kind="code", force=True)
+
+
+def test_a_symlinked_file_is_still_skipped_without_force(target: Path, home: Path) -> None:
+    """Without `--force` nothing is written over it, so there is nothing to refuse."""
+    shared = target.parent / "shared.yaml"
+    shared.write_text("shared: true\n", encoding="utf-8")
+    assert CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"]).exit_code == 0
+    config = target / ".rayspec" / "config.yaml"
+    config.unlink()
+    config.symlink_to(shared)
+    res = CliRunner().invoke(app, ["init", "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert config.is_symlink()
+    assert shared.read_text(encoding="utf-8") == "shared: true\n"
+
+
+def test_a_failed_scaffold_leaves_no_temporary_files(tmp_path: Path, home: Path) -> None:
+    target = tmp_path / "proj"
+    target.mkdir()
+    _blocked(target, "stubs.yaml")
+    CliRunner().invoke(app, ["init", "--from", "hello_review", "--root", str(target)])
+    assert [p.name for p in target.rglob("*") if p.is_file()] == []
+
+
+@pytest.mark.parametrize("name", sorted(example_names()))
+def test_a_scaffolded_example_finds_and_passes_its_own_test_cases(
+    name: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of "an example is a project": `rayspec test` is a shipped command, so the
+    scaffold has to bring the cases with it and discovery has to find them where they land."""
+    target = tmp_path / name
+    target.mkdir()
+    res = CliRunner().invoke(app, ["init", "--from", name, "--root", str(target), "--no-skill"])
+    assert res.exit_code == 0, res.output
+    assert (target / "checks.yaml").is_file()
+    monkeypatch.chdir(target)
+    run = CliRunner().invoke(app, ["test"])
+    assert run.exit_code == 0, run.output
+    assert " passed" in run.output and "no cases" not in run.output

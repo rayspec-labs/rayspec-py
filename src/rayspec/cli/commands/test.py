@@ -51,8 +51,11 @@ from rayspec.testing.spec import Case, CaseFileError, Suite
 EXIT_FAILED = 1
 EXIT_USAGE = 2
 
+#: What to tell a project that has no cases at all. Both placements are ones the project itself
+#: can take: ``examples/<name>/checks.yaml`` is this repository's layout, and a project scaffolded
+#: from an example (or installed from a wheel) has no ``examples/`` directory to put a file in.
 NO_CASES_HINT = (
-    "put cases in .rayspec/tests/<workflow>/<case>.yaml (or a checks.yaml next to an example): "
+    "put cases in .rayspec/tests/<workflow>/<case>.yaml, or a checks.yaml at the project root: "
     + docs_url("docs/testing.md")
 )
 

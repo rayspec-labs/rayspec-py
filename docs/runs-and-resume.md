@@ -311,7 +311,9 @@ A step can name the files it promises to write:
   otherwise the run's workdir). Absolute paths, `~`, `..` and control characters are refused when
   the workflow is loaded, with the file and line of the step. So is `{{ … }}`: an entry is a
   literal file name, **not a template**. When the name varies per `each:` item, keep the file
-  name fixed and template the step's `cwd:` instead (that one *is* rendered per item):
+  name fixed and template the step's `cwd:` instead (that one *is* rendered per item). A step's
+  `cwd:` is resolved **before** its body runs, so the body cannot be what creates it — an earlier
+  step is:
 
   <!-- rayspec:run -->
   ```yaml
@@ -319,11 +321,18 @@ A step can name the files it promises to write:
     each: "['api', 'web']"
     as: name
     steps:
+      - id: prepare
+        shell: "mkdir -p out/{{ name }}"
       - id: build
-        shell: "mkdir -p out/{{ name }} && ./build.sh > out/{{ name }}/report.md"
-        cwd: "out/{{ name }}"
-        artifacts: [report.md]
+        needs: [prepare]
+        cwd: "out/{{ name }}"                     # rendered per item: this is where the name varies
+        shell: 'echo "built {{ name }}" > report.md'
+        artifacts: [report.md]                    # a fixed name, relative to the cwd above
   ```
+
+  The two files land in the run directory as `artifacts/fan[0]/build/report.md` and
+  `artifacts/fan[1]/build/report.md`: the *step path* keeps the items apart, which is why the
+  declared name does not have to.
 - They are checked once the step has **succeeded**: a declared file that is missing, is not a
   regular file (a directory, a FIFO, a socket, a device node), or resolves outside the working
   directory (a symlink) **fails the step**, with a reason naming the path. A file outside the

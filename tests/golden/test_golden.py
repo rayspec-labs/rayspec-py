@@ -9,6 +9,10 @@ committed corpus under ``tests/golden/<suite>/<case>/``.
 Regenerate after an intentional change and read the diff as the record of what changed::
 
     RAYSPEC_UPDATE_GOLDEN=1 uv run pytest tests/golden -q
+
+The captured stream is grouped by step first (``_capture.canonical_order``): the order within a
+step is the engine's and is compared, the order between steps that ran at the same time is the
+scheduler's and is not.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import pytest
 
 from rayspec.testing.spec import Case, CaseFileError, Suite, discover_suites
 
-from ._capture import capture
+from ._capture import canonical_order, capture
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DIR = Path(__file__).resolve().parent
@@ -31,8 +35,8 @@ UPDATE = os.environ.get("RAYSPEC_UPDATE_GOLDEN") == "1"
 UPDATE_HINT = "regenerate with: RAYSPEC_UPDATE_GOLDEN=1 uv run pytest tests/golden -q"
 
 #: How many cases must have a committed corpus — a deleted corpus is a red test, a *new* case
-#: without one (five scopes add cases in parallel) is a skip, not a tripwire for everyone.
-MINIMUM_COVERED = 24
+#: without one (several branches add cases in parallel) is a skip, not a tripwire for everyone.
+MINIMUM_COVERED = 28
 
 
 def discover(root: Path) -> tuple[list[Suite], str | None]:
@@ -110,6 +114,28 @@ def test_golden(suite: Suite, case: Case, home: Path, tmp_path: Path) -> None:
         assert expected == captured[name], _diff(expected, captured[name], str(path.name))
 
 
+def _event(step_path: str | None, marker: str) -> dict[str, object]:
+    return {"type": "stream", "step_path": step_path, "marker": marker}
+
+
+def test_the_corpus_does_not_pin_the_interleaving_of_concurrent_steps() -> None:
+    """Sibling steps under `max_parallel:` finish in whatever order the event loop wakes them,
+    so two runs of the same case interleave differently on the same machine. Comparing that
+    would make the corpus red at random, and the diff would say nothing about the change."""
+    started, finished = _event(None, "run.started"), _event(None, "run.finished")
+    a = _event("api", "1"), _event("docs", "1"), _event("api", "2"), _event("docs", "2")
+    b = a[1], a[0], a[3], a[2]  # the same records, the other way round
+    assert canonical_order([started, *a, finished]) == canonical_order([started, *b, finished])
+    assert canonical_order([started, *a, finished])[0] is started
+    assert canonical_order([started, *a, finished])[-1] is finished
+
+
+def test_the_corpus_still_pins_the_order_within_one_step() -> None:
+    """What one step emitted, in the order it emitted it, is deterministic and is compared."""
+    one, two = _event("api", "1"), _event("api", "2")
+    assert canonical_order([one, two]) != canonical_order([two, one])
+
+
 @pytest.mark.skipif(UPDATE, reason="the corpus is being regenerated")
 def test_the_corpus_has_no_stale_entries() -> None:
     """A renamed or deleted case must not leave a directory behind."""
@@ -144,43 +170,3 @@ def test_masking_leaves_nothing_machine_specific() -> None:
                 if pattern.search(line):
                     offenders.append(f"{path.relative_to(GOLDEN_DIR)}:{lineno}: {what}")
     assert not offenders, offenders[:20]
-
-
-def test_the_corpus_does_not_depend_on_which_concurrent_step_finishes_first() -> None:
-    """Interleaving two parallel steps must not change the captured file.
-
-    The corpus used to assert a total order over events from steps running at the same time, so
-    whichever coroutine the event loop resumed first decided the file — and roughly two runs in
-    five disagreed with it. A gate that fails at random stops being believed, and this project
-    merges on the strength of this one.
-
-    ``canonical_order`` keeps each step's own events in order and each step in the order it
-    started; only the interleaving *between* concurrent steps is normalised. This checks that
-    directly, without needing a flaky run to prove it.
-    """
-    from ._capture import canonical_order
-
-    a_first = [
-        {"type": "run.started", "step_path": None},
-        {"type": "step.started", "step_path": "a"},
-        {"type": "step.started", "step_path": "b"},
-        {"type": "step.finished", "step_path": "a"},
-        {"type": "stream", "step_path": "b"},
-        {"type": "step.finished", "step_path": "b"},
-        {"type": "run.finished", "step_path": None},
-    ]
-    # The same run with b's stream record landing before a's step.finished — a pure race.
-    b_first = [
-        a_first[0],
-        a_first[1],
-        a_first[2],
-        a_first[4],
-        a_first[3],
-        a_first[5],
-        a_first[6],
-    ]
-    assert canonical_order(a_first) == canonical_order(b_first)
-
-    # What the corpus is for still fails: a step's own events reordered, and a reordered graph.
-    swapped_within = [a_first[0], a_first[2], a_first[1], *a_first[3:]]
-    assert canonical_order(swapped_within) != canonical_order(a_first)
