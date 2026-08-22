@@ -17,6 +17,10 @@ All notable changes to rayspec are documented here. The format follows
   and is not exported, so a child process the body starts finds a small slot in its own
   environment but not a spilled one — exporting it would put a value larger than the threshold
   back into the environment block that spilling exists to keep it out of (`docs/templating.md`).
+  Because the preamble is part of the rendered script, the step fingerprint of such a step
+  changes: a run started before this version and resumed after it re-runs every `shell:` step
+  whose value crossed the threshold, and reports it as a changed workflow. Runs started on this
+  version resume as before.
 
 ## [1.0.0] — 2026-08-22
 
@@ -468,4 +472,5 @@ The workflow language, the scheduler, the two provider adapters and the command 
   free only on public repositories, so every workflow file here — CI, the release pipeline, the
   reusable check, the docs publish — is written and locally checked but has not executed for real.
 
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0
