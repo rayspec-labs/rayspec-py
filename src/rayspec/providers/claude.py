@@ -178,8 +178,11 @@ ADAPTER_OWNED_OPTIONS: frozenset[str] = frozenset(
 )
 #: Dict-valued ``provider_options`` merged *under* the computed value instead of replacing it.
 #: These two are extension points on purpose: an extra environment variable or an extra MCP
-#: server adds to what rayspec computed rather than replacing it, and rayspec's own entries win
-#: on a name collision. ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at load
+#: server adds to what rayspec computed rather than replacing it, and rayspec's own entries —
+#: and the machine owner's, from ``providers.claude`` in ``config.yaml`` — win on a name
+#: collision. That is what makes them safe to allow-list under a control, so it has to be true
+#: of both: ``env`` is built with the workflow's block underneath, not on top.
+#: ``mcp.allow_servers`` is therefore checked against ``mcp_servers`` at load
 #: time, server by server — see :data:`rayspec.policy.ALLOWED_PROVIDER_OPTIONS`, which is also
 #: what refuses every field of this dataclass that rayspec has NOT reasoned about (``extra_args``
 #: re-emits any CLI flag after the ones computed here) once a control governs the agent.
@@ -260,8 +263,9 @@ def build_options(
 
     ``provider_options``: keys in :data:`ADAPTER_OWNED_OPTIONS` — every field this function
     computes — are ignored with a warning; :data:`MERGED_OPTIONS` (``env``, ``mcp_servers``) are
-    merged under the computed mapping (``env`` precedence: CLIENT_APP < settings.env <
-    provider_options.env < open(env) < req.env); every other ``ClaudeAgentOptions`` field is
+    merged under the computed mapping (``env`` precedence: provider_options.env < CLIENT_APP <
+    settings.env < open(env) < req.env, so a workflow variable adds to the environment and never
+    displaces one rayspec or the machine owner set); every other ``ClaudeAgentOptions`` field is
     applied verbatim; unknown keys warn.
     """
     if not Path(req.cwd).is_dir():
@@ -332,10 +336,15 @@ def build_options(
     # the same narrowing the codex adapter and the load-time check apply, so all three act
     # on one block (rayspec.schema.provider_option_block)
     overrides = dict(provider_option_block("claude", req.provider_options))
+    # provider_options.env goes FIRST so it is genuinely merged UNDER everything rayspec and the
+    # machine owner set — the promise MERGED_OPTIONS has always made and mcp_servers already
+    # kept. Merged over them it could displace CLAUDE_AGENT_SDK_CLIENT_APP or a variable the
+    # owner set in providers.claude.env from inside the very workflow those constrain, which is
+    # not "adding a variable"; adding one is still exactly what the escape hatch is for.
     env: dict[str, str] = {
+        **_str_mapping(overrides.pop("env", None), "provider_options.env", warnings),
         "CLAUDE_AGENT_SDK_CLIENT_APP": f"rayspec/{__version__}",
         **provider.settings_env,
-        **_str_mapping(overrides.pop("env", None), "provider_options.env", warnings),
         **(run_env or {}),
         **req.env,
     }
