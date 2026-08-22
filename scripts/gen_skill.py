@@ -154,7 +154,7 @@ def generate() -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point; returns the process exit code."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("--check", action="store_true", help="do not write; exit 1 when stale")
     args = parser.parse_args(argv)
     if args.check:

@@ -12,7 +12,11 @@ hook
 * rewrites every relative link of every page: to another published page when the target is one,
   to a full ``blob/main`` / ``tree/main`` URL when it is not.
 
-Fenced code blocks are left alone — a link inside a sample is part of the sample.
+Fenced code blocks are left alone — a link inside a sample is part of the sample. Only *inline*
+links are rewritten: a link-reference definition (``[ref]: ../examples/x``) would resolve on
+GitHub and 404 on the site, and the strict build cannot catch it because it validates the
+rewritten form rather than the definition line. ``tests/release/test_docs_site.py`` fails when a
+published page grows one, so the limitation is enforced rather than assumed.
 """
 
 from __future__ import annotations

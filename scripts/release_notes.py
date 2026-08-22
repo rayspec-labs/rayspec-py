@@ -21,8 +21,10 @@ from pathlib import Path
 #: ``## [1.2.3] — 2026-08-20`` / ``## [Unreleased]`` — Keep a Changelog's version heading.
 _HEADING_RE = re.compile(r"^## \[(?P<version>[^\]]+)\]", re.MULTILINE)
 
-#: The link-reference definitions at the foot of the file (``[1.2.3]: https://…``).
-_LINK_REF_RE = re.compile(r"^\[[^\]]+\]:\s+\S+\s*$", re.MULTILINE)
+#: A link-reference definition (``[1.2.3]: https://…``). Keep a Changelog collects one per
+#: version in a block at the foot of the *file*, which is what :func:`_strip_foot_link_refs`
+#: removes — a definition sitting next to the prose that reads it is part of that note and stays.
+_LINK_REF_RE = re.compile(r"^\[[^\]]+\]:\s+\S+\s*$")
 
 
 class NoSuchVersion(LookupError):
@@ -34,16 +36,28 @@ def normalise(version: str) -> str:
     return version[1:] if version.startswith(("v", "V")) else version
 
 
+def _strip_foot_link_refs(changelog: str) -> str:
+    """Drop the block of link-reference definitions at the foot of *changelog*.
+
+    It belongs to the file rather than to the last version, so it is removed once, here, instead
+    of anywhere a definition happens to appear.
+    """
+    lines = changelog.rstrip().splitlines()
+    while lines and (not lines[-1].strip() or _LINK_REF_RE.match(lines[-1])):
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
 def sections(changelog: str) -> dict[str, str]:
     """Map every ``## [version]`` heading of *changelog* to its body (headings excluded)."""
     found: dict[str, str] = {}
+    changelog = _strip_foot_link_refs(changelog)
     matches = list(_HEADING_RE.finditer(changelog))
     for index, match in enumerate(matches):
         newline = changelog.find("\n", match.end())
         start = len(changelog) if newline == -1 else newline + 1
         end = matches[index + 1].start() if index + 1 < len(matches) else len(changelog)
-        body = _LINK_REF_RE.sub("", changelog[start:end])
-        found[match.group("version")] = body.strip()
+        found[match.group("version")] = changelog[start:end].strip()
     return found
 
 
@@ -54,7 +68,12 @@ def notes_for(version: str, changelog: str) -> str:
     change has not shipped yet.
     """
     wanted = normalise(version)
-    body = sections(changelog).get(wanted, "") if wanted.lower() != "unreleased" else ""
+    if wanted.lower() == "unreleased":
+        raise NoSuchVersion(
+            "`Unreleased` is not a version — roll its entries into a `## [x.y.z]` heading in "
+            "CHANGELOG.md and tag that"
+        )
+    body = sections(changelog).get(wanted, "")
     if not body:
         raise NoSuchVersion(
             f"CHANGELOG.md has no notes for {wanted} — add a `## [{wanted}]` section "
@@ -65,7 +84,7 @@ def notes_for(version: str, changelog: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Write the notes of ``version`` to stdout or ``--output``; 2 when there are none."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=(__doc__ or "").partition("\n")[0])
     parser.add_argument("version", help="the released version, with or without the tag's `v`")
     parser.add_argument(
         "--changelog", type=Path, default=Path("CHANGELOG.md"), help="path to CHANGELOG.md"

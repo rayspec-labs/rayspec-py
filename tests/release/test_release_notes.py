@@ -44,6 +44,23 @@ Preamble that belongs to no version.
 [2.1.0]: https://example.invalid/releases/tag/v2.1.0
 """
 
+#: A section whose prose uses a reference-style link, defined next to the line that reads it.
+WITH_REFERENCE_LINK = """# Changelog
+
+## [3.0.0] — 2026-10-01
+
+### Added
+- see [the design doc][design] for why
+
+[design]: https://example.invalid/design
+
+## [2.0.0] — 2026-08-01
+
+- old
+
+[3.0.0]: https://example.invalid/releases/tag/v3.0.0
+"""
+
 
 def _load_script() -> ModuleType:
     spec = importlib.util.spec_from_file_location("release_notes", SCRIPT)
@@ -77,6 +94,17 @@ def test_the_link_reference_of_the_version_is_not_part_of_the_notes() -> None:
     assert "https://example.invalid" not in release_notes.notes_for("2.1.0", SAMPLE)
 
 
+def test_a_reference_style_link_the_notes_use_is_kept() -> None:
+    """Only the definitions at the foot of a section are plumbing.
+
+    One sitting next to the prose that reads it is part of the note: dropping it publishes
+    ``[the design doc]`` as literal text.
+    """
+    notes = release_notes.notes_for("3.0.0", WITH_REFERENCE_LINK)
+    assert "[design]: https://example.invalid/design" in notes
+    assert "releases/tag/v3.0.0" not in notes, "the section's own link reference is plumbing"
+
+
 def test_a_leading_v_is_accepted_because_that_is_what_the_tag_says() -> None:
     assert release_notes.notes_for("v2.1.0", SAMPLE) == release_notes.notes_for("2.1.0", SAMPLE)
 
@@ -91,6 +119,15 @@ def test_a_version_with_no_section_is_refused() -> None:
 def test_unreleased_is_not_a_version() -> None:
     with pytest.raises(release_notes.NoSuchVersion):
         release_notes.notes_for("Unreleased", SAMPLE)
+
+
+def test_refusing_unreleased_says_what_to_do_about_it() -> None:
+    """The section exists; sending the reader to add it wastes the one day this runs."""
+    with pytest.raises(release_notes.NoSuchVersion) as excinfo:
+        release_notes.notes_for("Unreleased", SAMPLE)
+    message = str(excinfo.value)
+    assert "add a `## [Unreleased]` section" not in message, message
+    assert "not a version" in message
 
 
 def test_an_empty_section_is_refused() -> None:

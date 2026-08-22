@@ -119,7 +119,7 @@ ignore = ["PLR0913", "PLR0912", "PLR0915", "PLR2004", "PLR0911", "PLC0415", "RUF
 "asyncio.Event".msg = "use anyio.Event"
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false

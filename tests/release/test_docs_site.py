@@ -9,6 +9,7 @@ rather than pretend.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from html.parser import HTMLParser
@@ -203,6 +204,46 @@ def test_links_that_leave_the_docs_tree_point_at_the_repository(site: Path) -> N
     assert f"{base}/examples/secret_via_tool" in concepts
     schema = (site / "schema" / "index.html").read_text(encoding="utf-8")
     assert f"{base}/schemas" in schema
+
+
+#: ``[ref]: target`` at the start of a line — a link-reference definition.
+LINK_DEFINITION = re.compile(r"^\[[^\]]+\]:\s*(\S+)")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def test_no_published_page_links_a_checkout_path_by_reference() -> None:
+    """The link rewriter reads inline links only, and that limitation has to be enforced.
+
+    A reference-style definition naming a relative path resolves on GitHub and 404s on the site,
+    and the strict build cannot catch it: mkdocs validates the rewritten inline form, never the
+    definition line. Use an inline link until ``scripts/mkdocs_hooks.py`` handles both.
+    """
+    sources = [
+        *sorted(DOCS_DIR.glob("*.md")),
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "CHANGELOG.md",
+    ]
+    problems = []
+    for path in sources:
+        fence: str | None = None
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            marker = _FENCE.match(line)
+            if marker and fence is None:
+                fence = marker.group(1)
+                continue
+            if marker and marker.group(1) == fence:
+                fence = None
+                continue
+            if fence is not None:
+                continue
+            found = LINK_DEFINITION.match(line)
+            if found and not found.group(1).startswith(
+                ("http://", "https://", "mailto:", "#", "/")
+            ):
+                problems.append(f"{path.name}:{number}: {line.strip()}")
+    assert not problems, "reference-style links to checkout paths break on the site:\n" + "\n".join(
+        problems
+    )
 
 
 def test_the_site_is_not_written_into_the_checkout() -> None:
