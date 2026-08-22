@@ -109,6 +109,18 @@ TARGETS: dict[str, Target] = {
         tests=("tests/secrets", "tests/audit", "tests/plugins"),
         why="the one place a secret is stopped from reaching a file, a log or a sink",
     ),
+    "policy_enforce": Target(
+        name="policy_enforce",
+        module="src/rayspec/policy/enforce.py",
+        tests=("tests/policy", "tests/loader"),
+        why="whether a policy violation stops a run, and whether the denial is real",
+    ),
+    "policy_controls": Target(
+        name="policy_controls",
+        module="src/rayspec/policy/controls.py",
+        tests=("tests/policy",),
+        why="the classification the provider_options allow-list hangs off — it has to be total",
+    ),
     "approval_classes": Target(
         name="approval_classes",
         module="src/rayspec/engine/approval_classes.py",
