@@ -397,6 +397,25 @@ def test_code_of_conduct_explains_what_the_reporting_form_actually_opens() -> No
     assert "severity" in note, "the note must tell a conduct reporter to ignore the severity fields"
 
 
+def test_the_code_of_conduct_offers_the_fallback_security_names() -> None:
+    """The private form is the only channel the Covenant text names, and it can be switched off.
+
+    GitHub offers private reporting on public repositories only, and a maintainer can turn it off.
+    SECURITY.md says what to do then — the **Security contact (no details)** issue form — and the
+    conduct page did not, so a reporter the form was closed to had nowhere left to go: the only
+    other link on the page is GitHub's abuse reporting, which is scoped to reports *about* the
+    maintainer and so takes nothing about a third party.
+    """
+    fallback = "Security contact (no details)"
+    assert fallback in _text(SECURITY), "SECURITY.md no longer names the fallback form"
+    text = _text(CODE_OF_CONDUCT)
+    enforcement = text.split("## Enforcement", 1)[1].split("## Enforcement Guidelines", 1)[0]
+    assert fallback in _flat(enforcement), (
+        "the enforcement contact dead-ends: CODE_OF_CONDUCT.md names no fallback for a reporter "
+        f"the private form is closed to, while SECURITY.md offers {fallback!r}"
+    )
+
+
 def test_bug_report_warns_that_the_doctor_output_carries_paths() -> None:
     """A required field on a public tracker. It prints no secret value — but it does print
     absolute paths, the project path and every tool path it found."""

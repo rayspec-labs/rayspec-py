@@ -62,7 +62,9 @@ Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
 <https://github.com/rayspec-labs/rayspec-py/security/advisories/new>, GitHub's
 private reporting form for this repository, which is visible to the maintainer
-only.
+only. If that form is not available to you, open the **Security contact (no
+details)** issue form instead: it asks for a way to reach you and nothing else,
+and the private thread is opened from there.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
@@ -148,6 +150,13 @@ and asks for affected versions, ecosystems and a severity. Ignore those fields
 for a conduct report and put what happened in the title and the description; a
 draft advisory is visible to the maintainer only and stays unpublished unless it
 is deliberately released.
+
+GitHub offers private reporting on public repositories only, and a maintainer can
+switch it off, so the form can be closed to you. The fallback named above is the
+same one [SECURITY.md](SECURITY.md) offers for that case: it is named for security
+reports because that is where the need first came up, but all it asks for is a way
+to reach you, which is what a conduct report needs to start a private thread. The
+tracker is public — put nothing about the incident in it.
 
 If your report is *about* the maintainer, that form is the wrong place. Use
 GitHub's own abuse reporting instead —
