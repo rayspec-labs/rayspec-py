@@ -1,6 +1,6 @@
 <!-- Generated from docs/templating.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/templating.md -->
-<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · cli.md · providers.md · examples.md -->
+<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · examples.md -->
 
 # Templating and expressions
 
@@ -120,7 +120,7 @@ when `deps:` is set. `cwd` defaults to `run.workdir`.
 
 Bare Jinja expressions; `{{`/`{%` inside them is a lint error. Try one against a finished run
 before you commit it: `rayspec eval <run> "steps.a.output | length" --step build[2]/implement`
-([cli.md](cli.md#rayspec-eval)).
+([cli.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/cli.md#rayspec-eval)).
 
 - `when` and `until` must evaluate to **exactly** a boolean: `steps.check.ok`,
   `steps.a.output.verdict == 'fix'`, `steps.list.output | length > 0`. A non-boolean result or an

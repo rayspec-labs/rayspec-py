@@ -1,9 +1,13 @@
 ---
-name: rayspec
-description: Author, validate, dry-run and run rayspec agent workflows (a YAML DSL on the Claude Agent SDK / OpenAI Codex SDK). Use when asked to create or edit a rayspec workflow, .rayspec/ project files, agents, stubs, or to run, inspect, resume or debug rayspec from the CLI.
+name: rayspec-workflows
+description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus agents, prompts, includes, stubs and .rayspec/ project files. Use when asked to create or edit a rayspec workflow, agent or prompt. Load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote from the CLI.
 ---
 
-# rayspec — declarative agent workflows
+# rayspec workflows — authoring the YAML DSL
+
+**Companion skill**: everything about *running* what you write — `rayspec validate`, `plan`,
+`run`, `resume`, `logs`, `explain`, `test`, every flag, `--json` shape and exit code — is in the
+**`rayspec-cli`** skill. Load it as soon as you leave the editor.
 
 ## Mental model (read this first)
 
@@ -18,17 +22,11 @@ description: Author, validate, dry-run and run rayspec agent workflows (a YAML D
 - Every succeeded step has an **output** (agent text or validated JSON with `output_schema`;
   stdout for shell/python; the approver's comment; JSON for composites). References are strict:
   a missing field, a failed/skipped producer or `null` fails the consuming step loudly.
-- A **run** = one execution with fixed inputs, an id `YYYYMMDD-HHMMSS-xxxx` and a run directory
-  `~/.rayspec/projects/<slug>/runs/<run-id>/` (`run.json`, `events.jsonl`, one dir per step with
-  `output.*`, `stream.jsonl`, `stdout.log`, `context.json`). `RAYSPEC_HOME` overrides `~/.rayspec`.
-- **Worktree by default**: in a git repo every run gets `git worktree add` on branch
-  `rayspec/<workflow>-<shortid>` under `~/.rayspec/projects/<slug>/worktrees/`; steps run there
-  (`run.workdir`), workflows load from your checkout. `isolation: none` / `--no-worktree` runs in
-  place; non-git dirs always run in place.
 - Providers: `claude`, `codex`, `stub` (scripted; what `--dry-run` uses). Each declares
   capabilities; `rayspec validate` refuses a field the resolved provider lacks.
-- Exit codes: `0` succeeded · `1` failed · `2` usage/validation error · `3` paused at a gate ·
-  `4` cancelled (`stop:`/rejected gate) · `130` interrupted.
+- Runs, run directories, worktrees and exit codes are the `rayspec-cli` skill's subject; you only
+  need to know that a run happens elsewhere (a git worktree by default) and that authoring is
+  finished when `rayspec validate` says `OK`.
 
 ## The authoring loop (follow it in this order)
 
@@ -56,6 +54,9 @@ description: Author, validate, dry-run and run rayspec agent workflows (a YAML D
    approvals and who ran it). Paused (exit 3): `rayspec approve <run> [comment]` / `reject <run> [reason]`
    / `resume <run>`. Failed/interrupted: fix, then `rayspec resume <run>` replays succeeded steps
    (`--force` when you edited the workflow — its hash changed). Run ids accept a unique prefix.
+
+Steps 3-7 are the `rayspec-cli` skill's subject: **now validate, plan and dry-run — load the
+`rayspec-cli` skill** for the exact commands, flags, `--json` shapes and exit codes.
 
 ## YAML cheat-sheet (every step kind, annotated)
 
@@ -296,73 +297,46 @@ provider's `medium` tier. `access: read-only` cannot `allow` `edit`/`shell`.
   scalar (`prompt: |`) or quotes; booleans are only `true/false` (`yes`/`no`/`on` stay strings);
   duplicate keys are errors.
 
+## Field index (every field the schema defines)
+
+The cheat-sheet above shows the common ones in context; this index is the complete list, so a
+field that is not here does not exist. Defaults in parentheses.
+
+| Where | Fields |
+|---|---|
+| top level | `rayspec` (must be `1`) · `name` · `description` · `inputs` · `defaults` · `isolation` (`worktree`) · `agents` · `steps` · `outputs` |
+| `defaults:` | `agent` · `timeout` · `max_parallel` (`4`) · `on_unsupported` (`error`) · `on_step_failure` (`drain`) · `budget_usd` · `max_tokens` (`"500k"`) · `timeout_total` (whole-run wall clock, measured from the run's *original* start — a resume keeps counting) |
+| every step | `id` · `description` · `needs` · `when` · `join` (`all`) · `timeout` · `always_run` (`false`) · `allow_failure` (`false`) · `artifacts` |
+| `artifacts:` | files the step must leave behind, relative to its working directory; absolute paths, `~`, `..`, trailing `/` and `{{`/`{%` are rejected, and a declared file that is missing after a *successful* step fails it (not checked on reused records or in `--dry-run`) |
+| leaf steps only (`prompt`/`shell`/`python`) | `retry` · `env` · `output_schema` |
+| `retry:` | `attempts` (required, 1-10, the TOTAL count) · `delay` (`3s`, doubles each retry) · `on_error` (`transient`, or `all`) |
+| kind keys (exactly one per step) | `prompt` · `prompt_file` · `shell` · `python` · `loop` · `each` · `approve` · `include` · `stop` — `prompt_file:` alone is a complete prompt step (`prompt:` and `prompt_file:` are mutually exclusive) |
+| `prompt:` step | `agent` · `session` |
+| `shell:` step | `interpreter` (`bash`, or `sh`) · `cwd` |
+| `python:` step | `deps` · `cwd` |
+| `loop:` | `steps` (required) · `max_iterations` (required) · `until` · `on_exhausted` (`fail`) |
+| `each:` | `as` (`item`) · `steps` (required) · `max_parallel` · `on_failure` (`fail`) |
+| `approve:` | `message` (required; a bare string is shorthand for it) · `on_reject` (`cancel`) · `class` (the approval class the operator's policy governs — see the `rayspec-cli` skill) · `auto_if` (bare expression that approves the gate without asking; it can only add to what the class already permits) |
+| `include:` | `with` |
+| `stop:` | `status` (`cancelled`) · `reason` |
+| `inputs.<name>:` | `type` (`string`) · `required` · `default` · `description` · `enum` · `items` · `properties` · `secret` |
+| agents | `provider` · `model` · `effort` · `access` (`workspace-write`) · `instructions` · `instructions_file` · `instructions_mode` (`append`) · `max_turns` · `budget_usd` · `tools` · `network` · `commands` · `thinking` · `on_denial` (`warn`) · `mcp` · `provider_options` · `extends` (only in a step's `agent: {extends: name, …}` form) |
+| `tools:` | `allow` · `deny` — entries are groups (`read` `edit` `shell` `web` `agent` `mcp`), `mcp:<server>[/<tool>]`, or `<provider>:<RawName>` |
+| `network:` | `on` / `off` — whether the agent may reach the network through its provider's own tools; `off` is folded into `tools.deny: [web]` |
+| `commands:` | `allow` · `deny` — Python regexes compiled at load time, `deny` first, a non-empty `allow` means "nothing else". Advisory (a validate warning) unless the provider declares the `command_policy` capability |
+| `on_denial:` | `warn` (default) or `fail` — what a refused tool call does to the step; `fail` needs the provider's `denial_reporting` capability |
+| `mcp.<server>:` | `transport` (`stdio`, or `http`/`sse`) · `command` · `args` · `env` · `url` · `headers` — `stdio` requires `command`, `http`/`sse` require `url` |
+
 ## CLI quick reference
+
+Only the commands that **create or describe the authoring artifacts themselves** live here; every
+command that executes, inspects or governs a run is in the `rayspec-cli` skill.
 
 | Command | Purpose | Key flags | Exit |
 |---|---|---|---|
-| `rayspec init` | scaffold `.rayspec/` (+ this skill into `.claude/skills/rayspec/`) | `--kind code\|content`, `--force`, `--no-skill`, `--root` | 0 / 2 |
-| `rayspec doctor` | Python, home, config, git/uv, SDKs, CLIs, auth, pricing rows | `--probe`, `--provider ID`, `--json` | 0 / 1 |
-| `rayspec workflows` · `agents` · `providers` | list discovered workflows / agent files / the capability matrix | `--json` (`--root` for `workflows`/`agents`) | 0 / 2 |
-| `rayspec validate [names…]` | schema, graph, references, templates, capabilities | `--allow-unsupported`, `--json` | 0 / 2 |
-| `rayspec plan <wf>` | inputs, resolved agents, step order, capability + cost report | `--input k=v`, `--inputs-file`, `--json` | 0 / 2 |
-| `rayspec run <wf>` | run (or resume) a workflow | `--input`, `--inputs-file`, `--dry-run`, `--stubs f`, `--stubs-init f`, `--exec-shell`, `--yes`, `--no-interactive`, `--json`, `--quiet`, `--verbose`, `--fail-fast`, `--allow-unsupported`, `--worktree/--no-worktree`, `--base`, `--repo`, `--resume <id>`, `--force` | 0 1 2 3 4 130 |
-| `rayspec runs` | list runs (newest first) | `--all`, `--limit N`, `--json` | 0 |
-| `rayspec costs` | sum a project's runs by workflow (tokens, cost, cost-source breakdown) | `--since 7d`, `--workflow NAME`, `--json` | 0 / 2 |
-| `rayspec show <run>` | header, workspace, step table, warnings, outputs, pause state | `--json` | 0 / 2 |
-| `rayspec logs <run>` | lifecycle events; `--step <path>` = that step's transcript | `--step`, `--stream`, `--follow`, `--verbose`, `--json` | 0 / 2 |
-| `rayspec audit <run>` | read-only ledger: commands, tools, files, warnings, approvals + who ran it | `--commands`, `--json` | 0 / 2 |
-| `rayspec resume <run>` | re-run from the top with the reuse cache | `--force`, `--yes`, `--no-interactive`, `--json` | run's code / 2 |
-| `rayspec approve <run> [comment]` · `reject <run> [reason]` | decide a paused gate and resume | `--force`, `--json` | run's code / 2 |
-| `rayspec cancel <run>` | SIGINT a live run / mark a dead one cancelled | `--yes`, `--mark`, `--force`, `--json` | 0 / 1 / 2 |
-| `rayspec worktrees list` · `clean` | rayspec worktrees of the project | `--older-than 7d`, `--merged`, `--force`, `--dry-run` | 0 / 2 |
-| `rayspec projects add\|list\|remove` | names for `--repo <name>` | `--base` | 0 / 2 |
-| `rayspec skill install\|show\|path` | this skill (project or `--global`) | `--global`, `--force` | 0 / 2 |
-
-`--json` on `run`/`resume`/`approve`/`reject`: JSONL events on stdout, the summary object
-(`run_id status exit_code reason outputs usage cost_usd cost_source run_dir workspace pause`) as
-the **last** stdout line (`… --json | tail -1 | jq .exit_code`); Rich lines go to stderr. `--json`
-does not imply `--no-interactive`. Every `<run>` accepts a unique id prefix. Commands that read a
-project take `--root DIR`. `resume` refuses a run whose workflow file changed (`--force` re-runs
-the steps whose fingerprint changed), a run with a live pid, and a succeeded or cancelled run.
-
-**Stub file** (`--stubs`, YAML; `--stubs-init` scaffolds it):
-
-```yaml
-defaults: { latency_ms: 0, usage: { input: 1200, output: 300 } }
-steps:                                  # key = step path or glob (build[*]/review, block/step)
-  assess: { output: { verdict: fix, reason: "repro present" } }     # dict -> structured output
-  "build[*]/implement": { text: "Implemented; committed.",
-                          events: [ {tool_call: {name: Bash, input: {cmd: "pytest -q"}}}, {tool_result: {text: "3 passed"}} ] }
-  "build[*]/review": { sequence: ["Fix the flaky test", "BUILD-CLEAN"] }   # n-th call; last repeats
-  pr: { fail: { kind: api, message: "simulated 529", transient: true, times: 1 }, text: "ok" }
-match:                                  # after steps: first prompt regex that matches
-  - { prompt_regex: "Is this real", output: { verdict: skip, reason: "dup" } }
-```
-
-Resolution: exact path → first matching glob (declaration order) → `match[]` → default
-(`"[stub] " + prompt[:80]`, or a minimal `output_schema` instance). `sequence` advances per
-matched entry (a glob sees every loop iteration) — that is how a loop converges in a dry run.
-`--stubs` without `--dry-run` is allowed only when every prompt agent is `provider: stub`
-(a real run with scripted answers; `resume`/`approve`/`reject` reuse the recorded stubs path,
-`rayspec resume --stubs PATH` overrides).
-
-## Providers, capabilities, cost
-
-- Claude: all tool groups, `max_turns`, `budget_usd`, `thinking`, raw `claude:<Name>` tools,
-  reports cost itself (`$0.12`). Codex: tools only `deny: [web]`; `max_turns`/`budget_usd`/
-  `thinking`/other tools → validation error (`unsupported: agents.x.max_turns …`); no USD cost —
-  add `pricing:` to `config.yaml` for estimates (`~$0.12`), else tokens only. Stub: everything.
-- An unsupported field is a `rayspec validate` error; `--allow-unsupported` or
-  `defaults.on_unsupported: warn` downgrades it to a warning (Codex then ignores
-  `max_turns`/`budget_usd`/`thinking`; an unsupported `tools` entry still fails at run time).
-- Structured output (`output_schema`) is native on both: keep schemas to `type`/`properties`/
-  `required`/`enum` (Codex strict mode rejects `format`, `pattern`, `minimum`, …).
-- `rayspec doctor` shows SDKs, bundled CLIs and auth (`claude` login / `ANTHROPIC_API_KEY`;
-  `codex login` / `OPENAI_API_KEY`); `--probe` runs one real turn per provider. Keys live in
-  `~/.rayspec/.env` or `.rayspec/.env` (the project file is applied only by `run`/`resume`/
-  `approve`/`reject`). `--dry-run` needs no login.
-- Costs: `rayspec run` footer, `runs`, `show` print `$` (provider-reported), `~$` (pricing table),
-  `≥$` (partially priced); `defaults.budget_usd`/`max_tokens` stop a run that overshoots.
+| `rayspec init` | scaffold `.rayspec/` (+ both agent skills into `.claude/skills/`) | `--kind code\|content`, `--from EXAMPLE`, `--force`, `--no-skill`, `--root` | 0 / 2 |
+| `rayspec new workflow <name>` · `new agent <name>` | add one workflow or agent file to a project that already exists (it never creates one) | `--agent NAME`, `--description`, `--force`, `--root` | 0 / 2 |
+| `rayspec schema [kind]` | print the published JSON Schemas (`workflow`, `run`, `events`, `stream`) | `--out DIR` | 0 / 2 |
 
 ## Pitfalls and conventions
 
@@ -381,13 +355,8 @@ matched entry (a glob sees every loop iteration) — that is how a loop converge
   their output — "code computes, agents judge".
 - `stop:` defaults to `status: cancelled` (exit 4); `stop: {status: succeeded}` still renders
   `outputs:`. Exhausting a loop is `failed` unless `on_exhausted: continue`.
-- `--dry-run` creates no worktree and skips shell/python (unless `--exec-shell`); it cannot
-  prove a shell step works — run the command yourself before a real run if in doubt.
 - Include files are discovered by name (`include: review_block`) or by a path relative to the
   including file; their `with:` keys must be declared inputs of the block.
-- A run in progress holds a per-workdir lock. A `running` record whose process died (crash)
-  resumes normally (`rayspec resume <run>` detects the dead pid); `rayspec cancel <run> --mark`
-  marks it cancelled instead (a cancelled run resumes only with `--force`).
 
 ## References (read on demand — same directory)
 
@@ -397,12 +366,11 @@ matched entry (a glob sees every loop iteration) — that is how a loop converge
   traps, strict YAML (read before using a field not shown above).
 - `references/templating.md` — context roots, step views, shell/python body rules, filters,
   env of shell steps, input coercion, error messages.
-- `references/cli.md` — every command, flag, `--json` shape and exit code (read for `runs`/
-  `show`/`logs`/`resume`/`cancel` details, `init`, `doctor`).
-- `references/providers.md` — the neutral adapter, the capability matrix, Claude/Codex option
-  mapping, access levels and tools, the stub file format, tiers/aliases, pricing, auth.
 - `references/examples.md` — the example projects (what each shows) and the patterns: self-heal
   loop, branch-and-stop, fan-out with partial failure, reusable block, finally step.
-- Online only: `runs-and-resume.md` (run dir layout, resume rules, approval flow),
-  `isolation.md` (worktrees, `--repo`, locks), `extending.md`, `constitution.md` at
+- Everything about running what you wrote — `cli.md`, `providers.md`, `testing.md`, `policy.md`,
+  `runs-and-resume.md`, `isolation.md`, `ci.md` — is in the **`rayspec-cli`** skill. Load it
+  instead of guessing a flag.
+- Online only: `extending.md` (plugins and the provider seam), `constitution.md` (why the DSL
+  refuses fields), `agent-skill.md` (these two skills) at
   https://github.com/rayspec-labs/rayspec-py/blob/main/docs/.

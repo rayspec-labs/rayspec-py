@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The packaged Claude Code skill (``rayspec/SKILL.md`` + ``references/``) and its installer.
+"""The packaged Claude Code skills (``<name>/SKILL.md`` + ``references/``) and their installer.
 
-Boundary: this package is *data* plus the small helpers that read and copy it. ``SKILL.md`` is
-hand-written; ``references/*.md`` are generated from ``docs/*.md`` by ``scripts/gen_skill.py``
-(the repository's ``.claude/skills/rayspec/`` is a mirror of this directory). The CLI
+rayspec ships **two** skills, because authoring a workflow and operating a run are two different
+jobs with two different vocabularies: ``rayspec-workflows`` (the DSL — every step kind, field,
+template rule) and ``rayspec-cli`` (every command, flag, ``--json`` shape and exit code). Each is
+a :class:`Skill` in :data:`SKILLS`; nothing outside this module hard-codes a skill name.
+
+Boundary: this package is *data* plus the small helpers that read and copy it. Each ``SKILL.md``
+is hand-written; ``references/*.md`` are generated from ``docs/*.md`` by ``scripts/gen_skill.py``
+(the repository's ``.claude/skills/<name>/`` are mirrors of these directories). The CLI
 (:mod:`rayspec.cli.commands.skill`, :mod:`rayspec.cli.commands.init`) calls :func:`install_skill`
 / :func:`installed_state`; nothing here imports the loader, engine or providers. Files are read
 through :mod:`importlib.resources`, so everything works from an installed wheel.
@@ -20,24 +25,53 @@ from typing import Literal
 
 from rayspec.resources import walk_files
 
-#: Skill name — the directory name under ``.claude/skills/`` and the frontmatter ``name:``.
-SKILL_NAME = "rayspec"
-
-#: The ``docs/<name>.md`` pages mirrored into ``references/<name>.md`` (``scripts/gen_skill.py``).
-REFERENCE_NAMES: tuple[str, ...] = (
-    "concepts",
-    "schema",
-    "templating",
-    "cli",
-    "providers",
-    "examples",
-)
-
-#: Where the skill is installed, relative to a project root or the home directory.
+#: Where a skill is installed, relative to a project root or the home directory.
 SKILLS_SUBDIR = Path(".claude") / "skills"
 
 InstallAction = Literal["created", "overwritten", "skipped"]
 InstalledStateKind = Literal["missing", "current", "stale"]
+
+
+@dataclass(frozen=True, slots=True)
+class Skill:
+    """One packaged skill: the directory name (= the frontmatter ``name:`` and the directory it
+    installs into under ``.claude/skills/``), a one-line summary for the CLI listings, and the
+    ``docs/<name>.md`` pages mirrored into its ``references/``.
+
+    A docs page belongs to exactly one skill: ``scripts/gen_skill.py`` keeps a link to a page of
+    the *same* skill relative and rewrites every other target to the published docs URL, so a page
+    two skills need is linked, never duplicated.
+    """
+
+    name: str
+    summary: str
+    references: tuple[str, ...]
+
+
+#: Authoring: the workflow DSL, agents, prompts, stubs, project files.
+WORKFLOWS_SKILL = Skill(
+    name="rayspec-workflows",
+    summary="authoring workflow YAML, agents, prompts and stubs (the DSL)",
+    references=("concepts", "schema", "templating", "examples"),
+)
+
+#: Operating: running, inspecting, resuming, debugging, testing, auditing, governing.
+CLI_SKILL = Skill(
+    name="rayspec-cli",
+    summary="running, inspecting, resuming, testing and governing rayspec (the CLI)",
+    references=("cli", "providers", "testing", "policy", "runs-and-resume", "isolation", "ci"),
+)
+
+#: Every packaged skill, in the order the CLI lists and installs them.
+SKILLS: tuple[Skill, ...] = (WORKFLOWS_SKILL, CLI_SKILL)
+
+#: The install names (``.claude/skills/<name>/``), in the same order.
+SKILL_NAMES: tuple[str, ...] = tuple(skill.name for skill in SKILLS)
+
+
+def find_skill(name: str) -> Skill | None:
+    """The skill installed as ``name``, or ``None`` — callers turn that into a usage error."""
+    return next((skill for skill in SKILLS if skill.name == name), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,19 +95,19 @@ class InstalledState:
     digest: str | None
 
 
-def skill_dir() -> Traversable:
-    """The packaged skill directory (``…/rayspec/skill/rayspec``; holds ``SKILL.md``)."""
-    return resources.files(__name__) / SKILL_NAME
+def skill_dir(skill: Skill) -> Traversable:
+    """The packaged directory of ``skill`` (``…/rayspec/skill/<name>``; holds ``SKILL.md``)."""
+    return resources.files(__name__) / skill.name
 
 
-def skill_files() -> list[tuple[str, Traversable]]:
-    """Every file of the packaged skill as ``[(relative posix path, resource)]``, sorted.
+def skill_files(skill: Skill) -> list[tuple[str, Traversable]]:
+    """Every file of ``skill`` as ``[(relative posix path, resource)]``, sorted.
 
-    The skill is documentation: the Python that happens to live in the same package directory
+    A skill is documentation: the Python that happens to live in the same package directory
     (and anything a build left behind) is not part of it.
     """
     return walk_files(
-        skill_dir(),
+        skill_dir(skill),
         keep_dir=lambda _rel, name: name != "__pycache__",
         keep_file=lambda _rel, name: (
             not name.startswith(".") and not name.endswith((".py", ".pyc"))
@@ -91,10 +125,10 @@ def _digest(items: list[tuple[str, bytes]]) -> str:
     return h.hexdigest()[:12]
 
 
-def content_digest() -> str:
-    """A short content hash of the packaged skill (``rayspec skill show`` prints it as the
+def content_digest(skill: Skill) -> str:
+    """A short content hash of one packaged skill (``rayspec skill show`` prints it as that
     skill's version identity next to the rayspec version)."""
-    return _digest([(rel, node.read_bytes()) for rel, node in skill_files()])
+    return _digest([(rel, node.read_bytes()) for rel, node in skill_files(skill)])
 
 
 def _installed_files(root: Path) -> list[tuple[str, bytes]]:
@@ -106,17 +140,17 @@ def _installed_files(root: Path) -> list[tuple[str, bytes]]:
     return found
 
 
-def installed_state(target: Path) -> InstalledState:
-    """Compare the skill directory ``target`` with the packaged skill."""
+def installed_state(skill: Skill, target: Path) -> InstalledState:
+    """Compare the directory ``target`` with the packaged ``skill``."""
     if not (target / "SKILL.md").is_file():
         return InstalledState(target, "missing", None)
     digest = _digest(_installed_files(target))
-    state: InstalledStateKind = "current" if digest == content_digest() else "stale"
+    state: InstalledStateKind = "current" if digest == content_digest(skill) else "stale"
     return InstalledState(target, state, digest)
 
 
-def install_skill(target: Path, *, force: bool = False) -> list[InstalledFile]:
-    """Write the packaged skill into ``target`` (the ``…/skills/rayspec`` directory itself).
+def install_skill(skill: Skill, target: Path, *, force: bool = False) -> list[InstalledFile]:
+    """Write ``skill`` into ``target`` (the ``…/skills/<name>`` directory itself).
 
     Existing files are kept (``skipped``) unless ``force`` (``overwritten``); missing ones are
     ``created``. Raises :class:`NotADirectoryError` when ``target`` (or a parent) is a file,
@@ -127,7 +161,7 @@ def install_skill(target: Path, *, force: bool = False) -> list[InstalledFile]:
         raise NotADirectoryError(f"{target} is not a directory")
     target.mkdir(parents=True, exist_ok=True)
     results: list[InstalledFile] = []
-    for rel, node in skill_files():
+    for rel, node in skill_files(skill):
         path = target / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_dir():
@@ -141,23 +175,27 @@ def install_skill(target: Path, *, force: bool = False) -> list[InstalledFile]:
     return results
 
 
-def project_skill_dir(root: Path) -> Path:
-    """``<root>/.claude/skills/rayspec`` — the project install location."""
-    return root / SKILLS_SUBDIR / SKILL_NAME
+def project_skill_dir(skill: Skill, root: Path) -> Path:
+    """``<root>/.claude/skills/<name>`` — the project install location of ``skill``."""
+    return root / SKILLS_SUBDIR / skill.name
 
 
-def global_skill_dir(home: Path | None = None) -> Path:
-    """``~/.claude/skills/rayspec`` — the user-wide install location (``home`` overrides ``~``)."""
-    return (home or Path.home()) / SKILLS_SUBDIR / SKILL_NAME
+def global_skill_dir(skill: Skill, home: Path | None = None) -> Path:
+    """``~/.claude/skills/<name>`` — the user-wide location (``home`` overrides ``~``)."""
+    return (home or Path.home()) / SKILLS_SUBDIR / skill.name
 
 
 __all__ = [
-    "REFERENCE_NAMES",
+    "CLI_SKILL",
+    "SKILLS",
     "SKILLS_SUBDIR",
-    "SKILL_NAME",
+    "SKILL_NAMES",
+    "WORKFLOWS_SKILL",
     "InstalledFile",
     "InstalledState",
+    "Skill",
     "content_digest",
+    "find_skill",
     "global_skill_dir",
     "install_skill",
     "installed_state",
