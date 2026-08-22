@@ -19,6 +19,8 @@
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": "when_false", "status": "skipped", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "bail", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "loop"}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "step.started"}
 {"data": {"max": 3, "n": 1}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "loop.iteration"}
+{"data": {"max": 3, "n": 2}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "loop.iteration"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[1]/implement", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[1]/implement:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[1]/implement:1", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": "c1", "data": {"command": "pytest -q"}, "kind": "tool_call", "name": "Bash", "nested": false, "text": "", "ts": "<ts>"}, "step_path": "build[1]/implement", "type": "stream"}
@@ -50,7 +52,6 @@
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "case.", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- The regression test does not cover the empty-input case.", "ts": "<ts>"}, "step_path": "build[1]/review", "type": "stream"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[1]/review", "ts": "<ts>", "type": "step.finished"}
-{"data": {"max": 3, "n": 2}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "loop.iteration"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "build[2]/implement", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:build[2]/implement:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:build[2]/implement:1", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
 {"record": {"attempt": 1, "call_id": "c1", "data": {"command": "pytest -q"}, "kind": "tool_call", "name": "Bash", "nested": false, "text": "", "ts": "<ts>"}, "step_path": "build[2]/implement", "type": "stream"}
@@ -73,7 +74,6 @@
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "BUILD-CLEAN", "ts": "<ts>"}, "step_path": "build[2]/review", "type": "stream"}
 {"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "BUILD-CLEAN", "ts": "<ts>"}, "step_path": "build[2]/review", "type": "stream"}
 {"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build[2]/review", "ts": "<ts>", "type": "step.finished"}
-{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "build", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "approve"}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "step.started"}
 {"data": {"message": "steps.confirm.approve.class: names approval class 'chore', but no operator policy is in force, so the gate is not held \u2014 every automatic approval (--yes, --approve-class, auto_if) applies to it"}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "warning"}
 {"data": {"actor": {"ci": null, "id": "<actor>", "provider_accounts": {}, "source": "<source>"}, "approved": true, "by": "dry-run", "comment": ""}, "run_id": "<run-id>", "step_path": "confirm", "ts": "<ts>", "type": "run.decision"}
