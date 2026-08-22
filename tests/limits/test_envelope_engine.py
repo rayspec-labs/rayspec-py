@@ -97,7 +97,8 @@ async def test_approving_a_paused_run_waives_the_ceiling_for_that_run(project: P
     env = envelope(project, "r1", per_run=0.001)
     resumed = await run_with(project, env, resume="r1")
     assert resumed.status is RunStatus.SUCCEEDED, resumed.reason  # type: ignore[attr-defined]
-    assert env.waived is True
+    assert env.waived_spend is True
+    assert env.waived_failures is False  # nobody was asked about the breaker
     assert project.record("r1").pause is None
 
 
@@ -244,3 +245,57 @@ async def test_two_runs_finishing_at_once_both_land_in_the_ledger(project: Proje
         tg.start_soon(one, "rb")
     assert all(r.status is RunStatus.SUCCEEDED for r in results)  # type: ignore[attr-defined]
     assert ledger.read().day_usd == pytest.approx(0.012)  # 2 runs, 3 steps each, at $0.002
+
+
+async def test_approving_a_failure_pause_does_not_waive_the_money_ceiling(
+    project: Project,
+) -> None:
+    """The operator was asked about flakiness. They must not lose their money ceiling for it.
+
+    ``budget.per_run`` here is far below one step's cost, so a run that kept its spending
+    envelope pauses again on money — which is the whole point: a spending ceiling nobody asked
+    about is still in force.
+    """
+    project.workflow("t", CHAIN)
+    ledger = SpendLedger(ledger_path(project.home / "projects" / "local-test"))
+    ledger.record_outcome(failed=True)
+    ledger.record_outcome(failed=True)
+
+    caps = {"per_run": 0.001, "max_consecutive_failures": 2}
+    result = await run_with(project, envelope(project, "r1", **caps), run_id="r1")
+    assert result.status is RunStatus.PAUSED  # type: ignore[attr-defined]
+    record = project.record("r1")
+    assert record.pause is not None and record.pause.reason == "failures"
+
+    record.pause.decision = Decision(approved=True, comment="a network blip, not the workflow")
+    project.store.save(record)
+
+    project.sink.clear()
+    env = envelope(project, "r1", **caps)
+    resumed = await run_with(project, env, resume="r1")
+    assert env.waived_failures is True
+    assert env.waived_spend is False
+    assert resumed.status is RunStatus.PAUSED, resumed.reason  # type: ignore[attr-defined]
+    assert "budget.per_run" in resumed.reason  # type: ignore[attr-defined]
+    again = project.record("r1")
+    assert again.pause is not None and again.pause.reason == "budget"
+
+
+async def test_closing_the_breaker_says_the_spending_ceilings_are_not_waived(
+    project: Project,
+) -> None:
+    project.workflow("t", CHAIN)
+    ledger = SpendLedger(ledger_path(project.home / "projects" / "local-test"))
+    ledger.record_outcome(failed=True)
+
+    caps = {"per_day": 10.0, "max_consecutive_failures": 1}
+    await run_with(project, envelope(project, "r1", **caps), run_id="r1")
+    record = project.record("r1")
+    assert record.pause is not None and record.pause.reason == "failures"
+    record.pause.decision = Decision(approved=True, comment="fine")
+    project.store.save(record)
+
+    project.sink.clear()
+    await run_with(project, envelope(project, "r1", **caps), resume="r1")
+    messages = [e.data.get("message", "") for e in project.events(EventType.WARNING)]
+    assert any("spending ceilings are not waived" in m for m in messages), messages

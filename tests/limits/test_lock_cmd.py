@@ -57,6 +57,29 @@ def test_lock_writes_the_file_and_check_is_then_quiet(root: Path) -> None:
     assert "up to date" in checked.output
 
 
+def test_lock_check_without_a_lockfile_is_drift_not_success(root: Path) -> None:
+    """`--check` asserts a fact about the file. "There is no file" is not that fact — a CI job
+    told "up to date" about a repository that pins nothing has been told something false."""
+    assert not lockfile_path(root).exists()
+    result = invoke("lock", "--check", "--root", str(root))
+    assert result.exit_code == 1, result.output
+    assert "up to date" not in result.output
+    assert "no lockfile" in result.output and "rayspec.lock" in result.output
+
+
+def test_lock_check_json_names_the_missing_lockfile_as_drift(root: Path) -> None:
+    result = invoke("lock", "--check", "--json", "--root", str(root))
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["checked"] is True
+    assert payload["drift"] and "no lockfile" in payload["drift"][0]
+
+
+def test_lock_check_never_writes_the_file_it_reports_on(root: Path) -> None:
+    invoke("lock", "--check", "--root", str(root))
+    assert not lockfile_path(root).exists()
+
+
 def test_lock_check_reports_drift_and_exits_one(root: Path) -> None:
     invoke("lock", "--root", str(root))
     drift(root)
@@ -170,6 +193,43 @@ def test_the_ci_default_leaves_a_project_without_a_lockfile_alone(
     # an explicitly passed --locked still refuses a missing lockfile: that IS the promise
     explicit = invoke("run", "t", "--dry-run", "--locked", "--root", str(root))
     assert explicit.exit_code == 2 and "no lockfile" in explicit.output
+
+
+def test_the_ci_default_says_it_has_nothing_to_enforce(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not refusing is a choice; being silent about it is not. "Nothing to check" must not
+    read as "nothing changed" in a CI log."""
+    monkeypatch.setenv("CI", "true")
+    result = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert "no lockfile" in result.output and "nothing is pinned" in result.output
+    assert "rayspec lock" in result.output
+
+
+def test_the_note_is_not_printed_when_there_is_a_lockfile_or_no_ci(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert invoke("run", "t", "--dry-run", "--root", str(root)).exit_code == 0
+    quiet = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert "nothing is pinned" not in quiet.output  # no CI: nothing was promised
+    invoke("lock", "--root", str(root))
+    monkeypatch.setenv("CI", "true")
+    locked = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert locked.exit_code == 0, locked.output
+    assert "nothing is pinned" not in locked.output
+
+
+def test_a_dangling_lockfile_symlink_is_an_error_not_an_absent_file(root: Path) -> None:
+    """`docs/policy.md` promises exactly this for the sibling guardrail file: a path that
+    exists in SOME shape must never be skipped as "not there"."""
+    lockfile_path(root).parent.mkdir(parents=True, exist_ok=True)
+    lockfile_path(root).symlink_to(root / "nowhere" / "rayspec.lock")
+    checked = invoke("lock", "--check", "--root", str(root))
+    assert checked.exit_code == 2, checked.output
+    assert "dangling symlink" in checked.output
+    run = invoke("run", "t", "--dry-run", "--locked", "--root", str(root))
+    assert run.exit_code == 2 and "dangling symlink" in run.output
 
 
 def _git_init(path: Path) -> None:

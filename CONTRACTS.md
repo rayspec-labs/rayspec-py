@@ -2900,7 +2900,8 @@ from rayspec.limits import (
     lock_entries_for,     # (ResolvedWorkflow) -> {agent key: LockEntry} for the agents the
     #                       prompt steps resolve to (the RunRecord.toolchain["models"] keys)
     check_locked,         # (ResolvedWorkflow, Lockfile | None) -> [LockDrift]  (None ⇒ [])
-    load_lockfile,        # (project_root) -> Lockfile | None      (strict YAML; LockfileError)
+    load_lockfile,        # (project_root) -> Lockfile | None  (None ONLY when truly absent; a
+    #                       dangling symlink/loop/directory is LockfileError; strict YAML)
     write_lockfile,       # (project_root, {wf: {key: LockEntry}}) -> Path  (sorted, stable bytes)
     merged_workflows,     # (Lockfile | None, updates) -> dict  (re-locking one keeps the others)
     parse_lockfile,       # (data, *, path=None) -> Lockfile
@@ -2911,13 +2912,19 @@ from rayspec.limits import (
     SpendLedger,          # (path); .read(when=None), .commit(run_id, cost_usd, when=None)
     #                       -> SpendState, .record_outcome(failed=) -> int, .reset_failures(),
     #                       .take_warnings() -> [str]  (drained; e.g. an unreadable file replaced)
+    #                       reading NEVER raises: see "Spend ledger shape" below
     # -- envelopes -------------------------------------------------------------------------
     BudgetEnvelope,       # frozen: per_run, per_day, per_month, max_consecutive_failures;
     #                       .active, .spends
-    RunEnvelope,          # (envelope, ledger, *, run_id, waived=False)
+    RunEnvelope,          # (envelope, ledger, *, run_id, waived_spend=False,
+    #                       waived_failures=False)
     #                       .check(run_usd) -> reason | None, .settle(run_usd) -> reason | None
     #                       (final totals), .commit_final(run_usd), .record_outcome(failed=),
-    #                       .waive(close_breaker=False), .take_warnings(), .active, .waived,
+    #                       .waive(close_breaker=False), .take_warnings(),
+    #                       .waived_spend / .waived_failures — ONE waiver per control, never
+    #                       both; .checks_spend / .checks_failures (still in force),
+    #                       .active = either of them; a waived control is skipped, not the
+    #                       ledger commit — a waived run is still counted
     #                       .pause_kind ∈ {ENVELOPE_PAUSE_REASON, FAILURE_PAUSE_REASON}
     envelope_reason, failure_breaker_reason,
     ENVELOPE_PAUSE_REASON,  # "budget"   FAILURE_PAUSE_REASON  # "failures"
@@ -2968,7 +2975,11 @@ passes that project). `project_root` is the root the workflow was LOADED from: w
 that is the prepared checkout, never the caller's directory. Exit `0` written/in sync · `1` `--check` found drift · `2` usage.
 `--locked/--no-locked` defaults to `locked_default(os.environ)` (on under `CI`). An explicit
 `--locked` refuses a MISSING lockfile; the CI default does not — it enforces only a lockfile
-that exists, so setting `CI` cannot break a project that never opted in. `check_locked` also
+that exists, so setting `CI` cannot break a project that never opted in, but it prints one
+`warning:` line on stderr saying nothing is pinned, because a CI log that is silent about the
+lockfile reads like one where it was checked. `lock --check` treats **no lockfile at all** as
+drift (exit 1, one `drift` line): `--check` asserts a fact about the file, and "there is
+nothing to check" is not that fact. `check_locked` also
 reports a pinned agent the workflow no longer has (`field="stale"`), so `lock --check` and
 `lock` never disagree. `write_lockfile` replaces the file whole (temp + `os.replace`).
 `validate --locked` reports drift as an ERROR row (not a warning). The file is YAML, read with
@@ -2996,9 +3007,13 @@ spent. The final spend is committed and the consecutive-failure counter moved in
 or one that had to be replaced, is reported as a `warning` — never silently. A dry run never
 touches the ledger and takes no slot. Any resume entry clears an operational pause
 (`Runner._consume_envelope_decision`) and re-evaluates the ceiling; a recorded
-`pause.decision.approved` additionally WAIVES the ceilings for that run (`rayspec approve
-<run>`), and closes the failure breaker ONLY when the breaker is what paused it — approving a
-spend is not approving a failure streak. A rejecting decision changes nothing.
+`pause.decision.approved` additionally WAIVES, for that run, the ceiling that PAUSED it
+(`rayspec approve <run>`) — and only that one: `RunEnvelope.waive(close_breaker=)` sets
+`waived_failures` (and resets the counter) for a breaker pause, `waived_spend` for a money one.
+Approving a spend is not approving a failure streak, and closing the breaker is not approving a
+spend, so a run approved past the breaker still pauses on `policy.budget` if it reaches it, and
+vice versa; the console names which control the approval covered. A rejecting decision changes
+nothing.
 `RunContext.last_finished_path` is the last record persisted BEFORE the envelope tripped (frozen
 afterwards, so the pause names the step that reached the ceiling, not the drain's last skip).
 
@@ -3021,7 +3036,14 @@ because rejecting a ceiling does nothing.
 `flock` on `spend.json.lock` (a sibling file, because the document itself is replaced). A run
 commits its ABSOLUTE total; the DELTA between two commits is attributed to the day and month the
 commit is MADE in, so a run resumed tomorrow spends tomorrow's money. A per-run entry is kept
-`RETAIN_DAYS` after its LAST commit.
+`RETAIN_DAYS` after its LAST commit. **Reading never raises** — it runs at the start of every
+`run`/`resume`/`approve`, so an exception there bricks the project until somebody deletes the
+file: a document that will not parse, an EMPTY one (rayspec never writes a zero-byte ledger) and
+one whose `version` is newer than `LEDGER_VERSION` are each replaced whole; a day/month total,
+`consecutive_failures` or `runs.<id>.cost_usd` that is not a finite number of the right kind is
+dropped field by field and everything readable is kept. The repaired document is what the next
+commit writes, so the file is fixed rather than re-crashed. Every one of those is a
+`take_warnings()` line, which the engine emits as a `warning` event.
 
 Additive to frozen modules (all mirrored above): `providers/base.Denial(tool, reason, call_id)`
 + `AgentResult.denials: tuple[Denial, ...] = ()`; `store/model.DenialInfo(tool, reason, call_id)`

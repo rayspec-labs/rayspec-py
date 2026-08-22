@@ -172,3 +172,37 @@ def test_the_lockfile_is_replaced_whole(project: Project, monkeypatch: pytest.Mo
     monkeypatch.undo()
     assert lockfile_path(project.root).read_text(encoding="utf-8") == before
     assert not list(lockfile_path(project.root).parent.glob("*.tmp"))
+
+
+# -- a path that exists in some shape is never "absent" -------------------------------------------
+
+
+def test_a_dangling_symlink_is_not_an_absent_lockfile(project: Project) -> None:
+    """`load_lockfile` must not answer ``None`` for a path that is there but unusable: that is
+    how `--locked` reports "no lockfile" about a file the operator can see."""
+    path = lockfile_path(project.root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(project.root / "nowhere" / LOCKFILE_NAME)
+    with pytest.raises(LockfileError, match="dangling symlink"):
+        load_lockfile(project.root)
+
+
+def test_a_symlink_to_a_real_lockfile_is_read_normally(project: Project, tmp_path: Path) -> None:
+    project.workflow("t", WORKFLOW)
+    elsewhere = tmp_path / "shared.lock"
+    write_lockfile(project.root, {"t": lock_entries_for(project.load("t"))})
+    lockfile_path(project.root).rename(elsewhere)
+    lockfile_path(project.root).symlink_to(elsewhere)
+    lock = load_lockfile(project.root)
+    assert lock is not None and "t" in lock.workflows
+
+
+def test_a_directory_at_the_lockfile_path_is_an_error(project: Project) -> None:
+    lockfile_path(project.root).mkdir(parents=True)
+    with pytest.raises(LockfileError, match="is a directory"):
+        load_lockfile(project.root)
+
+
+def test_a_genuinely_absent_lockfile_is_still_silent(project: Project) -> None:
+    """The ordinary case — the lockfile is opt-in — and the only one that answers ``None``."""
+    assert load_lockfile(project.root) is None

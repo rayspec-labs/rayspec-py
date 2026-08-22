@@ -513,7 +513,8 @@ class Runner:
             return
         self.envelope.waive(close_breaker=breaker)
         await ctx.warn(
-            "the consecutive-failure breaker is closed again for this project"
+            "the consecutive-failure breaker is closed again for this project "
+            "(the spending ceilings are not waived)"
             if breaker
             else "the spending ceilings are waived for this run (the failure breaker is not)"
         )

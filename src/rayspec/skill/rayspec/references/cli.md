@@ -97,7 +97,7 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
 | `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/isolation.md#--repo)) |
-| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is also refused — "nothing to check" must not read as "everything is fine" |
+| `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is refused when the **flag** is passed — asking for `--locked` is a promise the models were pinned, and "nothing to check" must not read as "everything is fine". The `CI` **default** may not break a project that never opted in, so it enforces a lockfile that exists and prints one `warning:` line on stderr when there is none — never silence |
 | `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 1h30m`), a bare number of seconds (`--wait-slot 90`), or `forever` — the only spelling that waits indefinitely. `--wait-slot 0` does **not** wait (the default); a negative duration is a usage error. Otherwise exit 2, naming the run that holds the slot. A `--dry-run` takes no slot |
 
 On **stderr**, before the run starts, comes the policy line — `policy: .rayspec/policy.yaml`, or
@@ -194,12 +194,15 @@ lockfile is what makes that visible, and [`run`](#rayspec-run) / [`plan`](#raysp
 
 | Option | Effect |
 |---|---|
-| `--check` | report drift and exit 1; never write the file (what a CI job runs) |
+| `--check` | report drift and exit 1; never write the file (what a CI job runs). **No lockfile at all is drift**: `--check` asserts a fact about the file, and "there is nothing to check" is not that fact |
 | `--json` | `{"path", "workflows": {name: {agent key: {provider, model, effort}}}, "drift": [...], "checked": bool}` |
 | `--root DIR` | project root |
 
 Exit codes: `0` written / in sync · `1` `--check` found drift · `2` usage (unknown workflow, a
-workflow that does not load, an unreadable lockfile).
+workflow that does not load, an unreadable lockfile). A path that is *there* but is not a
+readable file — a dangling symlink, a symlink loop, a directory — is exit 2 naming what it is,
+never "no lockfile": a guardrail that disappears because nobody could `stat` it is worse than
+none, and [`policy.yaml`](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md) makes the same promise.
 
 ```console
 $ rayspec lock
@@ -208,6 +211,10 @@ wrote .rayspec/rayspec.lock (2 workflow(s), 3 agent(s))
 $ rayspec lock --check
 error: review_pr: agent 'agents.reviewer' resolves to model 'claude-opus-4-9' but the lockfile pins 'claude-sonnet-4-6'
 hint: run `rayspec lock` to re-pin
+
+$ rayspec lock --check          # a repository that pins nothing
+error: no lockfile at .rayspec/rayspec.lock — nothing is pinned
+hint: run `rayspec lock` to write it
 ```
 
 Agents are keyed the way `run.json`'s `toolchain.models` keys them (`agents.reviewer`,
@@ -968,7 +975,7 @@ Options:
 rayspec approve [OPTIONS] {run} [comment]
 ```
 
-Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. On a run an operational ceiling paused (`pause.reason` `budget` or `failures`) there is no gate to answer: `approve` there means "run it anyway" and **waives** the ceiling for that run — a spending waiver does not touch the failure breaker, and closing the breaker does not waive a spend. `rayspec resume` re-evaluates the ceiling instead, which is usually what an unattended job wants. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
+Record an approval for the pending gate of a *paused* run and resume it in-process; the optional comment becomes the gate step's output. On a run an operational ceiling paused (`pause.reason` `budget` or `failures`) there is no gate to answer: `approve` there means "run it anyway" and **waives the ceiling it was asked about**, and only that one — a spending waiver does not touch the failure breaker, and closing the breaker does not waive a spend. So a run approved past the breaker still pauses on `policy.budget` if it reaches it: nobody was asked about money, and an operator does not lose a ceiling they were not asked about. `rayspec resume` re-evaluates the ceiling instead, which is usually what an unattended job wants. Refuses if the run is not paused or the workflow changed (`--force`). Secret inputs and the stub script are re-obtained exactly like [`rayspec resume`](#rayspec-resume) (`--input NAME=VALUE` for secret inputs / `RAYSPEC_INPUT_<NAME>`; the recorded `--stubs` file, or `--stubs PATH`) — all checked before the decision is written. Exits with the resumed run's exit code. `--json` prints the JSONL events and the summary object (last line) on stdout.
 
 Options:
 

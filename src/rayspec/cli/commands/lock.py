@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from rich.text import Text
 
 from rayspec.cli.commands._loader_common import (
     Context,
@@ -31,6 +32,7 @@ from rayspec.cli.commands._loader_common import (
     OutputOption,
     RootOption,
     console,
+    err_console,
     error_lines,
     fail,
     make_context,
@@ -87,7 +89,9 @@ def enforce_lockfile(
     A missing lockfile is refused when ``--locked`` was passed: the flag is a promise that the
     models were pinned, and "there is nothing to check" must not read as "everything is fine".
     The CI *default* is different — it may not break a project that never opted in, so with no
-    flag and no lockfile there is simply nothing to enforce.
+    flag and no lockfile there is simply nothing to enforce. It does not do that in SILENCE,
+    though: the run says on stderr that nothing is pinned, because a CI log with no line about
+    the lockfile reads exactly like one where the lockfile was checked and matched.
     """
     if not locked_enabled(locked):
         return
@@ -103,6 +107,14 @@ def enforce_lockfile(
                 f"--locked: no lockfile at {short_path(lockfile_path(root), ctx)}",
                 hint="run `rayspec lock` and commit the file (it pins the model of every agent)",
             )
+        err_console().print(
+            Text(
+                f"warning: no lockfile at {short_path(lockfile_path(root), ctx)} — nothing is "
+                "pinned, so the CI default has nothing to enforce. Run `rayspec lock` and "
+                "commit the file, or pass --no-locked to say so on purpose.",
+                style="yellow",
+            )
+        )
         return
     drifts = check_locked(resolved, lockfile)
     if not drifts:
@@ -188,6 +200,15 @@ def register(app: typer.Typer) -> None:
             ]
 
         if check:
+            if existing is None:
+                # `--check` reports drift and exits 1; it never writes the file. Answering "up
+                # to date" for a repository that pins nothing asserts a fact that is not true —
+                # and a CI job that runs this is exactly who would believe it.
+                drifts.insert(
+                    0,
+                    f"no lockfile at {short_path(lockfile_path(ctx.project_root), ctx)} — "
+                    "nothing is pinned",
+                )
             payload = {
                 "path": str(lockfile_path(ctx.project_root)),
                 "workflows": {n: _entries_json(e) for n, e in sorted(updates.items())},
@@ -198,7 +219,8 @@ def register(app: typer.Typer) -> None:
                 out.print(json.dumps(payload, ensure_ascii=False), markup=False, highlight=False)
             elif drifts:
                 error_lines(drifts, kind="lockfile drift")
-                out.print("[dim]hint: run `rayspec lock` to re-pin[/dim]")
+                what = "write it" if existing is None else "re-pin"
+                out.print(f"[dim]hint: run `rayspec lock` to {what}[/dim]")
             else:
                 out.print(f"[green]lockfile is up to date[/green] ({len(updates)} workflow(s))")
             raise typer.Exit(code=1 if drifts else 0)
