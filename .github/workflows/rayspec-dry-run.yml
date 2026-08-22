@@ -13,8 +13,8 @@
 #         pull-requests: write
 #       uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
 #       with:
-#         workflow: review_pr
-#         stubs: .rayspec/dryrun/review_pr.stubs.yaml
+#         workflow: example                    # what `rayspec init` scaffolds — swap in your own
+#         stubs: .rayspec/stubs/example.yaml   # and the stub script it writes next to it
 #         rayspec-version: "1.0.0"
 #
 # The caller's token has to carry `pull-requests: write` for the comment. Without it the run
@@ -25,6 +25,10 @@
 # `pull-requests: write` refuses the call outright for any caller that cannot grant it — the one
 # who forgot the line, and a pull request from a fork, whose token is read-only — instead of
 # degrading to the job summary. What runs here is exactly what the calling job granted, no more.
+#
+# Every outcome is reported, not only the good one: `status` and `exit-code` are set for a run
+# that failed, paused, was cancelled or never started, and `fail-on-error: false` hands that
+# verdict to the caller instead of failing the check.
 name: rayspec dry run
 
 on:
@@ -47,8 +51,14 @@ on:
         default: ""
         type: string
       rayspec-version:
-        description: Version to install from PyPI. Empty means the latest release — pin it.
-        default: ""
+        # No default may mean "whatever is newest": the `rayspec` name on PyPI was parked with a
+        # 0.0.1 placeholder before the first release, so *latest* can still resolve to a stub.
+        # The floor is the 1.x line that the `@v1` ref follows; a bare version pins exactly.
+        description: >-
+          Version to install from PyPI: a bare version pins it exactly (1.0.0), anything starting
+          with an operator is a specifier (>=1.2,<2). Pin it — a check that changes with someone
+          else's release is a check nobody trusts.
+        default: ">=1.0.0,<2"
         type: string
       python-version:
         description: Interpreter rayspec runs on.
@@ -85,6 +95,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
+          # Pinning the action pins none of what it installs: without this, the tool that
+          # resolves and installs rayspec is whatever uv was released this morning.
+          version: "0.12.5"
           python-version: ${{ inputs.python-version }}
           enable-cache: false
 
@@ -93,7 +106,19 @@ jobs:
           VERSION: ${{ inputs.rayspec-version }}
         run: |
           set -euo pipefail
-          uv tool install "rayspec${VERSION:+==$VERSION}"
+          case "$VERSION" in
+            "")
+              echo "::error::rayspec-version is empty — that installs whatever PyPI serves as the latest release. Pass a version, or leave the input out for the default."
+              exit 1
+              ;;
+            # `v1.0.0` is the tag this workflow is called at, so a caller reaches for it here
+            # too; `uv tool install rayspecv1.0.0` would be a baffling way to say no.
+            v[0-9]*) spec="rayspec==${VERSION#v}" ;;
+            [0-9]*) spec="rayspec==$VERSION" ;;
+            *) spec="rayspec$VERSION" ;;
+          esac
+          echo "installing $spec"
+          uv tool install "$spec"
           uv tool dir --bin >> "$GITHUB_PATH"
 
       - name: Dry-run the workflow
@@ -108,11 +133,16 @@ jobs:
           args=("$WORKFLOW" --dry-run --no-interactive --json)
           if [ -n "$STUBS" ]; then args+=(--stubs "$STUBS"); fi
           if [ -n "$INPUTS_FILE" ]; then args+=(--inputs-file "$INPUTS_FILE"); fi
-          rayspec version
+          rayspec version || true
+          # `|| code=$?` is what keeps the rest of this step alive. A `run:` block is executed as
+          # `bash -e {0}`, and `set -uo pipefail` above does not turn that `-e` off: a bare
+          # `rayspec run` that exits non-zero would end the step here, before a status was ever
+          # written — which is every outcome this check exists to report. errexit does not apply
+          # to a command on the left of `||`, so the exit code is caught instead of fatal.
+          code=0
           rayspec run "${args[@]}" \
             > "$RUNNER_TEMP/rayspec-events.jsonl" \
-            2> "$RUNNER_TEMP/rayspec-errors.txt"
-          code=$?
+            2> "$RUNNER_TEMP/rayspec-errors.txt" || code=$?
           case "$code" in
             0) status=succeeded ;;
             1) status=failed ;;
@@ -123,12 +153,16 @@ jobs:
           esac
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "rayspec exited $code — $status"
           tail -c 4000 "$RUNNER_TEMP/rayspec-errors.txt" || true
           if [ "$code" -ne 0 ]; then
             # stdout is a file, so without this the log of a failed run is empty.
             echo "--- the end of the event stream"
             tail -c 4000 "$RUNNER_TEMP/rayspec-events.jsonl" || true
           fi
+          # This step reports; it never decides. Whether a run that did not succeed fails the
+          # check is `fail-on-error`, read once by the last step in this job.
+          exit 0
 
       - name: Render the result
         id: render
@@ -186,8 +220,9 @@ jobs:
                   if isinstance(record, dict):
                       records.append(record)
 
-          # A workflow that does not load is reported as one object on stdout — there is no event
-          # stream and nothing on stderr, so this is the only place the reason exists.
+          # A workflow that does not load is reported as one object on stdout — there is no
+          # event stream, and stderr carries the run's notes (the policy line, any warnings)
+          # rather than the reason, so this is the only place the reason exists.
           problems: list[str] = []
           kind = "errors"
           for record in records:
@@ -288,9 +323,23 @@ jobs:
               gh api -X POST "repos/$REPO/issues/$NUMBER/comments" -F "body=@$BODY" --silent
             fi
           }
-          # One line: GitHub reads only the first line of an annotation, and the second half is
-          # the half that says what to do about it.
-          post || echo "::warning::could not post the comment — the calling job needs permissions: pull-requests: write. The result is in this run's job summary."
+          # `gh` fails for more than one reason and the report must not misdiagnose the one it
+          # got: a missing grant is 403, a pull request this token cannot see is 404, and a
+          # network blip is neither. Its own stderr is quoted when it is none of those.
+          rc=0
+          said=$(post 2>&1) || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            said=$(printf '%s' "$said" | tr '\n\r' '  ' | tail -c 300)
+            case "$said" in
+              *"HTTP 403"*) why="the calling job needs permissions: pull-requests: write" ;;
+              *"HTTP 404"*) why="$REPO#$NUMBER is not visible to this job's token" ;;
+              *[![:space:]]*) why="gh exited $rc: $said" ;;
+              *) why="gh exited $rc without a message — a network problem, most likely" ;;
+            esac
+            # One line: GitHub reads only the first line of an annotation, and the second half is
+            # the half that says what to do about it.
+            echo "::warning::could not post the comment — $why. The result is in this run's job summary."
+          fi
 
       - name: Fail the check when the dry run did not succeed
         if: inputs.fail-on-error && steps.run.outputs.status != 'succeeded'
