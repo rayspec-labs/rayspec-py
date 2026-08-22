@@ -729,20 +729,11 @@ class Runner:
         # ``run_graph`` the caller never reaches ``outcomes.update(...)``, so that dict is empty
         # exactly in the case this guard exists for.
         #
-        # TOP-LEVEL ONLY (``StepPath`` depth 1). Composite steps roll their bodies up under their
-        # own policy — ``each.on_failure: continue`` tolerates a failed item, ``loop.on_exhausted``
-        # decides an exhausted loop — and those nested records stay ``tolerated=False`` in the
-        # store. Counting them here would fail a run whose ``each:`` step legitimately succeeded.
-        #
-        # A step the stop CANCELLED is not one of them (:func:`stop_collateral`): tearing the
-        # sibling list down is how a ``stop:`` ends a run, so counting its own teardown made a
-        # declared, deliberate stop report as ``failed`` — with the collateral as the reason,
-        # and only when a sibling happened to still be in flight.
-        failed = [
-            r
-            for r in failed_steps(run)
-            if len(StepPath.parse(r.path).segments) == 1 and not stop_collateral(r)
-        ]
+        # ANY DEPTH, but only where no composite has already answered for the record
+        # (:func:`run_failures`): a failed step is a failure of the run wherever in the graph it
+        # happened, and a ``stop:`` inside an ``each:``/``include:`` body is exactly how one used
+        # to be hidden.
+        failed = run_failures(run)
         if ctx.stopped is not None:
             # The step that RAISED the stop must not outrank its own signal: `on_reject: cancel`
             # records the gate as REJECTED *and* stops the run, and that is a deliberate cancel
@@ -988,7 +979,7 @@ def failed_steps(run: RunRecord) -> list[StepRecord]:
 
 
 def stop_collateral(record: StepRecord) -> bool:
-    """Whether ``record`` is a step a ``stop:`` cancelled while winding its sibling list down.
+    """Whether ``record`` was torn down by a ``stop:`` rather than failing on its own.
 
     Cancelling the running siblings is *how* a ``stop:`` ends a sibling list, and the scheduler
     records each of them ``interrupted`` with the skip reason
@@ -996,22 +987,69 @@ def stop_collateral(record: StepRecord) -> bool:
     are the signal's own teardown rather than an independent failure: counting them turned a
     declared ``stop: {status: cancelled}`` into a ``failed`` run whose reason was the collateral
     it had ordered itself — and whether that happened depended only on whether a sibling was
-    still in flight, which is timing.
+    still in flight, which is timing. A step cancelled after a FAILURE (``--fail-fast``) carries
+    the reason ``failed`` instead, an outside cancellation ``interrupted``, and a gate rejected
+    with ``on_reject: cancel`` is recorded ``rejected``.
 
-    Nothing else produces this pair. A step cancelled after a FAILURE (``--fail-fast``) carries
-    the reason ``failed``, an outside cancellation ``interrupted``, and a gate rejected with
-    ``on_reject: cancel`` is recorded ``rejected`` — so every genuine failure still outranks the
-    stop, which is what keeps a ``stop:`` from laundering one.
+    What this pair does NOT say is that nothing failed. A COMPOSITE whose body stopped is
+    recorded ``interrupted`` (``stopped``) too — that is the contract, and it holds whether the
+    body merely stopped or had already failed a step first, because the ``stop:`` pre-empts the
+    roll-up that would otherwise have failed the composite. So the marker alone cannot tell a
+    carrier of the signal from a step whose failure the signal buried; only the body's own
+    records can, which is what :func:`run_failures` reads.
     """
     return record.status is StepStatus.INTERRUPTED and record.skip_reason == STOPPED_REASON
+
+
+def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
+    """Whether an enclosing composite has already settled the verdict on ``record``.
+
+    A composite rolls its body up under its own policy — ``each.on_failure: continue`` tolerates
+    a failed item, ``loop.on_exhausted`` decides an exhausted loop, ``include:`` fails on the
+    first untolerated body step — and it is the composite's record, not the body's, that the run
+    then counts (nested records stay ``tolerated=False`` in the store whatever the composite
+    decided, so the flag cannot be read for this). A composite that was torn down by the
+    ``stop:`` itself has settled nothing: its body was pre-empted mid-roll-up, so what its body
+    recorded is still unanswered and the search continues through it.
+    """
+    path = StepPath.parse(record.path)
+    for depth in range(1, path.depth):  # every enclosing composite, outermost first
+        name, _index = path.segments[depth - 1]
+        # a composite's own record path never carries the iteration index its body scope does
+        # (``fan`` for the ``each:`` whose items are ``fan[0]/…``)
+        container = run.steps.get(str(StepPath((*path.segments[: depth - 1], (name, None)))))
+        if container is None or not stop_collateral(container):
+            return True
+    return False
+
+
+def run_failures(run: RunRecord) -> list[StepRecord]:
+    """The records that make the RUN failed — untolerated failures nothing has answered for.
+
+    A ``stop:`` may declare the run's status only when nothing genuinely failed, and "genuinely"
+    means anywhere in the graph: a run whose ``run.json`` holds a failed step must never report
+    success, publish ``outputs:`` and exit 0, however deep the step sits. So this is not the
+    top-level records — it is every untolerated ``FAILED_LIKE`` record that is neither the stop's
+    own collateral (:func:`stop_collateral`) nor already accounted for by a composite that rolled
+    it up (:func:`answered_by_a_composite`). The nesting is what carries the difference: a body
+    failure under a composite that *finished* is that composite's verdict to make, a body failure
+    under a composite the ``stop:`` cut short is nobody's — so it is the run's.
+    """
+    return [
+        r
+        for r in failed_steps(run)
+        if not stop_collateral(r) and not answered_by_a_composite(run, r)
+    ]
 
 
 __all__ = [
     "RunResult",
     "Runner",
     "Workspace",
+    "answered_by_a_composite",
     "failed_steps",
     "fallback_project_slug",
     "process_start_time",
+    "run_failures",
     "stop_collateral",
 ]

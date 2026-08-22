@@ -209,3 +209,135 @@ async def test_the_pause_banner_does_not_call_the_teardown_victims_failed(
     assert result.status is RunStatus.PAUSED and result.exit_code == 3
     assert result.reason == "awaiting approval at gate"
     assert "already failed" not in (result.reason or "")
+
+
+# --------------------------------------------------------------------------------------------------
+# the product of the two shapes: a composite that carries the stop AND failed inside
+# --------------------------------------------------------------------------------------------------
+
+BODY_THAT_FAILS_AND_THEN_STOPS = """
+  - {id: bad, shell: fail}
+  - {id: slow, shell: hang}
+  - {id: halt, needs: [bad], join: always, stop: {status: succeeded, reason: "all clear"}}
+"""
+
+BODY_THAT_ONLY_STOPS = """
+  - {id: slow, shell: hang}
+  - {id: halt, stop: {status: succeeded, reason: "all clear"}}
+"""
+
+
+def with_composite_body(harness: Harness, kind: str, body: str) -> None:
+    """Workflow ``t``: one top-level composite ``blk`` running ``body`` as an include / an each.
+
+    The two carry the signal identically — the composite is recorded ``interrupted`` (``stopped``)
+    either way — so every claim here is made about both.
+    """
+    if kind == "include":
+        harness.workflow("inner", "rayspec: 1\nname: inner\nsteps:\n" + body)
+        steps = "  - {id: blk, include: inner}\n"
+    else:
+        nested = "".join(f"    {line}\n" for line in body.strip("\n").splitlines())
+        steps = '  - id: blk\n    each: "[1]"\n    steps:\n' + nested
+    harness.workflow("t", wf(steps, outputs='  ok: "yes"'))
+
+
+def body_path(kind: str, step_id: str) -> str:
+    """The record path of ``step_id`` inside ``blk`` (an each body is indexed, an include is not)."""
+    return f"blk/{step_id}" if kind == "include" else f"blk[0]/{step_id}"
+
+
+@pytest.mark.parametrize("kind", ["include", "each"])
+async def test_a_failure_inside_the_body_that_stops_still_fails_the_run(
+    harness: Harness, kind: str
+) -> None:
+    """A ``stop:`` may declare the run's status only when nothing GENUINELY failed.
+
+    This is the product of the two shapes each covered on its own above — a real failure, and a
+    composite carrying the stop — and only the product breaks: the failed leaf sits at depth 2,
+    where the run-level rule never looked, and the composite that would have reported it rolled
+    up ``interrupted`` (``stopped``) because the body stopped before it could. Neither record is
+    a failure the run counted, so a ``stop: {status: succeeded}`` in an ``include:``/``each:``
+    body laundered a failed step into exit 0 with ``outputs:`` published.
+    """
+    with_composite_body(harness, kind, BODY_THAT_FAILS_AND_THEN_STOPS)
+    result = await run_with_fake_leaf(harness, "t")
+    assert result.status is RunStatus.FAILED, "the stop must not declare the status of this run"
+    assert result.exit_code == 1
+    assert result.outputs is None, "a run holding a failed step must not publish outputs"
+    failed = body_path(kind, "bad")
+    assert result.reason and failed in result.reason, result.reason
+    run = harness.record(result.run_id)
+    assert run.status is RunStatus.FAILED and run.outputs is None
+    assert run.steps[failed].status is StepStatus.FAILED and not run.steps[failed].tolerated
+    assert run.steps["blk"].status is StepStatus.INTERRUPTED
+    assert run.steps["blk"].skip_reason == "stopped"
+
+
+@pytest.mark.parametrize("kind", ["include", "each"])
+async def test_the_same_body_without_a_failure_keeps_the_declared_status(
+    harness: Harness, kind: str
+) -> None:
+    """The control: the identical shape whose body only STOPPED still answers as it declared."""
+    with_composite_body(harness, kind, BODY_THAT_ONLY_STOPS)
+    result = await run_with_fake_leaf(harness, "t")
+    assert result.status is RunStatus.SUCCEEDED and result.exit_code == 0
+    assert result.reason == "all clear"
+    assert result.outputs == {"ok": "yes"}
+    assert harness.record(result.run_id).steps["blk"].status is StepStatus.INTERRUPTED
+
+
+async def test_a_failure_two_composites_deep_is_no_different(harness: Harness) -> None:
+    """Depth is not a hiding place: ``include:`` → ``each:`` → the failed leaf, stop in the body."""
+    harness.workflow(
+        "inner",
+        """rayspec: 1
+name: inner
+steps:
+  - id: fan
+    each: "[1]"
+    steps:
+      - {id: bad, shell: fail}
+      - {id: slow, shell: hang}
+      - {id: halt, needs: [bad], join: always, stop: {status: succeeded, reason: "all clear"}}
+""",
+    )
+    harness.workflow("t", wf("  - {id: blk, include: inner}\n", outputs='  ok: "yes"'))
+    result = await run_with_fake_leaf(harness, "t")
+    assert result.status is RunStatus.FAILED and result.exit_code == 1
+    assert result.reason and "blk/fan[0]/bad" in result.reason, result.reason
+    assert result.outputs is None
+
+
+async def test_a_composite_that_absorbed_the_failure_itself_does_not_fail_the_run(
+    harness: Harness,
+) -> None:
+    """The other control: a failure the composite's OWN policy already answered.
+
+    ``each.on_failure: continue`` tolerates a failed item and the ``each:`` succeeds — the run
+    without a ``stop:`` succeeds, so the ``stop:`` must not turn that into a failure. Nested
+    records stay ``tolerated=False`` in the store whatever the composite decided, so what tells
+    the two apart is the composite: this one settled on its own verdict, the one above never got
+    to.
+    """
+    harness.workflow(
+        "t",
+        wf(
+            """
+  - id: fan
+    each: "[1, 2]"
+    on_failure: continue
+    steps:
+      - {id: work, shell: "{{ 'fail' if item == 2 else 'ok' }}"}
+  - {id: slow, shell: hang}
+  - {id: halt, needs: [fan], stop: {status: succeeded, reason: "all clear"}}
+""",
+            outputs='  ok: "yes"',
+        ),
+    )
+    result = await run_with_fake_leaf(harness, "t")
+    assert result.status is RunStatus.SUCCEEDED and result.exit_code == 0
+    assert result.outputs == {"ok": "yes"}
+    run = harness.record(result.run_id)
+    assert run.steps["fan"].status is StepStatus.SUCCEEDED
+    assert run.steps["fan[1]/work"].status is StepStatus.FAILED

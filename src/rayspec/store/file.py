@@ -106,16 +106,23 @@ RUN_JSON = "run.json"
 #: Fields of a :class:`~rayspec.store.model.RunRecord` that redaction must leave alone: the
 #: strings the record is LOOKED UP by. ``run_id`` names the directory the record lives in;
 #: ``workflow_name`` and ``workflow_path`` are what ``resume``/``approve``/``reject``/``explain``
-#: re-load the workflow by (:func:`rayspec.cli._runs_common.load_resolved_for`). A secret that
-#: happens to equal one of them used to rewrite it, and the run was permanently unreachable
-#: (``unknown workflow '[REDACTED:…]'``) — the same class as the field names and step paths
-#: :meth:`~rayspec.redact.Redactor.redact_dump` already leaves alone. Everything else a record
-#: holds stays redacted.
+#: re-load the workflow by (:func:`rayspec.cli._runs_common.load_resolved_for`); ``project_root``
+#: is the project all of them re-scope to (:func:`rayspec.cli._runs_common.record_root`). A
+#: secret that happens to equal one of them used to rewrite it, and the run was permanently
+#: unreachable (``unknown workflow '[REDACTED:…]'``) — the same class as the field names and
+#: step paths :meth:`~rayspec.redact.Redactor.redact_dump` already leaves alone. Everything else
+#: a record holds stays redacted.
 #:
-#: Leaving them alone discloses nothing: all three are derived from the workflow file on disk
-#: and the run-id generator, never from an input, so a value that collides with one of them was
-#: already readable in the project. What it prevents is a run that no command can address again.
-RUN_IDENTITY_FIELDS: tuple[str, ...] = ("run_id", "workflow_name", "workflow_path")
+#: Leaving them alone discloses nothing: each is derived from the workflow file on disk, the
+#: project directory and the run-id generator, never from an input, so a value that collides
+#: with one of them was already readable in the project. What it prevents is a run that no
+#: command can address again.
+#:
+#: The record declares them (:attr:`rayspec.store.model.RunRecord.redaction_identity`) and this
+#: is the name the store's writers pass them by — one list, so a nested record that protects its
+#: own address (a step's ``path``, the workspace's ``workdir``) is honoured by the same rule
+#: rather than by a second one that has to be kept in step with this.
+RUN_IDENTITY_FIELDS: tuple[str, ...] = RunRecord.redaction_identity
 #: Where a step's declared ``artifacts:`` are copied (``artifacts/<step path>/<declared path>``).
 ARTIFACTS_DIR = "artifacts"
 #: Bytes per read while copying an artifact (constant memory for a large file).
