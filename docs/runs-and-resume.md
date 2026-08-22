@@ -60,6 +60,8 @@ runs/<run-id>/
                                                                    // and kept as declared_id (see below)
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "mbp",   // pid_started_at: start time of the
   "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
+  "fail_fast": false,                     // --fail-fast: the failure policy the run was STARTED with, so a resume
+                                          // continues with the same blast radius. Only ever tightens
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
                 "branch": "rayspec/review-ikd7", "base_branch": "main", "base_sha": "…", "head_sha": "…"},   // last record write (pause/end/resume)
   "pause": null,                          // {token, step, message, requested_at,
@@ -366,6 +368,13 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   before anything is written — exit 2 `run <id> was launched with --dry-run --stubs <path>; its
   recorded stubs file requires --dry-run (… would run for real)`, hint `pass --dry-run to resume
   it as a dry run (rayspec resume does so automatically), or switch the agents to provider: stub`;
+- a run launched with `--fail-fast` recorded it (`fail_fast`), and every resume entry point
+  continues with it: the second half of a run cancels the siblings the first half would have
+  cancelled. `rayspec resume --fail-fast` (and `run --resume --fail-fast`) *adds* the policy to a
+  run that started without it, and the tightened value is recorded — a failure policy is a
+  blast-radius control, so it only ever tightens and no later entry point can drop it. The
+  workflow's own `defaults.on_step_failure` is not recorded: it is part of the workflow, which the
+  hash guard below already pins;
 - the workflow hash must match; otherwise the resume is **refused** (exit 2, `pass --force`)
   unless `--force`, in which case a leaf whose `fingerprint` (rendered prompt/script + agent)
   changed is re-run with a warning and the rest is reused. Every entry point applies this guard

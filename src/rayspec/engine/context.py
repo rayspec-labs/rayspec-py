@@ -847,6 +847,17 @@ class RunContext:
 
     # -- drain policy ---------------------------------------------------------------------
 
+    @property
+    def fail_fast(self) -> bool:
+        """Whether ``--fail-fast`` is in force: passed to THIS entry point, or recorded on the
+        run being continued (``RunRecord.fail_fast``).
+
+        A resume continues one run, so it continues its blast radius; a second entry point that
+        forgets to repeat the flag must not quietly widen it. Reading both is also how the flag
+        keeps only ever tightening — neither source can clear the other.
+        """
+        return self.options.fail_fast or self.run.fail_fast
+
     def keep_going_for(self, scope: ExecScope) -> bool:
         """Whether a failed step leaves independent branches of ``scope`` running.
 
@@ -857,19 +868,20 @@ class RunContext:
         the failed step's own dependents still skip with ``upstream_failed`` — ``continue`` is not
         ``allow_failure``. ``--fail-fast`` beats it, because the flag may only ever tighten.
         """
-        if self.options.fail_fast:
+        if self.fail_fast:
             return False
         return scope.on_step_failure == "continue"
 
     def fail_fast_for(self, scope: ExecScope) -> bool:
         """Whether a failed step cancels the running siblings of ``scope``.
 
-        ``--fail-fast`` (``RunOptions.fail_fast``) OR the ``defaults.on_step_failure: fail_fast``
-        in force for this sibling list. The CLI flag can only *enable* fail-fast: it never
-        downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
-        behaviour. The scheduler reads this, never ``options.fail_fast``.
+        :attr:`fail_fast` (this entry point's ``--fail-fast`` or the one recorded on the run)
+        OR the ``defaults.on_step_failure: fail_fast`` in force for this sibling list. The CLI
+        flag can only *enable* fail-fast: it never downgrades a workflow that asked for it, and
+        ``drain`` (the default) is the 1.0.0 behaviour. The scheduler reads this, never
+        ``options.fail_fast``.
         """
-        if self.options.fail_fast:
+        if self.fail_fast:
             return True
         return scope.on_step_failure == "fail_fast"
 

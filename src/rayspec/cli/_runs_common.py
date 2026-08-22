@@ -763,6 +763,7 @@ def resume_run(
     *,
     force: bool = False,
     yes: bool = False,
+    fail_fast: bool = False,
     interactive: bool = False,
     json_mode: bool = False,
     quiet: bool = False,
@@ -792,6 +793,10 @@ def resume_run(
     same instance :func:`~rayspec.cli.commands.resume.resume_secret_inputs` already used, so a
     ``cmd:`` helper runs at most once per command; one is built here only when the caller has
     none.
+
+    ``fail_fast`` is ``--fail-fast`` for this entry point. It is OR-ed with the policy the run
+    was started with (``RunRecord.fail_fast``) — a resume may tighten the blast radius, never
+    widen it — and the tightened value is recorded, so the next resume keeps it too.
 
     ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
     does, because it starts the same agents.
@@ -880,6 +885,7 @@ def resume_run(
         dry_run=run.dry_run,
         yes=yes,
         interactive=interactive,
+        fail_fast=fail_fast,
         force=force,
         resume=True,
         stub_script=stub_script,

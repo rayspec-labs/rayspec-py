@@ -199,6 +199,10 @@ def register(app: typer.Typer) -> None:
         no_interactive: Annotated[
             bool, typer.Option("--no-interactive", help="Never prompt; pause at gates (exit 3).")
         ] = False,
+        fail_fast: Annotated[
+            bool,
+            typer.Option("--fail-fast", help="Cancel running siblings on failure (tightens only)."),
+        ] = False,
         json_: JsonOption = False,
         output: OutputOption = None,
         quiet: Annotated[
@@ -214,7 +218,8 @@ def register(app: typer.Typer) -> None:
         """Resume a paused/failed/interrupted run (steps that succeeded are reused).
 
         Succeeded and cancelled runs are refused (exit 2) unless --force. Secret inputs must be
-        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused.
+        supplied again (--input / RAYSPEC_INPUT_<NAME>); a --stubs file given at launch is reused,
+        and so is the failure policy it started with (--fail-fast here only tightens it).
         """
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
@@ -297,6 +302,7 @@ def register(app: typer.Typer) -> None:
             record,
             force=force,
             yes=yes,
+            fail_fast=fail_fast,
             interactive=interactive,
             json_mode=json_,
             quiet=quiet,

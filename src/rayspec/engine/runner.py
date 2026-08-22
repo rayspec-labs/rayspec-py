@@ -651,6 +651,9 @@ class Runner:
             run.started_at = run.started_at or utcnow()
             run.workflow_hash = self.resolved.hash
             run.dry_run = bool(self.options.dry_run)
+            # a failure policy only ever tightens: this entry point may add --fail-fast to the
+            # run, it may not take away the one the run was started with
+            run.fail_fast = run.fail_fast or bool(self.options.fail_fast)
             run.workspace = self.workspace.info()  # head_sha refreshed by ``run()``
             self.store.save(run)
             return run, cache, mismatch, True
@@ -673,6 +676,7 @@ class Runner:
             host=socket.gethostname(),
             workspace=self.workspace.info(),
             dry_run=bool(self.options.dry_run),
+            fail_fast=bool(self.options.fail_fast),
             # who set this run going — resolved once, at the first start, and never rewritten
             # by a resume (``_prepare_record`` returns early above for a resumed run)
             actor=actor,

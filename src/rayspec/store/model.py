@@ -236,6 +236,13 @@ class RunRecord(_Model):
     #: ``--dry-run`` (stub providers, shell/python skipped unless ``--exec-shell``); additive
     #: field so listings can tell a rehearsal from a real run
     dry_run: bool = False
+    #: additive: ``--fail-fast`` — the failure policy this run was STARTED with, so that a
+    #: resume continues it with the same blast radius instead of draining what the first half
+    #: would have cancelled. The workflow's own ``defaults.on_step_failure`` is not recorded:
+    #: it belongs to the workflow, and the workflow hash already refuses a resume of a changed
+    #: one. Like the flag, it may only ever be TIGHTENED — a resume that passes ``--fail-fast``
+    #: sets it, a resume that does not can never clear it. ``False`` in older records.
+    fail_fast: bool = False
     workspace: WorkspaceInfo = Field(default_factory=WorkspaceInfo)
     pause: PauseInfo | None = None
     outputs: dict[str, Any] | None = None

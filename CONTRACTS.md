@@ -1176,7 +1176,13 @@ Semantics fixed here (tests in `tests/engine/`):
   pid that last ran). `run.pause` is cleared when the
   gate that owns it reaches a decision by any path (stored decision, `--yes`, dry run, TTY), so
   `RunResult.pause` is only non-None for a run that is `paused`. `RunRecord.dry_run` (additive)
-  records `--dry-run`.
+  records `--dry-run`, `RunRecord.fail_fast` (additive) `--fail-fast`: a resume continues with
+  the blast radius the run was started with. `RunContext.fail_fast` is `options.fail_fast or
+  run.fail_fast` and is what `fail_fast_for` / `keep_going_for` read; `Runner._prepare_record`
+  OR-s the flag of a resume entry into the record and saves it. A failure policy only ever
+  TIGHTENS, so no entry point can clear a recorded one. The workflow's own
+  `defaults.on_step_failure` is NOT recorded — it is part of the workflow, and the hash guard
+  refuses a resume of a changed one.
 - Declared `artifacts:`: `executors.artifacts.collect_artifacts(step, scope, ctx, outcome)` runs
   in `scheduler._execute` after the executor (`_dispatch`) and before `finish`, for EVERY kind.
   It is a no-op unless the step declared artifacts and SUCCEEDED in this run (a replayed record
@@ -1327,7 +1333,8 @@ interactive=, prompt=None)` returns `None` (pause at gates) or a `SuspendingAppr
 runs the `ConsoleApprovalPrompt` inside `async with sink.suspended():` for every sink exposing
 `suspended()`; `rayspec run` and `_runs_common.resume_run` (`resume`/`approve`/`reject`;
 additive kwargs `inputs=` (re-supplied secrets), `stub_script: StubScript | None =`,
-`stubs_path=`; the resumed run inherits `dry_run` from the record) both use
+`stubs_path=`, `fail_fast=` (`resume --fail-fast`, OR-ed into `RunRecord.fail_fast`); the resumed
+run inherits `dry_run` and `fail_fast` from the record) both use
 it. `print_summary`'s outputs table and `_loader_common.fail()` render run data as `rich.text.Text`
 (never markup: `[stub] think` stays literal) and through
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
