@@ -43,6 +43,7 @@ from rayspec.engine.context import (
     RunContext,
     StepOutcome,
     error_info,
+    failed_outcome,
     merge_cost_source,
     utcnow,
     view_of,
@@ -167,7 +168,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                         outcome = (
                             _skipped(record, "when_false")
                             if verdict is False
-                            else _failed(record, verdict)
+                            else failed_outcome(record, verdict)
                         )
                         await finish(outcome, step, scope, ctx)
                         settle(outcome)
@@ -241,7 +242,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                             outcome = (
                                 _skipped(record, "when_false")
                                 if verdict is False
-                                else _failed(record, verdict)
+                                else failed_outcome(record, verdict)
                             )
                             await finish(outcome, step, scope, ctx)
                             settle(outcome)
@@ -328,7 +329,7 @@ async def run_one(
     except RunControl as exc:
         outcome = _controlled(record, exc)
     except Exception as exc:  # bugs become failed steps, not crashes
-        outcome = _failed(record, error_info(exc, type_="engine"))
+        outcome = failed_outcome(record, error_info(exc, type_="engine"))
     try:
         await finish(outcome, step, scope, ctx)
     except anyio.get_cancelled_exc_class():
@@ -377,7 +378,7 @@ async def _dispatch(
         with anyio.fail_after(timeout):
             return await executor(step, scope, ctx, record, record.attempts)
     except TimeoutError:
-        return _failed(
+        return failed_outcome(
             record,
             ErrorInfo(
                 type=TIMEOUT_ERROR_TYPE, message=f"timed out after {timeout:g}s", transient=False
@@ -439,7 +440,7 @@ async def run_leaf(
                 with anyio.fail_after(timeout):
                     outcome = await executor(step, scope, ctx, record, attempt)
             except TimeoutError:
-                outcome = _failed(
+                outcome = failed_outcome(
                     record,
                     ErrorInfo(
                         type=TIMEOUT_ERROR_TYPE,
@@ -453,7 +454,7 @@ async def run_leaf(
             except RunControl:
                 raise
             except Exception as exc:
-                outcome = _failed(record, error_info(exc, type_="engine"))
+                outcome = failed_outcome(record, error_info(exc, type_="engine"))
         accumulate(outcome.record)
         last = outcome
         rec = outcome.record
@@ -538,13 +539,6 @@ def _skipped(record: StepRecord, reason: str) -> StepOutcome:
     record.status = StepStatus.SKIPPED
     record.skip_reason = reason
     record.ok = None
-    return StepOutcome(record=record)
-
-
-def _failed(record: StepRecord, error: ErrorInfo) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.error = error
-    record.ok = False
     return StepOutcome(record=record)
 
 

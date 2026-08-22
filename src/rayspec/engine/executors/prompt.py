@@ -21,6 +21,7 @@ from rayspec.engine.context import (
     RunContext,
     StepOutcome,
     error_info,
+    failed_outcome,
     sha256_json,
     usage_from_mapping,
 )
@@ -233,17 +234,19 @@ async def run_prompt(
     try:
         agent = ctx.resolved.agent_for(def_path)
     except KeyError:
-        return _fail(record, ErrorInfo(type="agent", message=f"no agent resolved for {def_path}"))
+        return failed_outcome(
+            record, ErrorInfo(type="agent", message=f"no agent resolved for {def_path}")
+        )
     record.provider = agent.provider
     record.model = agent.model
     try:
         provider = await ctx.providers.get(agent.provider)
     except ProviderError as exc:
-        return _fail(record, classify_provider_error(exc))
+        return failed_outcome(record, classify_provider_error(exc))
     tctx = ctx.template_context(scope)
     prompt_text = ctx.resolved.prompt_text(def_path)
     if prompt_text is None:
-        return _fail(record, ErrorInfo(type="prompt", message="prompt text not loaded"))
+        return failed_outcome(record, ErrorInfo(type="prompt", message="prompt text not loaded"))
     try:
         prompt = ctx.engine.render_str(prompt_text, tctx)
         instructions = (
@@ -253,7 +256,7 @@ async def run_prompt(
         )
         env = ctx.render_env(step.env, tctx)
     except TemplateRenderError as exc:
-        return _fail(record, error_info(exc, type_="render"))
+        return failed_outcome(record, error_info(exc, type_="render"))
     record.fingerprint = sha256_json(
         {
             "prompt": prompt,
@@ -299,7 +302,7 @@ async def run_prompt(
         # stream reported before it, else zero — NOT "unknown", which is reserved for attempts
         # cut off mid-flight
         _record_partial_usage(record, ctx, emit, model=agent.model, unknown_if_unreported=False)
-        return _fail(record, classify_provider_error(exc))
+        return failed_outcome(record, classify_provider_error(exc))
     except BaseException:
         # cancelled from outside (Ctrl-C, a sibling's stop/pause, the attempt deadline): keep the
         # usage the adapter reported so far, or mark it unknown — never "zero tokens"
@@ -377,7 +380,7 @@ def _map_result(
         # the turn "succeeded", but the agent was refused something it tried to do. With
         # ``on_denial: fail`` that is the step's answer — a denial nobody reads is a silent
         # failure. The denials stay on the record either way.
-        return _fail(
+        return failed_outcome(
             record,
             ErrorInfo(
                 type="denied",
@@ -392,7 +395,7 @@ def _map_result(
     if result.status == "success":
         if step.output_schema is not None:
             if structured_error is not None:
-                return _fail(
+                return failed_outcome(
                     record,
                     ErrorInfo(
                         type="output_schema",
@@ -418,7 +421,7 @@ def _map_result(
             message=_status_message(result),
             transient=False,
         )
-    return _fail(record, error, output=result.text or None)
+    return failed_outcome(record, error, output=result.text or None)
 
 
 def _estimate_cost(record: StepRecord, ctx: RunContext, *, model: str | None, usage: Usage) -> None:
@@ -463,13 +466,6 @@ def _status_message(result: AgentResult) -> str:
         "budget": "the agent exceeded budget_usd",
         "error": "the agent run failed",
     }.get(result.status, f"agent status {result.status}")
-
-
-def _fail(record: StepRecord, error: ErrorInfo, *, output: Any = None) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.ok = False
-    record.error = error
-    return StepOutcome(record=record, output=output, output_kind="text" if output else None)
 
 
 __all__ = [

@@ -32,6 +32,9 @@ src/rayspec/
   fmt.py        format_duration / humanize_duration — the ONE rendering of a duration, for the
                listings, the console tree, the approval panel and the cap reasons alike (a leaf
                module: no rayspec imports). Tokens and costs render through providers/pricing.py
+  resources.py  walk_files(node, *, keep_dir=, keep_file=) — the ONE recursive listing of a
+               packaged data tree (the skill, the init scaffolds, the example corpus); a leaf
+               module over importlib.resources, no rayspec imports
   secrets/      SecretProvider protocol + the env/file/cmd sources behind
                `config.secrets`; redact.py  the one Redactor every writer goes through
   loader/secrets.py  where a `secret: true` input may appear (the placement rules)
@@ -1050,6 +1053,11 @@ from rayspec.engine.context import (
     totals_of,  # (records) -> (Usage, cost_usd | None, cost_source); RunContext.run_totals()
     #   applies it to every record of the run (run.json cost_source, run.finished, RunResult),
     #   RunContext.budget_totals() to the accounted ones
+    mark_failed,  # (record, error) -> record  stamps status=failed + ok=False + error, the ONE
+    #   place those three are set together
+    failed_outcome,  # (record, error, *, output=None) -> StepOutcome  mark_failed + the outcome
+    #   (output carried as text when the step produced one before failing); every executor and
+    #   the scheduler fail a step through it
 )
 from rayspec.engine.approval import (
     ApprovalPrompt,  # Protocol: async __call__(ApprovalRequest) -> ApprovalAnswer | None (None = pause)

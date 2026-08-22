@@ -261,6 +261,31 @@ class StepOutcome:
     event_data: dict[str, Any] = field(default_factory=dict)
 
 
+def mark_failed(record: StepRecord, error: ErrorInfo) -> StepRecord:
+    """Stamp ``failed`` + ``ok=False`` + ``error`` on ``record`` and return it.
+
+    The one place those three fields are set together: a record left ``ok=None`` or without its
+    error is a step whose failure the store cannot explain afterwards.
+    """
+    record.status = StepStatus.FAILED
+    record.ok = False
+    record.error = error
+    return record
+
+
+def failed_outcome(record: StepRecord, error: ErrorInfo, *, output: Any = None) -> StepOutcome:
+    """:func:`mark_failed` plus the :class:`StepOutcome` the scheduler expects back.
+
+    ``output`` is what the step produced before it failed (an agent's partial answer); it is
+    carried as text so the templates and the store see it, exactly as for a succeeded step.
+    """
+    return StepOutcome(
+        record=mark_failed(record, error),
+        output=output,
+        output_kind="text" if output else None,
+    )
+
+
 #: ``defaults.on_step_failure`` from the most permissive to the most restrictive. A failure
 #: policy is a blast-radius control, so it may only ever be TIGHTENED from the outside in:
 #: ``continue`` keeps scheduling after a failure, ``drain`` launches nothing new, ``fail_fast``
@@ -1097,7 +1122,9 @@ __all__ = [
     "cost_source_of",
     "effective_on_step_failure",
     "error_info",
+    "failed_outcome",
     "is_cap_reason",
+    "mark_failed",
     "merge_cost_source",
     "on_step_failure_floor",
     "sha256_json",
