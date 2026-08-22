@@ -2,8 +2,8 @@
 {"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "checkout", "ts": "<ts>", "type": "step.started"}
 {"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "checkout", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "gate", "ts": "<ts>", "type": "step.started"}
-{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "contracts", "ts": "<ts>", "type": "step.started"}
 {"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "gate", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "contracts", "ts": "<ts>", "type": "step.started"}
 {"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "contracts", "ts": "<ts>", "type": "step.finished"}
 {"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "review", "ts": "<ts>", "type": "step.started"}
 {"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:review:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:review:1", "ts": "<ts>"}, "step_path": "review", "type": "stream"}
