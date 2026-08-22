@@ -433,7 +433,7 @@ DOC_MARKERS: tuple[str, ...] = ("rayspec:validate", "rayspec:run", "rayspec:skip
 #: job, ``failed`` is the drift this convention exists to catch.
 DOC_RUN_STATUSES: frozenset[str] = frozenset({"succeeded", "cancelled"})
 
-_DOC_FENCE = re.compile(r"^(?P<indent>[ \t]*)```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
+_DOC_FENCE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^`]*)$")
 _DOC_MARKER = re.compile(
     r"^\s*<!--\s*rayspec:(?P<kind>validate|run|skip)(?P<rest>\s[^\n]*?)?\s*-->\s*$"
 )
@@ -524,7 +524,11 @@ def _scan_page(path: Path, source: str) -> tuple[list[DocBlock], list[str]]:
             continue
         fence = _DOC_FENCE.match(line)
         if fence is not None:
-            indent, start, lang, body = fence.group("indent"), number, fence.group("lang"), []
+            words = fence.group("info").split()
+            indent, start, body = fence.group("indent"), number, []
+            lang = words[0] if words else ""
+            if lang in _DOC_LANGS and any("rayspec:" in word for word in words[1:]):
+                strays.append(f"{source}:{number}: a rayspec marker belongs ABOVE the fence")
             continue
         marker = _DOC_MARKER.match(line)
         if marker is not None:
