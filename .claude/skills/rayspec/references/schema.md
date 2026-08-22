@@ -13,7 +13,6 @@ fields are Jinja text. See [templating.md](templating.md) for the language itsel
 
 ## Top level
 
-<!-- rayspec:run -->
 ```yaml
 rayspec: 1                # required; the only schema version
 name: fix_issue           # required; identifier (see below)
@@ -62,7 +61,6 @@ it).
 
 ### `inputs`
 
-<!-- rayspec:run issue=7 -->
 ```yaml
 inputs:
   issue: { type: integer, required: true, description: "Issue number" }
@@ -88,7 +86,6 @@ resolved values are validated against it. How values are supplied and coerced is
 
 #### Secret inputs
 
-<!-- rayspec:validate -->
 ```yaml
 inputs:
   token: { type: string, secret: true, required: true }
@@ -155,7 +152,6 @@ An input is something a *run* is given. A **secret source** is something a *mach
 `secrets:` block of `config.yaml` (user-level `~/.rayspec/config.yaml` or project-level
 `.rayspec/config.yaml`, merged per key) says where each named secret comes from:
 
-<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 # ~/.rayspec/config.yaml
 secrets:
@@ -236,7 +232,6 @@ Be clear about what this is:
 - pattern **detectors** for well-known credential shapes are opt-in and default to off, because
   a false positive in a run log is worse than the gap:
 
-<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 # ~/.rayspec/config.yaml
 redact:
@@ -254,7 +249,6 @@ this release.
 
 A (possibly partial) agent; unset fields are filled by merge and tier resolution.
 
-<!-- rayspec:skip field reference: `instructions` and `instructions_file` exclude each other -->
 ```yaml
 agents:
   implementer:
@@ -334,7 +328,6 @@ Leaf steps (`prompt`, `shell`, `python`) add:
 
 ### `prompt:` / `prompt_file:`
 
-<!-- rayspec:skip fragment: `reviewer` and `check` are defined elsewhere -->
 ```yaml
 - id: review
   needs: [check]
@@ -354,7 +347,6 @@ step's own id inside a loop body, which continues the previous iteration's sessi
 
 ### `shell:`
 
-<!-- rayspec:run -->
 ```yaml
 - id: test
   shell: pytest -q
@@ -383,7 +375,6 @@ own `env:` — explicit values always win.
 
 ### `python:`
 
-<!-- rayspec:skip fragment: `fetch` is defined elsewhere -->
 ```yaml
 - id: summarize
   python: |
@@ -400,7 +391,6 @@ Same output contract as `shell:`; `{{ expr }}` renders as a Python literal
 
 ### `loop:`
 
-<!-- rayspec:skip field reference: `steps: [...]` is a placeholder -->
 ```yaml
 - id: build
   needs: [assess]
@@ -421,7 +411,6 @@ Output: `{<body id>: output}` of the last executed iteration; attributes `iterat
 
 ### `each:`
 
-<!-- rayspec:skip field reference: `steps: [...]` is a placeholder -->
 ```yaml
 - id: triage
   each: steps.list.output | fromjson      # expression → a list (mappings are rejected: use .values())
@@ -470,7 +459,6 @@ failed items under `continue`. Attribute `items`: `[{index, item, status, output
 
 ### `approve:`
 
-<!-- rayspec:skip fragment: `needs:` names a step defined elsewhere -->
 ```yaml
 - id: confirm
   needs: [build]
@@ -486,7 +474,6 @@ failed. Output: the approver's comment (`''` if none); attribute `approved`. Det
 
 ### `include:`
 
-<!-- rayspec:skip fragment: the included workflow is not part of the snippet -->
 ```yaml
 - id: review
   include: review_block                   # workflow name (discovery) or a path relative to this file
@@ -503,7 +490,6 @@ that map at load time.
 
 ### `stop:`
 
-<!-- rayspec:skip fragment: `needs:` names a step defined elsewhere -->
 ```yaml
 - id: bail
   needs: [assess]
@@ -593,7 +579,6 @@ with [yaml-language-server](https://github.com/redhat-developer/yaml-language-se
 the YAML extension, Neovim, Helix, JetBrains) completes field names, shows the docs of a field
 and flags typos while you type:
 
-<!-- rayspec:run -->
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
 rayspec: 1

@@ -213,3 +213,23 @@ def test_a_missing_reference_in_a_prompt_body_fails_the_run_check(tmp_path: Path
         == []
     ), "the snippet must still VALIDATE — otherwise this proves nothing about the run level"
     assert check_examples.check_doc_block(block, home=tmp_path)
+
+
+def test_the_markers_do_not_ship_in_the_packaged_skill() -> None:
+    """The skill references are model-facing input, not a copy of this repo's test conventions.
+
+    An agent reading them would see a convention it has no way to satisfy — and might imitate it
+    when it writes docs or workflows for somebody else's project.
+    """
+    directories = [
+        REPO_ROOT / "src" / "rayspec" / "skill" / "rayspec" / "references",
+        REPO_ROOT / ".claude" / "skills" / "rayspec" / "references",
+    ]
+    leaked = [
+        f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}"
+        for directory in directories
+        for path in sorted(directory.glob("*.md"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if any(marker in line for marker in check_examples.DOC_MARKERS)
+    ]
+    assert not leaked, "\n".join(leaked)
