@@ -2,10 +2,11 @@
 """Generate the reference files of the packaged ``rayspec`` skill and mirror the skill dir.
 
 The skill ships with the package under ``src/rayspec/skill/rayspec/``: a hand-written
-``SKILL.md`` plus ``references/<name>.md`` — verbatim copies of ``docs/<name>.md`` for every
-name in :data:`rayspec.skill.REFERENCE_NAMES`, each with a three-line header and relative links
+``SKILL.md`` plus ``references/<name>.md`` — near-verbatim copies of ``docs/<name>.md`` for every
+name in :data:`rayspec.skill.REFERENCE_NAMES`, each with a three-line header, relative links
 rewritten (to the sibling reference file, or to the published docs URL of
-``rayspec.cli._docs.DOCS_BASE`` when the target is not part of the skill). The whole skill dir is
+``rayspec.cli._docs.DOCS_BASE`` when the target is not part of the skill) and this repository's
+docs-as-tests markers stripped (:func:`strip_markers`). The whole skill dir is
 then mirrored to ``.claude/skills/rayspec/`` so this repository's own coding-agent sessions use
 it too. Run it after editing ``docs/*.md`` or ``SKILL.md``::
 
@@ -37,6 +38,20 @@ MIRROR_DIR = REPO_ROOT / ".claude" / "skills" / SKILL_NAME
 HAND_WRITTEN = ("SKILL.md",)
 
 _LINK_RE = re.compile(r"(?<!\\)(\[[^\]]*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
+#: The docs-as-tests markers of ``docs/*.md`` (``scripts/check_examples.py``). They name a check
+#: that exists only in this repository, so they are dropped on the way into the references.
+_MARKER_RE = re.compile(r"^[ \t]*<!--\s*rayspec:(?:validate|run|skip)\b.*-->[ \t]*$")
+
+
+def strip_markers(text: str) -> str:
+    """``docs/<name>.md`` without its docs-as-tests marker comments.
+
+    The references are model-facing input for the packaged skill: an agent reading them would see
+    a convention it has no way to satisfy, and could imitate it when writing docs or workflows for
+    somebody else's project. The rendered page never showed them either — they are HTML comments.
+    """
+    kept = [line for line in text.splitlines(keepends=True) if not _MARKER_RE.match(line.rstrip())]
+    return "".join(kept)
 
 
 def header_for(name: str) -> str:
@@ -69,8 +84,8 @@ def rewrite_link(target: str) -> str:
 
 
 def render_reference(name: str) -> str:
-    """The generated ``references/<name>.md``: header + ``docs/<name>.md`` with links rewritten."""
-    text = (DOCS_DIR / f"{name}.md").read_text(encoding="utf-8")
+    """The generated ``references/<name>.md``: header + the page, links rewritten, markers gone."""
+    text = strip_markers((DOCS_DIR / f"{name}.md").read_text(encoding="utf-8"))
     body = _LINK_RE.sub(lambda m: f"{m.group(1)}{rewrite_link(m.group(2))}{m.group(3)}", text)
     return header_for(name) + body
 

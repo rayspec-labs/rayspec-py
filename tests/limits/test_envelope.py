@@ -73,21 +73,87 @@ def test_the_pause_kind_names_the_control_that_fired(tmp_path: Path) -> None:
 
 def test_waiving_a_money_pause_leaves_the_failure_breaker_alone(tmp_path: Path) -> None:
     """Two independent guardrails: saying yes to one dollar figure is not saying yes to the
-    other control."""
+    other control — and a control that is still armed still stops the run."""
     ledger = SpendLedger(ledger_path(tmp_path))
     ledger.record_outcome(failed=True)
     ledger.record_outcome(failed=True)
     env = RunEnvelope(
-        BudgetEnvelope(per_day=0.01, max_consecutive_failures=5), ledger, run_id="mine"
+        BudgetEnvelope(per_day=0.01, max_consecutive_failures=2), ledger, run_id="mine"
     )
     assert env.check(5.0) is not None
     env.waive()
-    assert env.active is False
-    assert env.check(5.0) is None
+    assert env.waived_spend is True and env.waived_failures is False
+    assert env.active is True  # the breaker was never answered
+    reason = env.check(5.0)
+    assert reason is not None and "circuit breaker open" in reason
     assert ledger.read().consecutive_failures == 2  # untouched
 
+
+def test_waiving_a_money_pause_still_counts_what_the_run_spends(tmp_path: Path) -> None:
+    """A waiver says "this run may cost more", not "this run costs nothing" — the next run's
+    day total has to include it."""
+    ledger = SpendLedger(ledger_path(tmp_path))
+    env = RunEnvelope(
+        BudgetEnvelope(per_day=0.01, max_consecutive_failures=9), ledger, run_id="mine"
+    )
+    assert env.check(5.0) is not None
+    env.waive()
+    assert env.check(7.0) is None  # the money ceiling no longer stops it
+    assert ledger.read().day_usd == pytest.approx(7.0)  # but it is still the operator's money
+
+
+def test_a_run_with_nothing_left_to_enforce_still_records_its_final_total(
+    tmp_path: Path,
+) -> None:
+    """With every control answered there is nothing to ask per step, so the per-step commit is
+    skipped — but the run's own total is committed when it finishes, the same as any other."""
+    ledger = SpendLedger(ledger_path(tmp_path))
+    env = RunEnvelope(BudgetEnvelope(per_day=0.01), ledger, run_id="mine")
+    env.waive()
+    assert env.active is False
+    assert env.check(7.0) is None
+    env.commit_final(7.0)
+    assert ledger.read().day_usd == pytest.approx(7.0)
+
+
+def test_closing_the_breaker_does_not_waive_the_spending_envelope(tmp_path: Path) -> None:
+    """An operator answering a question about flakiness is not being asked to give up their
+    money ceiling, and must not lose one they were never asked about."""
+    ledger = SpendLedger(ledger_path(tmp_path))
+    ledger.record_outcome(failed=True)
+    env = RunEnvelope(
+        BudgetEnvelope(per_day=0.01, max_consecutive_failures=1), ledger, run_id="mine"
+    )
+    assert env.check(5.0) is not None and env.pause_kind == "failures"
+
     env.waive(close_breaker=True)  # the breaker's OWN pause was approved
-    assert ledger.read().consecutive_failures == 0
+    assert env.waived_failures is True and env.waived_spend is False
+    assert ledger.read().consecutive_failures == 0  # the streak is forgiven
+    assert env.active is True
+
+    reason = env.check(5.0)
+    assert reason is not None and "budget.per_day" in reason
+    assert env.pause_kind == "budget"
+
+
+def test_waiving_both_controls_leaves_nothing_to_stop_the_run(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    ledger.record_outcome(failed=True)
+    env = RunEnvelope(
+        BudgetEnvelope(per_day=0.01, max_consecutive_failures=1), ledger, run_id="mine"
+    )
+    env.waive()
+    env.waive(close_breaker=True)
+    assert env.active is False
+    assert env.check(5.0) is None
+
+
+def test_a_waiver_of_a_control_that_is_not_set_changes_nothing(tmp_path: Path) -> None:
+    ledger = SpendLedger(ledger_path(tmp_path))
+    env = RunEnvelope(BudgetEnvelope(per_day=0.01), ledger, run_id="mine")
+    env.waive(close_breaker=True)  # no breaker configured: nothing to close, nothing to reset
+    assert env.active is True
+    assert env.check(5.0) is not None
 
 
 def test_settle_rephrases_the_ceiling_from_the_final_total(tmp_path: Path) -> None:

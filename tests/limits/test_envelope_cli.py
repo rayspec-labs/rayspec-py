@@ -218,3 +218,18 @@ def test_a_dry_run_with_exec_shell_spends_nothing(
     assert result.exit_code == 0, result.output
     ledger = SpendLedger(ledger_path(home / "projects" / project_slug_for(root)))
     assert ledger.read().day_usd == 0.0
+
+
+def test_a_directory_where_the_ledger_belongs_is_a_warning_not_a_traceback(
+    root: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From the CLI, the way an operator meets it: `run` must not die on `IsADirectoryError`."""
+    with_budget(monkeypatch, per_day=10.0)
+    ledger_path(home / "projects" / project_slug_for(root)).mkdir(parents=True)
+    result = runner.invoke(
+        app,
+        ["run", "t", "--stubs", str(root / "stubs.yaml"), "--no-interactive", "--root", str(root)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "IsADirectoryError" not in result.output
+    assert "could not be written" in result.output

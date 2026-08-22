@@ -115,6 +115,12 @@ def cli() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(scope="session")
+def repo_docs() -> Path:
+    """``docs/`` in this checkout — for the guarantees that are only true if they are written."""
+    return Path(__file__).resolve().parents[2] / "docs"
+
+
 def only_store(home: Path) -> FileRunStore:
     """The one project run store under ``home`` (the CLI created it)."""
     (slug_dir,) = [p for p in (home / "projects").glob("*/*") if (p / "runs").is_dir()]

@@ -51,6 +51,14 @@ def record_decision(
     its workspace, and not ``$RAYSPEC_HOME/.env`` or ``<project>/.rayspec/.env``, both of which
     this command applies to its own environment as configuration and neither of which may name
     a person.
+
+    What is written here is a *claim*, and the gate treats it as one: ``run.json`` is a file in
+    a user-owned directory, so a step of any run can write a decision into a paused run's pause
+    slot and put any name on it. :mod:`rayspec.engine.executors.approve` asks who is answering
+    again, in the process that consumes the decision. That is this process — ``approve``/
+    ``reject`` resume in-process, so the identity recorded here is the one that ends up on the
+    ``run.decision`` event; a decision nobody made through this command is re-attributed to
+    whoever resumed the run, with a warning naming what the record claimed.
     """
     if run.pause is None:
         raise ValueError(f"run {run.run_id} has no pending gate")

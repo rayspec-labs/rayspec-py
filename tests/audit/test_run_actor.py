@@ -69,9 +69,11 @@ def test_a_decision_is_stamped_before_the_gate_consumes_it(
     assert reloaded.pause.decision.actor.id == "reviewer@example.invalid"
 
 
-def test_a_terminal_approval_is_attributed_to_the_run_actor(
+def test_a_gate_waived_at_launch_names_whoever_launched(
     cli: CliRunner, project: Path, home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the identity is resolved in the process that answers the gate, which at launch is the
+    # process that started the run — the two coincide here, and must keep coinciding
     monkeypatch.setenv("RAYSPEC_ACTOR", "launcher@example.invalid")
     result = cli.invoke(app, ["run", "gate", "--root", str(project), "--yes"])
     assert result.exit_code == 0, result.output
@@ -381,3 +383,128 @@ def test_a_refused_env_identity_is_said_out_loud_and_kept_as_a_claim(
     assert result.exit_code == 0, result.output
     assert "security-team@corp.invalid" in result.output
     assert "not an identity" in result.output
+
+
+def test_a_planted_decision_cannot_choose_who_approved(
+    cli: CliRunner,
+    project: Path,
+    paused: tuple[str, FileRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `run.json` is a file in a user-owned directory, so a `shell:` step of ANY run can write a
+    # decision into ANOTHER run's pause slot and name whoever it likes on it. A decision read
+    # back out of the record is an answer, never an identity: the gate is attributed to the
+    # process that consumed it.
+    from rayspec.store.model import ActorInfo, Decision
+
+    run_id, store = paused
+    run = store.load(run_id)
+    assert run.pause is not None
+    run.pause.decision = Decision(
+        approved=True,
+        comment="planted",
+        by="cli",
+        actor=ActorInfo(id="ceo@corp.invalid", source="env"),
+    )
+    store.save(run)
+    monkeypatch.setenv("RAYSPEC_ACTOR", "operator@example.invalid")
+    result = cli.invoke(app, ["resume", run_id, "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    actor = decisions[-1].data.get("actor")
+    assert actor is not None
+    assert actor["id"] == "operator@example.invalid"
+    # and the swap is said out loud: a control that re-attributes silently cannot be read off
+    # the ledger at all
+    warnings = [e for e in store.read_events(run_id) if e.type.value == "warning"]
+    assert any("ceo@corp.invalid" in str(e.data.get("message", "")) for e in warnings), warnings
+
+
+def test_a_decision_recorded_by_the_approver_is_left_alone(
+    cli: CliRunner,
+    project: Path,
+    paused: tuple[str, FileRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the permitted case must stay quiet: `rayspec approve` writes the decision and consumes it
+    # in the same process, so the identity in the record and the identity of the process agree
+    run_id, store = paused
+    monkeypatch.setenv("RAYSPEC_ACTOR", "reviewer@example.invalid")
+    result = cli.invoke(app, ["approve", run_id, "ship it", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    assert decisions[-1].data["actor"]["id"] == "reviewer@example.invalid"
+    warnings = [e for e in store.read_events(run_id) if e.type.value == "warning"]
+    assert not [e for e in warnings if "reviewer@example.invalid" in str(e.data.get("message"))]
+
+
+def test_resuming_with_yes_names_whoever_resumed(
+    cli: CliRunner,
+    project: Path,
+    paused: tuple[str, FileRunStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # the run's actor is resolved once, at launch. A gate answered during a resume is answered
+    # by whoever ran the resuming command, and that is a different question with a different
+    # answer — recording the launcher puts a decision on a person who never made one.
+    run_id, store = paused
+    monkeypatch.setenv("RAYSPEC_ACTOR", "second-operator@example.invalid")
+    result = cli.invoke(app, ["resume", run_id, "--yes", "--root", str(project)])
+    assert result.exit_code == 0, result.output
+    run = store.load(run_id)
+    assert run.actor is not None and run.actor.id == "launcher@example.invalid"
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    assert decisions[-1].data["by"] == "--yes"
+    actor = decisions[-1].data.get("actor")
+    assert actor is not None and actor["id"] == "second-operator@example.invalid"
+
+
+SHELL_RC_POISON_WORKFLOW = """
+rayspec: 1
+name: poison_shell_rc
+isolation: none
+steps:
+  - id: rewrite
+    shell: |
+      printf 'export RAYSPEC_ACTOR=%s\\n' 'shell-rc@corp.invalid' >> "$HOME/.zshrc"
+  - {id: ok, needs: [rewrite], approve: "ship it?"}
+"""
+
+
+def test_a_poisoned_shell_rc_does_not_reach_a_running_process(
+    cli: CliRunner, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the limit of a per-process defence, pinned so it cannot quietly become wider or narrower.
+    # A step runs as the operator, so it can append `export RAYSPEC_ACTOR=…` to a shell startup
+    # file. What that does NOT do is reach any process that is already running: the file is read
+    # by a shell at startup, and rayspec never reads it. What it DOES do is put the value in the
+    # operator's own environment from their next shell on, where nothing can tell it apart from
+    # the operator having typed it — which is why `docs/runs-and-resume.md` says so out loud.
+    fake_home = tmp_path / "operator-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    root = tmp_path / "shell-rc-poison"
+    workflows = root / ".rayspec" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "poison_shell_rc.yaml").write_text(SHELL_RC_POISON_WORKFLOW, encoding="utf-8")
+    result = cli.invoke(app, ["run", "poison_shell_rc", "--root", str(root), "--no-interactive"])
+    assert result.exit_code == 3, result.output
+    assert "RAYSPEC_ACTOR=shell-rc@corp.invalid" in (fake_home / ".zshrc").read_text()
+    store = only_store(home)
+    (run_id,) = store.list_run_ids()
+    result = cli.invoke(app, ["approve", run_id, "human LGTM", "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    decisions = [e for e in store.read_events(run_id) if e.type.value == "run.decision"]
+    actor = decisions[-1].data.get("actor")
+    assert actor is not None
+    assert actor["id"] != "shell-rc@corp.invalid"
+    assert actor["source"] == "os"
+
+
+def test_the_shell_startup_file_limit_is_documented(repo_docs: Path) -> None:
+    # a stated limitation is fine and an unstated one is not, so the statement is part of the
+    # build: this page is where the identity rule is described, and it has to describe its edge
+    page = " ".join((repo_docs / "runs-and-resume.md").read_text(encoding="utf-8").split())
+    assert "shell startup file is outside it" in page
+    assert "export RAYSPEC_ACTOR=someone-else" in page
+    assert "next shell** exports it" in page

@@ -106,6 +106,7 @@ cannot do:
 | `claude` | `result.permission_denials`: every call the permission layer refused, on a turn that otherwise **succeeded** | supported — the successful turn becomes a failed step |
 | `codex` | a refused command is a `sandboxError` that **fails the turn**, so the step fails on its own; the denial is recorded next to the error so the record names what the sandbox blocked | **refused at validation** — there is nothing left for it to grade |
 
+<!-- rayspec:run -->
 ```yaml
 agents:
   reviewer:
@@ -206,6 +207,7 @@ working directory (plus the temp dirs, `/tmp` and `$TMPDIR`); an agent that runs
 step). Either grant the cache directory as an extra writable root or move the cache into the
 workdir:
 
+<!-- rayspec:skip an agent file, not a workflow -->
 ```yaml
 # agent file — extra writable roots (Codex config `sandbox_workspace_write.writable_roots`)
 provider: codex
@@ -221,6 +223,7 @@ provider_options:
 `providers.codex.config` in `config.yaml` is where a machine owner makes it. On a project with no
 policy the agent-file form above is fine.
 
+<!-- rayspec:skip fragment: `builder` is defined elsewhere on this page -->
 ```yaml
 # …or keep the cache inside the workspace: `env:` on the prompt step (works for every access level)
 - id: implement
@@ -257,6 +260,7 @@ script the stub agents again without repeating the flag (a missing file is exit 
 <path>` hint; `--stubs PATH` on any of them overrides and replaces the recorded path; a `--dry-run`
 record resumes as a dry run).
 
+<!-- rayspec:skip a stub script, not a workflow -->
 ```yaml
 defaults: { latency_ms: 0, usage: { input: 1200, output: 300 } }
 steps:
@@ -351,6 +355,7 @@ effort `low` / default / `high`) or an `@alias` from `config.aliases` (which may
 effort; an alias that pins a different provider than the agent's explicit `provider:` is a load
 error). An unset `model` is the `medium` tier.
 
+<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 # ~/.rayspec/config.yaml
 default_provider: claude
@@ -370,6 +375,7 @@ providers:
 glob wins; `null` disables pricing for the match) to USD per million tokens. It is used whenever
 a provider reports no cost (Codex always, Claude never):
 
+<!-- rayspec:skip a config.yaml, not a workflow -->
 ```yaml
 pricing:
   "gpt-5.4*": { input: 2.0, cached_input: 0.5, output: 8.0 }   # cache_write omitted → billed at the input rate
@@ -426,6 +432,7 @@ answer is not "inject it into the prompt" but **hand out a capability, not a cre
   environment the adapter was launched with, so put the credential in `~/.rayspec/.env` (loaded
   by `run`/`resume`/`approve`/`reject`) or in the server's own launcher — never in a template:
 
+<!-- rayspec:run -->
 ```yaml
 agents:
   triager:
