@@ -316,7 +316,7 @@ Exactly one kind key per step. Fields that are valid on every kind:
 | `timeout` | `null` | [duration](#durations) > 0; per attempt for leaves, whole-step for composites; falls back to `defaults.timeout` |
 | `always_run` | `false` | ignore the resume cache (re-run on `--resume`) |
 | `allow_failure` | `false` | a failure is recorded as `failed` + `tolerated: true` (`ok: false`); joins treat it as satisfied; the run status is unaffected |
-| `artifacts` | `[]` | files this step promises to write, relative to its working directory (`cwd:` for `shell:`/`python:`, else the run's workdir). Checked after the step succeeds — a missing one, one that is not a regular file, or one outside the run's workspace, **fails the step** — then copied into the run directory and recorded with a sha256. Absolute paths, `~`, `..` and control characters are refused when the workflow loads, and so is `{{ … }}`: the entry is **not templated** — name a fixed file and put what varies per item in the step's `cwd:`, which *is* rendered. The same file declared twice is kept once. See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#declared-artifacts). |
+| `artifacts` | `[]` | files this step promises to write, relative to its working directory (`cwd:` for `shell:`/`python:`, else the run's workdir). Checked after the step succeeds — a missing one, one that is not a regular file, or one outside the run's workspace, **fails the step** — then copied into the run directory and recorded with a sha256. Absolute paths, `~`, `..` and control characters are refused when the workflow loads, and so is `{{ … }}`: the entry is **not templated** — name a fixed file and put what varies per item in the step's `cwd:`, which *is* rendered (and which an earlier step has to create: see [`shell:`](#shell)). The same file declared twice is kept once. See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#declared-artifacts). |
 
 Leaf steps (`prompt`, `shell`, `python`) add:
 
@@ -355,6 +355,11 @@ step's own id inside a loop body, which continues the previous iteration's sessi
   env: { PYTEST_ADDOPTS: "-x" }
   allow_failure: true
 ```
+
+`cwd:` is rendered and resolved **before** the body runs, so the directory has to be there
+already: a body that creates the directory it is supposed to run in fails with `cwd does not
+exist`. Let an earlier step create it (`shell: mkdir -p out/{{ name }}`) — that is also how a
+per-item working directory is built inside an `each:` body.
 
 Output: stdout with trailing newlines stripped; `exit_code`, `stderr`, `ok`. Non-zero exit fails
 the step (tolerated with `allow_failure`). Every `{{ expr }}` in the body becomes an environment

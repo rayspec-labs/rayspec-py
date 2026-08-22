@@ -1081,8 +1081,8 @@ next steps:
 ```
 
 The catalogue is whatever the build ships (`rayspec init --from ''` prints it); today that is
-`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `secret_via_tool`,
-`triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
+`fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `review_sweep`,
+`secret_via_tool`, `triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
 
 ### `rayspec new workflow`
 
