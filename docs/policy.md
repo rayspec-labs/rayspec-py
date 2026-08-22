@@ -75,6 +75,7 @@ Layers do not override each other, because no layer can *loosen* another. They c
 | `workspace.protected_paths` | union |
 | `workspace.max_changed_files` / `max_changed_lines` | the smallest value any layer set |
 | `trust.require` | true when any layer sets it |
+| `approvals.classes` | the union of the class **names**; for a class two layers both define, `allow_yes: false` wins over `true` and `require_tty: true` over `false` |
 | `budget.per_run` / `per_day` / `per_month` / `max_consecutive_failures` | the smallest ceiling any layer set |
 | `max_consecutive_failures` | the smallest value any layer set |
 | `max_concurrent_runs` | per provider, the smallest limit any layer set (a bare integer is `*`, which covers every provider) |
@@ -86,6 +87,7 @@ names all of them — because editing one of them would not be enough.
 
 ## The keys
 
+<!-- rayspec:skip a policy file, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml
 providers:
@@ -104,6 +106,11 @@ workspace:
   max_changed_lines: 2000
 trust:
   require: true                   # only workflows in .rayspec/trusted.yaml may run
+approvals:                        # what may approve a gate that names a class
+  classes:
+    release:
+      allow_yes: false            # no --yes, --dry-run, --approve-class or auto_if
+      require_tty: true           # and no decision recorded by `rayspec approve`
 budget:                           # the operator's spending envelope (runs-and-resume.md)
   per_run: 2.00
   per_day: 20.00
@@ -126,6 +133,13 @@ policy, because a guardrail that silently disappears is worse than none. That co
 `policy.yaml` ends up in after a bad checkout or a moved home directory: a dangling symlink, a
 symlink loop, a directory or an unreadable parent are each an error naming the path and what it
 is. A path that is genuinely absent is the only silent case, because that is the ordinary one.
+
+Every command that reads the file answers the same way — the loader's sentence and exit 2, never
+a traceback: `validate`, `plan`, `run`, `resume`, `approve`, `reject` and `test`. It goes to
+stderr everywhere except `rayspec validate`, which carries it in the report on stdout with the
+workflow's own errors. A typo
+in a policy key is the commonest thing that happens to this file, and what comes back has to read
+as "your file is wrong", not as "rayspec is broken".
 
 ### What a violation looks like
 
@@ -255,23 +269,29 @@ The keys on the list, and what each one is:
 | claude | `mcp_servers` | extra MCP servers, merged **under** the agent's `mcp:` block — a name the agent declares is the agent's declaration either way. Under a control, only a server the controls themselves name passes (below) |
 | claude | `max_thinking_tokens` | how many tokens a turn may think for. It moves what a turn costs, never what a cost is measured against — the thinking tokens are reported as usage like any other |
 | claude | `max_buffer_size`, `load_timeout_ms` | transport knobs: how much stdout is buffered, how long to wait for the CLI to come up (the step's own deadline is enforced by the engine around the whole call) |
-| claude | `user` | an opaque end-user id forwarded to the API |
+| claude | `user` | the **OS account the CLI subprocess is started under**: the SDK hands it to `open_process(user=...)`, which resolves it with `getpwnam` and calls `setuid` in the child before `exec`. Under any control only `null` passes — the identity the run already has (below) |
 | codex | `config.mcp_servers` | as above, merged under the agent's `mcp:` block and checked against the same folded set |
 | codex | `config.model_reasoning_summary` | how much of the model's reasoning is summarised into the stream: transcript verbosity |
 | codex | `approval_mode` | `deny_all` (the default) refuses every sandbox escalation; `auto_review` answers them for the agent and is refused under any control; see below |
 | codex | `ephemeral` | do not persist the thread — it withholds state, it grants nothing |
 | codex | `usage_baseline` | usage counters **subtracted** from a resumed thread's totals — the number every spend ceiling is measured against *and* the number `spend.json`, `run.json` and `rayspec costs` report. Checked by value: under any control only a baseline that subtracts nothing passes (below) |
 
-Six of the eleven entries carry no guard at all — `max_thinking_tokens`, `max_buffer_size`,
-`load_timeout_ms` and `user` on Claude, `config.model_reasoning_summary` and `ephemeral` on Codex.
-Each of them says out loud why it needs none (`INERT_BECAUSE` in `rayspec.policy.enforce`), and
-each reason is paired with the test that holds it to the code: a key set to an extreme value has to
+Five of the eleven entries carry no guard at all — `max_thinking_tokens`, `max_buffer_size` and
+`load_timeout_ms` on Claude, `config.model_reasoning_summary` and `ephemeral` on Codex. Each of
+them says out loud why it needs none (`INERT_BECAUSE` in `rayspec.policy.enforce`), and each
+reason is paired with the test that holds it to the code: a key set to an extreme value has to
 leave every option the adapter computes byte-identical. An allow-listed key with no guard is inert
 under every control, which is a second unsafe default hiding inside a safe design —
 `usage_baseline` sat there as "accounting only" while setting the number every ceiling is compared
-against — so "no guard" cannot be reached by leaving a field out.
+against, and `user` sat there as "a label carried to the vendor" while choosing the OS account the
+agent's process runs as — so "no guard" cannot be reached by leaving a field out.
 
-The other five carry a guard, and a guard has the same problem one level down: it can claim to
+`user` is also why the inert proof is not the whole story: it asks whether a key moves the *other*
+options the adapter computes, and this key's own effect was the defect. A justification is only
+worth the question its test asks, so the reason now lives beside a guard that refuses every value
+a control was not reasoned about with.
+
+The other six carry a guard, and a guard has the same problem one level down: it can claim to
 cover a kind of control and then decide from a subset of the controls in force. `mcp_servers`
 consulted the policy document alone, so with no policy file it admitted an arbitrary server past
 the agent's own `mcp:` set, its `tools.deny: [mcp]`, its `network: off` and its `access:
@@ -291,6 +311,7 @@ the ones that refuse them are a `tools.deny` naming `mcp` or `mcp:<server>`, a n
 `tools.allow` that names neither, and an `mcp.allow_servers` that leaves the name out. All of them
 at once, never one of them:
 
+<!-- rayspec:skip an agent's `provider_options`, not a workflow -->
 ```yaml
 # .rayspec/policy.yaml — mcp: {allow_servers: [github]}
 provider_options:
@@ -395,6 +416,7 @@ on every run that sets it.
 
 `.rayspec/trusted.yaml` lists the workflows this checkout may run, by hash:
 
+<!-- rayspec:skip a trust file, not a workflow -->
 ```yaml
 workflows:
   - workflow: .rayspec/workflows/nightly.yaml
@@ -431,6 +453,64 @@ Without that key the trust list is still useful on its own: `rayspec trust check
 The file belongs in the repository next to `policy.yaml`. It carries a path and a digest and
 nothing else — never workflow content, never an input, never a secret.
 
+## Approval classes
+
+`approvals.classes` is the one block of this document that governs a *person's* decision rather
+than a machine's capability: it says what may approve an [approval
+gate](runs-and-resume.md#approval-classes), and what may never approve one automatically.
+
+<!-- rayspec:skip a policy document, not a workflow — the validator has nothing to check it against -->
+```yaml
+# .rayspec/policy.yaml
+approvals:
+  classes:
+    release:
+      allow_yes: false      # never approved automatically — by anything
+    chore:
+      require_tty: true     # and never by a decision recorded out of band
+```
+
+A workflow names a class and cannot define one:
+
+<!-- rayspec:skip one step of a workflow, shown on its own -->
+```yaml
+- id: publish
+  needs: [build]
+  approve:
+    message: "publish to the registry?"
+    class: release
+```
+
+With those two files in place, `rayspec run <workflow> --yes --dry-run --approve-class release`
+pauses at the gate (exit 3) and the steps behind it do not run. So does `rayspec resume <run>
+--yes`. The rules are checked in the executor that decides a gate, not where a flag is parsed, so
+there is no flag, environment variable or configuration key that reaches around them — and
+`auto_if:` is not even evaluated for a gate a class holds shut.
+
+What still works is a human deciding *this one gate*: the terminal prompt, or `rayspec approve
+<run>` / `rayspec reject <run>`. `allow_yes: false` removes the blanket waivers, not the gate.
+`require_tty: true` goes further and takes the out-of-band commands away too, because they can be
+scripted; it cannot tell a person from a pty. **Rejecting is never constrained by a class.**
+
+Two properties this block shares with every other key here, and one it does not:
+
+* it is restrictive only — there is no spelling that lets a workflow, a flag or a layer *widen*
+  what may approve a gate, which is what makes it safe to leave a scheduled workflow allowed to
+  publish a release;
+* it layers most-restrictive-wins, with the class names united: a class only `~/.rayspec/policy.yaml`
+  defines is defined, and a layer that says `allow_yes: true` cannot reopen what another held;
+* the limit is the **name**. A class no layer in force defines keeps the permissive default — a
+  workflow can no more invent a restriction than lift one — so a typo on either side leaves the
+  gate open. It does not do so quietly: `rayspec plan`, `plan --risk` and the gate itself each say
+  the class is not held, and they distinguish "no policy is in force" from "the policy in force
+  does not define this class".
+
+A class that holds something is a control like every other key here, so it closes the
+`provider_options` escape hatch beside it. A class an operator merely *named* — `allow_yes: true`,
+`require_tty: false` — forbids nothing and is not a control, exactly as `trust.require: false` is
+not. The full rule table is in
+[runs-and-resume.md](runs-and-resume.md#approval-classes).
+
 ## Per-agent controls
 
 Two of the agent's own controls have a shape of their own and are documented here; the full list
@@ -440,6 +520,7 @@ of the fields that count as a control is
 Two things you want to say about an agent before leaving it alone overnight live on the agent, not
 in the policy file, because they are part of what the workflow *is*:
 
+<!-- rayspec:skip an agent file, not a workflow -->
 ```yaml
 # .rayspec/agents/reviewer.yaml
 provider: claude

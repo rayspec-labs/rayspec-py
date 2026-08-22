@@ -143,6 +143,9 @@ SAMPLES: dict[str, Sample] = {
     ),
     "policy.tools.deny": policy_sample("tools.deny", "tools:\n  deny: [shell]\n"),
     "policy.trust.require": policy_sample("trust.require", "trust:\n  require: true\n"),
+    "policy.approvals.classes": policy_sample(
+        "approvals.classes", "approvals:\n  classes:\n    release: {allow_yes: false}\n"
+    ),
     "policy.workspace.protected_paths": policy_sample(
         "workspace.protected_paths", "workspace:\n  protected_paths: ['.github/**']\n"
     ),
@@ -208,6 +211,7 @@ def test_the_samples_between_them_carry_every_kind_of_restriction() -> None:
 #: ``ALLOWED_PROVIDER_OPTIONS`` below: an entry that grows a guard has to appear here.
 GUARD_SAMPLES: dict[tuple[str, tuple[str, ...]], tuple[str, str]] = {
     ("claude", ("env",)): ("env:\n  GITHUB_TOKEN: x\n", "env.GITHUB_TOKEN"),
+    ("claude", ("user",)): ("user: nobody\n", "user"),
     ("claude", ("mcp_servers",)): (
         "mcp_servers:\n  evil: {type: stdio, command: /bin/sh}\n",
         "mcp_servers.evil",

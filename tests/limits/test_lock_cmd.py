@@ -57,6 +57,29 @@ def test_lock_writes_the_file_and_check_is_then_quiet(root: Path) -> None:
     assert "up to date" in checked.output
 
 
+def test_lock_check_without_a_lockfile_is_drift_not_success(root: Path) -> None:
+    """`--check` asserts a fact about the file. "There is no file" is not that fact — a CI job
+    told "up to date" about a repository that pins nothing has been told something false."""
+    assert not lockfile_path(root).exists()
+    result = invoke("lock", "--check", "--root", str(root))
+    assert result.exit_code == 1, result.output
+    assert "up to date" not in result.output
+    assert "no lockfile" in result.output and "rayspec.lock" in result.output
+
+
+def test_lock_check_json_names_the_missing_lockfile_as_drift(root: Path) -> None:
+    result = invoke("lock", "--check", "--json", "--root", str(root))
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["checked"] is True
+    assert payload["drift"] and "no lockfile" in payload["drift"][0]
+
+
+def test_lock_check_never_writes_the_file_it_reports_on(root: Path) -> None:
+    invoke("lock", "--check", "--root", str(root))
+    assert not lockfile_path(root).exists()
+
+
 def test_lock_check_reports_drift_and_exits_one(root: Path) -> None:
     invoke("lock", "--root", str(root))
     drift(root)
@@ -172,6 +195,43 @@ def test_the_ci_default_leaves_a_project_without_a_lockfile_alone(
     assert explicit.exit_code == 2 and "no lockfile" in explicit.output
 
 
+def test_the_ci_default_says_it_has_nothing_to_enforce(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not refusing is a choice; being silent about it is not. "Nothing to check" must not
+    read as "nothing changed" in a CI log."""
+    monkeypatch.setenv("CI", "true")
+    result = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert "no lockfile" in result.output and "nothing is pinned" in result.output
+    assert "rayspec lock" in result.output
+
+
+def test_the_note_is_not_printed_when_there_is_a_lockfile_or_no_ci(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert invoke("run", "t", "--dry-run", "--root", str(root)).exit_code == 0
+    quiet = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert "nothing is pinned" not in quiet.output  # no CI: nothing was promised
+    invoke("lock", "--root", str(root))
+    monkeypatch.setenv("CI", "true")
+    locked = invoke("run", "t", "--dry-run", "--root", str(root))
+    assert locked.exit_code == 0, locked.output
+    assert "nothing is pinned" not in locked.output
+
+
+def test_a_dangling_lockfile_symlink_is_an_error_not_an_absent_file(root: Path) -> None:
+    """`docs/policy.md` promises exactly this for the sibling guardrail file: a path that
+    exists in SOME shape must never be skipped as "not there"."""
+    lockfile_path(root).parent.mkdir(parents=True, exist_ok=True)
+    lockfile_path(root).symlink_to(root / "nowhere" / "rayspec.lock")
+    checked = invoke("lock", "--check", "--root", str(root))
+    assert checked.exit_code == 2, checked.output
+    assert "dangling symlink" in checked.output
+    run = invoke("run", "t", "--dry-run", "--locked", "--root", str(root))
+    assert run.exit_code == 2 and "dangling symlink" in run.output
+
+
 def _git_init(path: Path) -> None:
     for args in (
         ["git", "init", "-q", "-b", "main"],
@@ -207,3 +267,68 @@ def test_repo_checks_the_lockfile_of_the_repo_it_runs(
     )
     assert result.exit_code == 2, result.output
     assert "agents.reviewer" in result.output
+
+
+# -- one gate, one caller set ---------------------------------------------------------------
+
+
+#: Every command that carries the shared ``--locked`` gate and takes a workflow name. They must
+#: not merely all *have* the flag: what "no lockfile" means, and how the refusal is worded, has
+#: to be the same sentence, or the gate is three gates wearing one name.
+GATED = pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(("run", "t", "--dry-run"), id="run"),
+        pytest.param(("plan", "t"), id="plan"),
+        pytest.param(("validate", "t"), id="validate"),
+    ],
+)
+
+
+def flat(text: str) -> str:
+    """Console output with the terminal's line wrapping collapsed, so a long sentence can be
+    compared verbatim instead of by keyword."""
+    return " ".join(text.split())
+
+
+CI_DEFAULT_WARNING = (
+    "warning: no lockfile at .rayspec/rayspec.lock — nothing is pinned, so the CI default has "
+    "nothing to enforce. Run `rayspec lock` and commit the file, or pass --no-locked to say so "
+    "on purpose."
+)
+
+LOCKED_REFUSAL = "error: --locked: no lockfile at .rayspec/rayspec.lock"
+LOCKED_HINT = "hint: run `rayspec lock` and commit the file (it pins the model of every agent)"
+
+
+@GATED
+def test_every_gated_command_says_the_ci_default_has_nothing_to_enforce(
+    root: Path, argv: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`docs/cli.md` names `validate --locked` as the CI gate — the one command a project is
+    most likely to run there, and so the last place the warning may be missing."""
+    monkeypatch.setenv("CI", "true")
+    result = invoke(*argv, "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert CI_DEFAULT_WARNING in flat(result.output)
+
+
+@GATED
+def test_every_gated_command_refuses_a_missing_lockfile_in_the_same_words(
+    root: Path, argv: tuple[str, ...]
+) -> None:
+    result = invoke(*argv, "--locked", "--root", str(root))
+    assert result.exit_code == 2, result.output
+    assert LOCKED_REFUSAL in flat(result.output)
+    assert LOCKED_HINT in flat(result.output)
+
+
+@GATED
+def test_no_gated_command_warns_when_the_lockfile_is_there(
+    root: Path, argv: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert invoke("lock", "--root", str(root)).exit_code == 0
+    monkeypatch.setenv("CI", "true")
+    result = invoke(*argv, "--root", str(root))
+    assert result.exit_code == 0, result.output
+    assert "nothing is pinned" not in result.output

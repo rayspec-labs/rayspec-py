@@ -1,0 +1,241 @@
+{
+  "cassette": 1,
+  "provider": "codex",
+  "about": "an authentication failure: the app-server echoes the user message, retries the response stream, then completes the turn with status failed and a TurnError",
+  "source": {
+    "capture": "recorded",
+    "from": "the bundled codex app-server, driven through the SDK with an invalid API key",
+    "scrubbed": [
+      "thread, turn and item ids; timestamps and durations",
+      "the trace and request identifiers of the failed API call",
+      "eight of the ten identical retry notifications"
+    ]
+  },
+  "request": {
+    "prompt": "Say hi in one word.",
+    "model": "gpt-5.4"
+  },
+  "transcript": [
+    {
+      "method": "turn/started",
+      "params": {
+        "threadId": "thr-cassette-1",
+        "turn": {
+          "completedAt": null,
+          "durationMs": null,
+          "error": null,
+          "id": "turn-cassette-1",
+          "items": [],
+          "itemsView": "notLoaded",
+          "startedAt": 1000,
+          "status": "inProgress"
+        }
+      }
+    },
+    {
+      "method": "item/started",
+      "params": {
+        "item": {
+          "clientId": null,
+          "content": [
+            {
+              "text": "Say hi in one word.",
+              "text_elements": [],
+              "type": "text"
+            }
+          ],
+          "id": "item-1",
+          "type": "userMessage"
+        },
+        "startedAtMs": 1000000,
+        "threadId": "thr-cassette-1",
+        "turnId": "turn-cassette-1"
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "completedAtMs": 1000100,
+        "item": {
+          "clientId": null,
+          "content": [
+            {
+              "text": "Say hi in one word.",
+              "text_elements": [],
+              "type": "text"
+            }
+          ],
+          "id": "item-1",
+          "type": "userMessage"
+        },
+        "threadId": "thr-cassette-1",
+        "turnId": "turn-cassette-1"
+      }
+    },
+    {
+      "method": "error",
+      "params": {
+        "error": {
+          "additionalDetails": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: wss://api.openai.com/v1/responses",
+          "codexErrorInfo": {
+            "responseStreamDisconnected": {
+              "httpStatusCode": 401
+            }
+          },
+          "message": "Reconnecting... 2/5"
+        },
+        "threadId": "thr-cassette-1",
+        "turnId": "turn-cassette-1",
+        "willRetry": true
+      }
+    },
+    {
+      "method": "error",
+      "params": {
+        "error": {
+          "additionalDetails": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses",
+          "codexErrorInfo": {
+            "responseStreamDisconnected": {
+              "httpStatusCode": 401
+            }
+          },
+          "message": "Reconnecting... 5/5"
+        },
+        "threadId": "thr-cassette-1",
+        "turnId": "turn-cassette-1",
+        "willRetry": true
+      }
+    },
+    {
+      "method": "error",
+      "params": {
+        "error": {
+          "additionalDetails": null,
+          "codexErrorInfo": "other",
+          "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses"
+        },
+        "threadId": "thr-cassette-1",
+        "turnId": "turn-cassette-1",
+        "willRetry": false
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "thr-cassette-1",
+        "turn": {
+          "completedAt": 1020,
+          "durationMs": 19517,
+          "error": {
+            "additionalDetails": null,
+            "codexErrorInfo": "other",
+            "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses"
+          },
+          "id": "turn-cassette-1",
+          "items": [],
+          "itemsView": "notLoaded",
+          "startedAt": 1000,
+          "status": "failed"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "events": [
+      {
+        "kind": "session",
+        "text": "thr-cassette-1",
+        "data": {
+          "thread_id": "thr-cassette-1",
+          "turn_id": "turn-cassette-1"
+        }
+      },
+      {
+        "kind": "raw",
+        "name": "userMessage",
+        "data": {
+          "completed": false,
+          "item": {
+            "clientId": null,
+            "content": [
+              {
+                "text": "Say hi in one word.",
+                "text_elements": [],
+                "type": "text"
+              }
+            ],
+            "id": "item-1",
+            "type": "userMessage"
+          }
+        }
+      },
+      {
+        "kind": "raw",
+        "name": "userMessage",
+        "data": {
+          "completed": true,
+          "item": {
+            "clientId": null,
+            "content": [
+              {
+                "text": "Say hi in one word.",
+                "text_elements": [],
+                "type": "text"
+              }
+            ],
+            "id": "item-1",
+            "type": "userMessage"
+          }
+        }
+      },
+      {
+        "kind": "warning",
+        "text": "Reconnecting... 2/5",
+        "data": {
+          "will_retry": true,
+          "codex_error_info": "responseStreamDisconnected"
+        }
+      },
+      {
+        "kind": "warning",
+        "text": "Reconnecting... 5/5",
+        "data": {
+          "will_retry": true,
+          "codex_error_info": "responseStreamDisconnected"
+        }
+      },
+      {
+        "kind": "error",
+        "text": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses",
+        "data": {
+          "will_retry": false,
+          "codex_error_info": "other"
+        }
+      }
+    ],
+    "result": {
+      "status": "error",
+      "text": "",
+      "session_ref": "thr-cassette-1",
+      "model": "gpt-5.4",
+      "cost_usd": null,
+      "cost_source": "none",
+      "num_turns": 1,
+      "usage": {
+        "input": 0,
+        "cached_input": 0,
+        "cache_write": 0,
+        "output": 0,
+        "reasoning": 0
+      },
+      "structured": null,
+      "denials": [],
+      "error": {
+        "kind": "unknown",
+        "message": "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses",
+        "transient": false,
+        "code": "other"
+      }
+    }
+  }
+}

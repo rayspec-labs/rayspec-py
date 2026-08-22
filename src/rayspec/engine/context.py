@@ -562,6 +562,8 @@ class RunContext:
         #: which operational control stopped it: ``budget`` (money) or ``failures`` (the
         #: consecutive-failure breaker). They are separate controls and separate decisions.
         self.envelope_pause_kind: str = "budget"
+        #: set once :meth:`ledger_unwritable` has reported the ledger — the run says it once
+        self._ledger_unwritable = False
         #: the record path of the last step that reached a final outcome (what a pause names)
         self.last_finished_path: str | None = None
         #: record paths finished (or replayed) in THIS run — what the caps are measured over;
@@ -945,7 +947,16 @@ class RunContext:
         if envelope is None or self.options.dry_run or not envelope.active:
             return None
         _usage, cost, _source = self.run_totals()
-        reason = await to_thread.run_sync(envelope.check, cost)
+        try:
+            reason = await to_thread.run_sync(envelope.check, cost)
+        except OSError as exc:
+            # the ledger is read at the start of every check and written back on the way out;
+            # the read repairs whatever it finds, but a path that cannot be WRITTEN at all (a
+            # directory where spend.json belongs, a full disk) used to leave this as the only
+            # unguarded call in the run. Losing the accounting is a smaller failure than
+            # ending the run on a traceback — being quiet about it is not.
+            await self.ledger_unwritable(exc)
+            reason = None
         for problem in envelope.take_warnings():
             await self.warn(problem)
         if reason is None:
@@ -958,6 +969,23 @@ class RunContext:
             f"once the ceiling allows, or `rayspec approve {self.run.run_id}` to continue anyway"
         )
         return reason
+
+    async def ledger_unwritable(self, exc: OSError) -> None:
+        """Say ONCE that the spend ledger could not be written, in one wording.
+
+        Every place that writes it — the per-step :meth:`check_envelope`, the final settle and
+        the waiver an approval applies — reports it here, so a run that cannot reach the ledger
+        says so once rather than once per step, and says the same thing wherever it happened.
+        """
+        if self._ledger_unwritable:
+            return
+        self._ledger_unwritable = True
+        where = getattr(getattr(self.envelope, "ledger", None), "path", None)
+        what = "the spend ledger" if where is None else f"the spend ledger {where}"
+        await self.warn(
+            f"{what} could not be written ({exc.strerror or exc}) — this run's spend and its "
+            "outcome are not in the operator's totals"
+        )
 
     async def check_budget(self, *, pending: StepRecord | None = None) -> str | None:
         """Compare the run totals (:meth:`budget_totals`) and the elapsed wall clock

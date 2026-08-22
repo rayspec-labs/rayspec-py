@@ -800,6 +800,10 @@ def resume_run(
     ``wait_slot`` is ``--wait-slot``: a resume takes a host run slot exactly as ``rayspec run``
     does, because it starts the same agents.
 
+    ``fail_fast`` is ``--fail-fast`` given on THIS entry. The run's own recorded override is
+    restored by the engine either way (``RunRecord.fail_fast``), and this can only tighten it —
+    a resume never turns fail-fast off.
+
     ``ctx`` is re-scoped to the run's project (:func:`record_context`) before anything
     project-scoped is read, so the second half of a run gets the same config, policy and
     ledger the first half did — whichever directory the resume was typed in.
