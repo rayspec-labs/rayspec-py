@@ -351,6 +351,42 @@ def test_json_documents_share_one_rendering(
     assert res.stdout == render(payload) + "\n"
 
 
+#: `--json` commands that print no document at all when they cannot do their work outside a
+#: project: they exit non-zero with a plain-text `error:` on stderr, so a `--json` consumer gets
+#: an empty stdout and has to parse English to find out why. Not a regression — this is what they
+#: have always done — but a recorded gap: `error_lines(..., json_mode=True)` already renders the
+#: error document, and a command that adopts it should drop out of this set rather than be added
+#: to it. Two today: `worktrees list` outside a git repository, and `plan <name>` for a workflow
+#: that is not there.
+NO_DOCUMENT_ON_ERROR = {"plan", "worktrees list"}
+
+
+@pytest.mark.parametrize(("command", "extra"), DOCUMENTS, ids=lambda case: str(case))
+def test_json_documents_outside_a_project(
+    command: str, extra: list[str], tmp_path: Path, home: Path
+) -> None:
+    """The same rendering in a bare directory — or a recorded gap, never a third answer.
+
+    The parametrisation above runs every command inside a project, which is the case that works.
+    A directory that is neither a project nor a git repository is where a `--json` consumer finds
+    out whether the contract holds when the command cannot answer.
+    """
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    argv = [*command.split(), *extra, "--json"]
+    if "--root" in _flags(command):
+        argv += ["--root", str(bare)]
+    res = CliRunner().invoke(app, argv)
+    if command in NO_DOCUMENT_ON_ERROR:
+        assert res.exit_code != 0 and not res.stdout, (
+            f"{command} now prints a document — drop it from NO_DOCUMENT_ON_ERROR"
+        )
+        return
+    assert res.stdout, f"{command} printed nothing: exit {res.exit_code}, {res.stderr!r}"
+    payload = json.loads(res.stdout)
+    assert res.stdout == common.json_text(payload) + "\n"
+
+
 #: Commands whose default (table) rendering is a listing.
 TABLES = [
     ("workflows", []),

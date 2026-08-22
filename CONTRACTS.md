@@ -1829,8 +1829,11 @@ are `_loader_common` itself and `rayspec schema`'s published schema document, an
 the print, a local bound to one and printed bare, a helper that returns one, `sys.stdout.write`,
 `from json import dumps` under any alias, and `model_dump_json`; the scan also asserts it still
 sees those two modules, so a scan that has stopped working fails too). The same file asserts that
-every command's `--json` document is exactly `json_text` of its payload, and that the payload is
-serialisable without `default=`.
+every command's `--json` document is exactly `json_text` of its payload, that the payload is
+serialisable without `default=`, and that the same holds in a bare directory — where two commands
+knowingly print no document at all but a plain-text `error:` and a non-zero exit (`worktrees list`
+outside a git repository, `plan <name>` for a workflow that is not there); the test records that
+pair, so a third one fails.
 
 `new_table(title=None, show_header=True) -> rich.table.Table` is the same story for listings: no
 box, no edges, bold header, left-justified title — the only knobs are the two arguments, and no

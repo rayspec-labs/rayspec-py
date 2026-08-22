@@ -43,14 +43,25 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _rows(output: str) -> dict[str, str]:
+#: The agents the ``project`` fixture scaffolds.
+AGENTS = frozenset({"bare", "codex_reviewer", "deep", "lost", "plain", "reviewer"})
+
+
+def _rows(output: str, *, expected: frozenset[str] = AGENTS) -> dict[str, str]:
     """``{agent name: the whole line}``. Tables carry no borders, so a row is keyed by its first
-    column — an agent name is an identifier and never contains a space."""
+    column — an agent name is an identifier and never contains a space.
+
+    Only lines whose first token is one of ``expected`` count, so the header cannot pass for a
+    row, and a cell folded onto a second line cannot invent one. The set is then compared, which
+    is what makes a row that went missing fail here rather than three assertions later.
+    """
     rows: dict[str, str] = {}
     for line in output.splitlines():
         first = line.split()
-        if first:
+        if first and first[0] in expected:
+            assert first[0] not in rows, f"{first[0]} listed twice: {line!r}"
             rows[first[0]] = line
+    assert set(rows) == set(expected), f"listed {sorted(rows)}, expected {sorted(expected)}"
     return rows
 
 
@@ -120,5 +131,5 @@ def test_agents_alias_conflict_reports_the_problem_and_no_model_or_effort(projec
     assert clash["resolved"]["model"] is None and clash["resolved"]["effort"] is None
     assert "pins provider 'codex'" in clash["resolved"]["problem"]
     res = runner.invoke(app, ["agents", "--root", str(project)])
-    row = _rows(res.output)["clash"]
+    row = _rows(res.output, expected=AGENTS | {"clash"})["clash"]
     assert "pins provider" in row and "low" not in row

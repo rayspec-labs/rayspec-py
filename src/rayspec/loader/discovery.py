@@ -50,10 +50,9 @@ def find_project_root(start: Path | None = None) -> Path:
     **When there is no project at all** — no ``.rayspec/`` and no git repository above ``start``
     — the answer is ``start`` itself, resolved. Nothing is created and nothing is guessed: the
     caller gets a directory it can read a config from and list an (empty) set of workflows in.
-    A command that must not treat an arbitrary directory as a project — ``rayspec runs``,
-    ``rayspec costs``, which would otherwise mint a project slug and a store for it — asks the
-    same question again with :func:`rayspec.cli.commands.runs.is_project_dir` and says so
-    instead.
+    A command that must not treat an arbitrary directory as a project — ``rayspec runs`` and
+    ``rayspec costs``, which would otherwise mint a project slug and a store for one — re-checks
+    for ``.rayspec/`` or ``.git`` itself and says so instead.
 
     This is the one project-root discovery. The git top level of a directory is a different
     question with a different answer (``packages/foo/.rayspec`` in a monorepo) and is answered

@@ -192,9 +192,15 @@ def junit_error_xml(message: str, *, detail: str = "", name: str = "rayspec") ->
     return ET.tostring(root, encoding="unicode", xml_declaration=True) + "\n"
 
 
+#: Separators of a machine-readable line: no spaces at all. The same ones pydantic's
+#: ``model_dump_json`` uses, so ``events.jsonl``, ``run.json``, every ``--json`` document rayspec
+#: prints and this helper are one format rather than several that happen to parse the same.
+_COMPACT: tuple[str, str] = (",", ":")
+
+
 def json_line(payload: Any) -> str:
-    """Compact JSON for one machine-readable line."""
-    return json.dumps(payload, ensure_ascii=False, default=str)
+    """Compact JSON for one machine-readable line — one object, no spaces."""
+    return json.dumps(payload, ensure_ascii=False, default=str, separators=_COMPACT)
 
 
 __all__ = [
