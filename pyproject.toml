@@ -67,16 +67,45 @@ docs = [
 requires = ["hatchling>=1.27"]  # PEP 639 list-form `license-files` (metadata 2.4+)
 build-backend = "hatchling.build"
 
+# A checkout that has been *used* is not a clean checkout: `rayspec run` leaves run records,
+# `rayspec trust add` writes a `trusted.yaml`, `rayspec lock` writes a `rayspec.lock`, a coding
+# agent leaves a `.claude/`, and the release job writes the bill of materials into `provenance/`.
+# The release publishes the sdist as well as the wheel and a published artefact cannot be recalled,
+# so the deny-list below applies to both targets rather than trusting the tree it is built from.
+# A pre-seeded `trusted.yaml` is the sharp end of this: it carries a digest that still matches, so
+# it silently satisfies a `trust.require` policy layer in the project it is scaffolded into.
+#
+# It has to be a deny-list. An allow-list would drop the tracked `.claude/skills/rayspec/` mirror
+# that `scripts/gen_skill.py --check` compares the packaged skill against, so a distributor could
+# not run the test suite from an unpacked sdist.
+[tool.hatch.build]
+exclude = [
+  # next to an example project a maintainer has actually run
+  "examples/**/.claude",
+  "examples/**/.rayspec/runs",
+  "examples/**/.rayspec/trusted.yaml",
+  "examples/**/.rayspec/rayspec.lock",
+  # and the same at the repository root, where `.claude/skills/rayspec/` is tracked on purpose and
+  # has to stay, so only the local-settings file goes
+  "/.claude/settings.local.json",
+  "/.rayspec/runs",
+  "/.rayspec/trusted.yaml",
+  "/.rayspec/rayspec.lock",
+  # secrets, wherever they are: unanchored, so this is every directory, not just the root
+  ".env",
+  # the bill of materials and the release notes, which the release job writes into the checkout
+  "/provenance",
+]
+
 # `rayspec init --from <example>` scaffolds one of the example projects, so the corpus has to be
 # importable data — a `uv tool install rayspec` user has no checkout to copy from. `examples/` is
 # listed as an ordinary source directory and remapped into the package by `sources` below, so the
 # usual file selection applies to it: force-include would copy the working tree verbatim, VCS
 # ignore rules and `exclude` alike, and publish whatever local state the release checkout holds.
+# No `exclude` of its own: declaring one here would replace the shared list above instead of
+# adding to it.
 [tool.hatch.build.targets.wheel]
 only-include = ["src/rayspec", "examples"]
-# A checkout that has been used collects run state and a `.env` next to the examples; `.gitignore`
-# only anchors those patterns at the repository root, so exclude them here as well.
-exclude = ["examples/**/.rayspec/runs", "examples/**/.env", "examples/**/.rayspec/.env"]
 
 [tool.hatch.build.targets.wheel.sources]
 "src/rayspec" = "rayspec"
