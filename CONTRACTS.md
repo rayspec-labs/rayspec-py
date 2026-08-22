@@ -44,10 +44,11 @@ src/rayspec/
   engine/context_rebuild.py + cli/commands/{explain,eval}.py + plan --render  the read-only
                half of the engine: rebuild a step's template
                context from a stored run (or from stubs) and render its body — no run, no provider
-  skill/        package data `skill/rayspec/{SKILL.md,references/*.md}` +
-               install/compare helpers; cli/commands/skill.py + cli/commands/_skill_common.py
-               (presentation helpers shared with init.py; scripts/gen_skill.py generates the
-               references from docs/ and mirrors the dir to .claude/skills/rayspec/)
+  skill/        package data `skill/<skill name>/{SKILL.md,references/*.md}` for each of the
+               two skills (rayspec-workflows, rayspec-cli) + install/compare helpers;
+               cli/commands/skill.py + cli/commands/_skill_common.py (presentation helpers
+               shared with init.py; scripts/gen_skill.py generates both reference sets from
+               docs/ and mirrors both dirs to .claude/skills/<name>/)
   testing/      spec.py (Case/Expect/StepExpect + discovery), runner.py
                (one case through Runner + StubProvider + CollectingSink), report.py (the
                four-line failure, JUnit, --json) + cli/commands/test.py; scripts/check_examples.py
@@ -2090,11 +2091,11 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
 - `rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]`
   copies the `<kind>` tree into `<root>/.rayspec/` (`workflows/example.yaml`, `agents/reviewer.yaml`,
   `prompts/*.md`, `config.yaml`, `stubs/example.yaml`; `workflows/agents/prompts/stubs` dirs
-  always created) and — unless `--no-skill` — the packaged coding-agent
-  skill into `<root>/.claude/skills/rayspec/` (`rayspec.skill.install_skill(project_skill_dir
-  (root), force=)`, same per-file idempotence, printed through `_skill_common.
-  print_install_result`; the `nothing written` warning counts both sets; the only write outside
-  `.rayspec/`). `--root` defaults to the cwd (no walk-up). Existing files are kept (`exists …
+  always created) and — unless `--no-skill` — **both** packaged coding-agent
+  skills into `<root>/.claude/skills/<name>/` (for every `rayspec.skill.SKILLS` entry,
+  `install_skill(skill, project_skill_dir(skill, root), force=)`, same per-file idempotence,
+  printed through `_skill_common.print_install_result`; the `nothing written` warning counts
+  every set; the only write outside `.rayspec/`). `--root` defaults to the cwd (no walk-up). Existing files are kept (`exists …
   skipped; use --force`) unless `--force`; exit 0 (a stderr `warning: nothing written` when
   every file existed; a stderr `warning:` naming the old kind + its left-over files when an
   untouched scaffold of the other kind is detected via `workflows/example.yaml`), exit 2
@@ -2329,58 +2330,85 @@ a redirected listing is rendered at a fixed width instead of the 80 columns a ba
 that width are folded or ellipsised by Rich.
 
 ### rayspec.skill + CLI `skill`
-The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`
-holds the hand-written `SKILL.md` (frontmatter `name: rayspec`, `description:`) and
-`references/{concepts,schema,templating,cli,providers,examples}.md` — verbatim copies of
-`docs/<name>.md` with a three-line `<!-- Generated … -->` header and relative links rewritten
-(sibling reference when the target is one of the six, else the `cli/_docs.py::DOCS_BASE` URL)
-by `scripts/gen_skill.py [--check]`, which also mirrors the whole dir to
-`.claude/skills/rayspec/` for this repository's own sessions (`--check` exits 1 on drift;
-`tests/skill/test_skill_fresh.py` runs it, so editing `docs/<one of the six>.md` or `SKILL.md`
-means re-running the script in the same PR). Nothing under `rayspec/skill/` imports the loader,
-engine or providers; files are read via `importlib.resources` (works from a wheel — hatchling
-needs no pyproject include).
+rayspec ships **two** Claude Code skills for coding agents as package data, because authoring a
+workflow and operating a run are different jobs: `rayspec-workflows` (the DSL — step kinds,
+fields, templating, agents, prompts, stubs) and `rayspec-cli` (every command, flag, `--json`
+shape and exit code, plus stubs, providers, cost and policy). Each lives in
+`src/rayspec/skill/<name>/` and holds a hand-written `SKILL.md` (frontmatter `name: <name>`,
+`description:`) plus its own `references/*.md` — verbatim copies of `docs/<name>.md` with a
+three-line `<!-- Generated … -->` header and relative links rewritten (sibling reference when the
+target belongs to the *same* skill, else the `cli/_docs.py::DOCS_BASE` URL, which is why a page
+two skills need is linked rather than duplicated) by `scripts/gen_skill.py [--check]`, which also
+mirrors both dirs to `.claude/skills/<name>/` for this repository's own sessions (`--check` exits
+1 on drift in **either** skill and on a stray directory under `.claude/skills/`;
+`tests/skill/test_skill_fresh.py` runs it, so editing a `docs/` page that a skill ships, or a
+`SKILL.md`, means re-running the script in the same change). A directory name with a hyphen is
+not a Python package, which is fine: nothing imports it — `skill/` holds no `__init__.py` per
+skill, hatchling ships every file under `src/rayspec`, and the files are read via
+`importlib.resources` (works from a wheel). The old single `rayspec` skill name is retired, not
+aliased: 1.0.0 has never been published, so there is no installed base to keep working.
 
-- Python surface (`rayspec.skill`): `SKILL_NAME = "rayspec"`, `REFERENCE_NAMES` (the six),
-  `SKILLS_SUBDIR = Path(".claude/skills")`, `skill_dir() -> Traversable` (the packaged dir),
-  `skill_files() -> [(relative posix path, Traversable)]` (sorted; no `.py`/dotfiles),
-  `content_digest() -> str` (12 hex of sha256 over `rel\0bytes\0` of every file, sorted — the
-  skill's version identity; there is no version stamp inside the files, so a rayspec version bump
-  alone never makes an installed copy stale), `install_skill(target, *, force=False) ->
-  list[InstalledFile(relative, path, action ∈ created|overwritten|skipped)]` (`target` is the
-  `…/skills/rayspec` dir itself; existing files kept unless `force`; raises
-  `NotADirectoryError`/`IsADirectoryError`/`OSError` — callers map to `error:` + exit 2),
-  `installed_state(target) -> InstalledState(path, state ∈ missing|current|stale, digest)`
-  (`missing` = no `SKILL.md`; `current` = the digest over the files found there equals
-  `content_digest()`; `stale` otherwise — an extra or edited file counts as stale),
-  `project_skill_dir(root) = <root>/.claude/skills/rayspec`, `global_skill_dir(home=None) =
-  ~/.claude/skills/rayspec` (`home` overrides `Path.home()`).
-- `rayspec skill install [--global] [--force] [--root DIR]` (`cli/commands/skill.py`): target =
-  `project_skill_dir(--root or find_project_root(cwd))` (nearest `.rayspec/` → `.git` → cwd —
-  deliberately the project-command walk-up, not `init`'s cwd-only rule) or, with `--global`,
-  `global_skill_dir()`; `--global` together with `--root` is exit 2 (`--global and --root are
-  mutually exclusive`). Output: one line per file (`created` / `overwrote` / `exists …
-  (skipped; use --force to overwrite)`), `<label> skill in <target>: n file(s) written[, m kept]`,
-  a stderr `warning: nothing written — all n file(s) exist; use --force …` when nothing was
-  written (exit stays 0), and the hint `open a fresh Claude Code session in <dir> — the
-  rayspec skill loads automatically (rayspec skill show)`. Exit 2 `error: cannot write the
-  skill: …` (no traceback) for a `--root` that is not a directory, a directory where a skill
-  file goes, or any other `OSError`.
-- `rayspec skill show [--root DIR] [--json]`: `packaged <dir>  rayspec <version>, digest <12hex>,
-  <n> files`, then `project <path>  not installed | digest … — up to date | digest … — differs
-  from the packaged skill (… rayspec skill install --force [--global] to refresh)` and the same
-  `global` row. `--json` = `{packaged: {path, rayspec_version, digest, files[]}, project: {path,
-  state: missing|current|stale, digest|null}, global: {…}}`. Exit 0.
-- `rayspec skill path`: prints `skill_dir()`. `rayspec skill` with no subcommand ⇒ help, exit 2.
+- Page ownership: `rayspec-workflows` ships `concepts`, `schema`, `templating`, `examples`;
+  `rayspec-cli` ships `cli`, `providers`, `testing`, `policy`, `runs-and-resume`, `isolation`,
+  `ci`. `README.md`, `agent-skill.md`, `extending.md` and `constitution.md` are online-only.
+  `tests/skill/test_skill_totality.py` makes that classification **total**: every `docs/*.md`
+  page is in exactly one skill or in a named `ONLINE_ONLY` list with a reason, every leaf command
+  and invokable group of the builtin app is in exactly one skill's CLI table
+  (`UNLISTED_COMMANDS` is the deny-list), and every field of every schema model appears in the
+  authoring skill (`UNDOCUMENTED_FIELDS`). A new page, command or field that nobody classified
+  fails the suite instead of vanishing.
+- Python surface (`rayspec.skill`): `Skill(name, summary, references)` — one frozen registry
+  entry; `SKILLS` (the two, in install order), `SKILL_NAMES`, `WORKFLOWS_SKILL`, `CLI_SKILL`,
+  `find_skill(name) -> Skill | None` (no aliases; `"rayspec"` is `None`),
+  `SKILLS_SUBDIR = Path(".claude/skills")`, `skill_dir(skill) -> Traversable` (the packaged dir),
+  `skill_files(skill) -> [(relative posix path, Traversable)]` (sorted; no `.py`/dotfiles),
+  `content_digest(skill) -> str` (12 hex of sha256 over `rel\0bytes\0` of every file of that
+  skill, sorted — the skill's version identity; there is no version stamp inside the files, so a
+  rayspec version bump alone never makes an installed copy stale, and the two skills never share
+  a digest), `install_skill(skill, target, *, force=False) -> list[InstalledFile(relative, path,
+  action ∈ created|overwritten|skipped)]` (`target` is the `…/skills/<name>` dir itself; existing
+  files kept unless `force`; raises `NotADirectoryError`/`IsADirectoryError`/`OSError` — callers
+  map to `error:` + exit 2), `installed_state(skill, target) -> InstalledState(path, state ∈
+  missing|current|stale, digest)` (`missing` = no `SKILL.md`; `current` = the digest over the
+  files found there equals `content_digest(skill)`; `stale` otherwise — an extra file, an edited
+  one, or the *other* skill installed there), `project_skill_dir(skill, root) =
+  <root>/.claude/skills/<name>`, `global_skill_dir(skill, home=None) = ~/.claude/skills/<name>`
+  (`home` overrides `Path.home()`). Nothing under `rayspec/skill/` imports the loader, engine or
+  providers.
+- Every `skill` subcommand takes an optional `NAME`: no name = all skills, a name = that one, an
+  unknown name = exit 2 `error: unknown skill '…'` with `hint: did you mean '…'?` (or
+  `hint: the skills are: rayspec-workflows, rayspec-cli`).
+- `rayspec skill install [NAME] [--global] [--force] [--root DIR]` (`cli/commands/skill.py`):
+  target = `project_skill_dir(skill, --root or find_project_root(cwd))` (nearest `.rayspec/` →
+  `.git` → cwd — deliberately the project-command walk-up, not `init`'s cwd-only rule) or, with
+  `--global`, `global_skill_dir(skill)`; `--global` together with `--root` is exit 2 (`--global
+  and --root are mutually exclusive`). Output per skill: one line per file (`created` /
+  `overwrote` / `exists … (skipped; use --force to overwrite)`) and `<label> skill in <target>:
+  n file(s) written[, m kept]`, then one stderr `warning: nothing written — all n file(s) exist;
+  use --force …` when *nothing at all* was written across the selected skills (exit stays 0), and
+  the hint `open a fresh Claude Code session in <dir> — the rayspec skills load automatically
+  (rayspec skill show)`. Exit 2 `error: cannot write the skill: …` (no traceback) for a `--root`
+  that is not a directory, a directory where a skill file goes, or any other `OSError`.
+- `rayspec skill show [NAME] [--root DIR] [--json]`: per skill a `<name> — <summary>` header, then
+  `packaged <dir>  rayspec <version>, digest <12hex>, <n> files`, then `project <path>  not
+  installed | digest … — up to date | digest … — differs from the packaged skill (… rayspec skill
+  install --force [--global] to refresh)` and the same `global` row; a blank line between skills.
+  `--json` = `{skills: [{name, packaged: {path, rayspec_version, digest, files[]}, project:
+  {path, state: missing|current|stale, digest|null}, global: {…}}]}` — an **object with a
+  `skills` array**, one entry per selected skill (the pre-1.0 shape was the single skill's object
+  at the top level). Exit 0.
+- `rayspec skill path [NAME]`: prints one `skill_dir(skill)` per line, in registry order.
+  `rayspec skill` with no subcommand ⇒ help, exit 2.
 - `cli/commands/_skill_common.py` (underscore ⇒ not auto-discovered): `print_install_result
   (results, target, *, label)` and `session_hint(directory, *, global_install)` — used by both
   `skill install` and `init` so the two command modules stay independent plug-ins.
-- Tests: `tests/skill/test_skill_content.py` checks `SKILL.md` against the real loader/CLI
-  (every ```yaml fence parses with PyYAML and the strict loader and every `- id:` step under
-  `steps:` via `parse_step`; both cheat-sheet workflows validate without warnings and dry-run;
-  every command/flag of the CLI table exists on every command named in its row);
-  `tests/skill/test_skill_secret_seam.py` verifies the skill's `secret: true` paragraph against
-  the implementation.
+- Tests: `tests/skill/test_skill_content.py` checks both `SKILL.md` files against the real
+  loader/CLI (every ```yaml fence parses with PyYAML and the strict loader and every `- id:` step
+  under `steps:` via `parse_step`; both cheat-sheet workflows validate without warnings and
+  dry-run; every command/flag a CLI table names exists on every command named in its row; each
+  skill names the other one); `tests/skill/test_skill_totality.py` holds the converse total
+  rules; `tests/skill/test_skill_secret_seam.py` verifies the authoring skill's `secret: true`
+  paragraph against the implementation.
 
 ### secrets + redact
 Two new packages and one new loader module; nothing else moved.
@@ -2713,8 +2741,9 @@ from rayspec.registry import (
 #   register_sink,SinkContext,SinkRegistration} (the events ones stay lazy: importing the models
 #   still must not load rich)
 ```
-`rayspec.cli.app`: `build_app()` builds a fresh app (builtins by pkgutil, then plugins); the
-module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
+`rayspec.cli.app`: `build_app(*, plugins=True)` builds a fresh app (builtins by pkgutil, then
+plugins; `plugins=False` stops after the builtins, which is how a test reasons about the surface
+this repository ships); the module-level `app` is one of those. `rayspec.cli.plugins`: `CLI_ENTRY_POINT_GROUP`,
 `PLUGIN_GROUPS` (the four above + `rayspec.providers`), `register_cli_plugins(app, *,
 argv=None)`,
 `loaded_cli_plugins()`, `cli_plugin_problems()`, `reset_cli_plugins()`, `command_names(app)`,

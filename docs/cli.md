@@ -1112,15 +1112,15 @@ rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--ro
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
-config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus the **rayspec
-skill for coding agents** in `.claude/skills/rayspec/` (`SKILL.md` + `references/*.md`, the same
-files `rayspec skill install` writes — see [agent-skill.md](agent-skill.md); `--no-skill` opts
-out), then print the next steps (`doctor`, `validate`, `plan example`, `run example --dry-run
---stubs .rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here —
-the skill loads automatically"). `--root DIR` is the directory that receives `.rayspec/` and
-`.claude/skills/rayspec/` (default: the cwd — `init` does **not** walk up to an enclosing
-project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
-that is not there is exit 2 and nothing is written. Files that already exist — scaffold and skill alike — are kept and listed as
+config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus **both rayspec
+skills for coding agents** in `.claude/skills/rayspec-workflows/` and `.claude/skills/rayspec-cli/`
+(`SKILL.md` + `references/*.md` each, the same files `rayspec skill install` writes — see
+[agent-skill.md](agent-skill.md); `--no-skill` opts out of both), then print the next steps
+(`doctor`, `validate`, `plan example`, `run example --dry-run --stubs
+.rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here — the skills
+load automatically"). `--root DIR` is the directory that receives `.rayspec/` and
+`.claude/skills/` (default: the cwd — `init` does **not** walk up to an enclosing project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
+that is not there is exit 2 and nothing is written. Files that already exist — scaffold and skills alike — are kept and listed as
 `exists … (skipped; use --force to overwrite)`; `--force` overwrites them — keeping the mode of
 the file it replaces (a `config.yaml` you chmodded to `0600` stays `0600`) and refusing a target
 that is a *symbolic link*, which is an error like a directory in the way: a scaffold writes files
@@ -1135,8 +1135,8 @@ stderr, no traceback) for an unknown `--kind`, a `--root` that is not a director
 where a template file goes (e.g. `.rayspec/config.yaml/`), a symlink where `--force` would
 write, or any other filesystem error
 (`error: cannot write the skill: … (the .rayspec/ scaffold was written; re-run with --no-skill
-to skip the skill)` for the skill files — the scaffold is complete at that point). Nothing is
-written outside `.rayspec/` and `.claude/skills/rayspec/`; runs live under `RAYSPEC_HOME`.
+to skip the skills)` for the skill files — the scaffold is complete at that point). Nothing is
+written outside `.rayspec/` and `.claude/skills/`; runs live under `RAYSPEC_HOME`.
 
 Switching kinds is per file: `rayspec init --kind content` over an untouched `code` scaffold adds
 only the files `code` does not ship (`prompts/draft.md`) and keeps the rest, which leaves a mixed
@@ -1307,45 +1307,51 @@ detail, required, hint}]}` (keys in that order).
 ### `rayspec skill install`
 
 ```
-rayspec skill install [--global] [--force] [--root DIR]
+rayspec skill install [NAME] [--global] [--force] [--root DIR]
 ```
 
-Write the packaged rayspec skill for coding agents ([agent-skill.md](agent-skill.md):
-`SKILL.md` + `references/{concepts,schema,templating,cli,providers,examples}.md`) to
-`<project>/.claude/skills/rayspec/` — `--root DIR` names an existing project directory (a
+Write the packaged rayspec skills for coding agents ([agent-skill.md](agent-skill.md):
+`rayspec-workflows` with `references/{concepts,schema,templating,examples}.md` and `rayspec-cli`
+with `references/{cli,providers,testing,policy,runs-and-resume,isolation,ci}.md`) to
+`<project>/.claude/skills/<name>/` — `--root DIR` names an existing project directory (a
 `--root` that is not there is exit 2, not a new directory tree); default: the nearest
 directory with `.rayspec/`, then `.git`, else the cwd — or, with `--global`, to
-`~/.claude/skills/rayspec/` for every project of this user. Same idempotence as `init`: one line
+`~/.claude/skills/<name>/` for every project of this user. Without `NAME` **both** skills are
+written; `NAME` (`rayspec-workflows` or `rayspec-cli`) writes just that one, and an unknown name
+is exit 2 with a did-you-mean and the real names. Same idempotence as `init`: one line
 per file (`created` / `overwrote` / `exists … (skipped; use --force to overwrite)`), a summary
-line with the target path, a stderr `warning: nothing written …` when every file existed (exit
-stays 0), and the hint `open a fresh Claude Code session in <dir> — the rayspec skill loads
-automatically`. `--force` overwrites (how you update after upgrading rayspec). Exit 2 (`error:
-cannot write the skill: …`, no traceback) for a `--root` that is not a directory, a directory
-where a skill file goes, or any other filesystem error; `--global` together with `--root` is a
-usage error (exit 2, `--global and --root are mutually exclusive`).
+line per skill with its target path, a stderr `warning: nothing written …` when every file of
+every selected skill existed (exit stays 0), and the hint `open a fresh Claude Code session in
+<dir> — the rayspec skills load automatically`. `--force` overwrites (how you update after
+upgrading rayspec). Exit 2 (`error: cannot write the skill: …`, no traceback) for a `--root` that
+is not a directory, a directory where a skill file goes, or any other filesystem error;
+`--global` together with `--root` is a usage error (exit 2, `--global and --root are mutually
+exclusive`).
 
 ### `rayspec skill show`
 
 ```
-rayspec skill show [--root DIR] [--json | --output FORMAT]
+rayspec skill show [NAME] [--root DIR] [--json | --output FORMAT]
 ```
 
-Print the packaged skill (its directory, the rayspec version and a 12-hex-digit content digest
-that identifies the skill's files, the file count) and the state of the project install
-(`<root>/.claude/skills/rayspec`, `--root` as for `install`) and the global install
-(`~/.claude/skills/rayspec`): `not installed`, `digest … — up to date` (byte-identical to the
+For each selected skill (both by default, one with `NAME`) print a `<name> — <summary>` header,
+the packaged copy (its directory, the rayspec version and a 12-hex-digit content digest that
+identifies that skill's files, the file count) and the state of the project install
+(`<root>/.claude/skills/<name>`, `--root` as for `install`) and the global install
+(`~/.claude/skills/<name>`): `not installed`, `digest … — up to date` (byte-identical to the
 packaged skill) or `digest … — differs from the packaged skill (… rayspec skill install
---force …)`. `--json`: `{packaged: {path, rayspec_version, digest, files}, project: {path,
-state: missing|current|stale, digest}, global: {…}}`. Exit 0.
+--force …)`. `--json`: `{skills: [{name, packaged: {path, rayspec_version, digest, files},
+project: {path, state: missing|current|stale, digest}, global: {…}}]}` — one entry per selected
+skill, in registry order. Exit 0.
 
 ### `rayspec skill path`
 
 ```
-rayspec skill path
+rayspec skill path [NAME]
 ```
 
-Print the packaged skill directory (the one `install` copies; it holds `SKILL.md` and
-`references/`). Exit 0.
+Print the packaged skill directories, one per line (the ones `install` copies; each holds
+`SKILL.md` and `references/`). `NAME` prints just that one. Exit 0.
 
 ### `rayspec completion`
 
