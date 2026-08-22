@@ -126,6 +126,33 @@
         "tools": {
           "$ref": "#/$defs/ToolsSpec"
         },
+        "network": {
+          "anyOf": [
+            {
+              "enum": [
+                "on",
+                "off"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network"
+        },
+        "commands": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "thinking": {
           "anyOf": [
             {
@@ -287,6 +314,33 @@
         },
         "tools": {
           "$ref": "#/$defs/ToolsSpec"
+        },
+        "network": {
+          "anyOf": [
+            {
+              "enum": [
+                "on",
+                "off"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network"
+        },
+        "commands": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandsSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "thinking": {
           "anyOf": [
@@ -479,6 +533,28 @@
         "approve"
       ],
       "title": "ApproveStep",
+      "type": "object"
+    },
+    "CommandsSpec": {
+      "additionalProperties": false,
+      "description": "``commands:`` — which shell commands an agent may run, as regular expressions.\n\nBoth lists are Python regular expressions matched against the command line a provider is\nabout to run; ``deny`` is checked first, and a non-empty ``allow`` means \"nothing else\".\nThey are validated (and compiled) at load time so a broken pattern is a file-and-line error\nrather than a control that quietly matches nothing.\n\nEnforcement needs the provider to hand rayspec its tool calls before they run. A provider\nthat can do that declares ``command_policy`` in its capabilities; on every other provider\n``rayspec validate`` warns that the block is advisory. See ``docs/policy.md``.",
+      "properties": {
+        "allow": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allow",
+          "type": "array"
+        },
+        "deny": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Deny",
+          "type": "array"
+        }
+      },
+      "title": "CommandsSpec",
       "type": "object"
     },
     "Defaults": {
