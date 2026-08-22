@@ -20,6 +20,7 @@ other runs, other projects or other people.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -65,18 +66,34 @@ ROW_STYLES: dict[str, str] = {
 COMMAND_STEP_KINDS = frozenset({"shell", "python"})
 
 
-def is_command_row(row: dict[str, Any]) -> bool:
+def command_step_paths(run: RunRecord) -> frozenset[str]:
+    """The paths of the run's ``shell:``/``python:`` steps, from ``run.json``.
+
+    The step's kind is on the step *record*, and only the ``step.started`` event repeats it in
+    its payload — so a filter that reads the payload alone keeps a shell step's start and drops
+    its ``succeeded``/``failed``. Asking the record instead answers for every row of the step.
+    """
+    return frozenset(path for path, rec in run.steps.items() if rec.kind in COMMAND_STEP_KINDS)
+
+
+def is_command_row(row: dict[str, Any], command_steps: Collection[str] = ()) -> bool:
     """Whether ``row`` describes something the run executed (``--commands``).
 
     That is a ``command`` row — a command an agent ran, whether the adapter reported it as a
-    ``command_start`` or as a tool call carrying a command line — or the row of a ``shell:``/
+    ``command_start`` or as a tool call carrying a command line — or a row of a ``shell:``/
     ``python:`` step, which is rayspec running a command itself. A step row names the step and
     its kind, not the body: the rendered body is not kept in the run directory (``rayspec
     explain`` re-renders it from the workflow).
+
+    ``command_steps`` is :func:`command_step_paths` of the run; a step row whose path is in it
+    is kept whatever its payload carries, which is what makes a shell step's *outcome* survive
+    the filter alongside its start. Without it only the rows that name their own kind are kept.
     """
     if row["kind"] == "command":
         return True
-    return row["kind"] == "step" and row["data"].get("kind") in COMMAND_STEP_KINDS
+    if row["kind"] != "step":
+        return False
+    return row["data"].get("kind") in COMMAND_STEP_KINDS or row.get("step") in command_steps
 
 
 def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
@@ -162,7 +179,8 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
     """The ``--json`` object: the run's identity, whether it was a rehearsal, and its rows."""
     rows = collect_rows(store, run)
     if commands:
-        rows = [row for row in rows if is_command_row(row)]
+        steps = command_step_paths(run)
+        rows = [row for row in rows if is_command_row(row, steps)]
     return {
         "run_id": run.run_id,
         "workflow": run.workflow_name,
@@ -263,6 +281,7 @@ __all__ = [
     "actor_line",
     "audit_payload",
     "collect_rows",
+    "command_step_paths",
     "is_command_row",
     "print_audit",
     "register",

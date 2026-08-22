@@ -29,7 +29,7 @@ import re
 import socket
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from rayspec.testing.spec import Case, Suite
 
@@ -133,6 +133,53 @@ def mask(value: Any, subs: list[tuple[re.Pattern[str], str]]) -> Any:
     return value
 
 
+#: Sort keys for run-level events at the head and tail of the stream; no step path can equal
+#: them (a path segment is ``[a-z][a-z0-9_]*`` with optional ``[n]``).
+FIRST: Final = ""
+LAST: Final = "\uffff"
+
+
+def canonical_order(events: list[Any]) -> list[Any]:
+    """Group each step's events together, so concurrent steps cannot reorder the corpus.
+
+    The stream is captured from a real run, and steps that run in parallel interleave: whichever
+    of two concurrent steps the event loop wakes first emits first. The corpus asserted a *total*
+    order over that, which is not a property of the run — it is a property of which coroutine got
+    resumed, and it made the suite fail about two runs in five once the engine grew a little more
+    work on the step-start path.
+
+    Steps are grouped in the order their paths sort, not the order they appeared: an ``each:``
+    fans its items out concurrently, so even which of them emits FIRST is a race, and ordering by
+    first appearance would only have moved the flake earlier in the stream. Sorting is total and
+    costs the reader nothing the record does not already say — ``run.json`` holds each step's
+    place in the graph, and the engine's own tests pin execution order.
+
+    What is still compared, which is what the corpus is for: every event of one step, in the order
+    that step emitted it; every step that ran; and the run-level events (``run.started``,
+    ``run.finished``, the warnings between them), which keep their position relative to the steps
+    around them. What is discarded is only the interleaving *between* steps that were running at
+    the same time — which no committed file could pin down without being flaky.
+    """
+
+    def step_of(event: Any) -> str | None:
+        path = event.get("step_path")
+        return path if isinstance(path, str) else None
+
+    last_step = max((i for i, e in enumerate(events) if step_of(e)), default=-1)
+    keys: list[tuple[str, int]] = []
+    current = FIRST  # sorts before every step path, so run.started stays first
+    for index, event in enumerate(events):
+        path = step_of(event)
+        if path is not None:
+            current = path
+        elif index > last_step:
+            # a run-level event after the last step belongs at the end, whichever step happened
+            # to finish last — that is exactly the race being canonicalised away
+            current = LAST
+        keys.append((current, index))
+    return [event for _, event in sorted(zip(keys, events, strict=True), key=lambda pair: pair[0])]
+
+
 def cli_args(suite: Suite, case: Case, *, inputs_file: Path) -> list[str]:
     """``rayspec run`` command line for ``case`` — the same one ``rayspec test`` simulates."""
     args = ["run", case.workflow, "--root", str(suite.root), "--dry-run", "--json"]
@@ -174,7 +221,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
     record_path = Path(summary["run_dir"]) / "run.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     subs = text_substitutions(home=home, root=suite.root)
-    events = [mask(json.loads(line), subs) for line in lines[:-1]]
+    events = canonical_order([mask(json.loads(line), subs) for line in lines[:-1]])
     return {
         "events.jsonl": "".join(json.dumps(e, sort_keys=True) + "\n" for e in events),
         "summary.json": json.dumps(mask(summary, subs), indent=2, sort_keys=True) + "\n",
@@ -185,6 +232,7 @@ def capture(suite: Suite, case: Case, *, home: Path, tmp_path: Path) -> dict[str
 __all__ = [
     "MASKED_KEYS",
     "USAGE_KEYS",
+    "canonical_order",
     "capture",
     "cli_args",
     "invoke",

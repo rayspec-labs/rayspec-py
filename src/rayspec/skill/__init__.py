@@ -18,6 +18,8 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Literal
 
+from rayspec.resources import walk_files
+
 #: Skill name — the directory name under ``.claude/skills/`` and the frontmatter ``name:``.
 SKILL_NAME = "rayspec"
 
@@ -64,21 +66,19 @@ def skill_dir() -> Traversable:
     return resources.files(__name__) / SKILL_NAME
 
 
-def _walk(node: Traversable, prefix: str = "") -> list[tuple[str, Traversable]]:
-    found: list[tuple[str, Traversable]] = []
-    for child in node.iterdir():
-        rel = f"{prefix}{child.name}"
-        if child.is_dir():
-            if child.name != "__pycache__":
-                found.extend(_walk(child, f"{rel}/"))
-        elif not child.name.startswith(".") and not child.name.endswith((".py", ".pyc")):
-            found.append((rel, child))
-    return sorted(found, key=lambda item: item[0])
-
-
 def skill_files() -> list[tuple[str, Traversable]]:
-    """Every file of the packaged skill as ``[(relative posix path, resource)]``, sorted."""
-    return _walk(skill_dir())
+    """Every file of the packaged skill as ``[(relative posix path, resource)]``, sorted.
+
+    The skill is documentation: the Python that happens to live in the same package directory
+    (and anything a build left behind) is not part of it.
+    """
+    return walk_files(
+        skill_dir(),
+        keep_dir=lambda _rel, name: name != "__pycache__",
+        keep_file=lambda _rel, name: (
+            not name.startswith(".") and not name.endswith((".py", ".pyc"))
+        ),
+    )
 
 
 def _digest(items: list[tuple[str, bytes]]) -> str:

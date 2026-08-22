@@ -1,0 +1,18 @@
+# One angle fails outright (a model outage, not a rate limit — `transient: false`, so the step's
+# retry policy does not apply): `on_step_failure: continue` leaves the other two branches running.
+defaults: { latency_ms: 0, usage: { input: 900, output: 120 } }
+steps:
+  api:
+    fail: { kind: api, message: "upstream model unavailable (503)", transient: false }
+  docs:
+    text: |
+      - `docs/cli.md` still documents the old flag name.
+      - The migration note has no example.
+  tests:
+    text: |
+      - The error path of `resolve()` has no test.
+      - Nothing covers the empty-input case.
+  digest:
+    text: |
+      docs and tests answered; api did not (upstream model unavailable).
+      Two reports were written; re-run the api angle when the provider is back.

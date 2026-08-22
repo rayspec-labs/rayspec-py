@@ -25,11 +25,13 @@ from rayspec.cli.commands import _loader_common as common
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "rayspec" / "cli"
 
-#: The two modules that render a JSON *document* themselves: `_loader_common` is the house
-#: renderer every other command goes through, and `rayspec schema` prints a published JSON
-#: Schema, which must stay byte-identical to the checked-in `schemas/*.schema.json` and is
-#: therefore not a presentation choice at all.
-JSON_DUMPS_EXCEPTIONS = {"commands/_loader_common.py", "commands/schema.py"}
+#: The one module that renders a JSON *document* itself: `_loader_common` is the house renderer
+#: every other command goes through. `rayspec schema` used to be the second, and no longer is —
+#: it prints `schemagen.schema_text`, the same text the file holds, rather than re-serialising the
+#: parsed document. Re-serialising was not a presentation choice at all: `json.dumps` defaults to
+#: `ensure_ascii=True`, so printing escaped every character the file wrote literally and the two
+#: disagreed on any description holding an em dash.
+JSON_DUMPS_EXCEPTIONS = {"commands/_loader_common.py"}
 
 #: Every call that turns a payload into JSON text. The house renderers (`json_text`,
 #: `json_line`, `print_json`) are deliberately not among them: going through those is the point.

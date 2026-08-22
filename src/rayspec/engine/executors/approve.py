@@ -29,8 +29,16 @@ the launch gate until the decision or pause is recorded); when the run is alread
 another gate, a later gate pauses too but does not overwrite ``run.pause`` (the decision slot
 belongs to the first gate; the later one asks again on resume).
 
-Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job and
-the rules are :mod:`rayspec.engine.approval_classes`'.
+**Who decided** is resolved HERE, in the process that is answering the gate
+(:func:`~rayspec.actor.resolve_actor`), and nowhere else. Neither identity in the record is used:
+``run.actor`` is whoever *launched* the run and stays that way through every resume, so a second
+operator answering a gate would be recorded as the first; and ``pause.decision.actor`` was read
+back out of ``run.json``, a file in a user-owned directory that a ``shell:`` step of any run can
+write — a decision found in the record supplies the *answer*, never the identity. When it names
+somebody else, the swap is a warning on the ledger rather than a silent correction.
+
+Module boundary: owns tokens, quiesce and decision recording; asking is the prompt's job, the
+rules are :mod:`rayspec.engine.approval_classes`' and the identity is :mod:`rayspec.actor`'s.
 """
 
 from __future__ import annotations
@@ -39,7 +47,9 @@ import json
 import sys
 
 import anyio
+from anyio import to_thread
 
+from rayspec.actor import clean_identity, resolve_actor
 from rayspec.engine.approval import ApprovalAnswer, ApprovalNeed, ApprovalRequest
 from rayspec.engine.approval_classes import (
     BY_AUTO_IF,
@@ -99,13 +109,6 @@ def stored_decision(ctx: RunContext, path: str, attempt: int) -> Decision | None
     return pause.decision
 
 
-def run_cost_source(ctx: RunContext) -> str:
-    """The run-level cost source the panel renders (``provider`` → ``$``, ``table`` → ``~$``,
-    ``partial`` → ``≥$``, ``none``); the engine's :func:`~rayspec.engine.context.cost_source_of`
-    rule."""
-    return cost_source_of(ctx.run.steps.values())
-
-
 def _needs_summary(step: ApproveStep, scope: ExecScope, ctx: RunContext) -> list[ApprovalNeed]:
     needs: list[ApprovalNeed] = []
     for need in step.needs:
@@ -163,7 +166,6 @@ async def run_approve(
         )
     answer: ApprovalAnswer | None = None
     by = "cli"
-    actor: ActorInfo | None = ctx.run.actor  # a gate answered here belongs to the run's actor
     decision = stored_decision(ctx, path, record.attempts)
     if (
         decision is not None
@@ -174,10 +176,13 @@ async def run_approve(
         # rejection is always honoured, so only an approval is dropped here.
         await ctx.warn(out_of_band_refused(class_name, step_path=path), step_path=path)
         decision = None
+    # WHO is answering, resolved before WHAT the answer is: from here to the outcome nothing may
+    # suspend, or the scheduler gets a slot between a rejection and the run it has to stop. A
+    # gate that goes on to pause resolves an identity it does not use, which is one cheap lookup.
+    actor = await deciding_actor(ctx, path, claimed=None if decision is None else decision.actor)
     if decision is not None:
         answer = ApprovalAnswer(decision.approved, decision.comment)
         by = decision.by
-        actor = decision.actor or actor  # ``rayspec approve|reject`` records its own actor
     else:
         record.attempts += 1
         automatic: str | None = None
@@ -220,7 +225,7 @@ async def run_approve(
         by=by,
         # the DURABLE record of who approved: ``run.pause`` (and with it the stored decision)
         # is cleared the moment the gate consumes it, the event log is not
-        actor=actor.model_dump(mode="json") if actor is not None else None,
+        actor=actor.model_dump(mode="json"),
     )
     record.approved = answer.approved
     outcome = StepOutcome(record=record, output=answer.comment or "", output_kind="text")
@@ -242,6 +247,41 @@ async def run_approve(
     record.ok = False
     outcome.control = RunStopped("cancelled", reason, step_path=path)
     return outcome
+
+
+def reattributed(claimed: str, actual: str, *, step_path: str) -> str:
+    """The warning for a stored decision that named somebody other than who consumed it."""
+    return (
+        f"the decision found in the record for {step_path} names {claimed!r}; a decision read "
+        f"back from run.json is an answer, not evidence of whose hand it was — anything running "
+        f"as you can write that file — so this gate is recorded as decided by {actual!r}"
+    )
+
+
+async def deciding_actor(
+    ctx: RunContext, path: str, *, claimed: ActorInfo | None = None
+) -> ActorInfo:
+    """Who is answering THIS gate — resolved in this process, from sources the run cannot write.
+
+    Not ``ctx.run.actor``: that is whoever launched the run, resolved once at its first start and
+    kept across every resume, so a gate answered during a resume would be stamped with somebody
+    who was not there. Not ``claimed`` either — the actor a stored ``pause.decision`` carries —
+    because that came out of a file in a user-owned directory. ``rayspec approve``/``reject``
+    write it and then consume it in the same process, so in the permitted case the two agree and
+    nothing is said; a decision planted by a step names somebody else, and that is a warning on
+    the ledger, because a control that re-attributes silently cannot be read off it at all.
+
+    Resolved off the event loop: the account-database lookup is a syscall that a directory
+    service can make slow, and the same care is taken at run start. Which is also why the caller
+    asks BEFORE the answer is known — a thread hop is a suspension point, and one taken between
+    a rejection and the outcome that stops the run would let the scheduler start fresh work in
+    between.
+    """
+    actor = await to_thread.run_sync(resolve_actor)
+    named = clean_identity(None if claimed is None else claimed.id)
+    if named is not None and named != actor.id:
+        await ctx.warn(reattributed(named, actor.id, step_path=path), step_path=path)
+    return actor
 
 
 async def _warn_refused(
@@ -301,7 +341,7 @@ async def _ask(
                 "steps": len(ctx.run.steps),
                 "tokens": ctx.run.total_usage().total,
                 "cost_usd": ctx.run.total_cost_usd(),
-                "cost_source": run_cost_source(ctx),
+                "cost_source": cost_source_of(ctx.run.steps.values()),
             },
         )
         try:
@@ -341,4 +381,11 @@ async def _pause(ctx: RunContext, record: StepRecord, message: str) -> StepOutco
     return StepOutcome(record=record, control=control)
 
 
-__all__ = ["at_a_terminal", "gate_token", "run_approve", "run_cost_source", "stored_decision"]
+__all__ = [
+    "at_a_terminal",
+    "deciding_actor",
+    "gate_token",
+    "reattributed",
+    "run_approve",
+    "stored_decision",
+]

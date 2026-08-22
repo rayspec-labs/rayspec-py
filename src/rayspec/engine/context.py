@@ -28,26 +28,27 @@ import logging
 import os
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import anyio
 from anyio import to_thread
 
-from rayspec.engine.approval import ApprovalPrompt, humanize_duration
+from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.approval_classes import ApprovalClasses
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType, RunEvent, StreamRecord
+from rayspec.fmt import humanize_duration
 from rayspec.loader import ResolvedWorkflow
 from rayspec.providers.base import Provider, Usage
+from rayspec.providers.pricing import combine_cost_sources
 from rayspec.redact import Redactor
 from rayspec.schema import Defaults, EachStep, LoopStep, StepModel, StepStatus
 from rayspec.store.base import RunStore
-from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord
+from rayspec.store.model import ArtifactRef, ErrorInfo, RunRecord, StepRecord, utcnow
 from rayspec.templating import (
     Scope,
     StepView,
@@ -174,10 +175,6 @@ def time_reason(elapsed_s: float | None, defaults: Defaults) -> str | None:
     )
 
 
-def utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
 def cost_source_of(records: Iterable[StepRecord]) -> str:
     """Run-level cost source over ``records`` (pinned seam):
 
@@ -188,21 +185,21 @@ def cost_source_of(records: Iterable[StepRecord]) -> str:
     * ``provider`` — every record with tokens reported a provider cost (``$``).
 
     Records without tokens and without cost (shell/python, skipped steps) do not count.
+
+    The fold itself is :func:`~rayspec.providers.pricing.combine_cost_sources` — the one place
+    the four sources are combined; this function only says which records take part. A record
+    that HAS a cost but names no source is read as ``provider``: a cost that was reported is
+    never an estimate.
     """
-    sources: set[str] = set()
-    unknown = False
-    for rec in records:
-        if rec.cost_usd is not None:
-            sources.add(rec.cost_source if rec.cost_source != "none" else "provider")
-        elif rec.usage.total:
-            unknown = True
-    if not sources:
-        return "none"
-    if unknown:
-        return "partial"
-    if "table" in sources:
-        return "table"
-    return "provider"
+    records = list(records)
+    return combine_cost_sources(
+        [
+            rec.cost_source if rec.cost_source and rec.cost_source != "none" else "provider"
+            for rec in records
+            if rec.cost_usd is not None
+        ],
+        unpriced=any(rec.cost_usd is None and rec.usage.total for rec in records),
+    )
 
 
 def totals_of(records: Iterable[StepRecord]) -> tuple[Usage, float | None, str]:
@@ -262,6 +259,31 @@ class StepOutcome:
     control: RunControl | None = None
     reused: bool = False
     event_data: dict[str, Any] = field(default_factory=dict)
+
+
+def mark_failed(record: StepRecord, error: ErrorInfo) -> StepRecord:
+    """Stamp ``failed`` + ``ok=False`` + ``error`` on ``record`` and return it.
+
+    The one place those three fields are set together: a record left ``ok=None`` or without its
+    error is a step whose failure the store cannot explain afterwards.
+    """
+    record.status = StepStatus.FAILED
+    record.ok = False
+    record.error = error
+    return record
+
+
+def failed_outcome(record: StepRecord, error: ErrorInfo, *, output: Any = None) -> StepOutcome:
+    """:func:`mark_failed` plus the :class:`StepOutcome` the scheduler expects back.
+
+    ``output`` is what the step produced before it failed (an agent's partial answer); it is
+    carried as text so the templates and the store see it, exactly as for a succeeded step.
+    """
+    return StepOutcome(
+        record=mark_failed(record, error),
+        output=output,
+        output_kind="text" if output else None,
+    )
 
 
 #: ``defaults.on_step_failure`` from the most permissive to the most restrictive. A failure
@@ -540,6 +562,8 @@ class RunContext:
         #: which operational control stopped it: ``budget`` (money) or ``failures`` (the
         #: consecutive-failure breaker). They are separate controls and separate decisions.
         self.envelope_pause_kind: str = "budget"
+        #: set once :meth:`ledger_unwritable` has reported the ledger — the run says it once
+        self._ledger_unwritable = False
         #: the record path of the last step that reached a final outcome (what a pause names)
         self.last_finished_path: str | None = None
         #: record paths finished (or replayed) in THIS run — what the caps are measured over;
@@ -825,6 +849,17 @@ class RunContext:
 
     # -- drain policy ---------------------------------------------------------------------
 
+    @property
+    def fail_fast(self) -> bool:
+        """Whether ``--fail-fast`` is in force: passed to THIS entry point, or recorded on the
+        run being continued (``RunRecord.fail_fast``).
+
+        A resume continues one run, so it continues its blast radius; a second entry point that
+        forgets to repeat the flag must not quietly widen it. Reading both is also how the flag
+        keeps only ever tightening — neither source can clear the other.
+        """
+        return self.options.fail_fast or self.run.fail_fast
+
     def keep_going_for(self, scope: ExecScope) -> bool:
         """Whether a failed step leaves independent branches of ``scope`` running.
 
@@ -835,19 +870,20 @@ class RunContext:
         the failed step's own dependents still skip with ``upstream_failed`` — ``continue`` is not
         ``allow_failure``. ``--fail-fast`` beats it, because the flag may only ever tighten.
         """
-        if self.options.fail_fast:
+        if self.fail_fast:
             return False
         return scope.on_step_failure == "continue"
 
     def fail_fast_for(self, scope: ExecScope) -> bool:
         """Whether a failed step cancels the running siblings of ``scope``.
 
-        ``--fail-fast`` (``RunOptions.fail_fast``) OR the ``defaults.on_step_failure: fail_fast``
-        in force for this sibling list. The CLI flag can only *enable* fail-fast: it never
-        downgrades a workflow that asked for it, and ``drain`` (the default) is the 1.0.0
-        behaviour. The scheduler reads this, never ``options.fail_fast``.
+        :attr:`fail_fast` (this entry point's ``--fail-fast`` or the one recorded on the run)
+        OR the ``defaults.on_step_failure: fail_fast`` in force for this sibling list. The CLI
+        flag can only *enable* fail-fast: it never downgrades a workflow that asked for it, and
+        ``drain`` (the default) is the 1.0.0 behaviour. The scheduler reads this, never
+        ``options.fail_fast``.
         """
-        if self.options.fail_fast:
+        if self.fail_fast:
             return True
         return scope.on_step_failure == "fail_fast"
 
@@ -911,7 +947,16 @@ class RunContext:
         if envelope is None or self.options.dry_run or not envelope.active:
             return None
         _usage, cost, _source = self.run_totals()
-        reason = await to_thread.run_sync(envelope.check, cost)
+        try:
+            reason = await to_thread.run_sync(envelope.check, cost)
+        except OSError as exc:
+            # the ledger is read at the start of every check and written back on the way out;
+            # the read repairs whatever it finds, but a path that cannot be WRITTEN at all (a
+            # directory where spend.json belongs, a full disk) used to leave this as the only
+            # unguarded call in the run. Losing the accounting is a smaller failure than
+            # ending the run on a traceback — being quiet about it is not.
+            await self.ledger_unwritable(exc)
+            reason = None
         for problem in envelope.take_warnings():
             await self.warn(problem)
         if reason is None:
@@ -924,6 +969,23 @@ class RunContext:
             f"once the ceiling allows, or `rayspec approve {self.run.run_id}` to continue anyway"
         )
         return reason
+
+    async def ledger_unwritable(self, exc: OSError) -> None:
+        """Say ONCE that the spend ledger could not be written, in one wording.
+
+        Every place that writes it — the per-step :meth:`check_envelope`, the final settle and
+        the waiver an approval applies — reports it here, so a run that cannot reach the ledger
+        says so once rather than once per step, and says the same thing wherever it happened.
+        """
+        if self._ledger_unwritable:
+            return
+        self._ledger_unwritable = True
+        where = getattr(getattr(self.envelope, "ledger", None), "path", None)
+        what = "the spend ledger" if where is None else f"the spend ledger {where}"
+        await self.warn(
+            f"{what} could not be written ({exc.strerror or exc}) — this run's spend and its "
+            "outcome are not in the operator's totals"
+        )
 
     async def check_budget(self, *, pending: StepRecord | None = None) -> str | None:
         """Compare the run totals (:meth:`budget_totals`) and the elapsed wall clock
@@ -1100,7 +1162,9 @@ __all__ = [
     "cost_source_of",
     "effective_on_step_failure",
     "error_info",
+    "failed_outcome",
     "is_cap_reason",
+    "mark_failed",
     "merge_cost_source",
     "on_step_failure_floor",
     "sha256_json",

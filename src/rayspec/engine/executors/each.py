@@ -23,7 +23,14 @@ from typing import Any
 import anyio
 from anyio.abc import TaskGroup
 
-from rayspec.engine.context import ExecScope, RunContext, StepOutcome, error_info, sha256_json
+from rayspec.engine.context import (
+    ExecScope,
+    RunContext,
+    StepOutcome,
+    error_info,
+    failed_outcome,
+    sha256_json,
+)
 from rayspec.engine.errors import RunControl, RunPaused
 from rayspec.engine.executors.loop import body_failure_message, body_outputs, failed_body_step
 from rayspec.engine.graph import StepGraph
@@ -163,11 +170,13 @@ async def run_each(
 
 
 def _fail(record: StepRecord, error: ErrorInfo) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.ok = False
-    record.error = error
+    """:func:`~rayspec.engine.context.failed_outcome`, plus the attempt the each step spent.
+
+    An ``each:`` that never launched an item still tried once, and a record showing zero
+    attempts reads as a step that was not reached at all.
+    """
     record.attempts = max(record.attempts, 1)
-    return StepOutcome(record=record)
+    return failed_outcome(record, error)
 
 
 __all__ = ["run_each"]

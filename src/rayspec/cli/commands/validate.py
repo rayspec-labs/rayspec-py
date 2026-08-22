@@ -26,10 +26,10 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
     workflow_label,
 )
-from rayspec.cli.commands.lock import LockedOption, locked_enabled
+from rayspec.cli.commands.lock import LockedOption, lockfile_in_force
 from rayspec.cli.commands.workflows import EMPTY_PROJECT_HINT
 from rayspec.errors import RayspecError
-from rayspec.limits import LockfileError, check_locked, load_lockfile
+from rayspec.limits import check_locked
 from rayspec.loader import discover_workflows, load_workflow, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 
@@ -142,21 +142,12 @@ def register(app: typer.Typer) -> None:
                 hint="run `rayspec workflows` to list the discovered workflows",
             )
             return
-        lockfile = None
-        if locked_enabled(locked):
-            try:
-                lockfile = load_lockfile(ctx.project_root)
-            except LockfileError as exc:
-                fail(str(exc), hint=exc.hint)
-                return
-            if lockfile is None and locked:
-                # the flag promises the models were pinned; the CI default does not, so a
-                # project without a lockfile is simply not checked
-                fail(
-                    "--locked: no lockfile at .rayspec/rayspec.lock",
-                    hint="run `rayspec lock` and commit the file",
-                )
-                return
+        # the shared gate (cli/commands/lock.py) decides whether the lockfile is enforced at
+        # all, refuses a missing one under the flag and prints the CI-default warning — one
+        # implementation for every command that offers --locked. docs/cli.md names
+        # `validate --locked` as the CI gate, which is exactly where a second copy of those
+        # three answers would go unnoticed the longest.
+        lockfile = lockfile_in_force(ctx, locked=locked)
         out = console()
         printer = (lambda *_, **__: None) if json_ else out.print
         total_errors = 0

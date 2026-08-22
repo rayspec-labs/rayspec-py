@@ -10,8 +10,9 @@ through and nothing about runs, stores, sinks or configuration; the callers wire
   :meth:`Redactor.redact_obj`, which work on the PARSED value: replacing a secret in the
   serialised text turns a bare JSON token (a numeric secret) into an unquoted marker and leaves
   a file that no longer parses. Free-form KEYS are redacted beside their values; a record's own
-  structure (field names, the step paths its steps are keyed by) is left alone on purpose —
-  see :meth:`Redactor.redact_dump`;
+  structure (field names, the step paths its steps are keyed by), the identity fields the writer
+  names (``preserve``) and the ones a record declares for itself
+  (:data:`IDENTITY_FIELDS_ATTR`) are left alone on purpose — see :meth:`Redactor.redact_dump`;
 * the shared subprocess runner redacts ``stdout.log``/``stderr.log`` and the stdout/stderr
   stream records as they are produced;
 * :class:`RedactingSink` wraps the event sinks so the console and ``--json`` are covered too.
@@ -55,6 +56,12 @@ PEM_MAX_BODY = 8192
 #: Upper bound on what a :class:`StreamRedactor` holds back for a detector, per detector; the
 #: name is kept because it is the documented worst case of the short-token detectors.
 DETECTOR_HOLD = 512
+#: The ``ClassVar`` a record model sets to name the fields of its OWN that are identity rather
+#: than content — the strings something later resolves the record BY. :meth:`Redactor.redact_dump`
+#: honours it wherever that model appears, at any depth, so a nested record can protect its
+#: address without the top-level writer having to know the shape of everything below it
+#: (:class:`rayspec.store.model.StepRecord` declares ``path``, for one).
+IDENTITY_FIELDS_ATTR = "redaction_identity"
 #: How often :meth:`Redactor.redact_dump` may undo a substitution a model cannot hold. Every
 #: round puts back everything the validator complained about, so one is nearly always enough.
 _MAX_UNDO_ROUNDS = 8
@@ -295,7 +302,7 @@ class Redactor:
                     return replacement
         return value
 
-    def redact_dump(self, model: BaseModel) -> Any:
+    def redact_dump(self, model: BaseModel, *, preserve: Sequence[str] = ()) -> Any:
         """``model`` as a JSON-able mapping with every secret replaced in the PARSED values.
 
         This is what a writer must persist a record through. Redacting the *serialised* text
@@ -315,15 +322,31 @@ class Redactor:
         mapping of records (the run's steps, keyed by step path) name a place in the record
         rather than carry a value, and rewriting one drops the field on the way back in
         (pydantic ignores what it does not know) or points a step at a directory that is not
-        there. Structural *strings* are a smaller version of the same coincidence and are NOT
-        exempt: a secret that equals the run id rewrites ``run_id``, and the record then no
-        longer names its own directory. That trade is deliberate — the value is far more likely
-        to be a leak than a generated id is to collide with it.
+        there.
+
+        ``preserve`` names the TOP-LEVEL fields that are identity rather than content: the
+        strings the record is looked up BY. They are the same class one level up — rewriting one
+        does not leak less, it destroys the record just as a rewritten field name would, and
+        there is no way to undo it afterwards. The caller decides which they are, because this
+        module knows nothing about runs (:data:`rayspec.store.file.RUN_IDENTITY_FIELDS`), and
+        its word applies to this level only: a nested record that happens to use the same field
+        name is content.
+
+        A nested record declares its own instead, as the ``ClassVar``
+        :data:`IDENTITY_FIELDS_ATTR` — honoured wherever that model appears, because the writer
+        at the top cannot be expected to name a field five levels down and the record whose
+        address it is can. A step's ``path`` is the example: it is the key its own mapping is
+        already stored under, so keeping it discloses nothing that the structure did not, while
+        rewriting it leaves a record that ``rayspec explain`` cannot even parse.
+
+        Every other structural string is NOT exempt — a secret that equals the workflow hash or
+        the project slug is far more likely to be a leak than a coincidence, and neither is what
+        a later command resolves the run by.
         """
         data = model.model_dump(mode="json")
         if not self:
             return data
-        out = self._redact_record(model, data)
+        out = self._redact_record(model, data, preserve=preserve)
         if out == data:  # nothing matched: skip the round trip a checkpoint pays on every save
             return out
         cls = type(model)
@@ -340,22 +363,35 @@ class Redactor:
         )
         return out
 
-    def _redact_record(self, model: BaseModel, data: Any) -> Any:
+    def _redact_record(self, model: BaseModel, data: Any, *, preserve: Sequence[str] = ()) -> Any:
         """``data`` (the dump of ``model``) redacted, with the model's own structure intact.
 
         The model instance is walked beside its dump so that a field name stays a field name;
         everything the record holds that is free-form — ``inputs``, ``outputs``, a toolchain
-        payload — goes through :meth:`redact_obj`, whose keys ARE redacted.
+        payload — goes through :meth:`redact_obj`, whose keys ARE redacted. ``preserve`` (field
+        names or their serialisation aliases) is passed through from :meth:`redact_dump` and
+        applies to this level only — nested records are reached through :meth:`_redact_child`,
+        which does not carry it. What travels with the model instead is its own
+        :data:`IDENTITY_FIELDS_ATTR` declaration, read here at whatever depth it turns up.
         """
         if not isinstance(data, dict):
             return self.redact_obj(data)
+        cls = type(model)
         fields = {
             (info.serialization_alias or info.alias or name): name
-            for name, info in type(model).model_fields.items()
+            for name, info in cls.model_fields.items()
         }
+        identity = (*preserve, *getattr(cls, IDENTITY_FIELDS_ATTR, ()))
+        keep = (
+            frozenset(key for key, name in fields.items() if key in identity or name in identity)
+            if identity
+            else frozenset()
+        )
         return {
             key: (
-                self._redact_child(getattr(model, fields[key], None), value)
+                value
+                if key in keep
+                else self._redact_child(getattr(model, fields[key], None), value)
                 if key in fields
                 else self.redact_obj(value)
             )
@@ -387,6 +423,22 @@ class Redactor:
         if len(text) < MIN_REDACTABLE_LEN:
             return True
         return self.redact(text) != text
+
+    def uncovered(self, secrets: Secrets) -> tuple[str, ...]:
+        """The NAMES in ``secrets`` whose value :meth:`redact` would still let through.
+
+        The read-back half of installing a redactor: assigning one to a store is not proof that
+        it took (a setter may accept the value and drop it), so the caller asks the store for
+        what it now holds and checks it here. Empty means every value is covered — including the
+        ones deliberately not redacted because they are shorter than
+        :data:`MIN_REDACTABLE_LEN`, which nothing could cover and which must therefore never
+        read as a failure. Takes the same pairs :meth:`build` does.
+        """
+        items: Iterable[tuple[str, Any]] = (
+            cast("Mapping[str, Any]", secrets).items() if isinstance(secrets, Mapping) else secrets
+        )
+        missing = [name for name, value in items if value is not None and not self.covers(value)]
+        return tuple(dict.fromkeys(missing))
 
     def extend(self, secrets: Secrets) -> Redactor:
         """This redactor plus ``{name: value}`` — the same detectors, the union of the literals.
@@ -640,6 +692,7 @@ class RedactingSink:
 
 __all__ = [
     "DETECTOR_HOLD",
+    "IDENTITY_FIELDS_ATTR",
     "MIN_REDACTABLE_LEN",
     "NULL_REDACTOR",
     "PEM_MAX_BODY",

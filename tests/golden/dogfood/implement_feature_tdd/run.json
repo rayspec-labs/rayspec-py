@@ -9,6 +9,7 @@
   "created_at": "<ts>",
   "dry_run": true,
   "ended_at": "<ts>",
+  "fail_fast": false,
   "host": "<host>",
   "inputs": {
     "branch_hint": "demo",

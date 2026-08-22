@@ -284,8 +284,11 @@ def print_show(
     step paths for an unfinished run, see ``planned_step_paths``)."""
     style = common.status_style(run.status.value)
     dry = "  [dim](dry run — stub providers, no model calls)[/dim]" if run.dry_run else ""
+    # the recorded blast radius belongs beside the recorded rehearsal flag: both say what the
+    # next resume of this run will do, and neither is worth reading run.json by hand for
+    fast = "  [dim](fail-fast — a failure cancels running siblings)[/dim]" if run.fail_fast else ""
     run_id = _cell(run.run_id)
-    out.print(f"[bold]run {run_id}[/bold]  [{style}]{run.status.value}[/{style}]{dry}")
+    out.print(f"[bold]run {run_id}[/bold]  [{style}]{run.status.value}[/{style}]{dry}{fast}")
     if run.reason:
         out.print(f"  reason:     {_cell(run.reason)}", markup=False)
     out.print(

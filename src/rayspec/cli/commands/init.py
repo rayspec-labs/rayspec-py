@@ -10,7 +10,9 @@ tests.
 
 from __future__ import annotations
 
+import os
 import shlex
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import resources
@@ -24,6 +26,7 @@ from rich.markup import escape
 
 from rayspec.cli.commands._loader_common import console, err_console, fail
 from rayspec.cli.commands._skill_common import print_install_result
+from rayspec.resources import walk_files
 from rayspec.schema.base import suggest
 from rayspec.skill import install_skill, project_skill_dir
 
@@ -62,21 +65,17 @@ def _template_root(kind: str) -> Traversable:
     return resources.files("rayspec.cli.templates") / kind
 
 
-def _walk(node: Traversable, prefix: str = "") -> list[tuple[str, Traversable]]:
-    """``[(relative posix path, file)]`` for every file below ``node``, sorted by path."""
-    found: list[tuple[str, Traversable]] = []
-    for child in node.iterdir():
-        rel = f"{prefix}{child.name}"
-        if child.is_dir():
-            found.extend(_walk(child, f"{rel}/"))
-        elif not child.name.startswith((".", "__")) and child.name != "__init__.py":
-            found.append((rel, child))
-    return sorted(found, key=lambda item: item[0])
-
-
 def template_files(kind: str) -> list[tuple[str, Traversable]]:
-    """The template files of ``kind`` as ``[(".rayspec/<path>", resource)]``."""
-    return [(f"{PROJECT_DIR}/{rel}", node) for rel, node in _walk(_template_root(kind))]
+    """The template files of ``kind`` as ``[(".rayspec/<path>", resource)]``.
+
+    Dotfiles and the package plumbing (``__init__.py``) belong to the wheel, not to the
+    scaffold a user asked for.
+    """
+    files = walk_files(
+        _template_root(kind),
+        keep_file=lambda _rel, name: not name.startswith((".", "__")) and name != "__init__.py",
+    )
+    return [(f"{PROJECT_DIR}/{rel}", node) for rel, node in files]
 
 
 #: ``{kind: (".rayspec/workflows/example.yaml", ...)}`` — what each kind writes.
@@ -89,9 +88,6 @@ SCAFFOLD_FILES: dict[str, tuple[str, ...]] = {
 #: wheel target's ``sources`` maps the repository's ``examples/`` here, through the ordinary file
 #: selection, so a used checkout's local state never reaches the artefact).
 EXAMPLES_DIR = "examples"
-
-#: Files of an example that belong to the repository's test harness, not to a user's project.
-EXAMPLE_SKIP = frozenset({"checks.yaml"})
 
 #: Files of an example that are documentation only. An existing copy is kept instead of refused:
 #: trying an example inside a repository that already has a README is a normal thing to do, and
@@ -118,22 +114,16 @@ def examples_root() -> Traversable | None:
     return None
 
 
-def _walk_project(node: Traversable, prefix: str = "") -> list[tuple[str, Traversable]]:
+def _walk_project(node: Traversable) -> list[tuple[str, Traversable]]:
     """``[(relative posix path, file)]`` below ``node``, sorted; ``.rayspec/`` is kept.
 
-    Unlike :func:`_walk` this keeps dot-directories (an example *is* a ``.rayspec/`` project) and
-    drops only build artefacts and the files of :data:`EXAMPLE_SKIP`.
+    Unlike :func:`template_files` this keeps dot-directories (an example *is* a ``.rayspec/``
+    project) and drops only build artefacts. **Everything else goes**, ``checks.yaml`` included:
+    it is the example's own test suite, ``rayspec test`` is a shipped command, and a scaffolded
+    project that cannot run the cases its README describes is a project with a missing file. It is
+    also what every example README's tree diagram says is there.
     """
-    found: list[tuple[str, Traversable]] = []
-    for child in node.iterdir():
-        rel = f"{prefix}{child.name}"
-        if child.is_dir():
-            if child.name == "__pycache__":
-                continue
-            found.extend(_walk_project(child, f"{rel}/"))
-        elif rel not in EXAMPLE_SKIP:
-            found.append((rel, child))
-    return sorted(found, key=lambda item: item[0])
+    return walk_files(node, keep_dir=lambda _rel, name: name != "__pycache__")
 
 
 def _names(root: Traversable) -> tuple[str, ...]:
@@ -366,8 +356,9 @@ def scaffold(root: Path, *, kind: str = "code", force: bool = False) -> list[Sca
 
     Raises :class:`NotADirectoryError` when ``root`` exists but is not a directory,
     :class:`IsADirectoryError` when a *directory* sits where a template file goes (with or
-    without ``force``), and any other :class:`OSError` of the filesystem unchanged — the CLI
-    maps them to ``error: …`` + exit 2.
+    without ``force``), :class:`OSError` when a file it would overwrite is a symbolic link, and
+    any other :class:`OSError` of the filesystem unchanged — the CLI maps them to ``error: …``
+    + exit 2.
     """
     return _place(root, template_files(kind), force=force)
 
@@ -378,24 +369,93 @@ def _place(root: Path, files: list[tuple[str, Traversable]], *, force: bool) -> 
     The one writer behind :func:`scaffold` and :func:`scaffold_example`, so a template scaffold
     and an example scaffold report and fail identically. The standard
     ``.rayspec/{workflows,agents,prompts,stubs}`` directories are always created.
+
+    **Whole or not at all.** A scaffold is a project, not a pile of files: half of one is a
+    directory whose own commands fail, and — because ``.rayspec/`` is what makes a directory a
+    rayspec project — a half-written one is also a project that did not exist a moment ago. So
+    every file is read first, then written to a temporary name beside its target (which is where
+    a full disk or a read-only directory shows up), and only then are the temporaries moved into
+    place. Anything that goes wrong before that last step leaves the directory exactly as it was:
+    the temporaries are removed and so are the directories this call created. Refusing was
+    already atomic (:func:`example_conflicts` runs before anything is written); this is the
+    error path catching up.
+
+    Two consequences of the rename, both decided here rather than left to the umask. The target
+    becomes a NEW inode, so the mode of the file being replaced is copied onto the temporary
+    first: overwriting a ``config.yaml`` somebody chmodded to ``0600`` changes its content, not
+    who may read it. And a symbolic link is refused (before anything is written, like a
+    directory in the way): ``os.replace`` would silently swap the link for a regular file, while
+    writing through it would change a file outside the project the scaffold is writing.
     """
     if root.exists() and not root.is_dir():
         raise NotADirectoryError(f"{root} is not a directory")
-    for sub in ALWAYS_DIRS:
-        (root / PROJECT_DIR / sub).mkdir(parents=True, exist_ok=True)
-    results: list[ScaffoldFile] = []
+    planned: list[tuple[ScaffoldFile, bytes, int | None]] = []
     for rel, node in files:
         target = root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_dir():
             raise IsADirectoryError(f"{target} is a directory, expected a file (or nothing)")
         existed = target.exists()
         if existed and not force:
-            results.append(ScaffoldFile(rel, target, "skipped"))
+            planned.append((ScaffoldFile(rel, target, "skipped"), b"", None))
             continue
-        target.write_bytes(node.read_bytes())
-        results.append(ScaffoldFile(rel, target, "overwritten" if existed else "created"))
-    return results
+        if target.is_symlink():
+            raise OSError(
+                f"{target} is a symbolic link, expected a file (or nothing) — a scaffold writes "
+                f"files inside the project it scaffolds; remove the link and re-run"
+            )
+        # read before writing anything: an unreadable source is then not half a scaffold either
+        planned.append(
+            (
+                ScaffoldFile(rel, target, "overwritten" if existed else "created"),
+                node.read_bytes(),
+                target.stat().st_mode & 0o7777 if existed else None,
+            )
+        )
+    created_dirs: list[Path] = []
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for sub in ALWAYS_DIRS:
+            _mkdir_p(root / PROJECT_DIR / sub, created_dirs)
+        for item, data, mode in planned:
+            if item.action == "skipped":
+                continue
+            _mkdir_p(item.path.parent, created_dirs)
+            tmp = item.path.with_name(f".{item.path.name}.rayspec-{os.getpid()}")
+            tmp.write_bytes(data)
+            if mode is not None:  # the replaced file's mode, not the umask's
+                os.chmod(tmp, mode)
+            staged.append((tmp, item.path))
+        for tmp, target in staged:
+            os.replace(tmp, target)
+    except BaseException:
+        _undo(staged, created_dirs)
+        raise
+    return [item for item, _, _ in planned]
+
+
+def _mkdir_p(path: Path, created: list[Path]) -> None:
+    """``mkdir -p path``, appending the directories that did not exist yet (shallowest first)."""
+    missing: list[Path] = []
+    node = path
+    while not node.exists() and node.parent != node:
+        missing.append(node)
+        node = node.parent
+    path.mkdir(parents=True, exist_ok=True)
+    created.extend(reversed(missing))
+
+
+def _undo(staged: list[tuple[Path, Path]], created_dirs: list[Path]) -> None:
+    """Remove the temporaries and the directories this call created; never raises.
+
+    Directories are removed deepest first and only while they are empty, so a directory the
+    target already had — or one somebody else is using — is left alone.
+    """
+    for tmp, _target in staged:
+        with suppress(OSError):
+            tmp.unlink()
+    for directory in reversed(created_dirs):
+        with suppress(OSError):  # not empty: something else lives there now
+            directory.rmdir()
 
 
 def detect_kind(root: Path) -> str | None:

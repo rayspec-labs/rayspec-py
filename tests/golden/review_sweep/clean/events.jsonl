@@ -1,0 +1,45 @@
+{"data": {"dry_run": true, "resume_count": 0, "workdir": "<workdir>", "workflow": "review_sweep"}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.started"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "api", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:api:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:api:1", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Nothing ", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "worth ", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "reporting.", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- Nothing worth reporting.", "ts": "<ts>"}, "step_path": "api", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "api", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "api_report", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "api_report", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "collect", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "collect", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "digest", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:digest:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:digest:1", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "All ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "three ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "angles ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "answered; ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "nothing ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "worth ", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "reporting.", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "All three angles answered; nothing worth reporting.", "ts": "<ts>"}, "step_path": "digest", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "digest", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "docs", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:docs:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:docs:1", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Nothing ", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "worth ", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "reporting.", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- Nothing worth reporting.", "ts": "<ts>"}, "step_path": "docs", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "docs", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "docs_report", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "docs_report", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "prompt"}, "run_id": "<run-id>", "step_path": "tests", "ts": "<ts>", "type": "step.started"}
+{"record": {"attempt": 1, "call_id": null, "data": {"session_ref": "stub:tests:1"}, "kind": "session", "name": null, "nested": false, "text": "stub:tests:1", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "- ", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "Nothing ", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "worth ", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text_delta", "name": null, "nested": false, "text": "reporting.", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"record": {"attempt": 1, "call_id": null, "data": {}, "kind": "text", "name": null, "nested": false, "text": "- Nothing worth reporting.", "ts": "<ts>"}, "step_path": "tests", "type": "stream"}
+{"data": {"cost_usd": null, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "tests", "ts": "<ts>", "type": "step.finished"}
+{"data": {"attempt": 1, "kind": "shell"}, "run_id": "<run-id>", "step_path": "tests_report", "ts": "<ts>", "type": "step.started"}
+{"data": {"cost_usd": null, "dry_run": true, "duration_ms": 0, "error": null, "skip_reason": null, "status": "succeeded", "tolerated": false, "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": "tests_report", "ts": "<ts>", "type": "step.finished"}
+{"data": {"cost_usd": null, "outputs": {"answered": 3, "digest": "All three angles answered; nothing worth reporting.", "reports": 3}, "reason": null, "status": "succeeded", "usage": {"cache_write": 0, "cached_input": 0, "input": 0, "output": 0, "reasoning": 0}}, "run_id": "<run-id>", "step_path": null, "ts": "<ts>", "type": "run.finished"}

@@ -46,6 +46,7 @@ from rayspec.cli.commands.eval import echo_block
 from rayspec.cli.commands.lock import LockedOption, enforce_lockfile
 from rayspec.config import Config
 from rayspec.engine import context_rebuild
+from rayspec.engine.approval import humanize_duration
 from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, unheld_classes
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
@@ -98,13 +99,21 @@ def _step_detail(step: StepModel, rw: ResolvedWorkflow, path: str) -> str:
 
 
 def _caps_line(rw: ResolvedWorkflow) -> str:
-    """``  budget_usd $1.50  max_tokens 500,000`` for the run-level caps that are set."""
+    """``  budget_usd $1.50  max_tokens 500,000  timeout_total 2h 0m`` for the caps that are set.
+
+    All three run-level caps or none: they are one circuit breaker, so a line that named the
+    cost and token caps and left the wall-clock one out would read as "this run has no time
+    limit". The duration is rendered the way the breach itself is (``time limit exceeded
+    (elapsed 2h 4m > timeout_total 2h 0m)``), so the plan and the reason agree.
+    """
     defaults = rw.workflow.defaults
     parts: list[str] = []
     if defaults.budget_usd is not None:
         parts.append(f"budget_usd ${defaults.budget_usd:.2f}")
     if defaults.max_tokens is not None:
         parts.append(f"max_tokens {defaults.max_tokens:,}")
+    if defaults.timeout_total is not None:
+        parts.append(f"timeout_total {humanize_duration(defaults.timeout_total * 1000)}")
     return "".join(f"  {part}" for part in parts)
 
 
@@ -403,6 +412,18 @@ def policy_class_rules(project_root: Path, home: Path | None) -> dict[str, Class
     return impl(project_root, home)
 
 
+def policy_in_force(project_root: Path, home: Path | None) -> bool:
+    """Whether an operator policy is in force at all — a different question from the rules.
+
+    A policy that caps spending and says nothing about classes still exists, and a report that
+    told the reader "no operator policy in force" two lines under the path of that file is how a
+    warning stops being read.
+    """
+    from rayspec.cli.commands.run import operator_policy
+
+    return operator_policy(project_root, home) is not None
+
+
 def gate_classes(rw: ResolvedWorkflow) -> list[tuple[str, str | None]]:
     """``(step path, approval class)`` of every gate — the run command's helper, lazily."""
     from rayspec.cli.commands.run import gate_classes as impl
@@ -544,7 +565,18 @@ def register(app: typer.Typer) -> None:
             input_exc = exc
         input_rows = _input_rows(rw, values, input_exc, inputs or [])
         providers_report = _provider_report(rw, caps, ctx.config)
-        classes = ApprovalClasses(rules=policy_class_rules(ctx.project_root, ctx.home))
+        try:
+            classes = ApprovalClasses(
+                rules=policy_class_rules(ctx.project_root, ctx.home),
+                policy_loaded=policy_in_force(ctx.project_root, ctx.home),
+            )
+        except RayspecError as exc:  # an unreadable or invalid policy file
+            # the same boundary `run` and `resume` stand inside. A plan measured against a
+            # policy nobody could read would be a report about guardrails that may or may not
+            # exist, so it is not printed: a mistyped key gets the loader's sentence and exit 2,
+            # like every other file this command cannot read.
+            fail(str(exc), hint=exc.hint)
+            return
         warnings = [*rw.warnings, *report.warnings, *unheld_classes(gate_classes(rw), classes)]
         if caps.warning:
             warnings.append(caps.warning)
@@ -574,6 +606,9 @@ def register(app: typer.Typer) -> None:
                 "isolation": rw.workflow.isolation,
                 "budget_usd": rw.workflow.defaults.budget_usd,
                 "max_tokens": rw.workflow.defaults.max_tokens,
+                # seconds, like every other duration this API reports; the three run-level caps
+                # are one breaker, so all three keys are always present (``null`` = no cap)
+                "timeout_total": rw.workflow.defaults.timeout_total,
                 "description": rw.workflow.description,
                 "inputs": {row["name"]: row for row in input_rows},
                 "input_errors": input_errors,

@@ -69,6 +69,8 @@ from rayspec.policy.layers import (
 from rayspec.policy.model import (
     ACCESS_ORDER,
     AccessPolicy,
+    ApprovalClassPolicy,
+    ApprovalsPolicy,
     McpPolicy,
     ModelsPolicy,
     Policy,
@@ -105,6 +107,8 @@ __all__ = [
     "WORKFLOW_CONTROLS",
     "AccessPolicy",
     "AllowedOption",
+    "ApprovalClassPolicy",
+    "ApprovalsPolicy",
     "Carried",
     "ChangeGuard",
     "Control",

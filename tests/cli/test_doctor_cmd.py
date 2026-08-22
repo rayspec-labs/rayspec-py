@@ -111,10 +111,22 @@ def _check(report: dict, check_id: str) -> dict:
     return found
 
 
+def _unwrapped(text: str) -> str:
+    """``text`` with every run of whitespace gone, for a needle a table cell may have folded.
+
+    A redirected listing is capped at 200 columns and the `detail` cell gets most of them, so a
+    long enough project path pushes a phrase onto a second physical line: the test then passes or
+    fails on how deep the temporary directory happened to be, which is nothing to do with the
+    behaviour it checks.
+    """
+    return "".join(text.split())
+
+
 def test_doctor_table_all_green(sdks: FakeSdks, project: Path, monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     code, out = _doctor("--root", str(project))
     assert code == 0, out
+    flat = _unwrapped(out)
     for needle in (
         "python",
         "rayspec",
@@ -131,8 +143,8 @@ def test_doctor_table_all_green(sdks: FakeSdks, project: Path, monkeypatch) -> N
         "login state unknown",
         "1 workflow",
     ):
-        assert needle in out, f"{needle!r} missing in:\n{out}"
-    assert "all required checks passed" in out
+        assert _unwrapped(needle) in flat, f"{needle!r} missing in:\n{out}"
+    assert _unwrapped("all required checks passed") in flat
 
 
 def test_doctor_json_shape(sdks: FakeSdks, project: Path) -> None:

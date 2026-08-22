@@ -7,7 +7,7 @@ workflow `outputs:` (one of them shaped with `regex_search`), a tier model (`sma
 examples/hello_review/
 ├── .rayspec/workflows/hello_review.yaml   # the workflow
 ├── stubs.yaml                             # scripted answer for --dry-run
-├── checks.yaml                            # what scripts/check_examples.py asserts
+├── checks.yaml                            # the cases `rayspec test` runs here
 └── README.md
 ```
 

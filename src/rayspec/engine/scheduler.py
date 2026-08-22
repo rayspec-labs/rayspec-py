@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-from collections.abc import Mapping
 from typing import Any
 
 import anyio
@@ -44,6 +43,7 @@ from rayspec.engine.context import (
     RunContext,
     StepOutcome,
     error_info,
+    failed_outcome,
     merge_cost_source,
     utcnow,
     view_of,
@@ -53,7 +53,7 @@ from rayspec.engine.executors.artifacts import collect_artifacts
 from rayspec.engine.graph import FAILED_LIKE, StepGraph, join_decision
 from rayspec.engine.retry import TIMEOUT_ERROR_TYPE, delay_for, policy_for, should_retry
 from rayspec.events.model import EventType
-from rayspec.providers.base import Usage
+from rayspec.providers.base import Usage, usage_dict
 from rayspec.schema import ApproveStep, StepModel, StepStatus
 from rayspec.store.model import ErrorInfo, StepRecord
 from rayspec.templating import TemplateRenderError
@@ -168,7 +168,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                         outcome = (
                             _skipped(record, "when_false")
                             if verdict is False
-                            else _failed(record, verdict)
+                            else failed_outcome(record, verdict)
                         )
                         await finish(outcome, step, scope, ctx)
                         settle(outcome)
@@ -242,7 +242,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                             outcome = (
                                 _skipped(record, "when_false")
                                 if verdict is False
-                                else _failed(record, verdict)
+                                else failed_outcome(record, verdict)
                             )
                             await finish(outcome, step, scope, ctx)
                             settle(outcome)
@@ -274,7 +274,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     control = state["control"]
     if control is not None and not isinstance(control, RunPaused):
         # a stop / reject cancelled the graph: the leftovers are decided, the cleanup ones run
-        await wind_down("stopped", cancelled=True)
+        await wind_down(STOPPED_REASON, cancelled=True)
     elif control is None and state["draining"] and fail_fast:
         await wind_down("run_failed", cancelled=False)
     # a cleanup step may have signalled a stop or a pause of its own (only if nothing had yet)
@@ -284,9 +284,18 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
     return outcomes
 
 
+#: The ``skip_reason`` a step carries when a ``stop:`` cancelled it while the sibling list was
+#: torn down. It is the marker the runner reads to tell a stop's own teardown from a failure that
+#: happened on its own (:func:`rayspec.engine.runner.stop_collateral`) — one name, so the two
+#: sides can never drift apart.
+STOPPED_REASON = "stopped"
+#: The same, for a pause.
+PAUSED_REASON = "paused"
+
+
 def cancel_reason_for(control: RunControl) -> str:
     """The ``skip_reason`` of steps interrupted because of ``control`` (``paused``/``stopped``)."""
-    return "paused" if isinstance(control, RunPaused) else "stopped"
+    return PAUSED_REASON if isinstance(control, RunPaused) else STOPPED_REASON
 
 
 def _evaluate_when(step: StepModel, scope: ExecScope, ctx: RunContext) -> bool | ErrorInfo:
@@ -329,7 +338,7 @@ async def run_one(
     except RunControl as exc:
         outcome = _controlled(record, exc)
     except Exception as exc:  # bugs become failed steps, not crashes
-        outcome = _failed(record, error_info(exc, type_="engine"))
+        outcome = failed_outcome(record, error_info(exc, type_="engine"))
     try:
         await finish(outcome, step, scope, ctx)
     except anyio.get_cancelled_exc_class():
@@ -378,7 +387,7 @@ async def _dispatch(
         with anyio.fail_after(timeout):
             return await executor(step, scope, ctx, record, record.attempts)
     except TimeoutError:
-        return _failed(
+        return failed_outcome(
             record,
             ErrorInfo(
                 type=TIMEOUT_ERROR_TYPE, message=f"timed out after {timeout:g}s", transient=False
@@ -440,7 +449,7 @@ async def run_leaf(
                 with anyio.fail_after(timeout):
                     outcome = await executor(step, scope, ctx, record, attempt)
             except TimeoutError:
-                outcome = _failed(
+                outcome = failed_outcome(
                     record,
                     ErrorInfo(
                         type=TIMEOUT_ERROR_TYPE,
@@ -454,7 +463,7 @@ async def run_leaf(
             except RunControl:
                 raise
             except Exception as exc:
-                outcome = _failed(record, error_info(exc, type_="engine"))
+                outcome = failed_outcome(record, error_info(exc, type_="engine"))
         accumulate(outcome.record)
         last = outcome
         rec = outcome.record
@@ -542,13 +551,6 @@ def _skipped(record: StepRecord, reason: str) -> StepOutcome:
     return StepOutcome(record=record)
 
 
-def _failed(record: StepRecord, error: ErrorInfo) -> StepOutcome:
-    record.status = StepStatus.FAILED
-    record.error = error
-    record.ok = False
-    return StepOutcome(record=record)
-
-
 def _interrupted(record: StepRecord, reason: str) -> StepOutcome:
     record.status = StepStatus.INTERRUPTED
     record.skip_reason = reason
@@ -560,10 +562,10 @@ def _interrupted(record: StepRecord, reason: str) -> StepOutcome:
 def _controlled(record: StepRecord, control: RunControl) -> StepOutcome:
     if isinstance(control, RunPaused):
         record.status = StepStatus.PAUSED
-        record.skip_reason = "paused"
+        record.skip_reason = PAUSED_REASON
     else:
         record.status = StepStatus.INTERRUPTED
-        record.skip_reason = "stopped"
+        record.skip_reason = STOPPED_REASON
         record.ok = False
     return StepOutcome(record=record, control=control)
 
@@ -605,7 +607,7 @@ async def finish(outcome: StepOutcome, step: StepModel, scope: ExecScope, ctx: R
     data: dict[str, Any] = {
         "status": str(rec.status.value),
         "duration_ms": rec.duration_ms,
-        "usage": _usage_dict(rec.usage),
+        "usage": usage_dict(rec.usage),
         "cost_usd": rec.cost_usd,
         "error": rec.error.model_dump() if rec.error is not None else None,
         "skip_reason": rec.skip_reason,
@@ -626,17 +628,9 @@ async def _finish_quietly(
         await finish(outcome, step, scope, ctx)
 
 
-def _usage_dict(usage: Any) -> Mapping[str, int]:
-    return {
-        "input": usage.input,
-        "cached_input": usage.cached_input,
-        "cache_write": usage.cache_write,
-        "output": usage.output,
-        "reasoning": usage.reasoning,
-    }
-
-
 __all__ = [
+    "PAUSED_REASON",
+    "STOPPED_REASON",
     "cancel_reason_for",
     "finalize",
     "finish",

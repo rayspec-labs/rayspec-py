@@ -23,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from anyio import to_thread
 
+from rayspec.fmt import humanize_duration
 from rayspec.providers.base import Usage
 from rayspec.providers.pricing import format_cost, format_tokens
 from rayspec.textsafe import safe_text
@@ -73,20 +74,6 @@ def _real_tty() -> bool:
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
     except (AttributeError, ValueError):
         return False
-
-
-def humanize_duration(ms: float | None) -> str:
-    """``0.3s`` · ``1.2s`` · ``31m 52s`` · ``1h 3m``; ``—`` when unknown."""
-    if ms is None:
-        return "—"
-    seconds = max(0.0, float(ms)) / 1000.0
-    if seconds < 59.95:  # below the point where ``.1f`` would print ``60.0s``
-        return f"{seconds:.1f}s"
-    minutes, sec = divmod(round(seconds), 60)
-    if minutes < 60:
-        return f"{minutes}m {sec}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes}m"
 
 
 def fmt_cost(cost_usd: float | None, cost_source: str = "provider") -> str:

@@ -126,6 +126,42 @@ class BudgetPolicy(StrictModel):
         return "budget policy"
 
 
+class ApprovalClassPolicy(StrictModel):
+    """``approvals.classes.<name>`` — what may approve a gate of one approval class.
+
+    The defaults are today's behaviour, so a class an operator merely names restricts nothing:
+    a key that is not set imposes nothing, here as everywhere else in the document.
+    """
+
+    allow_yes: bool = True
+    require_tty: bool = False
+
+    @classmethod
+    def _what(cls) -> str:
+        return "approval class"
+
+
+class ApprovalsPolicy(StrictModel):
+    """``approvals.classes`` — the approval classes an operator defines, by name.
+
+    A workflow's ``approve:`` step NAMES a class; only this block says what naming it costs. The
+    split is what makes a gate safe to leave on a schedule: a workflow can name a class but
+    cannot define one, so it can never loosen a rule set here.
+
+    Restrictive-only like every other block: ``allow_yes: false`` and ``require_tty: true``
+    remove an approval path that would otherwise exist, and there is no spelling that adds one.
+    :mod:`rayspec.engine.approval_classes` reads the merged block through
+    :func:`~rayspec.engine.approval_classes.rules_from_policy`, which is the only thing the
+    engine takes from a policy document.
+    """
+
+    classes: dict[str, ApprovalClassPolicy] = Field(default_factory=dict)
+
+    @classmethod
+    def _what(cls) -> str:
+        return "approvals policy"
+
+
 class TrustPolicy(StrictModel):
     """``trust.require`` — only workflows listed in ``.rayspec/trusted.yaml`` may run."""
 
@@ -150,6 +186,7 @@ class Policy(StrictModel):
     tools: ToolsPolicy = Field(default_factory=ToolsPolicy)
     mcp: McpPolicy = Field(default_factory=McpPolicy)
     workspace: WorkspacePolicy = Field(default_factory=WorkspacePolicy)
+    approvals: ApprovalsPolicy = Field(default_factory=ApprovalsPolicy)
     trust: TrustPolicy = Field(default_factory=TrustPolicy)
     budget: BudgetPolicy = Field(default_factory=BudgetPolicy)
     max_consecutive_failures: Count | None = None
@@ -164,6 +201,8 @@ __all__ = [
     "ACCESS_ORDER",
     "AccessPolicy",
     "Amount",
+    "ApprovalClassPolicy",
+    "ApprovalsPolicy",
     "BudgetPolicy",
     "Count",
     "McpPolicy",

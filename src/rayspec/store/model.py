@@ -6,7 +6,7 @@ from __future__ import annotations
 import secrets
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +25,7 @@ def new_run_id() -> str:
 
 
 def utcnow() -> datetime:
+    """Now, as an aware UTC datetime — the one clock every record timestamp is stamped from."""
     return datetime.now(UTC)
 
 
@@ -35,6 +36,15 @@ class _Model(BaseModel):
         validate_by_alias=True,
         serialize_by_alias=True,
     )
+
+    #: Fields of THIS record that are its address rather than its content — the strings
+    #: something later resolves the record by. Redaction leaves them alone wherever the record
+    #: turns up (:data:`rayspec.redact.IDENTITY_FIELDS_ATTR`): a ``secret: true`` value that
+    #: happens to equal one of them is a collision, and rewriting it does not leak less, it
+    #: loses the record. Each of these is derived from the project on disk — a workflow file,
+    #: a step id, a directory — never from an input, so keeping it discloses nothing that
+    #: reading the project would not. Everything else a record holds stays redacted.
+    redaction_identity: ClassVar[tuple[str, ...]] = ()
 
 
 class SessionRef(_Model):
@@ -115,6 +125,14 @@ class ActorInfo(_Model):
 
 
 class StepRecord(_Model):
+    #: ``path`` is the key this record is already stored under in ``RunRecord.steps`` and the
+    #: directory its files live in, ``id`` is that path's last segment, and the two ``_ref``
+    #: fields are run-dir-relative paths the store built out of ``path``. Redacting any of them
+    #: hides nothing the mapping's own keys do not show, while ``rayspec explain``/``logs`` then
+    #: fail to parse the step they were handed (``invalid step path '[REDACTED:…]'``) and the
+    #: refs point at files that are not there.
+    redaction_identity: ClassVar[tuple[str, ...]] = ("path", "id", "output_ref", "prompt_ref")
+
     path: str
     id: str
     kind: str
@@ -178,6 +196,11 @@ class StepRecord(_Model):
 
 
 class WorkspaceInfo(_Model):
+    #: the directory a resumed run runs in — ``rayspec resume``/``approve`` rebuild the engine's
+    #: workspace from it, so a rewritten one fails every remaining step with ``cwd does not
+    #: exist`` and the second half of the run is lost
+    redaction_identity: ClassVar[tuple[str, ...]] = ("workdir",)
+
     isolation: str = "none"
     workdir: str | None = None
     branch: str | None = None
@@ -211,6 +234,18 @@ class PauseInfo(_Model):
 
 
 class RunRecord(_Model):
+    #: ``run_id`` names the directory this record lives in; ``workflow_name``/``workflow_path``
+    #: are what ``resume``/``approve``/``reject``/``explain`` re-load the workflow by; and
+    #: ``project_root`` is the project every one of those commands re-scopes itself to.
+    #: :data:`rayspec.store.file.RUN_IDENTITY_FIELDS` is this tuple, under the name the store
+    #: hands to its writers.
+    redaction_identity: ClassVar[tuple[str, ...]] = (
+        "run_id",
+        "workflow_name",
+        "workflow_path",
+        "project_root",
+    )
+
     schema_version: int = Field(default=RUN_RECORD_SCHEMA_VERSION, alias="schema")
     run_id: str
     workflow_name: str
@@ -235,6 +270,13 @@ class RunRecord(_Model):
     #: ``--dry-run`` (stub providers, shell/python skipped unless ``--exec-shell``); additive
     #: field so listings can tell a rehearsal from a real run
     dry_run: bool = False
+    #: additive: ``--fail-fast`` — the failure policy this run was STARTED with, so that a
+    #: resume continues it with the same blast radius instead of draining what the first half
+    #: would have cancelled. The workflow's own ``defaults.on_step_failure`` is not recorded:
+    #: it belongs to the workflow, and the workflow hash already refuses a resume of a changed
+    #: one. Like the flag, it may only ever be TIGHTENED — a resume that passes ``--fail-fast``
+    #: sets it, a resume that does not can never clear it. ``False`` in older records.
+    fail_fast: bool = False
     workspace: WorkspaceInfo = Field(default_factory=WorkspaceInfo)
     pause: PauseInfo | None = None
     outputs: dict[str, Any] | None = None
@@ -248,6 +290,14 @@ class RunRecord(_Model):
     #: additive: absolute path of the ``--stubs`` file given at launch (``None`` when the run
     #: was not scripted); ``resume``/``approve``/``reject`` reuse it, ``--stubs`` overrides it
     stubs_path: str | None = None
+    #: additive: whether ``--fail-fast`` was in force for this run. The failure policy is a
+    #: blast-radius control, and the CLI flag is the operator's override of the workflow's own
+    #: ``defaults.on_step_failure`` — it lives on the command line, so without recording it the
+    #: second half of a run (``resume``/``approve``/``reject``) silently ran under a looser
+    #: policy than the first. Written at launch and re-written on every resume entry, where the
+    #: flag may still TIGHTEN it (it never loosens); ``False`` in records written before the
+    #: field existed, which is the behaviour those runs had.
+    fail_fast: bool = False
     #: additive: names of the inputs declared ``secret: true``; their values are never
     #: persisted (``inputs`` holds ``"<secret>"`` for the ones that were given) and must be
     #: supplied again on every resume entry

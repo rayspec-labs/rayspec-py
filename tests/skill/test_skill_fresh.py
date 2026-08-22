@@ -49,8 +49,9 @@ def test_every_reference_has_a_docs_source_and_the_header(gen: ModuleType) -> No
         )
         assert f"{DOCS_BASE}docs/{name}.md" in head[1]
         assert all(f"{n}.md" in head[2] for n in REFERENCE_NAMES)
+        page = (REPO_ROOT / "docs" / f"{name}.md").read_text("utf-8")
         body = text.split("\n", 4)[4]
-        assert body == _rewritten(gen, (REPO_ROOT / "docs" / f"{name}.md").read_text("utf-8"))
+        assert body == _rewritten(gen, gen.strip_markers(page))
 
 
 def _rewritten(gen: ModuleType, text: str) -> str:
