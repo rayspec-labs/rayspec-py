@@ -966,13 +966,15 @@ def test_a_run_that_did_not_load_reaches_the_report_with_its_exit_code(
     assert "unknown step 'gone'" in comment, comment
 
 
-def test_the_reason_a_workflow_did_not_load_is_only_ever_on_stdout(
+def test_a_document_that_parses_but_does_not_validate_reports_on_stdout(
     tmp_path: Path, home: Path
 ) -> None:
-    """The renderer parses stdout for it because stderr never carries it — but stderr is not empty.
+    """One of the two failure shapes: the reason is an `errors` object on stdout.
 
-    The comment next to that parsing said "nothing on stderr", and a justification that is half
-    false next to the code it justifies is how the other half stops being checked.
+    Named for what it checks. A document that does not PARSE is the other shape and reports the
+    other way — stdout empty, one `error:` line on stderr — which is why the renderer reads both
+    and why the comment beside it says so. A justification that is half true next to the code it
+    justifies is how the other half stops being checked.
     """
     events, exit_code = _dry_run(tmp_path, home, DOES_NOT_LOAD)
     assert exit_code == 2
@@ -1143,6 +1145,7 @@ def test_the_copy_paste_example_points_at_files_rayspec_init_writes(
     pull request, in the one file that is supposed to be the easy part.
     """
     root = tmp_path / "consumer"
+    root.mkdir()  # --root names an existing directory: a mistyped path is never scaffolded into
     result = CliRunner().invoke(app, ["init", "--root", str(root), "--no-skill"])
     assert result.exit_code == 0, result.stdout
 

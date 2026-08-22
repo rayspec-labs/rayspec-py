@@ -19,8 +19,10 @@ Two CI-only behaviours are worth knowing before the first red build:
   ([`rayspec lock`](cli.md#rayspec-lock)). A project with no lockfile is not affected — there is
   nothing to enforce — so the default never breaks a repository that did not opt in.
 - **Nothing may wait for a person.** Pass `--no-interactive` so an `approve:` gate pauses the run
-  (exit 3) instead of prompting into a log nobody is reading. That is about *real* runs in CI: a
-  dry run auto-approves every gate, so it never pauses and never exits 3.
+  (exit 3) instead of prompting into a log nobody is reading. A dry run approves a gate by itself
+  and usually runs straight through — but not when an operator policy holds the gate's approval
+  class (`allow_yes: false`): that is never waived, by a rehearsal as much as by `--yes`, so a dry
+  run can pause at exit 3 too. Treat 3 as an outcome your job may see, not one it cannot.
 
 ## The dry-run check, as a workflow you can call
 

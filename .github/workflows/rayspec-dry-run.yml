@@ -220,9 +220,12 @@ jobs:
                   if isinstance(record, dict):
                       records.append(record)
 
-          # A workflow that does not load is reported as one object on stdout — there is no
-          # event stream, and stderr carries the run's notes (the policy line, any warnings)
-          # rather than the reason, so this is the only place the reason exists.
+          # A workflow can fail to run in two shapes and they report differently, so the body is
+          # built from BOTH sources. A document that parses but does not validate (an unknown step
+          # in a `needs:`, a capability the provider lacks) puts an `errors` object on stdout —
+          # that is what this loop reads. A document that does not parse at all (bad YAML, a step
+          # with no kind) writes nothing to stdout and one `error:` line to stderr, which the run
+          # step captured and RAYSPEC_ERRORS renders below.
           problems: list[str] = []
           kind = "errors"
           for record in records:
