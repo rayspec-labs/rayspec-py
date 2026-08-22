@@ -452,5 +452,3 @@ The workflow language, the scheduler, the two provider adapters and the command 
   and running it on 3.11. **GitHub Actions has never produced a green run**: standard runners are
   free only on public repositories, so every workflow file here — CI, the release pipeline, the
   reusable check, the docs publish — is written and locally checked but has not executed for real.
-
-[1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0

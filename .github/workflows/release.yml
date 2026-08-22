@@ -208,7 +208,9 @@ jobs:
             echo "   then \`pip install rayspec\` can still resolve to it."
             echo "2. **Move the \`v1\` tag** onto this commit, so a repository calling the"
             echo "   reusable dry-run workflow at \`@v1\` gets this release."
-            echo "3. Roll the next \`## [Unreleased]\` heading into CHANGELOG.md."
+            echo "3. Roll the next \`## [Unreleased]\` heading into CHANGELOG.md, and give the"
+            echo "   released version the link reference it has no target for until this tag"
+            echo "   exists: \`[${VERSION}]: <this release's URL>\` at the foot of the file."
             echo
             echo "Verify what was published:"
             echo
