@@ -19,7 +19,9 @@ environment variable.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,16 +185,62 @@ def check_locked(resolved: ResolvedWorkflow, lockfile: Lockfile | None) -> list[
     return drifts
 
 
+#: The one :func:`_unusable` answer that means "there is no lockfile here".
+_MISSING = "missing"
+
+
+def _unusable(path: Path) -> str | None:
+    """What is wrong with ``path`` as a lockfile, or ``None`` when it is a regular file.
+
+    :data:`_MISSING` is the ONE answer that means "no lockfile" — the ordinary case, and the
+    only silent one. Everything else describes a path that exists in *some* shape and therefore
+    must not be reported as absent: ``--locked`` saying "no lockfile at .rayspec/rayspec.lock"
+    about a dangling symlink the operator can see in `ls` sends them looking for the wrong
+    problem. This is the shape :mod:`rayspec.policy` uses for the sibling guardrail file, and
+    ``docs/policy.md`` makes the promise for both.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return _MISSING
+    except OSError as exc:
+        return f"cannot be read: {exc.strerror or exc}"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            info = os.stat(path)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return "is a symlink loop"
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                return "is a dangling symlink"
+            return f"is a symlink that cannot be resolved: {exc.strerror or exc}"
+    if stat.S_ISDIR(info.st_mode):
+        return "is a directory"
+    if not stat.S_ISREG(info.st_mode):
+        return "is not a regular file"
+    return None
+
+
 def load_lockfile(project_root: Path) -> Lockfile | None:
     """Read ``.rayspec/rayspec.lock`` (``None`` when absent); raise :class:`LockfileError`.
 
     Strict YAML (the loader's reader: no duplicate keys, no surprise types) and a strict shape —
-    a lockfile that cannot be trusted must not silently pass a ``--locked`` run.
+    a lockfile that cannot be trusted must not silently pass a ``--locked`` run. A path that is
+    there but is not a readable file is an error naming what it is (:func:`_unusable`); only a
+    genuinely absent one answers ``None``.
     """
     path = lockfile_path(project_root)
+    wrong = _unusable(path)
+    if wrong == _MISSING:
+        return None
+    if wrong is not None:
+        raise LockfileError(
+            f"{path}: the lockfile {wrong}",
+            hint="remove the path and run `rayspec lock` to write a fresh lockfile",
+        )
     try:
         text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except FileNotFoundError:  # pragma: no cover - it was there a moment ago
         return None
     except OSError as exc:
         raise LockfileError(f"{path}: {exc}") from exc

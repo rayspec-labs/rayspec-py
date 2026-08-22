@@ -728,18 +728,31 @@ max_consecutive_failures: 3
   `pause.reason: "failures"` — a different control from `budget`, and a different decision.
 - **Continuing**: `rayspec resume <run>` re-evaluates the ceiling — raise it (or wait for the
   next day) and the run picks up where it stopped. `rayspec approve <run> "checked it"` says
-  "run it anyway" and **waives** the control that stopped this run: approving a spend does not
-  clear the failure streak, and closing the breaker does not waive a spend. `rayspec reject
-  <run>` changes nothing, so the run pauses again on the same ceiling.
+  "run it anyway" and **waives the control that stopped this run — only that one**: approving a
+  spend does not clear the failure streak, and closing the breaker does not waive a spend. A run
+  approved past the breaker that then reaches `policy.budget` pauses again on the money, and the
+  console says which control the approval covered. `rayspec reject <run>` changes nothing, so
+  the run pauses again on the same ceiling.
+- A waived run is still **counted**: "this run may cost more" is not "this run costs nothing",
+  and what it spends is in the day and month totals the next run is measured against.
 - `resume`, `approve` and `reject` are subject to all of it, exactly like `run`: they start the
   same agents, so they take the same host run slot and are measured against the same envelope.
 - A `--dry-run` spends nothing and is never counted. A `--stubs` run of a workflow whose agents
   are `provider: stub` is a real run as far as the ledger is concerned: if you have configured
   `pricing:` for the stub's model, that price is what gets committed. Leave the stub's models
   out of `pricing:` if you would rather it counted as nothing.
-- The ledger is replaced whole on every write and never left half-written. If it is ever found
-  unreadable it is replaced with a fresh document — and that is reported as a `warning` event
-  and on the console, because an envelope that quietly went back to zero is worse than none.
+- The ledger is replaced whole on every write and never left half-written. Reading it never
+  fails a command: a document that cannot be parsed at all, one that is empty (a zero-byte file
+  is a truncation — rayspec never writes one) and one stamped with a format version newer than
+  this rayspec understands are each replaced with a fresh document, and a single total that is
+  not a number is dropped while everything readable is kept. The repaired document is written
+  back on the next commit, so one bad byte cannot break every later `run`, `resume` and
+  `approve`. Every one of those is reported as a `warning` event, on the console and in
+  `rayspec show`, because an envelope that quietly went back to zero is worse than none.
+- Writing it cannot fail a command either. A path that can be read but never *written* — a
+  directory where `spend.json` belongs, a read-only mount, a full disk — costs the run its
+  accounting, not the run: one `warning` event says the ledger could not be written and that
+  this run's spend and outcome are not in the operator's totals, and the run finishes normally.
 
 ### Host run slots
 
@@ -795,7 +808,9 @@ CI job is the commonest unattended shape there is, and the workflow-hash guard d
 *tier* that was re-pointed in `config.yaml`. With `--repo`, the lockfile checked is the one in the
 checkout the workflow came from. The CI default only enforces a lockfile that exists — a project
 that never ran `rayspec lock` is not broken by setting a variable — while an explicit `--locked`
-refuses a missing one. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
+refuses a missing one. Not refusing is not the same as not mentioning it: under the CI default
+with no lockfile the run prints one `warning:` line on stderr saying nothing is pinned, so a CI
+log where the lockfile was checked and a CI log where there was no lockfile do not look alike. Agents are keyed the way `run.json`'s `toolchain.models` keys them, so a
 stored run and the lockfile talk about the same agents.
 
 ## Publishing the run branch
