@@ -648,6 +648,10 @@ that project's runs; there is no server, no shared ledger and nothing to roll up
 or people. The file holds dates, run ids, counts and dollar amounts — never an input, never an
 environment variable, never a prompt.
 
+These are keys of the same `policy.yaml` [the policy page](policy.md#the-keys) documents — read
+through the same loader, layered by the same most-restrictive-wins rules, and counted as controls
+by the same trigger. There is one document, not two.
+
 ### Spending envelopes and the failure breaker
 
 ```yaml

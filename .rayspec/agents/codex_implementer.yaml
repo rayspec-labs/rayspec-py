@@ -1,8 +1,9 @@
 # The same role on Codex (swap with `agent: codex_implementer` or `defaults.agent`).
 provider: codex
 model: large                        # gpt-5.4 @ effort high (built-in tier)
-access: workspace-write
+access: full                        # like implementer.yaml: uv needs the index and writes
+                                    # outside the worktree. `access:` is the neutral field for
+                                    # that — a raw sandbox_workspace_write override is refused
+                                    # while any control governs the agent (see docs/policy.md).
 instructions_file: prompts/implementer.md
 tools: { deny: [web] }
-provider_options:
-  codex: { config: { sandbox_workspace_write: { network_access: true } } }   # uv needs the index

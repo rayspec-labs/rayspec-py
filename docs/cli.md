@@ -96,7 +96,10 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is also refused — "nothing to check" must not read as "everything is fine" |
 | `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 1h30m`), a bare number of seconds (`--wait-slot 90`), or `forever` — the only spelling that waits indefinitely. `--wait-slot 0` does **not** wait (the default); a negative duration is a usage error. Otherwise exit 2, naming the run that holds the slot. A `--dry-run` takes no slot |
 
-Console output is one line per finished step (`✓ review succeeded 4.1s · 1.2k tok · $0.03`;
+On **stderr**, before the run starts, comes the policy line — `policy: .rayspec/policy.yaml`, or
+`policy: none in force (searched …)` — followed by the `warnings:` block, so neither ends up in
+piped stdout. Console output on stdout is one line per finished step
+(`✓ review succeeded 4.1s · 1.2k tok · $0.03`;
 a step replayed from the resume cache prints `↺ review reused (4.1s)`), plus run/workspace/
 decision lines and the final `■ run <id> <status>` line, then a summary: the `outputs:` table,
 the worktree path and branch, the `decide with: rayspec approve|reject|resume <id>` hint when
@@ -156,10 +159,14 @@ errors. A name that is neither a discovered workflow nor a file is `error: unkno
 `--locked` / `--no-locked` additionally checks each workflow against
 [`.rayspec/rayspec.lock`](#rayspec-lock); a drifted agent is an **error** here, not a warning
 (on by default under `CI`).
-A workflow with `secret: true` inputs gets a dim marker line under its status —
-`secret inputs: token (secret; env-only, never persisted)`. `--json`: `[{name, path, ok, errors:
-[...], warnings: [...], secret_inputs: [...], problems: [...]}]` (exit 2 when any entry has
-errors); `errors` is one string per problem and `path` is the workflow's label
+Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
+~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
+found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
+discovered against `--root`, see [policy.md](policy.md)). A workflow with `secret: true` inputs
+gets a dim marker line too — `secret inputs: token (secret; env-only, never persisted)`.
+`--json`: `[{name, path, ok, errors: [...], warnings: [...], secret_inputs: [...],
+policy: {layers, searched}, problems: [...]}]` (exit 2 when any entry has errors); `errors` is
+one string per problem and `path` is the workflow's label
 (`.rayspec/workflows/<name>.yaml`) even when the file fails to load (`null` only when the target
 is neither a discovered name nor a file). `problems` is the same list as objects — `{path, line,
 location, field, message, hint}`, one per problem, `path` never `null` — so a schema mistake can
@@ -242,7 +249,8 @@ rayspec plan <workflow> --risk [--json | --output FORMAT]
 
 Show what a run would do without executing: the workflow hash and isolation, the run-level caps the
 workflow set (`budget_usd $1.50  max_tokens 500,000  timeout_total 2h 0m` — all three or none: they
-are one circuit breaker, and naming two of them reads as "there is no third"), inputs with their
+are one circuit breaker, and naming two of them reads as "there is no third"), the policy layers in
+force (`policy: …`, exactly as `rayspec validate` prints it), inputs with their
 resolved values — each input on its own line: the value, `missing (required)`, `undefined`
 (optional without a default) or `'<raw>' (invalid: <why>)`; one problem per input (a required
 input whose value was rejected is `invalid`, never also `missing`) and one bad input never hides
@@ -261,9 +269,9 @@ inputs: {name: {name, type, value, state: ok|missing|invalid|undefined, problem,
 input_errors, agents: [{name, provider, model,
 effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
 providers: {id: {structured_output, cost_reporting, cost: provider|table|none, priced_models,
-unpriced_models, disabled_models, pricing_error?}}, errors, warnings, unsupported}` (a secret
-input's `value` is `"<secret>"`, `secret: true`; the three cap keys are always present, `null` when
-the cap is unset, and `timeout_total` is in seconds).
+unpriced_models, disabled_models, pricing_error?}}, policy: {layers, searched}, errors, warnings,
+unsupported}` (a secret input's `value` is `"<secret>"`, `secret: true`; the three cap keys are
+always present, `null` when the cap is unset, and `timeout_total` is in seconds).
 
 #### `--render`: see what the agent will receive
 
@@ -478,6 +486,49 @@ appears that you did not write. The second table lists the ids that are register
 what `extensions:` in `config.yaml` may name. `--json`: `{plugins: [{group, name, value,
 distribution, version, status, detail}], registered: {stores, sinks, approvals}}`. Writing one:
 [extending.md](extending.md).
+
+### `rayspec trust add`
+
+```
+rayspec trust add <workflow>... [--root DIR]
+```
+
+Record each workflow's current hash in `.rayspec/trusted.yaml`. The hash covers every file that
+contributed to the resolved workflow — the document, every `include:`d body, every agent file and
+every `prompt_file`/`instructions_file` — so trust is a statement about what will actually run.
+Adding a workflow that is already listed replaces its entry (`updated`). See
+[policy.md](policy.md).
+
+### `rayspec trust list`
+
+```
+rayspec trust list [--root DIR] [--json | --output FORMAT]
+```
+
+The trust list with, per entry, whether the workflow still hashes to what was trusted:
+`current`, `changed` (it was edited since) or `missing` (it no longer loads). `--json`:
+`[{workflow, hash, added, status}]`.
+
+### `rayspec trust remove`
+
+```
+rayspec trust remove <workflow>... [--root DIR]
+```
+
+Drop workflows from the trust list (the file is deleted when the last entry goes). Exit 2 when a
+name is not listed.
+
+### `rayspec trust check`
+
+```
+rayspec trust check [<workflow>...] [--root DIR] [--json | --output FORMAT]
+```
+
+Exit 0 only when every named workflow — with no arguments, every discovered workflow — is listed
+at its current hash; exit 1 otherwise, naming what changed. This is the gate a scheduled job puts
+in front of `rayspec run`. `--json`: `[{workflow, name, hash, trusted, problem}]`. Setting
+`trust: {require: true}` in `policy.yaml` applies the same gate to every command that loads a
+workflow.
 
 ### `rayspec projects add`
 
