@@ -146,12 +146,20 @@ def test_no_run_block_interpolates_a_value_into_the_shell() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_every_workflow_starts_from_read_only_permissions() -> None:
+def test_every_workflow_that_starts_itself_starts_from_read_only_permissions() -> None:
+    """A job that needs more says so; the file it lives in never begins with it.
+
+    A reusable workflow is the exception and is pinned separately below: it has no token of its
+    own to narrow.
+    """
     for path in workflow_files():
         workflow = load(path)
-        assert workflow.get("permissions") is not None, (
-            f"{path.name} does not declare top-level permissions"
-        )
+        if "workflow_call" in _on(workflow):
+            continue
+        declared = workflow.get("permissions")
+        assert declared is not None, f"{path.name} does not declare top-level permissions"
+        writable = [scope for scope, level in declared.items() if level not in {"read", "none"}]
+        assert not writable, f"{path.name} starts with write access to {writable}"
 
 
 # --------------------------------------------------------------------------- release.yml
@@ -354,9 +362,26 @@ def test_the_recipe_never_starts_a_real_agent() -> None:
     assert any("--no-interactive" in run for run in runs), "a gate must never wait for a person"
 
 
-def test_the_recipe_asks_for_exactly_the_permissions_it_uses() -> None:
+def test_the_recipe_asks_its_caller_for_no_permission_of_its_own() -> None:
+    """In a called workflow a ``permissions:`` block is a request, not a narrowing.
+
+    A caller whose job token does not already carry what the called workflow asks for has the
+    call rejected before any job starts — the opposite of what this file documents, which is to
+    report into the job summary and say why the comment is missing. Declaring nothing leaves the
+    token exactly what the caller granted (a called workflow can never hold more) and lets that
+    fallback happen.
+    """
     workflow = load(RECIPE)
-    assert workflow["permissions"] == {"contents": "read", "pull-requests": "write"}
+    assert "workflow_call" in _on(workflow), "the recipe is not a reusable workflow"
+    assert "permissions" not in workflow, "the recipe requests a permission its caller may not have"
+    for name, spec in workflow["jobs"].items():
+        assert "permissions" not in spec, f"{name} requests permissions of its own"
+
+
+def test_the_recipe_says_what_its_caller_has_to_grant() -> None:
+    """It is the marketplace-facing file: the caller cannot read the code to find out."""
+    header = RECIPE.read_text(encoding="utf-8").split("name: rayspec dry run")[0]
+    assert "pull-requests: write" in header
 
 
 def test_the_recipe_does_not_try_to_comment_where_it_cannot() -> None:

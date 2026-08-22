@@ -19,6 +19,12 @@
 #
 # The caller's token has to carry `pull-requests: write` for the comment. Without it the run
 # still reports — into the job summary — and says why the comment is missing.
+#
+# This workflow asks for no permission of its own. In a called workflow a `permissions:` block is
+# a request the caller has to be able to satisfy, not a narrowing of what it granted: asking for
+# `pull-requests: write` refuses the call outright for any caller that cannot grant it — the one
+# who forgot the line, and a pull request from a fork, whose token is read-only — instead of
+# degrading to the job summary. What runs here is exactly what the calling job granted, no more.
 name: rayspec dry run
 
 on:
@@ -67,10 +73,6 @@ on:
       exit-code:
         description: The exit code rayspec returned.
         value: ${{ jobs.dry-run.outputs.exit-code }}
-
-permissions:
-  contents: read
-  pull-requests: write
 
 jobs:
   dry-run:

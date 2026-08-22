@@ -59,8 +59,10 @@ jobs:
 It sets two outputs, `status` and `exit-code`, so a caller can decide for itself instead of
 letting the check fail.
 
-**Permissions.** The comment needs `pull-requests: write` on the *calling* job — a reusable
-workflow can only ever narrow what its caller grants. Without it the run still reports into the
+**Permissions.** The comment needs `pull-requests: write` on the *calling* job, as in the snippet
+above. The reusable workflow requests nothing of its own: a called workflow that asks for a
+permission its caller did not grant has the call rejected before any job starts, and a forgotten
+line should not read as an unexplained failure. Without the grant the run still reports into the
 job summary and prints a warning saying which permission is missing; the check does not fail for
 that reason alone.
 
