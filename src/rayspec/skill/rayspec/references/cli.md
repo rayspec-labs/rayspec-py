@@ -58,6 +58,31 @@ usage error — `error: --json and --output table disagree`, exit 2 — rather t
 silently winning. (`rayspec runs stubs -o/--output PATH` predates the flag and still means "write
 the script to this file"; that command has no `--json`.)
 
+The JSON itself is rendered the same way whatever printed it: **indented by two spaces when
+stdout is a terminal, compact — no spaces at all — when it is redirected or piped**, non-ASCII
+written as itself (`ä`) and keys in the payload's own order. When stdout cannot encode those
+characters — `PYTHONIOENCODING=ascii`, a C/POSIX locale, a legacy Windows code page — the whole
+document falls back to `\uXXXX` escapes, which parse to the same payload, rather than failing to
+print at all. `rayspec <cmd> --json |
+jq` therefore behaves identically whichever command produced the stream, and `rayspec <cmd> --json
+> file` writes a file that diffs against the next one. The two **line-delimited** outputs are the
+exception that keeps the promise of their format: `rayspec run|resume|approve|reject --json` and
+`rayspec logs --json` write one object per line and stay compact on a terminal too, because
+`rayspec run … --json | tail -1 | jq .exit_code` has to read a whole record off the last line.
+(`rayspec schema` is not a listing at all: it prints a published JSON Schema document, always the
+same bytes as the checked-in `schemas/*.schema.json`.)
+
+The `table` rendering is one style too, for every command that has one: no borders, a bold header
+row, columns separated by two spaces, a left-justified caption where a block has one, and every
+line ending where its text ends — no trailing padding to turn up in a diff. So
+`rayspec runs > yesterday.txt` and the same command tomorrow differ where the runs differ and
+nowhere else, and `grep`/`awk` over a redirected listing do not have to know which command wrote
+it. Colour is dropped when stdout is not a terminal (and with `NO_COLOR`). Rows and columns are
+never dropped, but a listing wider than the console does have its cells folded or shortened to
+fit: to the terminal's width on a terminal, and to a fixed 200 columns when stdout is redirected,
+so a redirected listing does not depend on the width of the shell that produced it. `--json` is
+the rendering that never shortens anything.
+
 ## Commands
 
 ### `rayspec run`

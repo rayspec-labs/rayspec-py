@@ -37,6 +37,8 @@ from rayspec.cli.commands._loader_common import (
     error_lines,
     fail,
     make_context,
+    new_table,
+    print_json,
     report_lines,
     resolve_output,
 )
@@ -116,7 +118,7 @@ def _caps_line(rw: ResolvedWorkflow) -> str:
 
 
 def _steps_table(rw: ResolvedWorkflow) -> Table:
-    table = Table(show_edge=False, pad_edge=False)
+    table = new_table()
     for col in ("#", "path", "kind", "needs", "join", "when", "detail"):
         table.add_column(col)
     bodies = {g.prefix: g for g in rw.graphs()}
@@ -145,7 +147,7 @@ def _steps_table(rw: ResolvedWorkflow) -> Table:
 
 
 def _agents_table(rw: ResolvedWorkflow) -> Table:
-    table = Table(show_edge=False, pad_edge=False)
+    table = new_table()
     for col in ("agent", "provider", "model", "effort", "access", "used by", "source"):
         table.add_column(col, style="bold" if col == "agent" else None)
     used: dict[str, list[str]] = {}
@@ -637,7 +639,7 @@ def register(app: typer.Typer) -> None:
                 payload["stubs"] = str(stubs) if stubs is not None else None
             if risk:
                 payload["risk"] = risk_report.to_json(findings)
-            out.print(json.dumps(payload, ensure_ascii=False), markup=False, highlight=False)
+            print_json(payload)
             if report.errors or input_errors:
                 raise typer.Exit(code=2)
             return

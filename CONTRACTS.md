@@ -168,7 +168,8 @@ does not emit `secret` (a rayspec marker, not JSON Schema).
 from rayspec.loader import (
     discover_workflows,  # (project_root: Path, *, home: Path | None = None) -> list[WorkflowRef]
     discover_agents,  # (project_root, *, home=None) -> list[AgentFileRef(name, path, scope)]
-    find_project_root,  # (start: Path | None = None) -> Path  # nearest dir with .rayspec/ (then .git, then start)
+    find_project_root,  # (start: Path | None = None) -> Path  # nearest dir with .rayspec/ (then .git,
+    #  then `start` itself, resolved: no project, nothing created) — the only project-root discovery
     load_workflow,  # (ref_or_path_or_name, *, project_root, home=None, config=None,
     #  known_providers=None) -> ResolvedWorkflow   (raises LoaderError / SchemaError)
     validate_workflow,  # (resolved, *, capabilities_for=None, template_checker=None,
@@ -1186,10 +1187,12 @@ from rayspec.workspace import (
     #   when nobody holds it (non-blocking acquire first); False for missing/held/OS error
     WorkspaceError,  # RayspecError root of the layer; GitError(message, args, returncode, stderr)
     Project,  # frozen: root, slug, name, is_git
-    find_project_root,  # (cwd=None) -> Path   git toplevel, else cwd (resolved)
     project_slug,  # (root) -> "host/owner/repo" from origin, else "local/<dir>-<sha1(abspath)[:8]>"
     normalize_remote_url,  # (url) -> slug | None   git@h:o/r.git, ssh://[u@]h[:port]/o/r, https://h/o/r
     project_from_root, discover_project, project_dir,  # project_dir(home, slug) = <home>/projects/<slug>
+    #   discover_project(cwd=None) -> Project rooted at the GIT TOP LEVEL (else cwd, resolved) —
+    #   a different question from `loader.find_project_root` (the directory holding `.rayspec/`),
+    #   which is the ONE project-root discovery; there is no second `find_project_root`
     create_worktree,  # (project, *, home, workflow_name, run_id, base=None) -> Worktree(path, branch,
     #   base_branch, base_sha, head_sha); path <home>/projects/<slug>/worktrees/<wf>-<shortid>,
     #   branch rayspec/<wf>-<shortid> (shortid = last '-' segment of run_id; the full run id on a
@@ -1797,7 +1800,8 @@ controlled by whoever pushed the checkout, so a command typed in project A never
 project B's.
 
 - `rayspec runs [--all] [--limit N] [--json]`: newest first by `created_at` then id (run id,
-  workflow, status — `(dry)` for dry runs —, started, duration, steps done/total, tokens, cost;
+  workflow, status — `(dry)` for dry runs —, `started (UTC)` as the age (`fmt_when`: `2d ago`,
+  and the absolute date beyond a month), duration, steps done/total, tokens, cost;
   `--all` adds the project column and lists every project). JSON: list of `{run_id, workflow,
   status, reason, project_slug, created_at, started_at, ended_at, duration_ms, steps_done,
   steps_total, steps_ok, steps_skipped, tokens, usage{…}, cost_usd, cost_source, resume_count,
@@ -2268,11 +2272,44 @@ documented as the older spelling of `--output json`. `--output` alone decides; `
 decides; both together are fine while they agree and exit 2
 (`error: --json and --output table disagree`) when they do not — one of them silently winning
 would print a table into a pipe that asked for JSON. `rayspec runs` counts `--output` with
-`--json`/`--all`/`--limit` as a listing flag that a subcommand refuses. Two knowingly-open points:
-`rayspec show` still takes `--json` alone, and `rayspec runs stubs -o/--output PATH` predates the
-flag and keeps its own meaning (that command has no `--json`, so nothing is ambiguous).
+`--json`/`--all`/`--limit` as a listing flag that a subcommand refuses. One knowingly-open point:
+`rayspec runs stubs -o/--output PATH` predates the flag and keeps its own meaning (that command
+has no `--json`, so nothing is ambiguous).
 `tests/cli/test_output_option.py` holds the gap list and asserts `--json` and `--output json` are
 byte-identical per command.
+
+**One rendering, one place.** `_loader_common` also owns how the JSON looks: `stdout_is_tty()` is
+the single probe, `json_text(payload)` renders a **document** (`indent=2` on a terminal, compact
+`separators=(",", ":")` when redirected; `default=str`, payload key order, and `ensure_ascii=False`
+unless `stdout_can_encode()` says stdout's codec cannot write the characters — a non-UTF-8 stdout
+gets `\uXXXX` escapes instead of a `UnicodeEncodeError` out of the write),
+`print_json(payload)` prints one on stdout (soft-wrapped — Rich folding a compact line would break
+it inside a string) and `json_line(payload)` renders one record of a **line-delimited** stream
+(`run|resume|approve|reject --json`'s summary line, `logs --json`), which stays compact on a
+terminal too so `… | tail -1 | jq` reads a whole record. The compact form is byte-for-byte
+pydantic's `model_dump_json`, i.e. what `run.json` and every JSONL line already were. No command
+serialises its own `--json` output: the two modules that print a serialised document under `cli/`
+are `_loader_common` itself and `rayspec schema`'s published schema document, and
+`tests/cli/test_output_style.py` fails on the next one (an AST scan covering the serialiser inside
+the print, a local bound to one and printed bare, a helper that returns one, `sys.stdout.write`,
+`from json import dumps` under any alias, and `model_dump_json`; the scan also asserts it still
+sees those two modules, so a scan that has stopped working fails too). The same file asserts that
+every command's `--json` document is exactly `json_text` of its payload, that the payload is
+serialisable without `default=`, and that the same holds in a bare directory — where two commands
+knowingly print no document at all but a plain-text `error:` and a non-zero exit (`worktrees list`
+outside a git repository, `plan <name>` for a workflow that is not there); the test records that
+pair, so a third one fails.
+
+`new_table(title=None, show_header=True) -> rich.table.Table` is the same story for listings: no
+box, no edges, bold header, left-justified title — the only knobs are the two arguments, and no
+module under `cli/` may construct a `Table` itself (same test file, same kind of scan: any dotted
+path or import alias, `Table.grid`, and a subclass). Its lines end where their text ends: Rich pads
+every cell out to its column width, and with no right border to sit behind, that padding would be
+trailing whitespace on most lines of a redirected listing, so the table strips it as it renders
+(same test file — no listing may leave any). Commands print through `console()`/`err_console()` so
+a redirected listing is rendered at a fixed width instead of the 80 columns a bare
+`rich.console.Console()` assumes; rows and columns are never dropped, but cells that do not fit
+that width are folded or ellipsised by Rich.
 
 ### rayspec.skill + CLI `skill`
 The Claude Code skill for coding agents ships as package data: `src/rayspec/skill/rayspec/`

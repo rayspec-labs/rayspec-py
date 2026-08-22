@@ -21,7 +21,6 @@ import typer
 import yaml
 from rich.console import Console
 from rich.markup import escape
-from rich.table import Table
 from rich.text import Text
 
 from rayspec.cli import _runs_common as runs_common
@@ -32,7 +31,9 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     error_lines,
     fail,
+    json_line,
     make_context,
+    new_table,
     report_lines,
     resolve_output,
 )
@@ -573,10 +574,10 @@ def print_summary(
             "pause": result.pause.model_dump(mode="json") if result.pause else None,
         }
         assert set(payload) == SUMMARY_KEYS, "SUMMARY_KEYS drifted from the payload"
-        out.print(json.dumps(payload), markup=False, highlight=False)
+        out.print(json_line(payload), markup=False, highlight=False, soft_wrap=True)
         return
     if result.outputs:
-        table = Table(show_edge=False, pad_edge=False, title="outputs", title_justify="left")
+        table = new_table(title="outputs")
         table.add_column("name", style="bold")
         table.add_column("value")
         for name, value in result.outputs.items():

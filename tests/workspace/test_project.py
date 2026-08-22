@@ -9,7 +9,7 @@ import pytest
 
 from rayspec.workspace.project import (
     Project,
-    find_project_root,
+    discover_project,
     normalize_remote_url,
     project_dir,
     project_from_root,
@@ -83,16 +83,16 @@ def test_project_slug_non_git(tmp_path: Path) -> None:
     assert project_slug(d).startswith("local/plain-")
 
 
-def test_find_project_root_git_toplevel(repo: Path) -> None:
+def test_discover_project_uses_the_git_top_level(repo: Path) -> None:
     sub = repo / "a" / "b"
     sub.mkdir(parents=True)
-    assert find_project_root(sub) == repo.resolve()
+    assert discover_project(sub).root == repo.resolve()
 
 
-def test_find_project_root_non_git(tmp_path: Path) -> None:
+def test_discover_project_without_git_uses_the_directory(tmp_path: Path) -> None:
     d = tmp_path / "plain" / "deep"
     d.mkdir(parents=True)
-    assert find_project_root(d) == d.resolve()
+    assert discover_project(d).root == d.resolve()
 
 
 def test_project_from_root(repo: Path, tmp_path: Path) -> None:

@@ -34,6 +34,8 @@ from rayspec.cli.commands._loader_common import (
     OutputOption,
     RootOption,
     console,
+    new_table,
+    print_json,
     resolve_output,
 )
 from rayspec.cli.commands.run import pause_actions
@@ -115,14 +117,7 @@ def artifact_rows(run: RunRecord) -> list[dict[str, Any]]:
 
 def artifacts_table(run: RunRecord) -> Table:
     """The ``artifacts`` block: which step promised which file, and what was stored."""
-    table = Table(
-        show_edge=False,
-        pad_edge=False,
-        box=None,
-        header_style="bold",
-        title="artifacts",
-        title_justify="left",
-    )
+    table = new_table(title="artifacts")
     table.add_column("step")
     table.add_column("file")
     table.add_column("size", justify="right")
@@ -197,14 +192,7 @@ def print_secret_inputs(out: Console, run: RunRecord, *, configured: Collection[
 
 def steps_table(store: FileRunStore, run: RunRecord) -> Table:
     """Per-step table in record order (nested paths appear as stored)."""
-    table = Table(
-        show_edge=False,
-        pad_edge=False,
-        box=None,
-        header_style="bold",
-        title="steps",
-        title_justify="left",
-    )
+    table = new_table(title="steps")
     table.add_column("step")
     table.add_column("kind")
     table.add_column("status")
@@ -366,14 +354,7 @@ def print_show(
             out.print(Text.assemble(("  ! ", "yellow"), warning))
     if run.outputs:
         out.print("")
-        table = Table(
-            show_edge=False,
-            pad_edge=False,
-            box=None,
-            header_style="bold",
-            title="outputs",
-            title_justify="left",
-        )
+        table = new_table(title="outputs")
         table.add_column("name")
         table.add_column("value")
         for name, value in run.outputs.items():
@@ -420,11 +401,7 @@ def register(app: typer.Typer) -> None:
         out = console()
         planned = common.planned_step_paths(ctx, record)
         if json_:
-            out.print(
-                json.dumps(show_payload(store, record, planned=planned), ensure_ascii=False),
-                markup=False,
-                highlight=False,
-            )
+            print_json(show_payload(store, record, planned=planned))
             return
         print_show(
             out, store, record, planned=planned, configured_secrets=tuple(ctx.config.secrets)

@@ -6,15 +6,19 @@ Boundary: CLI presentation only. Reads the registry (no SDK import, no provider 
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
-from rayspec.cli.commands._loader_common import OutputOption, resolve_output
+from rayspec.cli.commands._loader_common import (
+    OutputOption,
+    console,
+    new_table,
+    print_json,
+    resolve_output,
+)
 from rayspec.providers.base import ProviderCapabilities, ProviderRegistration
 from rayspec.providers.registry import BUILTIN_REGISTRATIONS, list_registrations
 
@@ -84,14 +88,14 @@ def registration_to_dict(reg: ProviderRegistration) -> dict[str, Any]:
 
 def render_tables(regs: list[ProviderRegistration]) -> tuple[Table, Table]:
     """Build the registry table and the transposed capability matrix (rows = capabilities)."""
-    listing = Table(title="Providers", show_lines=False)
+    listing = new_table(title="Providers")
     listing.add_column("id", style="bold")
     listing.add_column("name")
     listing.add_column("source")
     for reg in regs:
         listing.add_row(reg.id, reg.display_name, "builtin" if reg.id in _BUILTIN_IDS else "plugin")
 
-    matrix = Table(title="Capabilities", show_lines=False)
+    matrix = new_table(title="Capabilities")
     matrix.add_column("capability", style="bold", no_wrap=True)
     for reg in regs:
         matrix.add_column(reg.id, justify="center", overflow="fold")
@@ -112,9 +116,11 @@ def register(app: typer.Typer) -> None:
         json_ = resolve_output(output, json_)
         regs = list_registrations()
         if json_:
-            typer.echo(json.dumps([registration_to_dict(r) for r in regs], indent=2))
+            print_json([registration_to_dict(r) for r in regs])
             return
-        console = Console()  # terminal width / COLUMNS; Rich folds cells on narrow terminals
+        # the shared console: terminal width on a terminal, a fixed wide one when redirected,
+        # so a piped capability matrix does not fold differently than the one on screen
+        out = console()
         listing, matrix = render_tables(regs)
-        console.print(listing)
-        console.print(matrix)
+        out.print(listing)
+        out.print(matrix)

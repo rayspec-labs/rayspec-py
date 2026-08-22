@@ -22,7 +22,6 @@ no step runs, no provider is created, nothing is written.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Annotated, Any, cast
 
@@ -37,6 +36,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.cli.commands.eval import echo_block, format_value, print_warning
@@ -578,7 +578,7 @@ def register(app: typer.Typer) -> None:
             payload["warnings"].insert(0, stale)
         out = console()
         if json_:
-            out.print(json.dumps(payload, ensure_ascii=False, default=str), markup=False)
+            print_json(payload)
             return
         print_explain(out, payload, full=full)
 

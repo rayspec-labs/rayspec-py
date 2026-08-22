@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Helpers shared by the read-only loader commands (workflows, agents, validate, plan).
+"""Helpers shared by the commands: roots and config, the ``--output`` flag, one JSON rendering.
 
-Private module (underscore → not auto-registered). Keeps provider-registry and templating imports
-lazy so these commands work while those scopes land separately.
+Private module (underscore → not auto-registered). It began as the helpers of the read-only
+loader commands (``workflows``, ``agents``, ``validate``, ``plan``) and is now where the CLI's
+shared presentation lives: the two Rich consoles, ``fail``/``error_lines``, and the single place
+that decides what a ``--json`` document and one line of a ``--json`` stream look like. Everything
+imports it, so nothing here may import a command module. Provider-registry and templating imports
+stay lazy, so a command still answers when one of those modules is not installed.
 """
 
 from __future__ import annotations
@@ -13,7 +17,7 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -22,8 +26,10 @@ from typing import Annotated, Any
 import click
 import typer
 import typer.core
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.markup import escape
+from rich.segment import Segment
+from rich.table import Table
 from rich.text import Text
 
 from rayspec.actor import ACTOR_ENV
@@ -413,15 +419,160 @@ def template_checker() -> TemplateChecker | None:
     return None
 
 
+def stdout_is_tty() -> bool:
+    """Whether stdout is a terminal — the one probe every renderer here asks.
+
+    A closed or replaced stdout (a test runner's, a broken pipe) counts as "not a terminal": the
+    machine-readable rendering is the safe answer when nobody can say who is reading.
+    """
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, ValueError):  # detached / closed stdout
+        return False
+
+
 def console() -> Console:
     """A Rich console on the *current* stdout (CliRunner-safe), wide when not a terminal."""
-    is_tty = sys.stdout.isatty()
+    is_tty = stdout_is_tty()
     width = shutil.get_terminal_size().columns if is_tty else 200
     return Console(file=sys.stdout, width=width, highlight=False, soft_wrap=True)
 
 
 def err_console() -> Console:
     return Console(file=sys.stderr, highlight=False, soft_wrap=True, width=200)
+
+
+#: Separators of the piped rendering: no spaces at all. This is what pydantic's
+#: ``model_dump_json`` writes, so ``run.json``, ``events.jsonl`` and every ``--json`` document
+#: rayspec prints are one format rather than three that happen to parse the same.
+_COMPACT: tuple[str, str] = (",", ":")
+
+
+def stdout_can_encode(text: str) -> bool:
+    """Whether stdout's codec can write ``text`` as it stands — the second probe, like
+    :func:`stdout_is_tty`.
+
+    ``PYTHONIOENCODING=ascii``, a C/POSIX locale and the legacy Windows code pages all hand a
+    process a stdout that is not UTF-8, and writing ``ä`` into one raises ``UnicodeEncodeError``
+    from inside the write. A stream that will not name its codec is taken to be UTF-8, and an
+    unknown codec name counts as "no": the escaped rendering is always readable.
+    """
+    if text.isascii():
+        return True
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding, errors="strict")
+    except (UnicodeEncodeError, LookupError):
+        return False
+    return True
+
+
+def _dumps(payload: Any, **kwargs: Any) -> str:
+    """``json.dumps`` in the house style, escaped only when stdout cannot take the characters."""
+    text = json.dumps(payload, ensure_ascii=False, default=str, **kwargs)
+    if stdout_can_encode(text):
+        return text
+    return json.dumps(payload, ensure_ascii=True, default=str, **kwargs)
+
+
+def json_text(payload: Any) -> str:
+    """Render one ``--json`` / ``--output json`` **document** — the single rule, for every command.
+
+    Indented by two spaces when stdout is a terminal (a person is reading it), compact when it is
+    redirected or piped (a program is). Nothing else varies: key order is the payload's, and a
+    value the payload builder left unserialisable is rendered as its ``str()`` rather than taking
+    the command down after it has already done its work.
+
+    Non-ASCII is written as itself (``ä``) — unless stdout cannot encode it
+    (:func:`stdout_can_encode`), in which case the whole document falls back to ``\\uXXXX``
+    escapes. Both spellings parse to the same payload, and a document nobody can print is worth
+    less than an escaped one.
+
+    The rule is deliberately not per command: ``rayspec workflows --json | jq`` and ``rayspec
+    runs --json | jq`` used to disagree about whether they emit one line or twenty, which makes
+    every shell pipeline around them a command-specific special case.
+    """
+    if stdout_is_tty():
+        return _dumps(payload, indent=2)
+    return _dumps(payload, separators=_COMPACT)
+
+
+def print_json(payload: Any) -> None:
+    """Print one ``--json`` document on stdout in the house rendering (:func:`json_text`).
+
+    ``soft_wrap`` is not optional here: Rich would otherwise fold a long line to the console
+    width, and a compact document has no spaces to fold at — the break lands inside a string
+    and the document stops being JSON.
+    """
+    console().print(json_text(payload), markup=False, highlight=False, soft_wrap=True)
+
+
+def json_line(payload: Any) -> str:
+    """Render one record of a line-delimited stream (``run --json``, ``logs --json``).
+
+    Always compact, terminal or not: the format's promise is one object per line, and
+    ``rayspec run … --json | tail -1 | jq .exit_code`` reads a fragment as soon as a record is
+    allowed to wrap. Otherwise identical to :func:`json_text`, escapes on a stdout that cannot
+    encode the characters included.
+    """
+    return _dumps(payload, separators=_COMPACT)
+
+
+class _Listing(Table):
+    """A :class:`~rich.table.Table` that ends its lines where the text ends.
+
+    Rich pads every cell out to its column width. With a border that padding sits behind the
+    right edge and nobody sees it; without one — and rayspec's listings have none — it becomes
+    trailing whitespace on most lines of a redirected listing. That is the noise that makes
+    ``git diff`` complain, an editor rewrite the file on save and a pasted snippet look wrong,
+    on a file whose whole point is that it diffs cleanly against yesterday's.
+
+    Stripping it here rather than at each print site is deliberate: a listing cannot be printed
+    without going through the table it was built from, so there is no second way to emit one.
+    """
+
+    def _segments(self, console: Console, options: ConsoleOptions) -> Iterator[Segment]:
+        """``Table``'s own rendering, flattened to segments."""
+        for item in super().__rich_console__(console, options):
+            if isinstance(item, Segment):
+                yield item
+            else:  # pragma: no cover — Table yields segments, but the protocol allows both
+                yield from console.render(item, options)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        """Render as ``Table`` does, minus the padding at the end of every line."""
+        for line in Segment.split_lines(self._segments(console, options)):
+            segments = list(line)
+            while segments and not segments[-1].text.strip():
+                segments.pop()
+            if segments:
+                last = segments[-1]
+                segments[-1] = Segment(last.text.rstrip(), last.style, last.control)
+            yield from segments
+            yield Segment("\n")
+
+
+def new_table(*, title: str | None = None, show_header: bool = True) -> Table:
+    """The one rayspec table: no box, no edges, a bold header, a left-justified title.
+
+    Listings are read on a terminal and in a redirected file, and the file is the demanding
+    reader: it gets grepped, diffed against yesterday's and pasted into an issue. Borders make
+    all three worse and their width moves with the data, so no table draws any — and no command
+    picks its own, which is the part that kept ``rayspec doctor`` and ``rayspec runs`` from
+    looking like the same program. Lines end where their text ends (:class:`_Listing`).
+
+    Only ``title`` and ``show_header`` are choices; a caller that wants a different box wants a
+    different tool.
+    """
+    return _Listing(
+        title=title,
+        title_justify="left",
+        show_header=show_header,
+        header_style="bold",
+        box=None,
+        show_edge=False,
+        pad_edge=False,
+    )
 
 
 def fail(message: str, *, code: int = 2, hint: str | None = None) -> None:
@@ -445,9 +596,7 @@ def error_lines(items: list[str], *, json_mode: bool = False, kind: str = "error
     is escaped so Rich never reads it as markup.
     """
     if json_mode:
-        console().print(
-            json.dumps({"error": kind, "errors": list(items)}), markup=False, highlight=False
-        )
+        print_json({"error": kind, "errors": list(items)})
         return
     out = err_console()
     for item in items:
@@ -494,12 +643,18 @@ __all__ = [
     "error_problems",
     "fail",
     "invoked_command",
+    "json_line",
+    "json_text",
     "looks_like_path",
     "make_context",
     "message_problems",
+    "new_table",
+    "print_json",
     "report_lines",
     "resolve_output",
     "short_path",
+    "stdout_can_encode",
+    "stdout_is_tty",
     "template_checker",
     "workflow_label",
 ]

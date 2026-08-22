@@ -8,7 +8,6 @@ the Pydantic models — the checked-in copies under ``schemas/`` are the same by
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Annotated
 
@@ -89,10 +88,10 @@ def register(app: typer.Typer) -> None:
                 "--out schemas/[/dim]"
             )
             return
-        # json.dumps of the already-built document: never Rich markup, never re-highlighted
-        term.print(
-            json.dumps(json.loads(schema_text(kinds[0])), indent=2), markup=False, highlight=False
-        )
+        # the file's own text, not a re-dump of it: json.dumps defaults to ensure_ascii=True and
+        # would escape every character schema_text wrote literally, so printing and writing would
+        # disagree on any description holding an em dash. Never Rich markup, never re-highlighted.
+        term.print(schema_text(kinds[0]), end="", markup=False, highlight=False)
 
 
 __all__ = ["register"]

@@ -6,13 +6,11 @@ Boundary: CLI presentation only; logic lives in :mod:`rayspec.workspace.worktree
 
 from __future__ import annotations
 
-import json
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from rich.table import Table
 
 from rayspec.cli.commands._loader_common import (
     JsonOption,
@@ -20,6 +18,8 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    new_table,
+    print_json,
     resolve_output,
 )
 from rayspec.config import load_config, rayspec_home
@@ -121,13 +121,13 @@ def register(app: typer.Typer) -> None:
             fail(str(exc), hint=exc.hint)
             return
         if json_:
-            typer.echo(json.dumps([worktree_to_dict(i) for i in infos], indent=2))
+            print_json([worktree_to_dict(i) for i in infos])
             return
         out = console()
         if not infos:
             out.print(f"no rayspec worktrees for {project.slug}")
             return
-        table = Table(show_edge=False, pad_edge=False)
+        table = new_table()
         table.add_column("branch", style="bold")
         table.add_column("age")
         table.add_column("state")
@@ -195,18 +195,14 @@ def register(app: typer.Typer) -> None:
             fail(str(exc), hint=exc.hint)
             return
         if json_:
-            typer.echo(
-                json.dumps(
-                    {
-                        "dry_run": dry_run,
-                        "removed": [worktree_to_dict(i) for i in report.removed],
-                        "skipped": [
-                            {**worktree_to_dict(i), "reason": reason}
-                            for i, reason in report.skipped
-                        ],
-                    },
-                    indent=2,
-                )
+            print_json(
+                {
+                    "dry_run": dry_run,
+                    "removed": [worktree_to_dict(i) for i in report.removed],
+                    "skipped": [
+                        {**worktree_to_dict(i), "reason": reason} for i, reason in report.skipped
+                    ],
+                }
             )
             return
         out = console()

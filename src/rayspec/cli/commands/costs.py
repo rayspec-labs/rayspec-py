@@ -27,7 +27,6 @@ the one thing a total may never hide.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import time
@@ -50,6 +49,8 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    new_table,
+    print_json,
     resolve_output,
 )
 from rayspec.providers.base import Usage
@@ -376,7 +377,7 @@ def select_runs(
 
 def costs_table(report: CostReport) -> Table:
     """The grouped table: one row per workflow (most expensive first), the total last."""
-    table = Table(show_edge=False, pad_edge=False, box=None, header_style="bold")
+    table = new_table()
     table.add_column("workflow")
     table.add_column("runs", justify="right")
     table.add_column("tokens", justify="right")
@@ -601,15 +602,8 @@ def register(app: typer.Typer) -> None:
             )
             if json_:
                 empty = build_report([])
-                out.print(
-                    json.dumps(
-                        # no slug is minted for this directory, so none is reported either
-                        costs_payload(empty, project=None, since=cutoff, workflow=workflow),
-                        ensure_ascii=False,
-                    ),
-                    markup=False,
-                    highlight=False,
-                )
+                # no slug is minted for this directory, so none is reported either
+                print_json(costs_payload(empty, project=None, since=cutoff, workflow=workflow))
             return
         # list_runs() drops a run.json it cannot parse (a log warning the CLI suppresses) and
         # never sees one that is missing; both leave a run out of the sum, which is the one thing
@@ -620,14 +614,7 @@ def register(app: typer.Typer) -> None:
             records, unreadable=unreadable_run_ids(ctx.store, loaded, since=cutoff)
         )
         if json_:
-            out.print(
-                json.dumps(
-                    costs_payload(report, project=ctx.slug, since=cutoff, workflow=workflow),
-                    ensure_ascii=False,
-                ),
-                markup=False,
-                highlight=False,
-            )
+            print_json(costs_payload(report, project=ctx.slug, since=cutoff, workflow=workflow))
             return
         if not records:
             out.print(

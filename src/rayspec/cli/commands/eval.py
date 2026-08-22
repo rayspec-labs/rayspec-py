@@ -32,6 +32,7 @@ from rayspec.cli.commands._loader_common import (
     RootOption,
     console,
     fail,
+    print_json,
     resolve_output,
 )
 from rayspec.engine import context_rebuild
@@ -164,7 +165,7 @@ def register(app: typer.Typer) -> None:
                 payload |= {"shell": rendered.script, "env": dict(rendered.env)}
             else:
                 payload |= {"value": to_jsonable(value), "type": value_type(value)}
-            out.print(json.dumps(payload, ensure_ascii=False, default=str), markup=False)
+            print_json(payload)
             return
         if rendered is not None:
             echo_block(rendered.script)

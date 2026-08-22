@@ -90,13 +90,6 @@ def project_slug(root: Path) -> str:
     return local_slug(root)
 
 
-def find_project_root(cwd: Path | None = None) -> Path:
-    """The git top level containing ``cwd`` (default: the process cwd), else ``cwd`` itself."""
-    start = (Path.cwd() if cwd is None else cwd).resolve()
-    top = _git.toplevel(start)
-    return top if top is not None else start
-
-
 def project_from_root(root: Path) -> Project:
     """Build the :class:`Project` for ``root`` (no discovery; ``root`` is taken as-is)."""
     resolved = root.resolve()
@@ -107,8 +100,16 @@ def project_from_root(root: Path) -> Project:
 
 
 def discover_project(cwd: Path | None = None) -> Project:
-    """:func:`find_project_root` + :func:`project_from_root`."""
-    return project_from_root(find_project_root(cwd))
+    """The git project containing ``cwd`` (default: the process cwd).
+
+    The root is the git top level; a directory that is not in a git repository is its own root
+    (``project_slug`` then mints the ``local/...`` slug). This is a *git* question, which is why
+    it is not :func:`rayspec.loader.find_project_root`: that one answers "which directory holds
+    the ``.rayspec/`` a command reads", and in a repository whose project lives in
+    ``packages/foo/.rayspec`` the two answers differ on purpose.
+    """
+    start = (Path.cwd() if cwd is None else cwd).resolve()
+    return project_from_root(_git.toplevel(start) or start)
 
 
 def project_dir(home: Path, slug: str) -> Path:
@@ -119,7 +120,6 @@ def project_dir(home: Path, slug: str) -> Path:
 __all__ = [
     "Project",
     "discover_project",
-    "find_project_root",
     "local_slug",
     "normalize_remote_url",
     "project_dir",

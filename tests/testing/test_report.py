@@ -9,6 +9,7 @@ from pathlib import Path
 from rayspec.testing.report import (
     CaseResult,
     Failure,
+    json_line,
     junit_xml,
     results_json,
     summary_line,
@@ -98,3 +99,9 @@ def test_junit_escapes_hostile_text(tmp_path: Path) -> None:
 
 def test_failure_defaults_are_printable() -> None:
     assert Failure("f", "s").lines()[3] == "  at "
+
+
+def test_json_line_is_the_one_compact_spelling() -> None:
+    """One "one JSON line" in the wheel: the bytes `events.jsonl` and `rayspec run --json`
+    already use, so a project reporting its own checks does not invent a second."""
+    assert json_line({"a": 1, "b": None, "c": "ä"}) == '{"a":1,"b":null,"c":"ä"}'
