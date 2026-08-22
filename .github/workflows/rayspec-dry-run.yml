@@ -122,9 +122,15 @@ jobs:
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "status=$status" >> "$GITHUB_OUTPUT"
           tail -c 4000 "$RUNNER_TEMP/rayspec-errors.txt" || true
+          if [ "$code" -ne 0 ]; then
+            # stdout is a file, so without this the log of a failed run is empty.
+            echo "--- the end of the event stream"
+            tail -c 4000 "$RUNNER_TEMP/rayspec-events.jsonl" || true
+          fi
 
       - name: Render the result
         id: render
+        if: always()
         env:
           RAYSPEC_EVENTS: ${{ runner.temp }}/rayspec-events.jsonl
           RAYSPEC_ERRORS: ${{ runner.temp }}/rayspec-errors.txt
@@ -163,22 +169,38 @@ jobs:
                   return ""
 
 
-          exit_code = int(os.environ.get("RAYSPEC_EXIT") or 0)
+          # Empty when the run step never reported one — the report still has to say something.
+          raw_exit = (os.environ.get("RAYSPEC_EXIT") or "").strip()
+          exit_code = int(raw_exit) if raw_exit.lstrip("-").isdigit() else None
           workflow = os.environ.get("RAYSPEC_WORKFLOW", "?")
 
           records = []
           for line in read("RAYSPEC_EVENTS").splitlines():
               if line.strip():
                   try:
-                      records.append(json.loads(line))
+                      record = json.loads(line)
                   except ValueError:
-                      pass  # a stream cut off mid-line is still worth reporting on
+                      continue  # a stream cut off mid-line is still worth reporting on
+                  if isinstance(record, dict):
+                      records.append(record)
+
+          # A workflow that does not load is reported as one object on stdout — there is no event
+          # stream and nothing on stderr, so this is the only place the reason exists.
+          problems: list[str] = []
+          kind = "errors"
+          for record in records:
+              if "errors" in record and "type" not in record:
+                  kind = str(record.get("error") or "errors")
+                  problems += [str(item) for item in record["errors"] or []]
 
           summary = records[-1] if records and "exit_code" in records[-1] else {}
-          status = summary.get("status") or BY_CODE.get(exit_code, f"exit {exit_code}")
+          if exit_code is None:
+              status = "did not run"
+          else:
+              status = summary.get("status") or BY_CODE.get(exit_code, f"exit {exit_code}")
 
           body = [os.environ.get("RAYSPEC_MARKER", ""), ""]
-          icon = ICON.get(status, "x" if exit_code else "grey_question")
+          icon = ICON.get(status, "grey_question" if exit_code == 0 else "x")
           body += [f"### :{icon}: rayspec dry run — `{workflow}` {status}", ""]
 
           steps = [r for r in records if r.get("type") == "step.finished"]
@@ -201,11 +223,14 @@ jobs:
               body += ["<details><summary>Outputs</summary>", "", "```json", rendered, "```"]
               body += ["", "</details>", ""]
 
+          if problems:
+              body += [f"**{kind}**", "", "```"] + problems + ["```", ""]
+
           errors = read("RAYSPEC_ERRORS").strip()
           if errors and status != "succeeded":
               body += ["```", errors[-4000:], "```", ""]
 
-          footer = [f"exit code `{exit_code}`"]
+          footer = [f"exit code `{exit_code if exit_code is not None else '?'}`"]
           if summary.get("run_id"):
               footer.append(f"run `{summary['run_id']}`")
           if summary.get("reason"):
@@ -229,7 +254,8 @@ jobs:
         # A pull request from a fork gets a read-only token: the report is in the job summary
         # either way, and a missing comment must not read as a failed check.
         if: >-
-          inputs.comment
+          always()
+          && inputs.comment
           && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
         env:

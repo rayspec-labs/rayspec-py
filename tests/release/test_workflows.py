@@ -320,40 +320,68 @@ def test_the_recipe_always_writes_the_job_summary() -> None:
     assert "GITHUB_STEP_SUMMARY" in runs
 
 
-def _dry_run_events(tmp_path: Path, home: Path) -> tuple[Path, int]:
-    """A real ``rayspec run --dry-run --json`` stream, written to a file."""
+#: A workflow that loads: two steps, the second reading the first through a template.
+LOADS = """rayspec: 1
+name: review
+agents:
+  reviewer: { provider: stub, model: small }
+steps:
+  - id: collect
+    shell: echo hi
+  - id: review
+    needs: [collect]
+    agent: reviewer
+    prompt: 'review {{ steps.collect.output }}'
+outputs:
+  verdict: '{{ steps.review.output }}'
+"""
+
+#: The same workflow after the step a template reads was deleted — what the check exists to catch.
+DOES_NOT_LOAD = """rayspec: 1
+name: review
+agents:
+  reviewer: { provider: stub, model: small }
+steps:
+  - id: review
+    agent: reviewer
+    prompt: 'review {{ steps.gone.output }}'
+"""
+
+
+def _dry_run(
+    tmp_path: Path, home: Path, source: str = LOADS, *, workflow: str = "review"
+) -> tuple[Path, int]:
+    """A real ``rayspec run --dry-run --json``, split into the two files the recipe writes.
+
+    The recipe sends stdout to the event stream and stderr to the error file, so a test that
+    fabricates either one proves nothing about what the CLI actually emits.
+    """
     root = tmp_path / "project"
-    (root / ".rayspec" / "workflows").mkdir(parents=True)
-    (root / ".rayspec" / "workflows" / "review.yaml").write_text(
-        "rayspec: 1\n"
-        "name: review\n"
-        "agents:\n"
-        "  reviewer: { provider: stub, model: small }\n"
-        "steps:\n"
-        "  - id: collect\n"
-        "    shell: echo hi\n"
-        "  - id: review\n"
-        "    needs: [collect]\n"
-        "    agent: reviewer\n"
-        "    prompt: 'review {{ steps.collect.output }}'\n"
-        "outputs:\n"
-        "  verdict: '{{ steps.review.output }}'\n",
-        encoding="utf-8",
-    )
+    (root / ".rayspec" / "workflows").mkdir(parents=True, exist_ok=True)
+    (root / ".rayspec" / "workflows" / "review.yaml").write_text(source, encoding="utf-8")
     result = CliRunner().invoke(
         app,
-        ["run", "review", "--root", str(root), "--dry-run", "--no-interactive", "--json"],
+        ["run", workflow, "--root", str(root), "--dry-run", "--no-interactive", "--json"],
         env={"RAYSPEC_HOME": str(home)},
     )
     events = tmp_path / "events.jsonl"
     events.write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "errors.txt").write_text(result.stderr, encoding="utf-8")
     return events, result.exit_code
 
 
-def _render(tmp_path: Path, events: Path, exit_code: int, **extra: str) -> str:
+def _dry_run_events(tmp_path: Path, home: Path) -> tuple[Path, int]:
+    """A real ``rayspec run --dry-run --json`` stream of a workflow that loads."""
+    return _dry_run(tmp_path, home)
+
+
+def _render(tmp_path: Path, events: Path, exit_code: int | str, **extra: str) -> str:
     script = tmp_path / "render.py"
     script.write_text(heredoc(step_with_id(load(RECIPE), "render")["run"], "PY"), "utf-8")
     body = tmp_path / "comment.md"
+    errors = tmp_path / "errors.txt"
+    if not errors.exists():
+        errors.write_text("", encoding="utf-8")
     env = {
         **os.environ,
         "RAYSPEC_EVENTS": str(events),
@@ -390,15 +418,53 @@ def test_the_comment_says_a_dry_run_called_no_agent(tmp_path: Path, home: Path) 
     assert "--dry-run" in comment and "stub" in comment.lower()
 
 
-def test_the_comment_reports_a_run_that_never_started(tmp_path: Path) -> None:
-    """Exit 2 is a usage error: no events at all, only a message on stderr."""
-    events = tmp_path / "events.jsonl"
-    events.write_text("", encoding="utf-8")
-    (tmp_path / "errors.txt").write_text("error: unknown workflow 'nope'\n", encoding="utf-8")
-    comment = _render(tmp_path, events, 2)
+def test_the_comment_reports_a_workflow_that_did_not_load(tmp_path: Path, home: Path) -> None:
+    """The one failure the check exists to catch has to reach the person who caused it.
+
+    ``--json`` reports a load failure as an object on **stdout** and leaves stderr empty, so a
+    report that only ever quotes stderr renders a red check with no reason in it.
+    """
+    events, exit_code = _dry_run(tmp_path, home, DOES_NOT_LOAD)
+    assert exit_code == 2, events.read_text(encoding="utf-8")
+    comment = _render(tmp_path, events, exit_code)
+    assert "unknown step 'gone'" in comment, comment
+    assert "exit code `2`" in comment
+    assert ":x:" in comment, "a workflow that never started is not an open question"
+
+
+def test_the_comment_reports_a_run_that_never_started(tmp_path: Path, home: Path) -> None:
+    """A name that matches no workflow: nothing on stdout, the message on stderr."""
+    events, exit_code = _dry_run(tmp_path, home, workflow="nope")
+    assert exit_code == 2
+    assert not events.read_text(encoding="utf-8").strip(), "a usage error emits no events"
+    comment = _render(tmp_path, events, exit_code)
     assert "unknown workflow" in comment
     assert "exit code `2`" in comment
     assert ":x:" in comment, "a workflow that never started is not an open question"
+
+
+def test_the_comment_never_calls_a_step_that_did_not_run_a_success(tmp_path: Path) -> None:
+    """With ``always()`` the report also renders when the run step never produced an exit code."""
+    events = tmp_path / "events.jsonl"
+    events.write_text("", encoding="utf-8")
+    comment = _render(tmp_path, events, "")
+    assert "succeeded" not in comment, comment
+    assert ":x:" in comment
+
+
+def test_the_run_step_puts_the_event_stream_in_the_job_log_when_it_failed() -> None:
+    """stdout is redirected into a file, so a failing run leaves an empty job log otherwise."""
+    run = step_with_id(load(RECIPE), "run")["run"]
+    _redirect, _, after = run.partition("code=$?")
+    assert "rayspec-events.jsonl" in after, "the event stream is never shown in the log"
+    assert "rayspec-errors.txt" in after
+
+
+def test_the_report_is_written_even_when_the_run_step_itself_failed() -> None:
+    """``working-directory`` is resolved before the script runs: a bad one skips every step."""
+    recipe = load(RECIPE)
+    assert "always()" in str(step_with_id(recipe, "render").get("if", ""))
+    assert "always()" in str(step_with_id(recipe, "comment").get("if", ""))
 
 
 def test_the_comment_survives_a_truncated_event_stream(tmp_path: Path) -> None:
