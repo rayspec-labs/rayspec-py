@@ -105,14 +105,17 @@ jobs:
           uv run --isolated --no-project \
             --with "dist/rayspec-${VERSION}-py3-none-any.whl" rayspec version
 
+      # Written outside the checkout on purpose. `uv build` above reads the working tree, so a
+      # directory this job creates inside it is a directory a later rebuild would package.
       - name: Take the release notes out of the changelog
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p provenance
-          python3 scripts/release_notes.py "$VERSION" --output provenance/release-notes.md
-          cat provenance/release-notes.md
+          mkdir -p "$RUNNER_TEMP/provenance"
+          python3 scripts/release_notes.py "$VERSION" \
+            --output "$RUNNER_TEMP/provenance/release-notes.md"
+          cat "$RUNNER_TEMP/provenance/release-notes.md"
 
       - name: Write the bill of materials
         env:
@@ -122,7 +125,7 @@ jobs:
           uv sync --frozen --no-dev --no-editable
           uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv \
             --of JSON --sv 1.6 --pyproject pyproject.toml --output-reproducible \
-            -o "provenance/rayspec-${VERSION}.cdx.json"
+            -o "$RUNNER_TEMP/provenance/rayspec-${VERSION}.cdx.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -132,7 +135,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provenance
-          path: provenance/
+          path: ${{ runner.temp }}/provenance/
           if-no-files-found: error
 
   publish:
