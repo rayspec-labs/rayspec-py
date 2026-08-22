@@ -162,6 +162,43 @@ def test_every_workflow_that_starts_itself_starts_from_read_only_permissions() -
         assert not writable, f"{path.name} starts with write access to {writable}"
 
 
+def test_ci_lints_the_workflow_files() -> None:
+    """A misspelled ``steps.<id>.outputs`` is valid YAML and passes every test in this file.
+
+    These workflows cannot be tried out before they are needed, so the one tool that reads them
+    the way the runner does has to run on every pull request rather than on someone's laptop.
+    """
+    linting = [
+        name
+        for name, spec in load(CI)["jobs"].items()
+        if any("actionlint" in str(step.get("run", "")) for step in spec.get("steps", []))
+    ]
+    assert linting, "nothing lints the workflow files: a typo in an expression reaches the runner"
+
+
+def test_the_workflow_linter_is_pinned_to_a_version_and_its_bytes_are_checked() -> None:
+    """It is fetched rather than used as an action, so the pin is a version plus a checksum."""
+    [step] = [s for _job, s in steps_of(load(CI)) if "actionlint" in str(s.get("run", ""))]
+    env = step.get("env") or {}
+    assert "ACTIONLINT_VERSION" in env, "the linter is not pinned to a version"
+    assert "sha256sum -c" in step["run"], "the download is not verified against a checksum"
+
+
+def test_ci_never_re_resolves_the_lockfile() -> None:
+    """A ``uv.lock`` that has drifted from ``pyproject.toml`` fails the build, silently never."""
+    problems = []
+    for path in workflow_files():
+        for _job, step in steps_of(load(path)):
+            for line in str(step.get("run", "")).splitlines():
+                command = line.strip()
+                resolves = command.startswith("uv sync") or (
+                    "uv run" in command and "--group" in command
+                )
+                if resolves and "--locked" not in command and "--frozen" not in command:
+                    problems.append(f"{path.name}: {command}")
+    assert not problems, "\n".join(problems)
+
+
 # --------------------------------------------------------------------------- release.yml
 
 
