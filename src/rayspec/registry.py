@@ -61,6 +61,11 @@ KIND_GROUPS: Mapping[str, str] = MappingProxyType(
 #: The reverse mapping (``rayspec plugins`` groups its rows by entry-point group).
 GROUP_KINDS: Mapping[str, str] = MappingProxyType({v: k for k, v in KIND_GROUPS.items()})
 
+#: The shared empty settings mapping. It is handed out through a ``default_factory`` rather than
+#: as a plain default: a dataclass field default must be hashable on Python 3.11, and a
+#: ``mappingproxy`` is not (3.12 relaxed the check, which is how a package that cannot import on
+#: its own declared floor passed a green suite). The factory returns this same instance, so
+#: nothing is copied and it stays un-writable.
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
 
 
@@ -91,7 +96,7 @@ class StoreContext:
     root: Path
     home: Path
     project_slug: str = ""
-    settings: Mapping[str, Any] = _EMPTY
+    settings: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
 
 
 @dataclass(frozen=True)
@@ -111,7 +116,7 @@ class SinkContext:
     stream: TextIO | None = None
     verbose: bool = False
     quiet: bool = False
-    settings: Mapping[str, Any] = _EMPTY
+    settings: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,7 @@ class ApprovalContext:
 
     console: Any | None = None
     interactive: bool = True
-    settings: Mapping[str, Any] = _EMPTY
+    settings: Mapping[str, Any] = field(default_factory=lambda: _EMPTY)
 
 
 # ------------------------------------------------------------------------------------------
