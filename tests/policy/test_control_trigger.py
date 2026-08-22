@@ -9,8 +9,10 @@ while the restriction actually doing the work sat somewhere unlisted: the agent'
 is committed, external, and enforced by default under CI.
 
 So the trigger is classified rather than listed, and the classification is proved total the same
-way the allow-list is: parametrised over the real schema, failing when a field is neither
-"security-shaped, so it is a control" nor "not a control, and here is the one-line reason".
+way the allow-list is: parametrised over the real schemas, failing when a field is neither
+"security-shaped, so it is a control" nor "not a control, and here is the one-line reason". That
+partition — over every schema, not just this one — is ``test_control_universe.py``; this file
+holds the six blocks and the proof that each classified agent control really fires.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from .conftest import Tree, validated
 
 CLAUDE_WF = """rayspec: 1
 name: wf
+isolation: none
 steps:
   - id: think
     agent:
@@ -37,7 +40,9 @@ steps:
 """
 
 #: An agent nothing constrains: the top access level, no tool list, no cap, no server, no
-#: command policy — the carve-out the escape hatch is still an escape hatch in.
+#: command policy — the carve-out the escape hatch is still an escape hatch in. The workflow
+#: around it opts out too (``isolation: none`` in ``CLAUDE_WF``): the run has to have nothing to
+#: protect, not just the agent.
 UNCONSTRAINED = "access: full\n"
 
 
@@ -190,46 +195,15 @@ def test_the_env_entry_says_only_what_is_true() -> None:
     assert "inert" not in summary.lower()  # it is not inert; it is merged underneath
 
 
-# -- the trigger is classified, and the classification is total -----------------------------------
+# -- every classified agent control really fires ---------------------------------------------------
 
 
-def _agent_schema_fields() -> list[str]:
-    """Every field of the agent schema and of the agent a provider actually receives."""
-    import dataclasses
-
-    from rayspec.loader.loader import ResolvedAgent
-    from rayspec.schema import AgentDef
-
-    return sorted(set(AgentDef.model_fields) | {f.name for f in dataclasses.fields(ResolvedAgent)})
-
-
-@pytest.mark.parametrize("name", _agent_schema_fields())
-def test_every_agent_field_is_classified(name: str) -> None:
-    """Each field is a control with tags, or a non-control with a reason. Never neither.
-
-    This is the sibling of ``test_a_claude_sdk_field_outside_the_allow_list_is_refused``: both
-    sides are READ rather than written down, so a field added tomorrow fails this test until
-    someone says which it is. Defaulting to "not a control" is how the six above arose.
-    """
-    from rayspec.policy.controls import AGENT_CONTROLS, AGENT_NON_CONTROLS, CONTROL_TAGS
-
-    control = AGENT_CONTROLS.get(name)
-    reason = AGENT_NON_CONTROLS.get(name)
-    assert (control is None) != (reason is None), f"{name}: classify it in exactly one table"
-    if control is not None:
-        assert control.tags <= CONTROL_TAGS, f"{name}: unknown tag"
-        assert control.tags, f"{name}: a control covers at least one kind of restriction"
-        assert control.why.strip()
-    else:
-        assert reason and reason.strip(), f"{name}: give the one-line reason"
-
-
-def test_the_classification_carries_no_field_the_schema_does_not_have() -> None:
-    """A stale entry is a claim about a field that no longer exists."""
-    from rayspec.policy.controls import AGENT_CONTROLS, AGENT_NON_CONTROLS
-
-    assert sorted(set(AGENT_CONTROLS) | set(AGENT_NON_CONTROLS)) == _agent_schema_fields()
-
+#: The partition itself — every field of every schema a restriction can be written in, both
+#: directions — lives in ``test_control_universe.py``: the classification is only as total as the
+#: set of schemas it is pointed at, and pointing it at the agent alone is what let the identical
+#: restriction one level up (``defaults.budget_usd``, ``isolation:``) stay invisible. What is
+#: proved HERE is the other half: that each classified agent control really fires, and that none
+#: of them blocks a key the allow-list permits.
 
 CONTROL_SAMPLES: dict[str, str] = {
     "access": "access: read-only\n",

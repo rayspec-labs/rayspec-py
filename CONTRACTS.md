@@ -848,15 +848,34 @@ from rayspec.policy import (
     SAFE_APPROVAL_MODE,  # "deny_all" — the codex approval_mode that grants nothing
     ACCESS_ORDER, access_rank,
     # policy/controls.py — WHAT COUNTS AS A CONTROL, classified rather than listed:
-    CONTROL_TAGS,  # frozenset: access commands mcp model network provider settings spend tools
-    #   trust workspace — the KIND of restriction a control is; guards match on these
+    CONTROL_TAGS,  # frozenset: access commands mcp model network provider secrets settings spend
+    #   tools trust workspace — the KIND of restriction a control is; guards match on these
     Control,  # key (how it is spelled), tags, sources: (PolicySource, ...)
-    AGENT_CONTROLS,  # {agent field: AgentControl(why, tags, imposed)} — every SECURITY-SHAPED
-    #   field of the agent schema: access, tools, network, commands, mcp, max_turns, budget_usd,
-    #   on_denial. `.imposed(agent)` -> ((spelled key, value, tags), ...), empty when the field is
-    #   set to a value that restricts nothing (`access: full`, an empty `tools:`)
-    AGENT_NON_CONTROLS,  # {agent field: one-line reason it restricts nothing} — the other half
-    AgentControl, agent_controls,  # agent_controls(agent) -> (Control, ...)
+    Restriction,  # (why, tags, imposed) — one field of one schema that CONSTRAINS the run;
+    #   `.imposed(subject)` -> ((spelled key, value, tags), ...), empty when the field is set to a
+    #   value that restricts nothing (`access: full`, `isolation: none`, a cap left unset)
+    Carried,  # (by, why) — a nested field a control on the PARENT reads (`tools.deny`); `by` is
+    #   checked against the parent's own table, so it cannot name a carrier that does not exist
+    AGENT_CONTROLS, AGENT_NON_CONTROLS,  # the agent schema, partitioned
+    AGENT_TOOLS_CARRIED, AGENT_COMMANDS_CARRIED, AGENT_MCP_NON_CONTROLS,  # its nested schemas
+    WORKFLOW_CONTROLS, WORKFLOW_NON_CONTROLS,  # the workflow document: isolation (the DEFAULT
+    #   `worktree` restricts — only `none` does not), defaults (delegates), inputs (`secret:`)
+    DEFAULTS_CONTROLS, DEFAULTS_NON_CONTROLS,  # budget_usd, max_tokens, timeout_total, timeout
+    INPUT_CARRIED, INPUT_NON_CONTROLS,  # one declared input
+    STEP_CONTROLS, STEP_NON_CONTROLS,  # every step kind, keyed by field name: `timeout:`
+    STEP_RETRY_NON_CONTROLS, STEP_LOOP_NON_CONTROLS, STEP_APPROVE_NON_CONTROLS,
+    STEP_STOP_NON_CONTROLS,
+    POLICY_CONTROL_TAGS, POLICY_TAGS_FROM_VALUE, POLICY_NON_CONTROLS,  # the policy document, at
+    #   the `block.key` level a layer actually sets
+    CLI_FLAGS,  # {flag: ExternalControl(control, why)} — every option of every command; only
+    #   --worktree adds a restriction, and the run command writes it onto the document first
+    UNRESTRICTED_ACCESS, UNRESTRICTED_ISOLATION,  # the one value of each that withholds nothing
+    agent_controls,  # (agent) -> (Control, ...)
+    workflow_controls,  # (Workflow) -> (Control, ...) — over every agent the document runs
+    step_controls,  # (ResolvedWorkflow) -> {agent key: (Control, ...)} — a step's own timeout
+    #   governs that step's agent and every agent nested under it; an INCLUDED document's own
+    #   defaults:/inputs: reach the agents of its body the same way
+    defaults_imposed, inputs_imposed,  # the two the include walk reuses
     policy_controls,  # EffectivePolicy -> (Control, ...) (control_sources + POLICY_CONTROL_TAGS)
     EXTERNAL_CONTROLS,  # {artefact file name: ExternalControl(control: bool, why)} — every
     #   project/user file rayspec's own source names. control=True: rayspec.lock, config.yaml
@@ -925,22 +944,38 @@ still an escape hatch when nothing is being escaped. `check_provider_options` ru
 a restriction that was real but unlisted: the agent's own `access: read-only`, its
 `tools.deny: [shell, web]`, its `max_turns`/`budget_usd`, or the committed model lockfile. An
 enumeration in the trigger is worth exactly as much as an enumeration in the allow-list, so a
-control is now anything that constrains the run, from three sources: every security-shaped field of
-the agent schema (`AGENT_CONTROLS`), every key any policy layer sets
+control is anything that constrains the run, wherever it is spelled: every security-shaped field of
+the agent schema (`AGENT_CONTROLS`), every restriction the workflow document sets over the agents
+it runs (`WORKFLOW_CONTROLS` — `isolation:`, the `defaults:` caps, a `secret:` input) or the step
+that runs one (`STEP_CONTROLS` — its `timeout:`), every key any policy layer sets
 (`EffectivePolicy.control_sources`), and every external control (`EXTERNAL_CONTROLS` — the model
 lockfile, which `--locked` enforces by default under CI, and the machine owner's `providers:` block
 in `config.yaml`, which `provider_options` is applied over). `discover_external_controls` performs
 the two file checks; `check_provider_options` stays a pure check and takes them as `external=`.
 
-Completeness is a TEST, not a longer list. `AGENT_CONTROLS ⊎ AGENT_NON_CONTROLS` must partition the
-fields of `AgentDef` **and** of `ResolvedAgent` exactly — every field is either security-shaped, so
-it is a control, or carries the one line saying why it restricts nothing — and
-`tests/policy/test_control_trigger.py` parametrises over the real schema and fails when a field is
-in neither, when a classified control does not actually turn the allow-list on, and when a control
-blocks an allow-listed key. The same shape covers the policy document (parametrised over
-`Policy.model_fields`) and the artefacts (`EXTERNAL_CONTROLS` is checked against a scan of
-rayspec's own source for project file names, so the table cannot be total by construction). A field
-added later has to be classified; it cannot default to "not a control", which is how the six arose.
+A restrictive DEFAULT is still a restriction. `isolation: worktree` is the default and it withholds
+the checkout a person is sitting in (`add_dirs: [/]` is exactly what undoes it), so it is a
+`workspace` control — the same reading `access: workspace-write`, also a default, already got. The
+carve-out is therefore asked for rather than fallen into: `isolation: none` **and** `access: full`
+and no cap, list, server or secret. `rayspec run --worktree` on a document that says `isolation:
+none` is an operator ADDING a restriction, so `cli/commands/run.py` writes it onto the document
+before `validate_workflow`; the `--no-worktree` half is deliberately not plumbed, because removing
+a restriction from the document would OPEN a hatch the file had shut.
+
+Completeness is a TEST, not a longer list — and it is only as total as the set of schemas it is
+pointed at. Aimed at the agent alone it was total over the agent and silent about
+`defaults.budget_usd`, `defaults.max_tokens`, `defaults.timeout_total` and `isolation`, which were
+in no partition and no test. So the universe is READ: `tests/policy/test_control_universe.py` walks
+every Pydantic model reachable from `Workflow` and from `Policy`, fails when one belongs to no
+family, and then partitions every field of every family into a control (tags + why), a field
+carried by a control on its parent (`Carried.by`, checked against the parent's table), or the one
+line saying why it restricts nothing. Both directions are asserted, so a stale entry fails as
+loudly as a missing one. The same file holds the CLI (`CLI_FLAGS`, read off the built click
+surface) and the artefacts (`EXTERNAL_CONTROLS`, checked against a scan of rayspec's own source for
+project file names, so the table cannot be total by construction), and proves that every classified
+control really turns the allow-list on and that none of them blocks an allow-listed key.
+`tests/policy/test_control_trigger.py` keeps the six blocks and the agent samples. A field added
+later has to be classified; it cannot default to "not a control", which is how the six arose.
 
 Guards match on the KIND of control (`CONTROL_TAGS`), never on a spelling: `access.max` in a policy
 file and `access: read-only` on the agent withhold the same thing, so codex `approval_mode:

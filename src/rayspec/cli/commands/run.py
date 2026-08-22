@@ -720,6 +720,13 @@ def register(app: typer.Typer) -> None:
         except RayspecError as exc:
             fail(str(exc), hint=exc.hint)
             return
+        if worktree:
+            # --worktree can only ADD isolation, so the document the policy check reads carries
+            # it: a restriction an operator imposes at the command line is a control like any
+            # other, and `isolation` is where the check looks for it. The other half
+            # (--no-worktree) is left alone on purpose — removing it from the document would
+            # OPEN the escape hatch the file had already closed.
+            rw.workflow.isolation = "worktree"
         caps = common.capability_source()
         report = validate_workflow(
             rw,

@@ -163,8 +163,8 @@ could undo
 #### What counts as a control
 
 "Any control" is meant literally, and it is the half that is easy to get wrong: a trigger that
-lists two controls is defeated by writing a third. A control is anything that constrains the run,
-from any of three sources.
+lists two controls is defeated by writing a third — or by writing the same one somewhere the
+trigger was not looking. A control is anything that constrains the run, wherever it is spelled.
 
 **Fields the agent sets on itself.** These come with no policy file at all — the common case, and
 the case where an unprotected control does the most damage.
@@ -179,6 +179,22 @@ the case where an unprotected control does the most damage.
 | `max_turns`, `budget_usd` | hard ceilings on turns and money |
 | `on_denial: fail` | makes a refused tool call stop the step — the teeth of every denial |
 
+**Fields the workflow sets over every agent it runs.** The same ceilings, one level up — and the
+only spelling some of them have: `budget_usd` on the agent is a capability not every provider
+declares, so a run-level cap is where an operator puts one.
+
+| Field | What it withholds |
+| --- | --- |
+| `isolation` | where the run may write. `worktree` (the **default**) puts it on a copy on its own branch instead of the checkout you are sitting in; only `isolation: none` withholds nothing |
+| `defaults.budget_usd`, `defaults.max_tokens` | what the whole run may spend and how many tokens it may use |
+| `defaults.timeout_total`, `defaults.timeout` | the run's wall clock, and any one step's |
+| `inputs.<name>.secret` | a secret input is never persisted and may be named only in a few places — a restriction on where a value may go |
+| a step's own `timeout:` | how long that step, and anything nested in it, may run |
+
+A restrictive **default** is still a restriction: `isolation: worktree` and `access:
+workspace-write` are both things a run has to give up on purpose, so the carve-out below has to
+be asked for rather than fallen into.
+
 **Every key any policy layer sets**, whatever it is — see [The keys](#the-keys).
 
 **Controls imposed from outside the workflow file:**
@@ -188,15 +204,27 @@ the case where an unprotected control does the most damage.
 | `.rayspec/rayspec.lock` | the model lockfile pins what every agent resolves to, and `--locked` (on by default under CI) refuses a run that resolves to anything else |
 | `config.yaml` `providers:` | the machine owner's adapter settings; `provider_options` is applied *over* them (Codex `config`), so a value the owner set there could otherwise be replaced from inside the workflow |
 
-An agent that **no** control applies to is untouched: `access: full`, no tool list, no cap, no
-`mcp:`, no `commands:`, no policy file, no lockfile and no machine settings. It has nothing to
-bypass, so the escape hatch is still an escape hatch.
+**And the command line.** `rayspec run --worktree` on a workflow that says `isolation: none` is an
+operator adding a restriction, so it is written onto the document before the workflow is checked:
+what the check reads is `isolation: worktree`, exactly as if the file had said so. It is the only
+flag that adds one; the rest choose what is printed, where it goes, which run is addressed — or
+*loosen* something (`--yes`, `--allow-unsupported`, `--no-worktree`), and a widening is never a
+reason to shut an escape hatch.
 
-None of those three lists is where the rule lives. Every field of the agent schema is classified
-in `rayspec.policy.controls` as security-shaped (a control) or not (with the one line saying why),
-and a test parametrised over the real schema fails when a field is neither — so a field added
-later has to be classified rather than defaulting to "not a control". The same holds for the
-policy document and for the artefacts rayspec reads from disk.
+An agent that **no** control applies to is untouched: `isolation: none`, `access: full`, no tool
+list, no cap, no `mcp:`, no `commands:`, no secret input, no policy file, no lockfile and no
+machine settings. It has nothing to bypass, so the escape hatch is still an escape hatch.
+
+None of those lists is where the rule lives, and no list of them could be: a classification is
+only as total as the set of schemas it is pointed at, and pointing it at the agent alone is
+exactly how the caps one level up stayed invisible. So the universe is read rather than written
+down — every model reachable from the workflow document and from the policy document, the resolved
+agent a provider receives, every project file rayspec's own source names, and every option of
+every CLI command. Each field is classified in `rayspec.policy.controls` as a control (with its
+kinds and the one line that earned it the place), as carried by a control on its parent, or as
+restricting nothing (with the one line saying why), and `tests/policy/test_control_universe.py`
+fails when any of that stops being total — in either direction, so a stale entry fails as loudly
+as a missing one, and a nested model added tomorrow fails until someone classifies it.
 
 The keys that pass, and why:
 

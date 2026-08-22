@@ -13,6 +13,7 @@ from .conftest import Tree, validated
 
 WF = """rayspec: 1
 name: wf
+isolation: none
 steps:
   - id: think
     agent:
@@ -72,7 +73,8 @@ def test_a_provider_option_the_policy_does_not_control_is_fine(tree: Tree) -> No
 
 
 def test_provider_options_are_untouched_when_nothing_constrains_the_agent(tree: Tree) -> None:
-    """No policy file AND no control of any kind — ``access: full``, no tools, no caps.
+    """No policy file AND no control of any kind — ``isolation: none``, ``access: full``,
+    no tools, no caps.
 
     ``wf()`` is not that agent: it sets ``access: read-only``, which is a control in its own
     right (``tests/policy/test_control_trigger.py``). The carve-out is for an agent with nothing
@@ -82,6 +84,7 @@ def test_provider_options_are_untouched_when_nothing_constrains_the_agent(tree: 
         tree,
         """rayspec: 1
 name: wf
+isolation: none
 steps:
   - id: think
     agent:
@@ -235,6 +238,7 @@ steps:
 
 CODEX_WF = """rayspec: 1
 name: wf
+isolation: none
 steps:
   - id: think
     agent:
@@ -455,11 +459,12 @@ def test_codex_deny_all_stays_permitted_under_an_access_cap(tree: Tree) -> None:
 
 
 def test_the_escape_hatch_is_untouched_when_no_control_is_in_force(tree: Tree) -> None:
-    """No policy file and no self-imposed control: `provider_options` passes through as before."""
+    """Nothing in the document constrains the run: `provider_options` passes through as before."""
     _, report = validated(
         tree,
         """rayspec: 1
 name: wf
+isolation: none
 steps:
   - id: think
     agent:

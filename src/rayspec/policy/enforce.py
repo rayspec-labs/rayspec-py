@@ -28,6 +28,8 @@ from rayspec.policy.controls import (
     agent_controls,
     merged_controls,
     policy_controls,
+    step_controls,
+    workflow_controls,
 )
 from rayspec.policy.layers import EffectivePolicy, PolicySource, sources_text
 from rayspec.policy.trust import TrustStore
@@ -224,14 +226,18 @@ def _refused_approval_mode(value: object, controls: ControlsInForce) -> tuple[tu
 #: ships, and the list only grows when someone can write down what a key does.
 #:
 #: A control-free agent is untouched — the escape hatch is still an escape hatch when nothing is
-#: being escaped. What turns the allow-list on is a control OF ANY KIND, from any source: a
-#: ``policy.yaml`` key (:meth:`EffectivePolicy.control_sources`), a security-shaped field the
-#: agent sets on itself (:data:`~rayspec.policy.controls.AGENT_CONTROLS` — ``access``,
-#: ``tools``, ``network``, ``commands``, ``mcp``, ``max_turns``, ``budget_usd``, ``on_denial``)
-#: or an external one (:data:`~rayspec.policy.controls.EXTERNAL_CONTROLS` — the model lockfile,
-#: the machine owner's ``providers:`` settings). That trigger is classified rather than listed,
-#: and proved total against the real schema, for the same reason this list is: an enumeration in
-#: the trigger is worth exactly as much as an enumeration in the allow-list.
+#: being escaped. What turns the allow-list on is a control OF ANY KIND, from any source and in
+#: any schema: a ``policy.yaml`` key (:meth:`EffectivePolicy.control_sources`), a security-shaped
+#: field the agent sets on itself (:data:`~rayspec.policy.controls.AGENT_CONTROLS`), a
+#: restriction the workflow sets over every agent it runs
+#: (:data:`~rayspec.policy.controls.WORKFLOW_CONTROLS` — ``isolation:``, the ``defaults:`` caps,
+#: a ``secret:`` input), one spelled on the step that runs it
+#: (:data:`~rayspec.policy.controls.STEP_CONTROLS`) or an external one
+#: (:data:`~rayspec.policy.controls.EXTERNAL_CONTROLS` — the model lockfile, the machine owner's
+#: ``providers:`` settings). That trigger is classified rather than listed, and proved total
+#: against every schema a restriction can be written in, for the same reason this list is: an
+#: enumeration in the trigger is worth exactly as much as an enumeration in the allow-list — and
+#: a completeness test aimed at ONE schema is silent about the others.
 ALLOWED_PROVIDER_OPTIONS: Mapping[str, Mapping[tuple[str, ...], AllowedOption]] = {
     "claude": {
         ("env",): AllowedOption(
@@ -470,13 +476,17 @@ def check_provider_options(
 ) -> PolicyReport:
     """Read every governed agent's ``provider_options`` block as an ALLOW-list.
 
-    An agent is governed when ANY control applies to it, whatever its source: a ``policy.yaml``
-    key (:meth:`EffectivePolicy.control_sources`), a security-shaped field the agent sets on
-    itself (:func:`agent_control_sources`) or an external one — the model lockfile, the machine
-    owner's ``providers:`` settings — which the caller discovers and passes as ``external``,
-    because this function performs no IO of its own. So this runs whether or not a policy file
-    exists: a control a workflow sets on itself is still a control it must not be able to shed,
-    and a control imposed from outside it even more so.
+    An agent is governed when ANY control applies to it, whatever its source and whatever schema
+    it is spelled in: a ``policy.yaml`` key (:meth:`EffectivePolicy.control_sources`), a
+    security-shaped field the agent sets on itself
+    (:data:`~rayspec.policy.controls.AGENT_CONTROLS`), a restriction the WORKFLOW sets over every
+    agent it runs (:data:`~rayspec.policy.controls.WORKFLOW_CONTROLS` — ``isolation:``, the
+    ``defaults:`` caps, a ``secret:`` input), one spelled on the STEP that runs the agent
+    (:data:`~rayspec.policy.controls.STEP_CONTROLS`) or an external one — the model lockfile, the
+    machine owner's ``providers:`` settings — which the caller discovers and passes as
+    ``external``, because this function performs no IO of its own. So this runs whether or not a
+    policy file exists: a control a workflow sets on itself is still a control it must not be
+    able to shed, and a control imposed from outside it even more so.
 
     For a governed agent every key of its own provider's block must appear in
     :data:`ALLOWED_PROVIDER_OPTIONS`, and a key that does not is refused at load time. An agent
@@ -489,11 +499,20 @@ def check_provider_options(
     """
     report = PolicyReport()
     from_policy = policy_controls(effective)
+    from_workflow = workflow_controls(resolved.workflow)
+    per_step = step_controls(resolved)
     for key in sorted(resolved.agents):
         agent = resolved.agents[key]
         outside = () if external is None else external.of(agent.provider)
         controls = ControlsInForce.of(
-            (*from_policy, *agent_controls(agent), *outside), effective=effective
+            (
+                *from_policy,
+                *from_workflow,
+                *per_step.get(key, ()),
+                *agent_controls(agent),
+                *outside,
+            ),
+            effective=effective,
         )
         _check_provider_options(agent, controls, report)
     return report
