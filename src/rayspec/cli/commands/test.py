@@ -14,8 +14,8 @@ flag is given. A checked-in YAML file must never be able to widen what this comm
 the command a reviewer or a CI job runs against an untrusted checkout.
 
 Exit codes: ``0`` every case passed · ``1`` at least one case failed · ``2`` usage (a filter that
-matches nothing, no cases at all, a case that needs ``--exec-shell``) or a malformed case file.
-``--junit`` writes its file in every one of those cases.
+matches nothing, no cases at all, a case that needs ``--exec-shell``), a malformed case file, or a
+``policy.yaml`` the loader cannot read. ``--junit`` writes its file in every one of those cases.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
 )
 from rayspec.cli.commands.run import approval_classes_for
+from rayspec.errors import RayspecError
 from rayspec.testing import discover_suites, run_case
 from rayspec.testing.report import (
     CaseResult,
@@ -181,6 +182,16 @@ def register(app: typer.Typer) -> None:
                     hint="pass --exec-shell to authorise it, or drop the key from the case",
                 )
                 return
+        # the operator's rules, not the case file's: `--exec-shell` runs a gated body for real,
+        # so a class held shut holds here too. Read once per suite root and BEFORE the first
+        # case runs, because a policy file that cannot be read is a usage error like a
+        # malformed case file — reported once, with `--junit` still written, rather than as a
+        # traceback out of the middle of a suite.
+        try:
+            classes = {suite.root: approval_classes_for(suite.root, ctx.home) for suite, _ in pairs}
+        except RayspecError as exc:
+            usage_exit(str(exc), hint=exc.hint or "")
+            return
         started = time.monotonic()
         results: list[CaseResult] = []
         for suite, case_spec in pairs:
@@ -190,9 +201,7 @@ def register(app: typer.Typer) -> None:
                 home=ctx.home,
                 exec_shell=exec_shell,
                 keep_run_dir=False,
-                # the operator's rules, not the case file's: `--exec-shell` runs a gated body
-                # for real, so a class held shut holds here too
-                approval_classes=approval_classes_for(suite.root, ctx.home),
+                approval_classes=classes[suite.root],
             )
             results.append(result)
             if not json_:

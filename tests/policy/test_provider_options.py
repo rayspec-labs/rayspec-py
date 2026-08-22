@@ -753,7 +753,6 @@ INERT_PROOFS: dict[tuple[str, tuple[str, ...]], str] = {
     ("claude", ("max_thinking_tokens",)): "test_an_inert_claude_key_computes_the_same_options",
     ("claude", ("max_buffer_size",)): "test_an_inert_claude_key_computes_the_same_options",
     ("claude", ("load_timeout_ms",)): "test_an_inert_claude_key_computes_the_same_options",
-    ("claude", ("user",)): "test_an_inert_claude_key_computes_the_same_options",
     (
         "codex",
         ("config", "model_reasoning_summary"),
@@ -823,7 +822,6 @@ INERT_CLAUDE_VALUES: dict[str, object] = {
     "max_thinking_tokens": 200_000,
     "max_buffer_size": 1,
     "load_timeout_ms": 86_400_000,
-    "user": "someone-else",
 }
 
 
@@ -937,7 +935,7 @@ steps:
           max_thinking_tokens: 4096
           max_buffer_size: 1024
           load_timeout_ms: 5000
-          user: someone
+          user: null
     prompt: hello
 """
 
@@ -982,7 +980,12 @@ NO_VALUE_UNDER_A_CONTROL: dict[tuple[str, tuple[str, ...]], str] = {
         "a variable is read inside the process rayspec starts, so rayspec cannot say which of the "
         "options it computed a given name overrides; REASONED_ENV_NAMES is empty, and the ways "
         "out are providers.claude.env in config.yaml, an mcp: server's own env: and a step's env:"
-    )
+    ),
+    ("claude", ("user",)): (
+        "it is the OS account the CLI subprocess is started under (open_process(user=...) → "
+        "getpwnam + setuid), so a value re-decides the identity every control in force was "
+        "reasoned about against; null is the permitted case — the identity the run already has"
+    ),
 }
 
 

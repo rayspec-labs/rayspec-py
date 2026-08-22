@@ -431,13 +431,27 @@ strictly* it is held. A workflow can name a class but cannot define one, so it c
 a rule an operator set — which is what makes it safe to leave a workflow running on a schedule
 that is also allowed to publish a release.
 
-**rayspec does not read an operator policy yet.** There is nowhere to load one from, so today
-naming a class records the intent, makes the gate addressable by `--approve-class`, and nothing
-more. Nothing pretends otherwise: `rayspec plan` and the gate itself warn
-(`steps.publish.approve.class: names approval class 'release', but no operator policy is in
-force, so the gate is not held`), and `rayspec plan --risk` reports the gate as `unheld-class`.
-The table below is what each rule does wherever the rules come from — the engine enforces
-them today — not a description of a file you can write.
+The classes are defined in the `approvals:` block of a [`policy.yaml`](policy.md#approval-classes)
+— the same three layers, discovered the same way, combined most-restrictive-wins:
+
+```yaml
+# .rayspec/policy.yaml
+approvals:
+  classes:
+    release:
+      allow_yes: false
+```
+
+Every command that can reach a gate reads them: `rayspec run`, `rayspec resume`, `rayspec
+approve` / `rayspec reject`, `rayspec test`, and `rayspec plan` / `plan --risk` before anything
+runs. A class **no** layer in force defines keeps the permissive default, and every one of those
+commands except `rayspec test` says so rather than letting the name pass for a lock
+(`steps.publish.approve.class: 'release' is not defined by the operator policy, so the gate is
+not held`, or `…but no operator policy is in force…` when there is no file at all); `plan --risk`
+reports such a gate as `unheld-class`. `rayspec test` enforces the rules and stays silent about
+an unknown class: the harness has no warning surface, and a passing case discards its run
+directory, so there is nowhere to put the notice. Validate the spelling with `rayspec plan
+--risk` rather than reading a green suite as proof the class is held.
 
 | Rule | What it forbids | What still works |
 |---|---|---|
@@ -471,8 +485,7 @@ and a gate nobody can reject is a gate nobody can get out of.
 release_check --approve-class chore` answers the tidy-up gates and still stops at the release
 one. It is repeatable, and it pre-approves nothing at all for a class whose rules say
 `allow_yes: false`. A name no gate in the workflow uses simply pre-approves nothing: the run
-pauses exactly as it would have. Until a policy can be loaded, no class is marked
-`allow_yes: false`, so `--approve-class` is today the only half of this feature with an effect.
+pauses exactly as it would have.
 
 `rayspec test` is governed by the same rules. A case is a dry run and a dry run approves gates,
 but a class held shut is not waived by the mode a gate is reached in — and with `--exec-shell` a
