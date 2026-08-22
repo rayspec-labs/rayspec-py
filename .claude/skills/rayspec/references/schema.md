@@ -275,7 +275,7 @@ agents:
       docs:   { transport: http, url: https://mcp.example/, headers: {} }
     provider_options:           # raw per-provider pass-through; replaces wholesale on override
       codex:  { config: { model_reasoning_summary: concise } }
-      claude: { setting_sources: [project, user] }
+      claude: { max_thinking_tokens: 8000 }
 ```
 
 | Field | Default |

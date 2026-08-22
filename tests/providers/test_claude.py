@@ -7,6 +7,8 @@ No network, no CLI.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
 import sys
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -47,7 +49,12 @@ from rayspec.providers.base import (
     ToolPolicy,
 )
 from rayspec.providers.capabilities import CLAUDE_CAPABILITIES
-from rayspec.providers.claude import ClaudeProvider, build_options
+from rayspec.providers.claude import (
+    ADAPTER_OWNED_OPTIONS,
+    MERGED_OPTIONS,
+    ClaudeProvider,
+    build_options,
+)
 from rayspec.providers.registry import create_provider
 
 pytestmark = pytest.mark.anyio
@@ -485,18 +492,7 @@ def test_options_provider_options_env_and_mcp_servers_are_merged(tmp_path: Path)
     assert not tr.warnings
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        "stderr",
-        "cwd",
-        "cli_path",
-        "resume",
-        "fork_session",
-        "output_format",
-        "include_partial_messages",
-    ],
-)
+@pytest.mark.parametrize("key", sorted(ADAPTER_OWNED_OPTIONS))
 def test_options_provider_options_adapter_owned_keys_are_ignored_with_warning(
     tmp_path: Path, key: str
 ):
@@ -506,6 +502,52 @@ def test_options_provider_options_adapter_owned_keys_are_ignored_with_warning(
     assert getattr(opts, key) != "override"
     assert any(f"provider_options.{key}" in w and "ignored" in w for w in tr.warnings)
     assert opts.cwd == str(tmp_path) and opts.resume == "sess-old"
+
+
+def test_every_computed_option_is_owned_or_merged():
+    """No field the adapter computes may be silently replaceable from ``provider_options``.
+
+    Read straight off the ``ClaudeAgentOptions(...)`` call in :func:`build_options`, so a field
+    added there later has to be classified as owned or merged before this passes again — the
+    forgetting is what turns a control into an escape hatch.
+    """
+    tree = ast.parse(inspect.getsource(build_options))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ClaudeAgentOptions"
+    ]
+    assert len(calls) == 1
+    computed = {kw.arg for kw in calls[0].keywords if kw.arg}
+    assert computed == ADAPTER_OWNED_OPTIONS | MERGED_OPTIONS
+
+
+def test_options_provider_options_cannot_widen_the_computed_tool_policy(tmp_path: Path):
+    """The verifier's repro: ``disallowed_tools: []`` must not empty a computed denial."""
+    provider = ClaudeProvider({})
+    req = _req(
+        tmp_path,
+        access=AccessLevel.READ_ONLY,
+        tools=ToolPolicy(deny=("web",)),
+        model="claude-sonnet-4-5",
+        provider_options={
+            "disallowed_tools": [],
+            "allowed_tools": ["Bash", "WebSearch"],
+            "tools": None,
+            "permission_mode": "bypassPermissions",
+            "model": "claude-opus-4-1",
+        },
+    )
+    opts, tr = build_options(provider, req, _stderr_sink())
+    assert opts.disallowed_tools == ["WebFetch", "WebSearch"]
+    assert "Bash" not in opts.allowed_tools
+    assert opts.tools == ["Read", "Glob", "Grep"]
+    assert opts.permission_mode == "dontAsk"
+    assert opts.model == "claude-sonnet-4-5"
+    for key in ("disallowed_tools", "allowed_tools", "tools", "permission_mode", "model"):
+        assert any(f"provider_options.{key}" in w and "ignored" in w for w in tr.warnings)
 
 
 def test_options_read_only_warns_about_unrepresentable_allowed_tools(tmp_path: Path):
