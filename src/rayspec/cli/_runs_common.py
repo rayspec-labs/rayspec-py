@@ -834,7 +834,7 @@ def resume_run(
         wait_seconds,
         workflow_providers,
     )
-    from rayspec.providers.pricing import PriceTable
+    from rayspec.providers.pricing import price_table_of
     from rayspec.secrets import SecretError, build_redactor, provider_for, used_config_secrets
 
     out = loader_common.err_console() if json_mode else loader_common.console()
@@ -903,10 +903,9 @@ def resume_run(
             terminal_prompt=terminal_prompt_id(ctx.config.extensions, configured),
         ),
     )
-    try:
-        price_table = PriceTable.from_config(ctx.config.pricing)
-    except RayspecError:
-        price_table = None
+    # the second half of a run is measured in the same prices as the first, so a table too
+    # malformed to read is named here too rather than dropped in silence
+    price_table, pricing_problem = price_table_of(ctx.config.pricing)
     # the operator's ceilings apply to the second half of a run exactly as to the first: a
     # resume that would blow through the daily envelope pauses again rather than slipping past
     # it, and it queues for a host run slot because it starts the same agents. A scheduler that
@@ -914,7 +913,10 @@ def resume_run(
     # must not be the one that bypasses the caps. A dry run spends nothing and takes no slot.
     policy = limits_policy(project_root, home=ctx.home)
     loader_common.report_lines(
-        "policy warnings:", list(policy.warnings), style="yellow", printer=out.print
+        "policy warnings:",
+        [*policy.warnings, *([pricing_problem] if pricing_problem else [])],
+        style="yellow",
+        printer=out.print,
     )
     envelope = (
         None
