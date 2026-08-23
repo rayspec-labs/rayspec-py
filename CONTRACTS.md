@@ -3076,7 +3076,7 @@ from rayspec.store.file import (
     audit_log_enabled,      # (env=None) -> bool
     AUDIT_STREAM_KINDS,     # the stream kinds the ledger keeps — read_stream's prefilter
     audit_entry_for_create, # (RunRecord) -> the ledger's first row (creation + actor)
-    audit_entry_for_event,  # (RunEvent) -> {ts, kind, step, detail, data} | None  RAW
+    audit_entry_for_event,  # (RunEvent) -> {ts, kind, event, step, detail, data} | None  RAW
     audit_entry_for_stream, # (step_path, StreamRecord) -> row | None                RAW
     finish_audit_row,       # (row, redactor=NULL_REDACTOR) -> row  redact FIRST, shape SECOND
     #   the two builders return the row with its text untouched; this redacts the VALUES and
@@ -3084,6 +3084,23 @@ from rayspec.store.file import (
     #   redaction is exact match, so a multi-line or overlong secret would survive shaping.
     tool_command,           # (StreamRecord) -> str | None  the command a tool_call executes
     tool_arguments,         # (StreamRecord) -> Mapping | None  data["input"], else data itself
+    ROW_EVENT_KEY,          # "event" — a row's own key naming the EventType it came from
+    is_step_start_row,      # (row) -> row["event"] is step.started
+    is_step_end_row,        # (row) -> row["event"] is step.finished
+    is_attempt_start_row,   # (row) -> row["event"] is run.started or run.resumed
+    #   The ledger's brackets, and the reader halves of what the engine writes. They compare the
+    #   event TYPE, never a payload: a predicate that asked whether `data` holds a key named
+    #   "kind"/"status" is a rule over today's payload shapes only — `finish()` merges
+    #   `StepOutcome.event_data` into a step.finished payload, so an executor can put `kind`
+    #   there, and a step event added later could carry `status`. Either would move the line
+    #   silently; an event type cannot be re-classified by a payload, and a row that is neither
+    #   bracket is neither by construction.
+    #   A start opens an execution, the step's next end closes it, and everything the attempt
+    #   emitted (its retries included) lies between them. An end that closes no open start
+    #   reports a DECISION, not an execution — a skip, or a resume replay. An attempt start
+    #   closes every execution still open: no execution outlives the process that opened it, so
+    #   a killed attempt's open bracket ends there instead of swallowing the next attempt's
+    #   decision row. `rayspec audit --commands` is exactly the rows inside a bracket.
 )
 # FileRunStore(root, *, redactor=NULL_REDACTOR, audit: bool | None = None)
 #   audit: True/False pin the ledger on/off; None (default) asks AUDIT_ENV at write time
@@ -3093,6 +3110,8 @@ from rayspec.store.file import (
 #     was ever enabled, and the two agree row for row.
 # Rows are appended by create() (kind "run", detail "created", data.actor), append_event()
 #   and append_stream(); row kinds: run | step | command | tool | file | warning | approval.
+#   Every row also carries `event`: the EventType it was derived from, or None for the creation
+#   row (run.json) and for the rows derived from a step's stream.
 #   Progress events (loop.iteration, each.item) produce no row. A stream row is derived from the
 #   ORIGINAL record, before the boundary buffer, and the row is redacted with
 #   Redactor.redact_obj (VALUES, not serialised text) before it is shaped.
@@ -3139,7 +3158,21 @@ from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [-
     #                  becomes an `unreadable_row` warning, never a silently empty step.
     audit_payload,   # (store, run, *, commands) -> {run_id, workflow, status, dry_run, actor,
     #                  workdir, branch, rows}   (dry_run is also marked in the printed header)
-    is_command_row,  # a "command" row, or a step row whose data.kind is shell/python
+    command_rows,    # (run, rows) -> the `--commands` view: a row is in it iff it is a "command"
+    #                  row, or a row of a shell:/python: step (COMMAND_STEP_KINDS, read off the
+    #                  step RECORD by `command_step_paths`) lying inside one of that step's
+    #                  executions — the span `is_step_start_row` opens and the step's next
+    #                  `is_step_end_row`, or the next `is_attempt_start_row`, closes. Per ROW,
+    #                  not per step: on a resumed run one step path carries executions, skips and
+    #                  replays, and each is answered on its own. No status, skip reason or replay
+    #                  marker is read. `[]` for a `--dry-run` record: a rehearsal called no
+    #                  provider and ran no shell body, though the engine brackets every step it
+    #                  rehearsed. Read left to right, so it is defined over the ledger IN THE
+    #                  ORDER THE ENGINE WROTE IT, which `collect_rows` reconstructs from the
+    #                  timestamps the writer stamps at append time — a store that stopped
+    #                  appending in ts order, or a clock going backwards between two attempts,
+    #                  would reorder the rows and invalidate the brackets.
+    command_step_paths,  # (run) -> the paths whose step record kind is shell/python
     print_audit, rows_table, actor_line, unreadable_row, ROW_STYLES, COMMAND_STEP_KINDS,
 )
 ```

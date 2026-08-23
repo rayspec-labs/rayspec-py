@@ -115,7 +115,7 @@ def test_the_ledger_covers_the_run_its_steps_and_the_gate(
     paused = [e for e in entries if e["kind"] == "run" and e["detail"] == "paused"]
     assert paused and paused[-1]["step"] == "gate"
     assert entries[-1]["detail"] == "finished (paused)"
-    assert all(set(e) == {"ts", "kind", "step", "detail", "data"} for e in entries)
+    assert all(set(e) == {"ts", "kind", "event", "step", "detail", "data"} for e in entries)
 
 
 def test_an_approval_is_in_the_ledger_with_its_actor(

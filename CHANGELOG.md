@@ -5,6 +5,55 @@ All notable changes to rayspec are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-08-23
+
+One fix, and the correction of a claim 1.0.1 made about it.
+
+### Fixed
+- **`rayspec audit --commands` answers per row, not per step.** 1.0.1 said it "no longer lists a
+  `shell:`/`python:` step the run never started". That was true of a run with one attempt and
+  **not true of a resumed one**, where the same step path carries rows from every attempt: the
+  filter asked whether the run held a `step.started` for the step *anywhere* and then kept every
+  row of that step, so a resumed run's executed view still showed
+
+  - a step **skipped** in an earlier attempt, because a later attempt started it, and
+  - the **replay** row of a step a later attempt reused (`succeeded (reused from the previous
+    attempt — not re-executed)`) — a row that says in so many words that nothing ran.
+
+  The filter now asks the question the view is named after, about the row in front of it. Three
+  records the engine writes draw the line, and nothing else does — no status, no skip reason, no
+  replay marker, so a status added later is answered without the filter changing:
+
+  - `step.started` opens an execution;
+  - the step's next `step.finished` closes it;
+  - `run.started`/`run.resumed` closes every execution still open, because no execution outlives
+    the process that opened it. That is what an attempt killed outright leaves behind — a machine
+    loss, an OOM kill, a CI runner timeout write no outcome for the step that was running — and
+    without this the *next* attempt's decision about that step was read as the killed attempt's
+    outcome, which put a `skipped` row back into the executed view. What the view shows of a
+    killed execution is its `started` row: the run really did start executing there, and that is
+    the last thing the ledger saw of it.
+
+  A retry is an execution and keeps every attempt; `each:` items and `loop:` iterations are
+  answered one path at a time. A `--dry-run` rehearsal called no provider and ran no shell body,
+  so its executed view is now empty rather than a full bracket for every step the rehearsal
+  shaped — the header already said `dry run — nothing was executed`, and the table said the
+  opposite. The unfiltered `rayspec audit` is unchanged throughout: being decided against, being
+  replayed and being rehearsed are real facts about a run and belong in its ledger. A run that
+  never resumed and was not a rehearsal sees no change at all.
+
+  `docs/cli.md`, `docs/runs-and-resume.md` and the packaged `rayspec-cli` skill now describe the
+  dividing line as it is drawn, the killed attempt included.
+
+### Changed
+- A ledger row says which lifecycle event it came from: `rayspec audit --json` rows, and an
+  enabled `audit.jsonl`, gain an `event` field (`step.started`, `run.resumed`, …), `null` on the
+  creation row and on the rows derived from a step's stream, which are not lifecycle events. The
+  addition is what `--commands` reads. The line used to be drawn by asking whether a row's
+  payload happened to hold a key named `kind` or `status` — a rule about the payload shapes that
+  exist today rather than about what a row is, and one that a step event added later reporting a
+  `status`, or an executor putting a `kind` into a finish payload, would have moved silently.
+
 ## [1.0.1] — 2026-08-23
 
 `pip install rayspec` already gave you the whole engine *and* both provider CLIs. What it did not
@@ -53,9 +102,12 @@ give you was any idea what to do next. This release is one command that answers 
   report inside the working tree. Both harnesses are documented in `CONTRIBUTING.md`.
 
 ### Fixed
-- `rayspec audit --commands` no longer lists a `shell:`/`python:` step the run never started: a step
-  decided against (`when: false`, an upstream failure, the run-level cap) executed nothing, and the
-  view is documented as only what was executed. The unfiltered ledger still records it.
+- `rayspec audit --commands` no longer lists a `shell:`/`python:` step **a single-attempt run**
+  never started: a step decided against (`when: false`, an upstream failure, the run-level cap)
+  executed nothing, and the view is documented as only what was executed. The unfiltered ledger
+  still records it. **This fix was incomplete**: it asked whether the run had started the step
+  *anywhere*, so on a **resumed** run it still showed a skip from an earlier attempt and the
+  replay row of a step a later attempt reused. Completed in 1.0.2 — see below.
 - A `secret: true` value that happens to equal one of the strings a run is recorded under — its id,
   its workflow's name or file, its project root, its workspace directory — is now treated the same
   way everywhere, instead of being masked on the console and in `events.jsonl` while `run.json`,
@@ -599,6 +651,7 @@ The workflow language, the scheduler, the two provider adapters and the command 
   **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
   version tag, so this release is the first time they execute.
 
-[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.2
 [1.0.1]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0

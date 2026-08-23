@@ -388,7 +388,10 @@ Resume re-executes the workflow **from the top** with a reuse cache:
   step is not `always_run: true`. A replay executes nothing — no shell body, no provider call —
   and [`rayspec audit`](cli.md#rayspec-audit) says so on the row (`succeeded (reused from the
   previous attempt — not re-executed)`), so the ledger of a resumed run never shows one step's
-  work twice;
+  work twice. `rayspec audit --commands` leaves the replay row out altogether, and keeps the row
+  of the attempt that really ran the step — that view answers per row, so a step skipped in one
+  attempt and executed in the next shows only the execution, and a step an attempt was killed
+  mid-execution shows that attempt's `started` row and nothing a later attempt decided;
 - `failed`, `interrupted`, `running`, `paused`, `skipped` records re-run; `attempts` keep counting;
 - composites (`loop`, `each`, `include`) always re-run their bodies, which replay naturally
   (`until` is re-evaluated from stored outputs; an `each` item whose `item_sha256` changed is

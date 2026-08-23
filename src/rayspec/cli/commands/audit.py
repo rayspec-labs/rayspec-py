@@ -20,7 +20,7 @@ other runs, other projects or other people.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -46,6 +46,8 @@ from rayspec.store.file import (
     audit_entry_for_event,
     audit_entry_for_stream,
     finish_audit_row,
+    is_attempt_start_row,
+    is_step_end_row,
     is_step_start_row,
 )
 from rayspec.store.model import RunRecord
@@ -67,45 +69,84 @@ ROW_STYLES: dict[str, str] = {
 COMMAND_STEP_KINDS = frozenset({"shell", "python"})
 
 
-def command_step_paths(run: RunRecord, rows: Iterable[dict[str, Any]]) -> frozenset[str]:
-    """The ``shell:``/``python:`` steps this run EXECUTED — whose rows ``--commands`` keeps.
+def command_step_paths(run: RunRecord) -> frozenset[str]:
+    """The paths of this run's ``shell:``/``python:`` steps — the steps that ARE a command.
 
-    Two questions, and neither is answered by a list that has to be kept up to date:
+    Read off the ``kind`` of the step **record** (``run.json``), not off a row payload: only the
+    ``step.started`` event repeats the kind, so a filter that reads the payload alone keeps a
+    shell step's start and drops its ``succeeded``/``failed``. Asking the record answers for
+    every row of the step at once.
 
-    * *is this step a command?* — the ``kind`` on the step **record** (``run.json``). Only the
-      ``step.started`` event repeats the kind in its payload, so a filter that reads the payload
-      alone keeps a shell step's start and drops its ``succeeded``/``failed``; asking the record
-      answers for every row of the step.
-    * *did the run execute it?* — is there a ``step.started`` row for it
-      (:func:`~rayspec.store.file.is_step_start_row`). The engine emits that event at the one
-      moment it hands a step to its executor and at no other, so a step decided against before
-      it began has none — ``when: false``, an upstream failure, the budget breaker, and whatever
-      reason is added next, without a line changing here.
-
-    That second question is the whole difference between this view and ``rayspec audit`` without
-    the flag: a skipped ``shell:`` step is a real fact about the run and belongs in the ledger,
-    but it is not something that was executed.
+    This is only half of ``--commands``. Being a command step says nothing about whether any one
+    of its rows reports a command that ran — that is :func:`command_rows`.
     """
-    kinds = {path for path, rec in run.steps.items() if rec.kind in COMMAND_STEP_KINDS}
-    started = {str(row["step"]) for row in rows if row.get("step") and is_step_start_row(row)}
-    return frozenset(kinds & started)
+    return frozenset(path for path, rec in run.steps.items() if rec.kind in COMMAND_STEP_KINDS)
 
 
-def is_command_row(row: dict[str, Any], command_steps: Collection[str] = ()) -> bool:
-    """Whether ``row`` describes something the run executed (``--commands``).
+def command_rows(run: RunRecord, rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``--commands`` view of ``rows``: only what this run executed.
 
-    That is a ``command`` row — a command an agent ran, whether the adapter reported it as a
-    ``command_start`` or as a tool call carrying a command line — or a row of a ``shell:``/
-    ``python:`` step the run **started**, which is rayspec running a command itself. A step row
-    names the step and its kind, not the body: the rendered body is not kept in the run directory
-    (``rayspec explain`` re-renders it from the workflow).
+    **The rule, in one sentence:** a row is in this view iff it is a ``command`` row, or it is a
+    row of a ``shell:``/``python:`` step that lies inside one of that step's executions — the
+    span a ``step.started`` row opens (:func:`~rayspec.store.file.is_step_start_row`) and the
+    step's next end row (:func:`~rayspec.store.file.is_step_end_row`) or the next attempt
+    (:func:`~rayspec.store.file.is_attempt_start_row`) closes.
 
-    ``command_steps`` is :func:`command_step_paths` of the run; every row of a step in it is
-    kept whatever its payload carries, which is what makes a shell step's *outcome* survive the
-    filter alongside its start — and every row of a step that is not in it is dropped, including
-    the one that says it was skipped.
+    That is a question about the ROW, and it is total. The three brackets are event TYPES the
+    engine writes, never a status, a skip reason or a replay marker, so a status invented next
+    year is answered without this function changing:
+
+    * a step decided against before it began — ``when: false``, an upstream failure, the budget
+      breaker — has an end row and no start to close, so it is outside every execution;
+    * a step a resume replayed from its cache likewise has an end row of its own: the earlier
+      attempt's execution was closed by the earlier attempt's end row, and nothing ran this time;
+    * a retry is an execution and stays inside its start's bracket, so every attempt is kept;
+    * an execution the ledger never saw end — the process was killed between the two rows — is
+      closed by the attempt boundary, because no execution outlives the process that opened it.
+      Its start row stays, since the run really did start executing there, and it is the last
+      row of that execution: what the killed attempt wrote is what the view shows of it;
+    * the same step can execute, be skipped and be replayed across the attempts of one run, and
+      each of its rows is answered on its own — which is the whole of what a step-wide answer
+      (does this run have a ``step.started`` for it *anywhere*?) got wrong on a resumed run.
+
+    Asking per row is also what makes a shell step's *outcome* survive the filter next to its
+    start, where matching on the payload's ``kind`` would keep only the start.
+
+    A ``--dry-run`` rehearsal is the one whole-run answer: it called no provider and ran no shell
+    body, so nothing it recorded was executed and the view is empty. The engine still brackets
+    every step it rehearsed — a rehearsal is how a run is shaped and the ledger records that
+    shaping — which is exactly why the view cannot be left to read those brackets as work. The
+    printed header says the same thing (``dry run — nothing was executed``).
+
+    The brackets are read left to right, so this is defined over the ledger **in the order the
+    engine wrote it**, which :func:`collect_rows` reconstructs from the timestamps the writer
+    stamps at append time. A store that stopped appending in timestamp order, or a clock that
+    went backwards between two attempts, would reorder the rows and invalidate the brackets.
     """
-    return row["kind"] == "command" or (row["kind"] == "step" and row.get("step") in command_steps)
+    if run.dry_run:
+        return []
+    commands = command_step_paths(run)
+    executing: set[str] = set()  # step paths whose execution the ledger has open
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if is_attempt_start_row(row):  # a new process: nothing it finds open can still be running
+            executing.clear()
+            continue
+        if row["kind"] == "command":  # a command an agent ran: it ran, whoever reported it
+            kept.append(row)
+            continue
+        if row["kind"] != "step":
+            continue
+        path = str(row.get("step") or "")
+        inside = path in executing
+        if is_step_start_row(row):
+            executing.add(path)
+            inside = True
+        elif inside and is_step_end_row(row):
+            executing.discard(path)
+        if inside and path in commands:
+            kept.append(row)
+    return kept
 
 
 def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
@@ -191,8 +232,7 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
     """The ``--json`` object: the run's identity, whether it was a rehearsal, and its rows."""
     rows = collect_rows(store, run)
     if commands:
-        steps = command_step_paths(run, rows)
-        rows = [row for row in rows if is_command_row(row, steps)]
+        rows = command_rows(run, rows)
     return {
         "run_id": run.run_id,
         "workflow": run.workflow_name,
@@ -295,8 +335,8 @@ __all__ = [
     "actor_line",
     "audit_payload",
     "collect_rows",
+    "command_rows",
     "command_step_paths",
-    "is_command_row",
     "print_audit",
     "register",
     "rows_table",
