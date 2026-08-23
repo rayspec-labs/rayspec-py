@@ -34,10 +34,6 @@ rayspec ships the check as a reusable workflow. It installs rayspec from PyPI, r
 and reports the result — as a pull-request comment that is edited in place on every push, and
 always into the run's job summary.
 
-**Before the first release.** There is no `v1` tag yet, and the `rayspec` name on PyPI still holds
-only a 0.0.1 placeholder — so the `uses:` ref below is pinned to a commit, which is what to keep
-using until the tag exists, and the version it asks for cannot install until 1.0.0 is published.
-
 ```yaml
 # .github/workflows/rayspec.yml
 name: rayspec
@@ -48,7 +44,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@87b46107f9ac9dcdc0e7ae5c4af10549f5dde7c2
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
     with:
       workflow: example                    # what `rayspec init` scaffolds — swap in your own
       stubs: .rayspec/stubs/example.yaml   # and the stub script it writes next to it
@@ -80,7 +76,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@87b46107f9ac9dcdc0e7ae5c4af10549f5dde7c2
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
     with:
       workflow: example
       stubs: .rayspec/stubs/example.yaml
@@ -106,13 +102,12 @@ that reason alone.
 design. The job summary carries the same report. Do not reach for `pull_request_target` to work
 around it: that runs the fork's code with a writable token.
 
-**Pinning.** `@v1` will be a tag that moves with the 1.x line — set by hand, as the last step of a
-release (below); until it exists, and afterwards if you would rather not track a moving tag, pin a
-commit sha as the snippets above do. `rayspec-version` defaults to `>=1.0.0,<2`, the same 1.x line,
-deliberately rather than to *latest*: the `rayspec` name on PyPI is parked with a 0.0.1 placeholder
-until the first release lands, so "whatever is newest" has a wrong answer available and an unpinned
-check could quietly install a stub. Pin an exact version anyway — a check that silently changes
-with someone else's release is a check nobody trusts. A bare version (`1.0.0`) is pinned exactly;
+**Pinning.** `@v1` is a tag that moves with the 1.x line — set by hand, as the last step of a
+release (below). If you would rather not track a moving tag, pin a commit sha instead; the ref is
+the only thing that decides which version of this check your repository runs. `rayspec-version`
+defaults to `>=1.0.0,<2`, the same 1.x line, deliberately rather than to *latest*. Pin an exact
+version anyway — a check that silently changes with someone else's release is a check nobody
+trusts. A bare version (`1.0.0`) is pinned exactly;
 anything starting with an operator (`>=1.2,<2`) is passed through as a specifier; an empty string
 is refused rather than resolved.
 
