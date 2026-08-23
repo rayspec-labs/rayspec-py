@@ -684,7 +684,14 @@ def register(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", help="Also show step starts.")] = False,
         allow_unsupported: AllowUnsupportedOption = False,
         fail_fast: Annotated[
-            bool, typer.Option("--fail-fast", help="Cancel running siblings on failure.")
+            bool,
+            typer.Option(
+                "--fail-fast",
+                help=(
+                    "Cancel running siblings on failure, overriding the workflow's "
+                    "defaults.on_step_failure (only ever tightens it)."
+                ),
+            ),
         ] = False,
         resume: Annotated[
             str | None, typer.Option("--resume", help="Resume run id (prefix ok).")

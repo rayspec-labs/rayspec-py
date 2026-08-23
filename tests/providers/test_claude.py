@@ -525,7 +525,7 @@ def test_every_computed_option_is_owned_or_merged():
 
 
 def test_options_provider_options_cannot_widen_the_computed_tool_policy(tmp_path: Path):
-    """The verifier's repro: ``disallowed_tools: []`` must not empty a computed denial."""
+    """The reported repro: ``disallowed_tools: []`` must not empty a computed denial."""
     provider = ClaudeProvider({})
     req = _req(
         tmp_path,

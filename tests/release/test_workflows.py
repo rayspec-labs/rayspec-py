@@ -1231,6 +1231,35 @@ def test_the_page_says_the_outputs_are_set_whatever_happened() -> None:
     assert "fail-on-error" in paragraph, "the page does not say who decides when they are set"
 
 
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """``git`` in this repository, never raising — the caller reads the return code."""
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
+    )
+
+
+def test_every_ref_the_page_tells_a_stranger_to_call_exists() -> None:
+    """The page pinned ``@v1`` while no tag of that name had ever been pushed.
+
+    A ``uses:`` ref that does not resolve is not a slow failure: GitHub rejects the call before any
+    job of the caller's workflow starts, so the copy-paste example broke on the reader's first pull
+    request while reading as the finished thing. Every ref the page names is resolved against this
+    repository — a commit sha or a tag, both of which ``rev-parse`` answers without a network.
+    """
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        pytest.skip("not a git checkout — the refs the page names cannot be resolved here")
+    refs = sorted(set(re.findall(r"uses:\s+rayspec-labs/rayspec-py/\S+@(\S+)", _ci_page())))
+    assert refs, "docs/ci.md no longer shows how to call the reusable workflow"
+    missing = [
+        ref
+        for ref in refs
+        if _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode != 0
+    ]
+    shallow = _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    hint = " — this checkout is shallow, so it cannot see them either" if shallow else ""
+    assert not missing, f"docs/ci.md calls refs this repository does not have: {missing}{hint}"
+
+
 def test_the_copy_paste_example_points_at_files_rayspec_init_writes(
     tmp_path: Path, home: Path
 ) -> None:
