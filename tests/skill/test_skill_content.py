@@ -41,14 +41,17 @@ SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
             "## Mental model",
             "## The authoring loop",
             "## YAML cheat-sheet",
-            "## Templating rules that bite",
             "## Field index",
+            "## Templating rules that bite",
+            "## Secrets",
+            "## Best practices",
+            "## Worked examples",
             "## CLI quick reference",
             "## Pitfalls and conventions",
             "## References",
         ),
-        250,
-        450,
+        620,
+        780,
     ),
     CLI_SKILL.name: (
         (
@@ -103,9 +106,24 @@ def test_every_yaml_fence_is_valid_yaml_and_every_step_in_it_parses(skill: Skill
                 parse_step(step, source=source)
 
 
+#: Every full workflow the authoring page shows, and what each one is there to teach. The set is
+#: pinned so a pattern cannot quietly disappear (or a fourth one appear without a decision); the
+#: tests below load, validate and dry-run every member, so none of them can rot either.
+PAGE_WORKFLOWS: dict[str, str] = {
+    "fix_issue": "the cheat-sheet: every step kind once, in one file",
+    "review_block": "the block the cheat-sheet includes",
+    "selfheal": "worked example 1 — a loop that ends on a signal, not on a count",
+    "audit_sweep": "worked example 2 — fan-out with a tolerated item and a finally step",
+    "quality_block": "worked example 3 — a reusable block with its own inputs and outputs",
+    "pipeline": "worked example 3 — the caller that includes that block twice",
+}
+
+
 def test_the_workflows_skill_still_carries_the_full_cheat_sheet() -> None:
     assert len(yaml_blocks(WORKFLOWS_MD)) >= 3
-    assert set(workflow_blocks()) == {"fix_issue", "review_block"}
+    assert set(workflow_blocks()) == set(PAGE_WORKFLOWS)
+    for name, why in PAGE_WORKFLOWS.items():
+        assert len(why.strip()) > 20, name
 
 
 @pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
