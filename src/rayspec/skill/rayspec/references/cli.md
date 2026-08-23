@@ -958,8 +958,10 @@ omitted:
   read back from `steps/<path>/prompt.txt` (the agent's rendered `instructions` — the system
   prompt — are not persisted and are not shown); for `shell:`/`python:` the rendered script with
   its `${RAYSPEC_V<n>}` slots and their values. A value over 64 KiB is not inlined into a
-  preview: its slot reads `<N bytes — too large to inline here; read it in the producing step's
-  output file under the run dir>`. Only the first 20 lines are shown without `--full`.
+  preview: the slot still reads `${RAYSPEC_V<n>}`, and the spill path the script would read —
+  the preamble line above a `shell:` body, the `Path(...)` call of a `python:` one — stands in as
+  `<N bytes — too large to inline here; read it in the producing step's output file under the run
+  dir>`. Only the first 20 lines are shown without `--full`.
 - **fingerprint / output** — the step fingerprint, whether the run *replayed* the step from a
   previous one (`reused`), and the output file.
 

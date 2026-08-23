@@ -65,7 +65,10 @@ def rewrite_target(target: str, *, source_dir: Path, docs_dir: Path, repo_url: s
         resolved = dest.resolve()
     except OSError:  # pragma: no cover - only a malformed path gets here
         return target
-    if not resolved.exists():
+    # Outside the checkout as well as missing: `repo_link` builds a path relative to REPO_ROOT,
+    # and a link like `../../sibling/README.md` that happens to exist on the author's machine
+    # would crash the build there and quietly 404 on a runner where it does not.
+    if not resolved.exists() or not resolved.is_relative_to(REPO_ROOT):
         return target
     for page, source in ROOT_PAGES.items():
         if resolved == (REPO_ROOT / source).resolve():

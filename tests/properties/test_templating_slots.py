@@ -14,10 +14,10 @@ The promise has three halves, and each is a property below:
 2. **verbatim** — the bytes bash sees are the bytes the value had;
 3. **inertness** — nothing in a value is ever re-expanded by the shell or re-rendered by Jinja.
 
-Two of these do NOT hold above the 64 KiB spill threshold. Those cases are marked
-``xfail(strict=True)`` with the promise stated exactly as the documentation makes it, and are
-paired with a test that pins what happens today — never by narrowing the property until the
-counter-example disappears.
+All three are restated above the spill threshold in section 4, against a tiny threshold so
+every case takes the spill path: a promise that holds only under a size the author cannot see
+is not a promise. One difference across the threshold is real and stays — a spilled value is a
+shell variable, not an exported one — and has a test of its own rather than a comment.
 """
 
 from __future__ import annotations
@@ -55,6 +55,12 @@ from .generate import (
 #: with ``FileNotFoundError`` instead of skipping.
 BASH: str | None = shutil.which("bash")
 needs_bash = pytest.mark.skipif(BASH is None, reason="bash required")
+
+#: The POSIX shell the ``interpreter: sh`` properties run (``sh -eu``), resolved the same way.
+#: A body is rendered once and may run under either interpreter, so anything the renderer emits
+#: has to be in the standard, not merely in bash.
+SH: str | None = shutil.which("sh")
+needs_sh = pytest.mark.skipif(SH is None, reason="sh required")
 
 #: Values that are the whole point of the property: they look like the machinery itself, or like
 #: an injection. Drawn deliberately so they appear in every run, not only when the RNG is kind.
@@ -100,8 +106,18 @@ def body_of(values: Sequence[str], *, quote: str = '"') -> str:
     )
 
 
-def run_bash(script: str, env: dict[str, str], out: Path, count: int) -> list[bytes]:
-    """Run ``script``; return ``$OUT/0`` … ``$OUT/<count-1>`` as bytes.
+def slotted_body(count: int, *, quote: str = '"') -> str:
+    """What :func:`body_of` renders to: the same script with the slots numbered from 1."""
+    return "\n".join(
+        f'printf %s {quote}${{RAYSPEC_V{i + 1}}}{quote} > "$OUT/{i}"' for i in range(count)
+    )
+
+
+def run_script(
+    argv: Sequence[str], script: str, env: dict[str, str], out: Path, count: int
+) -> list[bytes]:
+    """Run ``script`` under ``argv`` (an interpreter and its flags, ``-c`` added here); return
+    ``$OUT/0`` … ``$OUT/<count-1>`` as bytes.
 
     Only the slot env plus ``PATH``/``OUT`` reaches the script. ``count`` is what the CALLER
     expects, not what the script happened to write: inferring it from the directory listing
@@ -111,10 +127,9 @@ def run_bash(script: str, env: dict[str, str], out: Path, count: int) -> list[by
     Bytes, never text: ``text=True`` would translate ``\\r`` on the way back and hide exactly
     the kind of mangling these properties exist to catch.
     """
-    assert BASH is not None, "guarded by needs_bash"
     out.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [BASH, "-euo", "pipefail", "-c", script],
+        [*argv, "-c", script],
         env={**env, "PATH": "/usr/bin:/bin", "OUT": str(out)},
         check=True,
         capture_output=True,
@@ -124,6 +139,18 @@ def run_bash(script: str, env: dict[str, str], out: Path, count: int) -> list[by
         f"the script wrote {written}, expected {count} output file(s)"
     )
     return [(out / str(i)).read_bytes() for i in range(count)]
+
+
+def run_bash(script: str, env: dict[str, str], out: Path, count: int) -> list[bytes]:
+    """:func:`run_script` under the ``interpreter: bash`` argv the shell executor uses."""
+    assert BASH is not None, "guarded by needs_bash"
+    return run_script([BASH, "-euo", "pipefail"], script, env, out, count)
+
+
+def run_sh(script: str, env: dict[str, str], out: Path, count: int) -> list[bytes]:
+    """:func:`run_script` under the ``interpreter: sh`` argv the shell executor uses."""
+    assert SH is not None, "guarded by needs_sh"
+    return run_script([SH, "-eu"], script, env, out, count)
 
 
 @pytest.fixture
@@ -556,8 +583,12 @@ def test_a_non_json_value_is_refused_rather_than_repred(
 
 
 # --------------------------------------------------------------------------------------------------
-# FINDINGS: two promises the spill path does not keep
+# 4. the spill path — the same three halves, above the threshold
 # --------------------------------------------------------------------------------------------------
+#
+# A value over the threshold is written to a file and the slot reads it back. That read is the
+# only thing that differs from a small value, so every property above is restated here against a
+# tiny threshold: the promise must not depend on a size the author cannot see.
 
 
 def spilled_text(rng: random.Random) -> str:
@@ -566,20 +597,13 @@ def spilled_text(rng: random.Random) -> str:
 
 
 @needs_bash
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "a spilled value renders as $(cat '<path>'), and command substitution strips trailing "
-        "newlines: above the spill threshold the value no longer arrives verbatim. "
-        "Delete this marker when the round trip is made verbatim — a strict xfail turns red "
-        "as XPASS on the day it starts passing, which is the signal to do so"
-    ),
-)
 def test_a_spilled_shell_value_arrives_verbatim(tmp_path: Path) -> None:
     """The verbatim promise, stated for values over the spill threshold.
 
-    Every generated case ends in a newline, so the property is falsified deterministically —
-    this test is the promise, not a flaky search for it.
+    Every generated case ends in a newline, so the property is falsified deterministically by a
+    renderer that reads the file through a bare ``$( … )`` — this test is the promise, not a
+    flaky search for it. (The one value that still cannot round trip is one holding NUL; see
+    :func:`test_a_nul_byte_in_a_spilled_value_is_dropped_by_the_shell`.)
     """
     engine = TemplateEngine(spill_threshold=8)
     counter = iter(range(10_000))
@@ -602,25 +626,29 @@ def test_a_spilled_shell_value_arrives_verbatim(tmp_path: Path) -> None:
 
 
 @needs_bash
-def test_today_a_spilled_shell_value_loses_its_trailing_newlines(tmp_path: Path) -> None:
-    """Pin the defect above, minimally, so a fix is noticed from both directions."""
+def test_a_spilled_slot_reads_its_file_without_dropping_trailing_bytes(tmp_path: Path) -> None:
+    """The minimal verbatim case, plus the mechanism that makes it hold — asserted, not implied.
+
+    Command substitution strips EVERY trailing newline, so a preamble written as
+    ``V=$(cat file)`` would lose them exactly as splicing ``$(cat file)`` into the body did. The
+    ``&& printf x`` sentinel and the ``${V%x}`` that removes it are what keep the last bytes;
+    each token of the assignment is load-bearing and is pinned here so it cannot be "tidied".
+    """
     engine = TemplateEngine(spill_threshold=8)
-    value = "abcdefghij\n"
+    value = "abcdefghij\n\n\n"
     rendered = engine.render_shell(body_of([value]), ctx_of([value]), spill_dir=tmp_path)
     assert rendered.spills and rendered.env == {}
     assert rendered.spills[0].read_bytes() == value.encode(), "the file itself is verbatim"
-    assert run_bash(rendered.script, rendered.env, tmp_path / "pin", 1) == [b"abcdefghij"]
+    preamble, body = rendered.script.split("\n", 1)
+    assert preamble == (
+        f"unset RAYSPEC_V1; RAYSPEC_V1=$(cat '{rendered.spills[0]}' && printf x) || exit $?; "
+        "RAYSPEC_V1=${RAYSPEC_V1%x}"
+    )
+    assert body == slotted_body(1), "below the preamble is the body, slots and all"
+    assert run_bash(rendered.script, rendered.env, tmp_path / "verbatim", 1) == [value.encode()]
 
 
 @needs_bash
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "docs/templating.md: \"echo '{{ x }}' prints the literal ${RAYSPEC_V1}\" — above the "
-        "spill threshold it prints $(cat <absolute path>) instead, leaking the run's tmp path. "
-        "Delete this marker when the behaviour or the documented promise is corrected"
-    ),
-)
 def test_a_single_quoted_spilled_slot_stays_literal(tmp_path: Path) -> None:
     """The single-quote promise, stated for values over the spill threshold."""
     engine = TemplateEngine(spill_threshold=8)
@@ -640,14 +668,195 @@ def test_a_single_quoted_spilled_slot_stays_literal(tmp_path: Path) -> None:
 
 
 @needs_bash
-def test_today_a_single_quoted_spilled_slot_prints_the_spill_path(tmp_path: Path) -> None:
-    """Pin the defect above: the script's own scratch path reaches the step's output."""
+def test_a_spilled_slot_keeps_the_scratch_path_out_of_the_body(tmp_path: Path) -> None:
+    """The run's temporary directory must not reach the step's own output.
+
+    The body is the user's script and whatever it prints is the step's output — which lands in
+    logs and in pasted bug reports. The spill path belongs to the preamble rayspec prepends and
+    to nowhere else, so no quoting context, ``set -x`` or error message in the body can put it
+    in front of a reader.
+    """
     engine = TemplateEngine(spill_threshold=8)
     values = ["abcdefghij"]
     rendered = engine.render_shell(body_of(values, quote="'"), ctx_of(values), spill_dir=tmp_path)
     assert rendered.spills
-    got = run_bash(rendered.script, rendered.env, tmp_path / "sqpin", 1)
-    assert got == [f"$(cat {rendered.spills[0]})".encode()]
+    preamble, body = rendered.script.split("\n", 1)
+    assert str(rendered.spills[0]) in preamble
+    assert str(tmp_path) not in body
+    assert run_bash(rendered.script, rendered.env, tmp_path / "sqbody", 1) == [b"${RAYSPEC_V1}"]
+
+
+@needs_bash
+def test_a_spilled_value_is_not_exported_to_a_child_process(tmp_path: Path) -> None:
+    """The one difference across the threshold that REMAINS, asserted so it stays deliberate.
+
+    Below the threshold the slot is a process environment variable, so a child process started
+    by the body reads it from its own environment. A spilled value is a shell variable and is
+    deliberately NOT exported: exporting it would put a value larger than the threshold back
+    into the environment block that spilling exists to keep it out of, which is the ``E2BIG``
+    this whole mechanism avoids. A child therefore sees the small slot and not the big one.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["ab", "abcdefghij"]
+    body = (
+        'printf %s "{{ inputs.v0 }}" > "$OUT/0"\n'
+        'printf %s "{{ inputs.v1 }}" > "$OUT/1"\n'
+        'sh -c \'printf %s "${RAYSPEC_V1-UNSET}"\' > "$OUT/2"\n'
+        'sh -c \'printf %s "${RAYSPEC_V2-UNSET}"\' > "$OUT/3"\n'
+    )
+    rendered = engine.render_shell(body, ctx_of(values), spill_dir=tmp_path)
+    assert rendered.env == {"RAYSPEC_V1": "ab"} and len(rendered.spills) == 1
+    got = run_bash(rendered.script, rendered.env, tmp_path / "export", 4)
+    assert got == [b"ab", b"abcdefghij", b"ab", b"UNSET"]
+
+
+@needs_bash
+def test_a_spilled_value_of_nothing_but_newlines_survives(tmp_path: Path) -> None:
+    """The shapes a bare command substitution destroys completely or almost completely."""
+    engine = TemplateEngine(spill_threshold=8)
+    cases = ["\n" * 9, "abcdefghij\n\n\n\n", "abcdefghij\n \n", " abcdefghij ", "\n" * 200]
+    for i, value in enumerate(cases):
+        rendered = engine.render_shell(body_of([value]), ctx_of([value]), spill_dir=tmp_path)
+        assert rendered.spills, f"{value!r} did not spill"
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"nl{i}", 1)
+        assert got == [value.encode()], f"{value!r} did not round trip"
+
+
+@needs_bash
+def test_two_spilled_slots_in_one_body_each_read_their_own_file(tmp_path: Path) -> None:
+    """Numbering is shared with the env slots: the preamble must assign V1 and V3, not V1 and V2.
+
+    One assignment per spilled slot, in slot order, above a body that is otherwise untouched.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["aaaaaaaaaa\n", "bb", "cccccccccc\n\n"]
+    rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
+    assert rendered.env == {"RAYSPEC_V2": "bb"}
+    assert len(rendered.spills) == 2
+    first, second, body = rendered.script.split("\n", 2)
+    assert first.startswith("unset RAYSPEC_V1;") and str(rendered.spills[0]) in first
+    assert second.startswith("unset RAYSPEC_V3;") and str(rendered.spills[1]) in second
+    assert body == slotted_body(3)
+    got = run_bash(rendered.script, rendered.env, tmp_path / "two", 3)
+    assert got == [v.encode() for v in values]
+
+
+@needs_bash
+def test_a_spill_path_holding_a_single_quote_closes_nothing(tmp_path: Path) -> None:
+    """``spill_dir`` is the run directory, whose name comes from a project the user names.
+
+    The preamble single-quotes the path and escapes an embedded quote exactly as the inline
+    substitution did; a path is never a place to stop quoting.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["abcdefghij\n"]
+    rendered = engine.render_shell(
+        body_of(values), ctx_of(values), spill_dir=tmp_path / "it's a dir"
+    )
+    assert "'" in str(rendered.spills[0])
+    assert run_bash(rendered.script, rendered.env, tmp_path / "quoted", 1) == [values[0].encode()]
+
+
+@needs_bash
+def test_a_spilled_slot_inside_a_quoted_heredoc_stays_literal(tmp_path: Path) -> None:
+    """The preamble sits above the body, so a heredoc in the body still opens where it did.
+
+    Both halves again: quoted delimiter keeps the slot literal, unquoted delivers the value —
+    and the value is now the spilled one, arriving whole.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    value = "abcdefghij"
+    context = ctx_of([value])
+    literal = engine.render_shell(
+        "cat > \"$OUT/0\" <<'EOF'\n{{ inputs.v0 }}\nEOF\n", context, spill_dir=tmp_path
+    )
+    expanded = engine.render_shell(
+        'cat > "$OUT/0" <<EOF\n{{ inputs.v0 }}\nEOF\n', context, spill_dir=tmp_path
+    )
+    assert literal.spills and expanded.spills
+    assert run_bash(literal.script, literal.env, tmp_path / "hdq", 1) == [b"${RAYSPEC_V1}\n"]
+    assert run_bash(expanded.script, expanded.env, tmp_path / "hdp", 1) == [value.encode() + b"\n"]
+
+
+@needs_bash
+def test_a_body_that_opens_with_a_shebang_still_runs(tmp_path: Path) -> None:
+    """A ``shell:`` body is handed to ``bash -c`` / ``sh -c`` and is never written to a file, so
+    its first line is not a shebang even when it looks like one — putting the preamble above it
+    changes nothing that was not already a comment.
+
+    Asserted rather than assumed: a preamble above a REAL shebang would break the script, and
+    this is the test that has to be rethought if the executor ever starts writing bodies out.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["abcdefghij\n"]
+    rendered = engine.render_shell(
+        "#!/usr/bin/env bash\n" + body_of(values), ctx_of(values), spill_dir=tmp_path
+    )
+    assert rendered.script.startswith("unset RAYSPEC_V1;")
+    assert run_bash(rendered.script, rendered.env, tmp_path / "shebang", 1) == [values[0].encode()]
+
+
+@needs_sh
+def test_the_preamble_is_posix_and_does_not_trip_set_u(tmp_path: Path) -> None:
+    """``interpreter: sh`` runs the same rendered script under ``sh -eu``.
+
+    ``$(<file)`` and ``read -r -d ''`` are bashisms, and the second returns non-zero at EOF,
+    which ``-e`` turns into a dead step; ``unset``, ``$( )`` and ``${v%x}`` are all POSIX.
+    ``-u`` is the other trap: the preamble may only read a parameter it has just assigned.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["abcdefghij\n\n", "cc", "dddddddddd"]
+    rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
+    assert len(rendered.spills) == 2
+    got = run_sh(rendered.script, rendered.env, tmp_path / "posix", 3)
+    assert got == [v.encode() for v in values]
+
+
+@needs_bash
+def test_a_spill_file_that_cannot_be_read_fails_the_script_loudly(tmp_path: Path) -> None:
+    """Never a silently empty slot.
+
+    ``cat file; printf x`` swallows a failed ``cat`` — the sentinel is printed anyway, the slot
+    becomes the empty string and the body runs on with it. ``cat file && printf x`` makes the
+    assignment carry ``cat``'s status, and the explicit ``|| exit $?`` stops the script even
+    when the caller did not set ``-e``.
+    """
+    assert BASH is not None, "guarded by needs_bash"
+    engine = TemplateEngine(spill_threshold=8)
+    values = ["abcdefghij\n"]
+    rendered = engine.render_shell(body_of(values), ctx_of(values), spill_dir=tmp_path)
+    rendered.spills[0].unlink()
+    out = tmp_path / "gone"
+    out.mkdir()
+    result = subprocess.run(
+        [BASH, "-c", rendered.script],  # deliberately WITHOUT -e: the `|| exit` is the guard
+        env={"PATH": "/usr/bin:/bin", "OUT": str(out)},
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert b"No such file" in result.stderr
+    assert list(out.iterdir()) == [], "the body must not have run on an empty slot"
+
+
+@needs_bash
+def test_a_nul_byte_in_a_spilled_value_is_dropped_by_the_shell(tmp_path: Path) -> None:
+    """A pre-existing limit of the slot mechanism, pinned on the spill side too.
+
+    NUL cannot round trip through either half: below the threshold the process environment
+    refuses it and the step dies with ``embedded null byte`` (see
+    :func:`test_a_nul_byte_is_carried_into_the_slot_and_fails_at_the_step`); above it, command
+    substitution drops it and the value arrives short. The file rayspec writes still holds it,
+    so nothing is lost on rayspec's side of the boundary — but the shell's side is lossy, and
+    silently so. Pinned rather than tolerated quietly: the fix is to refuse NUL at the slot, in
+    a change that also improves the message below the threshold.
+    """
+    engine = TemplateEngine(spill_threshold=8)
+    value = "abcde\x00fghij"
+    rendered = engine.render_shell(body_of([value]), ctx_of([value]), spill_dir=tmp_path)
+    assert rendered.spills[0].read_bytes() == value.encode("utf-8"), "the file keeps the NUL"
+    got = run_bash(rendered.script, rendered.env, tmp_path / "nul", 1)
+    assert got == [b"abcdefghij"], "the shell drops it"
 
 
 def test_the_spill_file_itself_is_always_verbatim(tmp_path: Path) -> None:

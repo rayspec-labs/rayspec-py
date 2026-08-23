@@ -259,9 +259,12 @@ provider's `medium` tier. `access: read-only` cannot `allow` `edit`/`shell`.
 - Context roots: `inputs`, `steps.<id>`, `run` (`id workflow workdir artifacts_dir state_dir
   branch base_branch started_at`), `project` (`root name slug`), `env.<VAR>`, `iteration`
   (`n max first prev.<body id>`), `each` (`index total`), `<as>`. Everything else is undefined.
-- **Shell env-ref rule**: in a `shell:` body every `{{ expr }}` renders to `${RAYSPEC_V<n>}` with
-  the value exported — never spliced into the script. So quote it: `"{{ x }}"`; single quotes and
-  `<<'EOF'` heredocs do NOT expand it; lists/objects arrive as JSON (pipe to `jq`). `${{ x }}`
+- **Shell env-ref rule**: in a `shell:` body every `{{ expr }}` renders to `${RAYSPEC_V<n>}` —
+  never spliced into the script. The value is exported, except over 64 KiB, where the script
+  assigns the slot to itself from a spill file as a plain shell variable: the body reads the same
+  `${RAYSPEC_V<n>}`, but a child process does NOT inherit it — pass it on (`cmd "${RAYSPEC_V1}"`,
+  or on stdin). So quote it: `"{{ x }}"`; single quotes and `<<'EOF'` heredocs do NOT expand it;
+  lists/objects arrive as JSON (pipe to `jq`). `${{ x }}`
   (GitHub syntax) is a lint error. Inputs are also `$RAYSPEC_INPUT_<NAME>`; the whole context is
   the JSON file `$RAYSPEC_CONTEXT` (`jq -r '.steps.review.output.summary' "$RAYSPEC_CONTEXT"`).
 - Python bodies: `{{ expr }}` renders a **Python literal** (`data = {{ steps.x.output }}`) — do

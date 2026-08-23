@@ -379,13 +379,31 @@ class TestShellEnv:
         assert r.script == 'x="${RAYSPEC_V1}"; echo ${#x} end'
 
     def test_spill_over_64k(self, engine, ctx, tmp_path):
+        """The body keeps the plain ``${RAYSPEC_V<n>}`` reference; a preamble line above it
+        reads the file back, sentinel and all, so bash's quoting rules and the value's trailing
+        bytes are the same either side of the threshold."""
         r = engine.render_shell("cat <<<{{ inputs.big }}", ctx, spill_dir=tmp_path / "tmp")
         assert len(r.spills) == 1
         path = r.spills[0]
         assert path.parent == tmp_path / "tmp"
-        assert r.script == f"cat <<<$(cat '{path}')"
+        assert r.script == (
+            f"unset RAYSPEC_V1; RAYSPEC_V1=$(cat '{path}' && printf x) || exit $?; "
+            "RAYSPEC_V1=${RAYSPEC_V1%x}\n"
+            "cat <<<${RAYSPEC_V1}"
+        )
         assert path.read_text() == "z" * 70000
         assert r.env == {}
+
+    def test_a_spill_path_with_a_quote_is_escaped_in_the_preamble(self, engine, ctx, tmp_path):
+        """``spill_dir`` is a run directory, and a project the user names reaches into its path.
+
+        A quote there must close nothing: it is escaped the shell's way, ``'"\'"'``.
+        """
+        r = engine.render_shell("cat {{ inputs.big }}", ctx, spill_dir=tmp_path / "it's here")
+        path = r.spills[0]
+        assert "'" in str(path)
+        quoted = "'" + str(path).replace("'", "'\"'\"'") + "'"
+        assert f"$(cat {quoted} && printf x)" in r.script
 
     def test_spill_requires_dir(self, engine, ctx):
         with pytest.raises(TemplateRenderError, match="spill"):

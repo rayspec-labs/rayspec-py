@@ -360,7 +360,9 @@ from rayspec.templating import (
     #                                          -> TemplateRenderError (never a silent None or a repr)
     #   .render_value(value, ctx) -> Any       deep rendering: str = template, dict/list recursed, scalars pass
     #   .render_shell(body, ctx, *, spill_dir=None) -> RenderedScript(script, env: dict[str,str], spills: list[Path])
-    #                                          {{ expr }} -> "${RAYSPEC_V<n>}" (+ env slot) | "$(cat '<spill>')" over 64 KiB
+    #                                          {{ expr }} -> "${RAYSPEC_V<n>}"; the value is an env slot, or over
+    #                                          64 KiB a spill file read back by a preamble line prepended to the
+    #                                          script (a SHELL variable there, not exported)
     #                                          spill_dir may be shared by parallel steps (collision-free names,
     #                                          made absolute); macro/call/filter/set-BLOCKS are compile errors
     #   .render_python(body, ctx, *, spill_dir=None) -> RenderedScript   {{ expr }} -> Python literal (repr of JSON-like)
@@ -410,11 +412,15 @@ Semantics fixed here (tests in `tests/templating/`):
   (`iteration.prev.x.output | default('')` works). `each` without `item_var` exposes `item`.
 - Shell/python bodies: comment delimiters `{{# … #}}`; `{% raw %}` for literal `{{`. Python
   `{{ }}` values must be JSON-like (no NaN/objects; mapping keys must be str). Spills:
-  `<spill_dir>/v<n>-<random>` via `mkstemp` (shell: text, `$(cat '<abs path>')`; python: JSON,
-  `json.loads(Path(...).read_text())`); `spill_dir` is made absolute and may be shared by parallel
-  steps. `{% macro %}`, `{% call %}`, `{% filter %}` blocks and `{% set x %}…{% endset %}` are
-  rejected at compile time for shell/python (they would re-substitute already substituted text);
-  use `{% set x = expr %}` and inline filters.
+  `<spill_dir>/v<n>-<random>` via `mkstemp`; `spill_dir` is made absolute and may be shared by
+  parallel steps. Shell: the file holds the text and the script gets a preamble line
+  `unset V; V=$(cat '<abs path>' && printf x) || exit $?; V=${V%x}` — the body keeps the plain
+  `${RAYSPEC_V<n>}` reference so bash's quoting rules and the value's trailing bytes are the same
+  either side of the threshold, and the slot is a shell variable, **not** exported (exporting it
+  would re-hit the environment size limit spilling avoids). Python: JSON,
+  `json.loads(Path(...).read_text())`. `{% macro %}`, `{% call %}`, `{% filter %}` blocks and
+  `{% set x %}…{% endset %}` are rejected at compile time for shell/python (they would
+  re-substitute already substituted text); use `{% set x = expr %}` and inline filters.
 - `render_value`: single `{{ expr }}` keeps type **including `None`**; the engine must reject
   `None` when str-coercing `env:` values. Text *fields* (prompt, instructions, approve message,
   stop.reason, cwd) go through `render_str`, which rejects `None`/undefined/callables.
