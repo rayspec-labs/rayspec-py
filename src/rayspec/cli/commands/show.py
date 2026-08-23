@@ -298,11 +298,15 @@ def print_show(
     if run.inputs:
         inputs = json.dumps(run.inputs, ensure_ascii=False)
         out.print(f"  inputs:     {_cell(inputs)}", markup=False)
-    started = common.fmt_stamp(run.started_at or run.created_at)
-    out.print(
-        f"  started:    {started} ({common.fmt_when(run.started_at or run.created_at)})",
-        markup=False,
-    )
+    # the absolute stamp is the answer; the age beside it is the terminal's convenience, so it
+    # is printed only where somebody is watching and only as an AGE — `fmt_age` never degrades
+    # into a second, shorter copy of the stamp it stands next to, and a run stamped in the future
+    # reads `in 9d` instead of `0s ago`
+    moment = run.started_at or run.created_at
+    started = common.fmt_stamp(moment)
+    if moment is not None and common.ages_are_relative():
+        started += f" ({common.fmt_age(moment)})"
+    out.print(f"  started:    {started}", markup=False)
     if run.ended_at is not None:
         out.print(f"  ended:      {common.fmt_stamp(run.ended_at)}", markup=False)
     out.print(f"  duration:   {common.fmt_duration(common.run_duration_ms(run))}", markup=False)
@@ -368,7 +372,7 @@ def print_show(
             Text.assemble(
                 (label, "yellow"),
                 f" at {_cell(pause.step)} (token {_cell(pause.token)}, "
-                f"{common.fmt_when(pause.requested_at)})",
+                f"{common.fmt_when(pause.requested_at, relative=common.ages_are_relative())})",
             )
         )
         out.print(f"  {safe_text(pause.message)}", markup=False)

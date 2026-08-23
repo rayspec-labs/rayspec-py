@@ -15,13 +15,25 @@ Running it::
 
     uv run python tests/properties/mutation/mutate.py --list
     uv run python tests/properties/mutation/mutate.py --target graph --jobs 6
-    uv run python tests/properties/mutation/mutate.py --jobs 6 --json report.json
+    uv run python tests/properties/mutation/mutate.py --jobs 6 --json "$TMPDIR/mutation.json"
 
 **The working tree is never modified.** Each worker gets a stand-in checkout in a temporary
 directory — a real copy of ``src/rayspec`` inside a mirror of the repository — and runs pytest
 with its ``src`` first on ``PYTHONPATH``, which shadows the editable install (a ``.pth`` entry,
 appended after ``PYTHONPATH``). A worker that is killed mid-run therefore leaves nothing behind
-but a temp directory: there is no "restore the file" step that a crash could skip.
+but a temp directory: there is no "restore the file" step that a crash could skip. The claim
+covers ``--json`` as well, which is why the example above points outside the checkout: a
+destination inside the working tree is REFUSED (:func:`report_destination`), because the
+example two lines above this paragraph used to be ``--json report.json`` and dropped an
+untracked file in the repository root every time somebody followed it.
+
+**A run that measured nothing exits non-zero.** A target whose null mutant does not pass is
+skipped, and a report over the mutants of no targets used to print a tidy
+``0 confirmed survivor(s) across 0 mutant(s)`` and exit 0 — a mutation harness that cannot
+fail, which is the defect it exists to find in other people's tests. Whatever the reason a
+target produced no verdict (a skipped null mutant, ``--limit 0``, an ``--index`` that matches
+nothing), the run says so on stderr and exits 1: the rule is about the outcome, so it does not
+need a list of the reasons.
 
 Two phases, because confirming a survivor is expensive:
 
@@ -678,6 +690,44 @@ def report(results: Sequence[Result], *, confirmed: bool = True) -> str:
     return "\n".join(lines)
 
 
+def report_destination(path: Path) -> Path:
+    """``path`` resolved, or :class:`ValueError` when it is inside the working tree.
+
+    The module's bolded promise is that the working tree is never modified, and a promise that
+    holds only while everybody copies the right example is not a promise. ``--json report.json``
+    was the example, and it wrote into the repository root.
+    """
+    destination = path.expanduser().resolve()
+    if destination == REPO or REPO in destination.parents:
+        raise ValueError(
+            f"{path} is inside the working tree ({REPO}), and this harness does not write "
+            "there. Point --json at a path outside the checkout, e.g. $TMPDIR/mutation.json"
+        )
+    return destination
+
+
+def exit_code(chosen: Sequence[Target], results: Sequence[Result]) -> int:
+    """``0`` only when every chosen target actually produced verdicts; ``1`` otherwise, loudly.
+
+    Checked on the OUTCOME rather than on the reasons a target can produce nothing — a skipped
+    null mutant, a ``--limit`` of zero, an ``--index`` that matches no site, whatever comes
+    next. A report over no mutants is not a clean bill of health, it is a run that did not
+    happen, and it must not read like the former.
+    """
+    silent = [target.name for target in chosen if not any(r.target == target.name for r in results)]
+    if not silent:
+        return 0
+    print(
+        f"!! no mutant of {', '.join(silent)} produced a verdict: nothing was measured for "
+        f"{'them' if len(silent) > 1 else 'it'}.\n"
+        "   A report over no mutants is not a clean bill of health; it is a run that did not "
+        "happen.",
+        file=sys.stderr,
+        flush=True,
+    )
+    return 1
+
+
 def _check_null_mutant(
     target: Target,
     source: str,
@@ -734,6 +784,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"unknown operator(s): {', '.join(sorted(unknown))}")
     if args.index and len(chosen) != 1:
         parser.error("--index needs exactly one --target (indexes are per module)")
+    destination: Path | None = None
+    if args.json is not None:
+        try:
+            destination = report_destination(args.json)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if args.list:
         for target in chosen:
@@ -769,12 +825,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     text = report(results, confirmed=not args.no_confirm)
     print(text)
-    if args.json is not None:
-        args.json.write_text(
+    if destination is not None:
+        destination.write_text(
             json.dumps([asdict(r) for r in results], indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-    return 0
+    return exit_code(chosen, results)
 
 
 if __name__ == "__main__":

@@ -584,8 +584,10 @@ A template that is exactly one `{{ expr }}` keeps the expression's type (so `wit
 - Literal braces in code bodies (`docker --format '{{.ID}}'`, `gh ... --json -q`, `kubectl -o
   go-template`, `helm`, `printf '{{'`) must be wrapped in `{% raw %} ... {% endraw %}`.
 - Code bodies use `{{# ... #}}` as Jinja comment delimiters so bash `${#VAR}` survives.
-- `{% macro %}`, `{% call %}`, `{% filter %}` and `{% set x %}…{% endset %}` blocks are rejected
-  in shell/python bodies; use `{% set x = expr %}` and inline filters.
+- A shell/python body supports `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}`
+  and no other statement: `{% macro %}`, `{% call %}`, `{% filter %}`, `{% set x %}…{% endset %}`
+  and `{% block %}` capture rendered text and would substitute it twice; use
+  `{% set x = expr %}` and inline filters.
 - Inside single quotes or a quoted heredoc (`<<'EOF'`) bash does not expand
   `${RAYSPEC_V1}` — use double quotes or an unquoted heredoc.
 - YAML: a scalar starting with `{{` must be quoted (`prompt: "{{ steps.a.output }}"`), and the

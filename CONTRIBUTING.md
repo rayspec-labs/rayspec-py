@@ -83,6 +83,47 @@ pass. A pull request without a test that would have caught the bug will be asked
 - `tests/docs/` pins documentation claims that drift (the CLI reference, the capability matrix,
   links, the files this page is part of). If one fails, the doc changed and the claim did not.
 
+### Two harnesses the gate does not run
+
+Both live in `tests/properties/` and both are worth knowing about before you touch the
+scheduler, the join table, the templating engine or the redactor.
+
+**The property suite** is generative: hand-rolled `forall`/`aforall` in
+`tests/properties/generate.py` draw seeded cases, shrink the first failure and print the seed
+key that reproduces it. The gate runs it like any other test, at the fixed base seed `0` so a
+red build is reproducible. Two environment variables change what it draws:
+
+```bash
+uv run pytest tests/properties                              # what the gate runs
+RAYSPEC_PROP_SEED=7 uv run pytest tests/properties          # go looking for new counter-examples
+RAYSPEC_PROP_CASES=400 uv run pytest tests/properties       # draw more cases per property
+```
+
+`RAYSPEC_PROP_CASES` must be `1` or more and `RAYSPEC_PROP_SEED` an integer: a value that would
+switch the suite off (or a misspelt `RAYSPEC_PROP_*` name, which would silently change nothing)
+is refused at import, naming the variable and the value. A property that needs a case the RNG
+only reaches on a kind seed takes `examples=(...)` — write the case down rather than hoping for
+it, and the coverage guard beside it then means something on every seed.
+
+**The mutation harness** answers the other question: would the tests notice if the code
+changed? It edits one line of a target module at a time — the join table, the scheduler's
+teardown, the redactor, the policy gate, the approval classes — and runs the tests that ought
+to catch it. A mutant the suite still passes is a **survivor**: a line nothing asserts on. It
+is not part of the gate (a full run takes about an hour) and nothing is scored on it; the
+output is a list to read.
+
+```bash
+uv run python tests/properties/mutation/mutate.py --list
+uv run python tests/properties/mutation/mutate.py --target redact --jobs 6
+uv run python tests/properties/mutation/mutate.py --jobs 6 --json "$TMPDIR/mutation.json"
+```
+
+Every worker runs against a stand-in package in a temporary directory, so the working tree is
+never written to — a `--json` path inside the checkout is refused rather than dropping an
+untracked file in it. A run that produced no verdict at all (a target whose null mutant does not
+pass, a `--limit` of zero) exits non-zero and says so: a report over no mutants is a run that
+did not happen, not a clean bill of health.
+
 Live tests hit a real provider. They are skipped unless `RAYSPEC_LIVE=1` is set — a bare `pytest`
 still collects them — and the gate's `-m 'not live'` deselects them outright:
 

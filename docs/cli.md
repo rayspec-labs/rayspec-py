@@ -95,6 +95,23 @@ fit: to the terminal's width on a terminal, and to a fixed 200 columns when stdo
 so a redirected listing does not depend on the width of the shell that produced it. `--json` is
 the rendering that never shortens anything.
 
+**Every moment rayspec prints is UTC and says so.** A full moment reads `2026-08-20 10:00:00 UTC`
+(`show`, `costs`, and every redirected listing cell); the per-record time column of one run's
+`logs` and `audit` reads `10:00:00 UTC`, repeated on each row rather than announced once in a
+header, because those two commands exist to be tailed, grepped and pasted one line at a time. A
+run record is written on one machine and read on another, and `~/.rayspec` outlives the laptop
+that created it, so an unlabelled `17:01` is not a time — it is a guess about whose clock.
+
+**An age is a terminal affordance.** `rayspec runs` and `rayspec show` answer "when" with an age —
+`13m ago`, `53d ago`, and `in 9d` for a stamp ahead of the local clock (skew between two machines
+that share a `RAYSPEC_HOME`, a restored backup) — only while somebody is watching one; a
+redirected or piped stream gets the absolute stamp instead, for the same reason its width is
+fixed at 200 columns. Nothing is lost either way: a run id opens with its date
+(`20260820-100000-h2nx`). That is what makes the paragraph above true of time as well as of
+padding — two redirected listings of an untouched store are byte-identical however long you wait
+between them. The one cell that still moves is the `duration` of a run that is still **running**,
+which really has been running longer (`--json`'s `duration_ms` moves with it).
+
 ## Commands
 
 ### `rayspec run`
@@ -648,7 +665,9 @@ rayspec runs [OPTIONS]
 
 List runs newest first (by `created_at`, then id) — by default those of the current project (the slug of `--root`/cwd), or every project under `RAYSPEC_HOME` with `--all` (every store under `projects/`, however deep the slug) — with status (`succeeded (dry)` marks a `--dry-run`), workflow, start time, duration, steps, tokens and cost. Run ids may be abbreviated to a unique prefix everywhere below.
 
-The **steps** column is `done/total`: *done* = steps the engine resolved — succeeded, failed with `allow_failure`, or skipped (`when:` false, upstream failed/skipped) — so a finished run reads `n/n`; *total* = the recorded steps plus, for every run that may still continue or be resumed (running/paused/interrupted/failed/cancelled — everything but succeeded), the workflow's planned steps (root steps and `include:` bodies; loop/each iterations are counted as they happen), so a run paused at the gate of a 3-step workflow reads `1/3` instead of `1/2` and a 3-step workflow that failed at step 2 reads `1/3`. When the workflow cannot be loaded any more (old record, file gone) the total falls back to the recorded steps. `rayspec show` adds the breakdown `(n ok · m skipped)`.
+The **steps** column is `done/total`: *done* = steps the engine resolved — succeeded, failed with `allow_failure`, or skipped (`when:` false, upstream failed/skipped) — so a finished run reads `n/n`; *total* = the recorded steps plus, for every run that may still continue or be resumed (running/paused/interrupted/failed/cancelled — everything but succeeded), the workflow's planned steps (root steps and `include:` bodies; loop/each iterations are counted as they happen), so a run paused at the gate of a 3-step workflow reads `1/3` instead of `1/2`, and a 3-step workflow that failed at step 2 reads `2/3` — the failed step is not done, but the third step, which the engine skipped as `upstream_failed`, is. When the workflow cannot be loaded any more (old record, file gone) the total falls back to the recorded steps. `rayspec show` adds the breakdown `(n ok · m skipped)`.
+
+The **started** column is when the run began (`started_at`, or `created_at` for a run that never got that far): its age on a terminal, the absolute `2026-08-20 10:00:00 UTC` when stdout is redirected or piped (the output-style rules at the top of this page).
 
 The **cost** column carries the run-level cost source: `$0.12` when every priced step reported a provider cost, `~$0.12` when any step cost is a [pricing-table](providers.md#pricing) estimate, `≥$0.12` when some steps have tokens but no price at all (an unpriced provider and no pricing entry — the sum is a lower bound; `show` says how many steps are unpriced), `-` when no cost is known at all (tokens are never shown as cost; the `tokens` column has them). The same marker appears on the step lines, the `■ run` line and the totals of the run console, in `show` and in the approval panel.
 
@@ -874,6 +893,8 @@ rayspec show [OPTIONS] {run}    # --output table|json (--json is the older spell
 ```
 
 Show one run: header (status — with a `dry run` marker for `--dry-run` records —, workflow, inputs (a `secret: true` input shows `"<secret>"` — the value is not in `run.json`), timing, `steps: done/total done (n ok · m skipped)` — see the `runs` column above —, tokens, cost with the run-level marker and, for a partial cost, a dim `(n steps unpriced)` note, `pid … (alive)` for a live run / `(exited)` for a paused one), workspace (isolation, workdir, branch, base/head sha), the step tree (nested paths like `build[2]/review`) with status, attempts, duration, tokens, cost and an output preview, an `artifacts:` table (step, file, size, sha256, stored ref) listing the files the steps promised and delivered — omitted when there are none —, a `warnings:` block (provider warnings streamed by the steps — e.g. a Claude rate-limit notice — and engine `warning` events, each as `<step>: <message>`; omitted when there are none), the rendered outputs, and the pause state (gate, token, decision) when the run is paused. Everything that comes out of `run.json`, an output file or a stream (inputs, outputs, previews, errors, reasons, messages) is untrusted text: it is printed as plain text with control characters and terminal escape sequences (colours, title changes, screen clears, hyperlinks) removed, and never parsed as Rich markup.
+
+The `started:` line is the absolute stamp, followed on a terminal by its age in brackets — `started:    2026-08-20 10:00:00 UTC (53d ago)`. The age is always an age, at any distance and in either direction, so it never spends the brackets repeating the stamp it stands beside.
 
 Options:
 

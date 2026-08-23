@@ -108,9 +108,11 @@ Consequences:
 - Comment delimiters are `{{# ... #}}`, so `${#VAR}` is plain bash.
 - Literal `{{` (Go templates, `printf '{{'`) → `{% raw %}docker ps --format '{{.ID}}'{% endraw %}`.
 - `${{ x }}` is a lint error (GitHub-Actions syntax).
-- `{% macro %}`, `{% call %}`, `{% filter %}` and `{% set x %}…{% endset %}` are compile
-  errors in code bodies (their captured output would be substituted twice); use
-  `{% set x = expr %}` and inline filters.
+- A code body supports `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}` — and
+  no other statement. `{% macro %}`, `{% call %}`, `{% filter %}`, `{% set x %}…{% endset %}`
+  and `{% block %}` are compile errors there because their captured output would be
+  substituted twice; `{% include %}`/`{% import %}`/`{% extends %}` because a code body has no
+  template loader. Use `{% set x = expr %}` and inline filters (`{{ x | lower }}`) instead.
 
 Inputs are also available without templating: `$RAYSPEC_INPUT_<NAME>` (see the
 [environment](#environment-of-shell-and-python-steps)).

@@ -188,7 +188,7 @@ duration of a case, so it is not thread-safe — drive cases sequentially or in 
 
 ## How rayspec tests itself
 
-Three nets guard the shapes this page depends on, and they are worth copying:
+Five nets guard the shapes this page depends on, and they are worth copying:
 
 - **`rayspec test`** over the examples and the repo's own workflows (`scripts/check_examples.py`
   runs the same cases and additionally verifies the coverage matrix of `examples/README.md`).
@@ -205,3 +205,36 @@ Three nets guard the shapes this page depends on, and they are worth copying:
   every persistence point and asserts that a resume converges on the same final state as an
   uninterrupted run — the write-ahead order and the reuse predicate are promises only if they hold
   at every interleaving.
+- **A property suite** (`tests/properties/`): a small hand-rolled generative driver
+  (`forall`/`aforall`) that draws seeded cases, shrinks the first failure and prints the seed key
+  that reproduces it. It covers the promises whose examples are the ones somebody thought of —
+  the join table over random nested DAGs, the `{{ }}` → `${RAYSPEC_V<n>}` round trip over
+  quotes, newlines, unicode and values that look like the machinery itself, and the redactor
+  over every chunking of a stream. The base seed is fixed so a red build is reproducible:
+
+  ```bash
+  uv run pytest tests/properties                       # what CI runs, base seed 0
+  RAYSPEC_PROP_SEED=7 uv run pytest tests/properties   # look for new counter-examples
+  RAYSPEC_PROP_CASES=400 uv run pytest tests/properties
+  ```
+
+  `RAYSPEC_PROP_CASES` must be at least 1 and `RAYSPEC_PROP_SEED` must be an integer — a value
+  that would draw no cases is refused at import rather than turning the suite into a green
+  no-op, and so is a misspelt name in the `RAYSPEC_PROP_*` namespace. A row the generator only
+  reaches on a lucky seed is written down as an `examples=(...)` case instead of hoped for.
+- **A mutation harness** (`tests/properties/mutation/mutate.py`): the question a green suite
+  cannot answer is whether the tests would notice if the code changed, so this edits one line of
+  a target module at a time (the join table, the scheduler teardown, the redactor, the policy
+  gate, the approval classes) and runs the tests that ought to catch it. A mutant that survives
+  is a line nothing asserts on. It takes about an hour, nothing is gated on a score, and the
+  output is a list to read and triage:
+
+  ```bash
+  uv run python tests/properties/mutation/mutate.py --list
+  uv run python tests/properties/mutation/mutate.py --target redact --jobs 6
+  uv run python tests/properties/mutation/mutate.py --jobs 6 --json "$TMPDIR/mutation.json"
+  ```
+
+  Every mutant runs against a stand-in package in a temporary directory, so the working tree is
+  never written to — a `--json` destination inside the checkout is refused. A run that produced
+  no verdict exits non-zero: a report over no mutants is a run that did not happen.
