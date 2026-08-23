@@ -432,11 +432,19 @@ def test_json_shape(sdks: FakeSdks, git_repo: Path) -> None:
     assert payload["run"]["skipped_reason"] is None
     assert set(payload["isolation"]) == {"next_run", "worktree_available", "reason"}
     assert payload["isolation"]["next_run"] in {"worktree", "none", "blocked"}
-    assert len(payload["next_steps"]) == 4
+    # A scaffolded project has a test case, so `rayspec test` is among the steps. Asserted by
+    # content rather than by a count: the number varies with what the project holds, and a magic
+    # number here is what let an unconditional `rayspec test` line through in the first place.
+    commands = [step["command"] for step in payload["next_steps"]]
+    assert "rayspec test" in commands, commands
+    assert commands[0] == "rayspec validate"
+    assert sum(step["cost"] == "provider" for step in payload["next_steps"]) == 1
     for step in payload["next_steps"]:
         assert set(step) == {"command", "note", "cost"}
         assert step["cost"] in {"free", "provider"}
-    assert [s["cost"] for s in payload["next_steps"]] == ["free", "free", "free", "provider"]
+    # the free ones first, the one that spends last — the ordering the block promises
+    costs = [s["cost"] for s in payload["next_steps"]]
+    assert costs == sorted(costs, key=lambda c: c == "provider"), costs
     assert set(payload["doctor"]) == {"ok", "exit_code", "failed_required"}
 
 

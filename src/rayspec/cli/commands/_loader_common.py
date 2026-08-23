@@ -45,7 +45,7 @@ from rayspec.config import (
     rayspec_home,
 )
 from rayspec.errors import RayspecError
-from rayspec.loader import discover_workflows, find_project_root
+from rayspec.loader import WorkflowRef, discover_workflows, find_project_root
 from rayspec.loader.discovery import YAML_SUFFIXES
 from rayspec.loader.loader import import_optional
 from rayspec.loader.validate import CapabilitiesFor, TemplateChecker
@@ -113,6 +113,21 @@ class Context:
     project_root: Path
     home: Path
     config: Config
+    #: Memo for :meth:`workflow_refs`. Discovery answers a question about the project, not about
+    #: the name being resolved, so it belongs to the invocation — one listing however many names
+    #: the command was given.
+    _refs: list[WorkflowRef] | None = None
+
+    def workflow_refs(self) -> list[WorkflowRef]:
+        """The project's discovered workflows, listed once per command invocation.
+
+        ``rayspec validate`` (and `run`, `lock`, `trust`) resolves every name it was given
+        against this list. Discovering per name made a project of N workflows cost N directory
+        listings to validate — quadratic in a command whose work is linear.
+        """
+        if self._refs is None:
+            self._refs = discover_workflows(self.project_root, home=self.home)
+        return self._refs
 
 
 def short_path(path: Path, ctx: Context) -> str:
@@ -138,6 +153,22 @@ def looks_like_path(target: str) -> bool:
     )
 
 
+def workflow_target(target: str, ctx: Context) -> str | WorkflowRef:
+    """``target`` as the loader should receive it: the discovered ref whenever it names one.
+
+    :func:`rayspec.loader.load_workflow` builds a fresh loader per call, so a bare NAME makes it
+    list the project again — once per workflow for a command that loads them all. Handing it the
+    ref the invocation has already discovered skips that; a path (or a name that matches
+    nothing, which the loader must still report in its own words) is passed through unchanged.
+    """
+    if looks_like_path(target):
+        return target
+    for ref in ctx.workflow_refs():
+        if ref.name == target:
+            return ref
+    return target
+
+
 def workflow_label(target: str, ctx: Context) -> str | None:
     """The label (``.rayspec/workflows/<name>.yaml``) of a workflow *target* without loading it.
 
@@ -153,7 +184,7 @@ def workflow_label(target: str, ctx: Context) -> str | None:
             if (base / candidate).is_file():
                 return short_path((base / candidate).resolve(), ctx)
         return None
-    for ref in discover_workflows(ctx.project_root, home=ctx.home):
+    for ref in ctx.workflow_refs():
         if ref.name == target:
             return short_path(ref.path, ctx)
     return None
@@ -778,4 +809,5 @@ __all__ = [
     "stdout_is_tty",
     "template_checker",
     "workflow_label",
+    "workflow_target",
 ]

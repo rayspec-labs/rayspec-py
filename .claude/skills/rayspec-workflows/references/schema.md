@@ -31,6 +31,11 @@ outputs: {}               # name → template (deep-rendered when the run succee
   the reserved template roots `inputs steps run project env iteration each loop self true false
   none null`. Step ids must be unique across the whole file, bodies included.
 - Keys of `inputs:`, `agents:`, `outputs:` are **names**: same syntax, no reserved-word check.
+- Both are at most **128 characters**. Every identifier becomes a path segment somewhere — a
+  workflow is `.rayspec/workflows/<name>.yaml`, its worktree branch is
+  `rayspec/<name>-<run id>`, a step is `steps/<id>/` in the run directory — and `NAME_MAX` is
+  255 bytes. The bound is rayspec's so the refusal is rayspec's (`must be at most 128 characters
+  (this one is 300) — it becomes a file name`) rather than the filesystem's bare errno.
 - `item` is *not* reserved (it is the default `as:` of `each:`).
 
 ### `defaults`
@@ -229,6 +234,17 @@ Be clear about what this is:
   `warning: <NAME> is shorter than 4 characters and is therefore not redacted` and `rayspec
   doctor` flags the row. Note the other end of the same trade-off: a 4-character secret like
   `test` also rewrites every ordinary word containing it;
+- a value that **equals one of the names the run is recorded under** — its run id, its workflow's
+  name or file, its project root, its workspace directory — is not redacted either, and the run
+  says so: `warning: <NAME> is one of the names this run is recorded under, which rayspec must
+  keep intact, and is therefore not redacted`. The record has to keep those strings (`resume`,
+  `approve` and `explain` resolve the run by them, so `run.json`, `show`, `runs` and `audit`
+  print them in clear), and hiding the same value in `events.jsonl` and on the console would not
+  protect it — it is a file name in your project either way — while a `[REDACTED:<NAME>]`
+  standing where the reader can look the true content up one file over says exactly which public
+  string the secret is. One answer everywhere, and named, beats a marker that is an answer key.
+  A secret equal to a **step id** is a different case and stays redacted: a step's address is
+  structural on both sides already, so nothing about it disagrees;
 - pattern **detectors** for well-known credential shapes are opt-in and default to off, because
   a false positive in a run log is worse than the gap:
 
@@ -568,8 +584,10 @@ A template that is exactly one `{{ expr }}` keeps the expression's type (so `wit
 - Literal braces in code bodies (`docker --format '{{.ID}}'`, `gh ... --json -q`, `kubectl -o
   go-template`, `helm`, `printf '{{'`) must be wrapped in `{% raw %} ... {% endraw %}`.
 - Code bodies use `{{# ... #}}` as Jinja comment delimiters so bash `${#VAR}` survives.
-- `{% macro %}`, `{% call %}`, `{% filter %}` and `{% set x %}…{% endset %}` blocks are rejected
-  in shell/python bodies; use `{% set x = expr %}` and inline filters.
+- A shell/python body supports `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}`
+  and no other statement: `{% macro %}`, `{% call %}`, `{% filter %}`, `{% set x %}…{% endset %}`
+  and `{% block %}` capture rendered text and would substitute it twice; use
+  `{% set x = expr %}` and inline filters.
 - Inside single quotes or a quoted heredoc (`<<'EOF'`) bash does not expand
   `${RAYSPEC_V1}` — use double quotes or an unquoted heredoc.
 - YAML: a scalar starting with `{{` must be quoted (`prompt: "{{ steps.a.output }}"`), and the

@@ -74,6 +74,7 @@ from rayspec.store.model import (
     RunRecord,
     StepRecord,
     WorkspaceInfo,
+    identity_strings,
     new_run_id,
     utcnow,
 )
@@ -197,6 +198,9 @@ class Runner:
         #: names this run declared secret whose value is too short to redact, discovered while
         #: installing the boundary and announced once the run can emit events
         self._unredactable: tuple[str, ...] = ()
+        #: names whose value IS one of the strings this run is recorded under, discovered when
+        #: the record is created and announced with the same voice as ``_unredactable``
+        self._collided: tuple[str, ...] = ()
 
     # -- the redaction boundary -------------------------------------------------------------
 
@@ -246,6 +250,33 @@ class Runner:
         if not isinstance(installed, Redactor) or installed.uncovered(secrets):
             raise self._no_redactor(secrets, current)
         self._unredactable = tuple(n for n in updated.skipped if n not in current.skipped)
+
+    def _teach_identities(self, run: RunRecord) -> None:
+        """Tell the store's redactor which strings this run is RECORDED under.
+
+        Called with the record in hand and before it is written, which is the earliest the
+        answer exists: ``_install_redactor`` runs before the record is created (it has to — the
+        lock file is written first), so a run that installs its own boundary knows the secret
+        values long before it knows its own addresses.
+
+        Why it matters even though the boundary is already in place: those addresses are exactly
+        what :meth:`~rayspec.redact.Redactor.redact_dump` keeps in clear, because ``resume`` and
+        ``explain`` resolve the run by them. Redacting them in ``events.jsonl`` while
+        ``run.json`` prints them leaves two files of one run disagreeing about the same fact —
+        and the disagreement is what tells a reader which public string the secret is. So a
+        value that equals one is not redacted at all, and its name is announced.
+
+        The CLI already builds its redactor with these (:func:`rayspec.secrets.build_redactor`),
+        which is what covers the sinks it wraps; for that redactor this is a no-op.
+        """
+        current = getattr(self.store, "redactor", None)
+        if not isinstance(current, Redactor) or not current:
+            return
+        narrowed = current.with_identities(identity_strings(run))
+        if narrowed is current:
+            return
+        self.store.redactor = narrowed
+        self._collided = tuple(n for n in narrowed.collisions if n not in current.collisions)
 
     def _no_redactor(self, secrets: list[tuple[str, Any]], current: Redactor) -> EngineError:
         """The refusal: this store does not hold the boundary, so nothing may be written.
@@ -339,6 +370,12 @@ class Runner:
                 f"{', '.join(self._unredactable)} is shorter than {MIN_REDACTABLE_LEN} "
                 "characters and is therefore not redacted — it can appear in the run store, "
                 "the logs and the console"
+            )
+        if self._collided:
+            await ctx.warn(
+                f"{', '.join(self._collided)} is one of the names this run is recorded under, "
+                "which rayspec must keep intact, and is therefore not redacted — it can appear "
+                "in the run store, the logs and the console"
             )
         if self.workspace.isolation != "none":
             await ctx.emit(
@@ -683,6 +720,7 @@ class Runner:
             # run, it may not take away the one the run was started with
             run.fail_fast = run.fail_fast or bool(self.options.fail_fast)
             run.workspace = self.workspace.info()  # head_sha refreshed by ``run()``
+            self._teach_identities(run)
             self.store.save(run)
             return run, cache, mismatch, True
         run = RunRecord(
@@ -709,6 +747,7 @@ class Runner:
             # by a resume (``_prepare_record`` returns early above for a resumed run)
             actor=actor,
         )
+        self._teach_identities(run)
         self.store.create(run)
         return run, {}, False, False
 

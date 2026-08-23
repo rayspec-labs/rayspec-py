@@ -99,6 +99,23 @@ fit: to the terminal's width on a terminal, and to a fixed 200 columns when stdo
 so a redirected listing does not depend on the width of the shell that produced it. `--json` is
 the rendering that never shortens anything.
 
+**Every moment rayspec prints is UTC and says so.** A full moment reads `2026-08-20 10:00:00 UTC`
+(`show`, `costs`, and every redirected listing cell); the per-record time column of one run's
+`logs` and `audit` reads `10:00:00 UTC`, repeated on each row rather than announced once in a
+header, because those two commands exist to be tailed, grepped and pasted one line at a time. A
+run record is written on one machine and read on another, and `~/.rayspec` outlives the laptop
+that created it, so an unlabelled `17:01` is not a time — it is a guess about whose clock.
+
+**An age is a terminal affordance.** `rayspec runs` and `rayspec show` answer "when" with an age —
+`13m ago`, `53d ago`, and `in 9d` for a stamp ahead of the local clock (skew between two machines
+that share a `RAYSPEC_HOME`, a restored backup) — only while somebody is watching one; a
+redirected or piped stream gets the absolute stamp instead, for the same reason its width is
+fixed at 200 columns. Nothing is lost either way: a run id opens with its date
+(`20260820-100000-h2nx`). That is what makes the paragraph above true of time as well as of
+padding — two redirected listings of an untouched store are byte-identical however long you wait
+between them. The one cell that still moves is the `duration` of a run that is still **running**,
+which really has been running longer (`--json`'s `duration_ms` moves with it).
+
 ## Commands
 
 ### `rayspec run`
@@ -470,7 +487,9 @@ A passing case deletes the run it created (a suite must not bury the project's r
 failing case keeps it, so `rayspec logs <run_id>` and `rayspec show <run_id>` explain it.
 
 The positional `<workflow>` keeps only cases of that workflow (or of a suite with that name),
-`--case ID` only that case id, `-k` / `--select PATTERN` only cases whose `<suite>:<case>` contains
+`--case ID` only that case — either the bare id (`approves`) or the qualified `<suite>:<case>`
+(`tests/example:approves`), which is the form a refusal lists, so what you are shown is always
+something you can type back — `-k` / `--select PATTERN` only cases whose `<suite>:<case>` contains
 the substring; the filters combine. `--exec-shell` makes `shell:`/`python:` steps of every case
 execute for real instead of being simulated — **it is the only thing that can start a subprocess,
 and only you can pass it**. A case file's `exec_shell: true` is a declaration that the case wants
@@ -650,7 +669,9 @@ rayspec runs [OPTIONS]
 
 List runs newest first (by `created_at`, then id) — by default those of the current project (the slug of `--root`/cwd), or every project under `RAYSPEC_HOME` with `--all` (every store under `projects/`, however deep the slug) — with status (`succeeded (dry)` marks a `--dry-run`), workflow, start time, duration, steps, tokens and cost. Run ids may be abbreviated to a unique prefix everywhere below.
 
-The **steps** column is `done/total`: *done* = steps the engine resolved — succeeded, failed with `allow_failure`, or skipped (`when:` false, upstream failed/skipped) — so a finished run reads `n/n`; *total* = the recorded steps plus, for every run that may still continue or be resumed (running/paused/interrupted/failed/cancelled — everything but succeeded), the workflow's planned steps (root steps and `include:` bodies; loop/each iterations are counted as they happen), so a run paused at the gate of a 3-step workflow reads `1/3` instead of `1/2` and a 3-step workflow that failed at step 2 reads `1/3`. When the workflow cannot be loaded any more (old record, file gone) the total falls back to the recorded steps. `rayspec show` adds the breakdown `(n ok · m skipped)`.
+The **steps** column is `done/total`: *done* = steps the engine resolved — succeeded, failed with `allow_failure`, or skipped (`when:` false, upstream failed/skipped) — so a finished run reads `n/n`; *total* = the recorded steps plus, for every run that may still continue or be resumed (running/paused/interrupted/failed/cancelled — everything but succeeded), the workflow's planned steps (root steps and `include:` bodies; loop/each iterations are counted as they happen), so a run paused at the gate of a 3-step workflow reads `1/3` instead of `1/2`, and a 3-step workflow that failed at step 2 reads `2/3` — the failed step is not done, but the third step, which the engine skipped as `upstream_failed`, is. When the workflow cannot be loaded any more (old record, file gone) the total falls back to the recorded steps. `rayspec show` adds the breakdown `(n ok · m skipped)`.
+
+The **started** column is when the run began (`started_at`, or `created_at` for a run that never got that far): its age on a terminal, the absolute `2026-08-20 10:00:00 UTC` when stdout is redirected or piped (the output-style rules at the top of this page).
 
 The **cost** column carries the run-level cost source: `$0.12` when every priced step reported a provider cost, `~$0.12` when any step cost is a [pricing-table](providers.md#pricing) estimate, `≥$0.12` when some steps have tokens but no price at all (an unpriced provider and no pricing entry — the sum is a lower bound; `show` says how many steps are unpriced), `-` when no cost is known at all (tokens are never shown as cost; the `tokens` column has them). The same marker appears on the step lines, the `■ run` line and the totals of the run console, in `show` and in the approval panel.
 
@@ -877,6 +898,8 @@ rayspec show [OPTIONS] {run}    # --output table|json (--json is the older spell
 
 Show one run: header (status — with a `dry run` marker for `--dry-run` records —, workflow, inputs (a `secret: true` input shows `"<secret>"` — the value is not in `run.json`), timing, `steps: done/total done (n ok · m skipped)` — see the `runs` column above —, tokens, cost with the run-level marker and, for a partial cost, a dim `(n steps unpriced)` note, `pid … (alive)` for a live run / `(exited)` for a paused one), workspace (isolation, workdir, branch, base/head sha), the step tree (nested paths like `build[2]/review`) with status, attempts, duration, tokens, cost and an output preview, an `artifacts:` table (step, file, size, sha256, stored ref) listing the files the steps promised and delivered — omitted when there are none —, a `warnings:` block (provider warnings streamed by the steps — e.g. a Claude rate-limit notice — and engine `warning` events, each as `<step>: <message>`; omitted when there are none), the rendered outputs, and the pause state (gate, token, decision) when the run is paused. Everything that comes out of `run.json`, an output file or a stream (inputs, outputs, previews, errors, reasons, messages) is untrusted text: it is printed as plain text with control characters and terminal escape sequences (colours, title changes, screen clears, hyperlinks) removed, and never parsed as Rich markup.
 
+The `started:` line is the absolute stamp, followed on a terminal by its age in brackets — `started:    2026-08-20 10:00:00 UTC (53d ago)`. The age is always an age, at any distance and in either direction, so it never spends the brackets repeating the stamp it stands beside.
+
 Options:
 
 - `--json` — Machine-readable output: the `runs` row plus `run_dir, inputs, outputs, workflow_path, workflow_hash, project_root, steps: [record fields + tokens, output_preview], artifacts: [{step, path, ref, sha256, size}], warnings: [str]` and `record` (the raw `run.json`).
@@ -916,7 +939,7 @@ The rows are derived from the run's own `run.json` (its creation, which is where
 
 Options:
 
-- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps, which are rayspec running a command itself. A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
+- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps the run **started**, which are rayspec running a command itself. A step the run decided against before it began — `when: false`, an upstream failure, the run-level cap — ran no body and is not in this view; it is still in the ledger proper, where the skip is a fact about the run. (The dividing line is the step's own `step.started` record, so it holds for whatever reason a step is skipped for next.) A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
 - `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, dry_run, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
@@ -1122,7 +1145,7 @@ rayspec quickstart [--provider claude|codex|both|none] [--yes] [--no-interactive
 **The first command to type after installing rayspec.** It prints what this machine has, offers
 the two things it cannot decide for you (a provider login, and `git init` when the directory is
 not a repository), scaffolds `.rayspec/` if there is no project yet, and then proves the install
-by performing a dry run — scripted agents, no login, no cost. It ends by naming the four commands
+by performing a dry run — scripted agents, no login, no cost. It ends by naming the commands that matter next
 that matter and saying which of them spends money.
 
 Its promise is that it never dead-ends. The whole authoring loop — write, `validate`, `plan`,
@@ -1158,7 +1181,7 @@ What it prints, in order:
 3. **What it did**, one line per step: `login`, `git init`, `project`, `dry run`.
 4. **The dry run**, with the command printed above it. The printed line *is* the argv that was
    invoked, so it can be copied and re-run.
-5. **The closing block** — the isolation sentence, the credentials sentence, the four commands,
+5. **The closing block** — the isolation sentence, the credentials sentence, the next-step commands,
    and the money line.
 
 Three git conditions, not two, and each one is reported where it is true: the **binary**
@@ -1267,11 +1290,12 @@ rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--ro
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
-config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus **both rayspec
+config.yaml, stubs/example.yaml, tests/example/approves.yaml}` from the templates packaged with
+rayspec, plus **both rayspec
 skills for coding agents** in `.claude/skills/rayspec-workflows/` and `.claude/skills/rayspec-cli/`
 (`SKILL.md` + `references/*.md` each, the same files `rayspec skill install` writes — see
 [agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md); `--no-skill` opts out of both), then print the next steps
-(`doctor`, `validate`, `plan example`, `run example --dry-run --stubs
+(`doctor`, `validate`, `test`, `plan example`, `run example --dry-run --stubs
 .rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here — the skills
 load automatically"). `--root DIR` is the directory that receives `.rayspec/` and
 `.claude/skills/` (default: the cwd — `init` does **not** walk up to an enclosing project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
@@ -1309,6 +1333,11 @@ Both kinds ship the same `config.yaml` (commented `tiers`/`aliases`/`pricing`/`p
 blocks) and a `stubs/example.yaml` that makes `rayspec run example --dry-run --stubs
 .rayspec/stubs/example.yaml` succeed without any login (its header comment links the stub file
 format in [providers.md](providers.md#stub-stub) by URL).
+
+Both also ship one test case, `.rayspec/tests/example/approves.yaml`, so `rayspec init && rayspec
+test` passes on a fresh machine: the case is a scripted dry run against that same stub file, needs
+no git checkout and no credentials, and is a newcomer's first sight of the case format (see
+[testing.md](testing.md)).
 
 #### Starting from an example
 
@@ -1374,8 +1403,11 @@ Add one workflow to a project that already exists — `rayspec init` is for crea
 `new` for growing it. Writes `.rayspec/workflows/<name>.yaml` (one read-only agent step, one
 `target` input, `isolation: none`) and prints `rayspec validate <name>` / `plan` / `run <name>
 --dry-run`; the fresh workflow validates and dry-runs without any login. `<name>` is both the
-`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, not a
-reserved context root such as `run`); anything else is a usage error naming the rule. `--agent
+`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, at most 128
+characters, not a reserved context root such as `run`); anything else is a usage error naming the
+rule — the length included, which is checked here rather than left to the filesystem
+(`error: invalid workflow name: invalid identifier 'aaaa…': must be at most 128 characters (this
+one is 300) — it becomes a file name`, never a bare `[Errno 63] File name too long`). `--agent
 NAME` references `.rayspec/agents/<NAME>.yaml` (or `~/.rayspec/agents/<NAME>.yaml`) instead of
 writing an inline agent into the workflow; that file has to exist, because a workflow pointing at
 a missing agent fails the `rayspec validate <name>` the command itself prints next — an unknown

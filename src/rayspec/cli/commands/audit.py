@@ -20,7 +20,7 @@ other runs, other projects or other people.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
@@ -46,6 +46,7 @@ from rayspec.store.file import (
     audit_entry_for_event,
     audit_entry_for_stream,
     finish_audit_row,
+    is_step_start_row,
 )
 from rayspec.store.model import RunRecord
 from rayspec.textsafe import safe_text
@@ -66,14 +67,28 @@ ROW_STYLES: dict[str, str] = {
 COMMAND_STEP_KINDS = frozenset({"shell", "python"})
 
 
-def command_step_paths(run: RunRecord) -> frozenset[str]:
-    """The paths of the run's ``shell:``/``python:`` steps, from ``run.json``.
+def command_step_paths(run: RunRecord, rows: Iterable[dict[str, Any]]) -> frozenset[str]:
+    """The ``shell:``/``python:`` steps this run EXECUTED — whose rows ``--commands`` keeps.
 
-    The step's kind is on the step *record*, and only the ``step.started`` event repeats it in
-    its payload — so a filter that reads the payload alone keeps a shell step's start and drops
-    its ``succeeded``/``failed``. Asking the record instead answers for every row of the step.
+    Two questions, and neither is answered by a list that has to be kept up to date:
+
+    * *is this step a command?* — the ``kind`` on the step **record** (``run.json``). Only the
+      ``step.started`` event repeats the kind in its payload, so a filter that reads the payload
+      alone keeps a shell step's start and drops its ``succeeded``/``failed``; asking the record
+      answers for every row of the step.
+    * *did the run execute it?* — is there a ``step.started`` row for it
+      (:func:`~rayspec.store.file.is_step_start_row`). The engine emits that event at the one
+      moment it hands a step to its executor and at no other, so a step decided against before
+      it began has none — ``when: false``, an upstream failure, the budget breaker, and whatever
+      reason is added next, without a line changing here.
+
+    That second question is the whole difference between this view and ``rayspec audit`` without
+    the flag: a skipped ``shell:`` step is a real fact about the run and belongs in the ledger,
+    but it is not something that was executed.
     """
-    return frozenset(path for path, rec in run.steps.items() if rec.kind in COMMAND_STEP_KINDS)
+    kinds = {path for path, rec in run.steps.items() if rec.kind in COMMAND_STEP_KINDS}
+    started = {str(row["step"]) for row in rows if row.get("step") and is_step_start_row(row)}
+    return frozenset(kinds & started)
 
 
 def is_command_row(row: dict[str, Any], command_steps: Collection[str] = ()) -> bool:
@@ -81,19 +96,16 @@ def is_command_row(row: dict[str, Any], command_steps: Collection[str] = ()) -> 
 
     That is a ``command`` row — a command an agent ran, whether the adapter reported it as a
     ``command_start`` or as a tool call carrying a command line — or a row of a ``shell:``/
-    ``python:`` step, which is rayspec running a command itself. A step row names the step and
-    its kind, not the body: the rendered body is not kept in the run directory (``rayspec
-    explain`` re-renders it from the workflow).
+    ``python:`` step the run **started**, which is rayspec running a command itself. A step row
+    names the step and its kind, not the body: the rendered body is not kept in the run directory
+    (``rayspec explain`` re-renders it from the workflow).
 
-    ``command_steps`` is :func:`command_step_paths` of the run; a step row whose path is in it
-    is kept whatever its payload carries, which is what makes a shell step's *outcome* survive
-    the filter alongside its start. Without it only the rows that name their own kind are kept.
+    ``command_steps`` is :func:`command_step_paths` of the run; every row of a step in it is
+    kept whatever its payload carries, which is what makes a shell step's *outcome* survive the
+    filter alongside its start — and every row of a step that is not in it is dropped, including
+    the one that says it was skipped.
     """
-    if row["kind"] == "command":
-        return True
-    if row["kind"] != "step":
-        return False
-    return row["data"].get("kind") in COMMAND_STEP_KINDS or row.get("step") in command_steps
+    return row["kind"] == "command" or (row["kind"] == "step" and row.get("step") in command_steps)
 
 
 def collect_rows(store: FileRunStore, run: RunRecord) -> list[dict[str, Any]]:
@@ -179,7 +191,7 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
     """The ``--json`` object: the run's identity, whether it was a rehearsal, and its rows."""
     rows = collect_rows(store, run)
     if commands:
-        steps = command_step_paths(run)
+        steps = command_step_paths(run, rows)
         rows = [row for row in rows if is_command_row(row, steps)]
     return {
         "run_id": run.run_id,
@@ -196,7 +208,9 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
 
 
 def _stamp(row: dict[str, Any]) -> str:
-    return _row_time(row).astimezone(UTC).strftime("%H:%M:%S")
+    """``10:00:00 UTC`` — the same rendering ``rayspec logs`` prints, zone included: an audit row
+    is evidence, and evidence that does not say whose clock it is worth less."""
+    return common.fmt_clock(_row_time(row))
 
 
 def rows_table(rows: list[dict[str, Any]]) -> Table:

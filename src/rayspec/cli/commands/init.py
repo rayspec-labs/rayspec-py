@@ -513,6 +513,7 @@ def next_steps(
     doctor: bool = True,
     workflow: str = "example",
     stubs: bool | str = True,
+    tests: bool = True,
 ) -> list[str]:
     """The commands to try after ``rayspec init`` (printed, and reused by the docs).
 
@@ -522,6 +523,10 @@ def next_steps(
     commands operate on, for a project that has no ``example``; ``stubs=False`` drops the
     ``--stubs <file>`` part when that project ships no stub script for it (a dry run without one
     still works — the stub provider answers with its defaults).
+
+    ``tests=False`` drops the ``rayspec test`` line for a caller standing in a project that has no
+    cases: that command exits 2 there, and a first-run list whose items exit 2 is the thing this
+    function exists not to print.
 
     ``stubs`` may also be the path to write after ``--stubs``. ``--stubs`` resolves against the
     **cwd**, so a caller standing somewhere other than the project root (`rayspec quickstart` in
@@ -535,6 +540,11 @@ def next_steps(
         dry += f" --stubs {stub_file}"
     lines = [
         "rayspec validate                        # schema, graph, references, capabilities",
+        *(
+            ["rayspec test                            # the scaffolded case, as a scripted dry run"]
+            if tests
+            else []
+        ),
         f"{f'rayspec plan {workflow}':<39} # inputs, agents/models, step order",
         f"{dry}   # scripted agents, no login needed",
         f"{real:<39} # a real run",

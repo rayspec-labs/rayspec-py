@@ -152,3 +152,61 @@ def test_workflow_label_is_none_for_an_unknown_name_and_a_missing_path(project: 
     ctx = make_context(project)
     assert workflow_label("nope", ctx) is None
     assert workflow_label("nope.yaml", ctx) is None
+
+
+WF = "rayspec: 1\nname: {name}\ndescription: workflow {name}\nisolation: none\nsteps:\n  - id: a\n    shell: echo hi\n"
+
+
+def _validate_cost(
+    root: Path, n: int, monkeypatch: pytest.MonkeyPatch
+) -> tuple[int, dict[str, int]]:
+    """`rayspec validate` over ``n`` generated workflows → (project listings, reads per file)."""
+    workflows = root / ".rayspec" / "workflows"
+    workflows.mkdir(parents=True)
+    for i in range(n):
+        (workflows / f"w{i:02d}.yaml").write_text(WF.format(name=f"w{i:02d}"))
+
+    reads: dict[str, int] = {}
+    listings: list[str] = []
+    read_text, iterdir = Path.read_text, Path.iterdir
+
+    def counting_read(self: Path, *args, **kwargs):
+        if self.suffix == ".yaml" and self.parent.name == "workflows":
+            reads[self.name] = reads.get(self.name, 0) + 1
+        return read_text(self, *args, **kwargs)
+
+    def counting_iterdir(self: Path):
+        if self.name == "workflows":
+            listings.append(str(self))
+        return iterdir(self)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", counting_read)
+        patch.setattr(Path, "iterdir", counting_iterdir)
+        res = runner.invoke(app, ["validate", "--root", str(root)])
+    assert res.exit_code == 0, res.output
+    assert f"{n} workflow(s) validated, no errors" in res.output
+    return len(listings), reads
+
+
+def test_validate_is_linear_in_the_number_of_workflows(
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rayspec validate` does a bounded amount of work PER workflow, not per pair of them.
+
+    It used to be quadratic twice over: resolving each of the N names listed the project again,
+    and each listing parsed all N files just to read their `description:`. N=200 took 32 s, and
+    it rose with the square. What is pinned here is the two facts behind those seconds rather
+    than a wall-clock number, which would only be flaky — and they are measured at two sizes,
+    because "listed a few times" and "listed once per workflow" are the same number at one size:
+
+    * the project is LISTED a constant number of times, whatever N is;
+    * each workflow file is READ once — the load that validates it — whatever N is.
+
+    Either half alone still leaves the other quadratic, so both are counted.
+    """
+    small_listings, small_reads = _validate_cost(tmp_path / "small", 4, monkeypatch)
+    large_listings, large_reads = _validate_cost(tmp_path / "large", 16, monkeypatch)
+    assert len(small_reads) == 4 and len(large_reads) == 16
+    assert max(large_reads.values()) == max(small_reads.values()) == 1, large_reads
+    assert large_listings == small_listings, (small_listings, large_listings)

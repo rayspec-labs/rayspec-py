@@ -12,6 +12,21 @@ from pydantic import AfterValidator, BeforeValidator
 #: Identifiers for step ids, input names, agent names, output keys and ``as:`` variables.
 IDENT_RE = re.compile(r"[a-z][a-z0-9_]*")
 
+#: Longest identifier rayspec accepts, in characters.
+#:
+#: Every identifier ends up as a **path segment**: a workflow is
+#: ``.rayspec/workflows/<name>.yaml``, its worktree is ``<name>-<short run id>`` with a git ref
+#: file ``.git/refs/heads/rayspec/<name>-<short run id>.lock`` beside it, a step is
+#: ``steps/<id>/`` inside the run directory. ``NAME_MAX`` is 255 bytes on macOS and Linux alike,
+#: so the longest identifier a filesystem can carry depends on which suffix a given command
+#: happens to append — and without a bound of rayspec's own the refusal is whatever the
+#: filesystem said (``[Errno 63] File name too long``, a bare errno naming no rule). 128 is half
+#: of ``NAME_MAX``: it clears every suffix rayspec appends with room to spare, and it is far more
+#: than a readable name needs. It is a rule of the identifier, so it lives with the other ones
+#: and every identifier — in a workflow file, in ``rayspec new``, in an ``agents:`` key — is
+#: refused by the same message.
+MAX_IDENT_LEN = 128
+
 #: Names that are roots of the template context (or Jinja specials) and therefore can't be ids.
 RESERVED_ROOTS: frozenset[str] = frozenset(
     {
@@ -40,11 +55,30 @@ InstructionsModeName = Literal["append", "replace"]
 EffortName = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 
+def _too_long(kind: str, value: str) -> str:
+    """The over-length message: names the limit and the length, and never echoes the whole value.
+
+    A 300-character identifier printed back in full buries the rule it broke under 300
+    characters of the mistake.
+    """
+    return (
+        f"invalid {kind} {_ellipsis(value)}: must be at most {MAX_IDENT_LEN} characters "
+        f"(this one is {len(value)}) — it becomes a file name"
+    )
+
+
+def _ellipsis(value: str, keep: int = 32) -> str:
+    """``value`` as a repr, shortened to ``keep`` characters; the length is named by the caller."""
+    return repr(value) if len(value) <= keep else f"{value[:keep]!r}…"
+
+
 def validate_identifier(value: str) -> str:
     if not isinstance(value, str) or not IDENT_RE.fullmatch(value):
         raise ValueError(
             f"invalid identifier {value!r}: must match ^[a-z][a-z0-9_]*$ (lowercase snake_case)"
         )
+    if len(value) > MAX_IDENT_LEN:
+        raise ValueError(_too_long("identifier", value))
     if value in RESERVED_ROOTS:
         raise ValueError(f"invalid identifier {value!r}: reserved name (template context root)")
     return value
@@ -59,6 +93,8 @@ def validate_name(value: str) -> str:
         raise ValueError(
             f"invalid name {value!r}: must match ^[a-z][a-z0-9_]*$ (lowercase snake_case)"
         )
+    if len(value) > MAX_IDENT_LEN:
+        raise ValueError(_too_long("name", value))
     return value
 
 
@@ -144,6 +180,7 @@ class RunStatus(StrEnum):
 
 __all__ = [
     "IDENT_RE",
+    "MAX_IDENT_LEN",
     "RESERVED_ROOTS",
     "AccessLevelName",
     "Duration",

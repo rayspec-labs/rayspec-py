@@ -20,7 +20,18 @@ Reproducing a failure::
 
 The base seed is fixed (``0``) so CI is deterministic: a property suite that draws different
 cases on every run reports failures nobody can reproduce, and turns a red build into folklore.
-Raise ``RAYSPEC_PROP_SEED`` locally to go looking for new counter-examples.
+Raise ``RAYSPEC_PROP_SEED`` locally to go looking for new counter-examples — the driver's own
+self-test states every seed it depends on, so a seed hunt never turns the driver red.
+
+Two rules keep a property from passing without checking anything, which is the failure mode a
+generative suite has and a hand-written one does not:
+
+* :func:`forall` / :func:`aforall` REFUSE a non-positive ``cases``, wherever it came from — an
+  environment variable, a division, a caller's arithmetic. That is the total rule; the
+  environment check below is only the part that can also say what to type instead.
+* the driver owns the whole ``RAYSPEC_PROP_*`` namespace (:func:`read_environment`): a value
+  that would switch a property off is an error at import, and so is a name in that namespace
+  that the driver does not read — a typo that silently changes nothing is the same defect.
 """
 
 from __future__ import annotations
@@ -28,16 +39,73 @@ from __future__ import annotations
 import contextlib
 import os
 import random
-from collections.abc import Awaitable, Callable, Generator, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterator, Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 E = TypeVar("E", bound=BaseException)
 
+
+class BadEnvironment(RuntimeError):
+    """A ``RAYSPEC_PROP_*`` variable the driver cannot use; raised at import, naming the value."""
+
+
+#: The variables this driver reads: ``name -> (smallest usable value or None, what it means)``.
+#: The driver owns the whole ``RAYSPEC_PROP_*`` namespace — see :func:`read_environment`.
+ENV_RULES: dict[str, tuple[int | None, int, str]] = {
+    "RAYSPEC_PROP_SEED": (None, 0, "the base seed every property draws its cases from"),
+    "RAYSPEC_PROP_CASES": (1, 60, "how many cases each property draws"),
+}
+#: The namespace :func:`read_environment` refuses unknown names in.
+ENV_PREFIX = "RAYSPEC_PROP_"
+
+
+def read_environment(env: Mapping[str, str]) -> tuple[int, int]:
+    """``(base seed, cases per property)`` from ``env``; anything unusable is a loud error.
+
+    Called once at import with ``os.environ``, and directly by the driver's own tests with a
+    made-up mapping. Three ways to get it wrong, all of them silent before this existed:
+
+    * ``RAYSPEC_PROP_CASES=0`` — every property then draws nothing, asserts nothing and passes.
+      A whole generative suite reports green while checking exactly one thing by accident;
+    * ``RAYSPEC_PROP_CASES=x`` — a value that is not an integer at all;
+    * ``RAYSPEC_PROP_CASE=500`` — a name in this driver's namespace that it does not read. The
+      run then quietly uses the default and the person who typed it believes they raised the
+      case count, which is the same defect wearing a different hat.
+    """
+    known = ", ".join(sorted(ENV_RULES))
+    for name in sorted(env):
+        if name.startswith(ENV_PREFIX) and name not in ENV_RULES:
+            raise BadEnvironment(
+                f"{name}={env[name]!r}: this property driver owns {ENV_PREFIX}* and does not "
+                f"read {name}, so setting it changes nothing. Known variables: {known}."
+            )
+    return _env_int("RAYSPEC_PROP_SEED", env), _env_int("RAYSPEC_PROP_CASES", env)
+
+
+def _env_int(name: str, env: Mapping[str, str]) -> int:
+    """One :data:`ENV_RULES` variable as an int; :class:`BadEnvironment` names it and its value."""
+    minimum, default, what = ENV_RULES[name]
+    raw = env.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise BadEnvironment(
+            f"{name}={raw!r} is not an integer ({what}); unset it for the default of {default}"
+        ) from None
+    if minimum is not None and value < minimum:
+        raise BadEnvironment(
+            f"{name}={raw!r} is below {minimum} ({what}): a property that draws {value} case(s) "
+            f"checks nothing and passes. Unset it for the default of {default}."
+        )
+    return value
+
+
 #: Base seed for every property; override with ``RAYSPEC_PROP_SEED`` to draw different cases.
-BASE_SEED = int(os.environ.get("RAYSPEC_PROP_SEED", "0"))
-#: Cases per property; override with ``RAYSPEC_PROP_CASES``.
-DEFAULT_CASES = int(os.environ.get("RAYSPEC_PROP_CASES", "60"))
+#: Cases per property; override with ``RAYSPEC_PROP_CASES`` (non-positive is refused above).
+BASE_SEED, DEFAULT_CASES = read_environment(os.environ)
 #: How many shrink candidates a falsified property may evaluate before it reports what it has.
 DEFAULT_SHRINK_BUDGET = 300
 
@@ -58,7 +126,7 @@ class Discard(Exception):
 
 
 class NoCases(AssertionError):
-    """Every drawn case was discarded — the generator and the precondition disagree."""
+    """The property checked nothing: it was asked for no cases, or every case was discarded."""
 
 
 def seed_key(label: str, index: int, *, seed: int = BASE_SEED) -> str:
@@ -81,16 +149,23 @@ def forall(
     shrink: Callable[[T], Iterator[T]] | None = None,
     show: Callable[[T], str] = repr,
     budget: int = DEFAULT_SHRINK_BUDGET,
+    examples: Sequence[T] = (),
 ) -> None:
-    """Draw ``cases`` values from ``gen`` and assert ``prop`` of each; shrink the first failure.
+    """Check ``examples``, then ``cases`` values from ``gen``; shrink and report the first failure.
 
     ``prop`` fails by raising (an ``assert`` is the normal way). The raised error is kept and
     re-reported with the minimal case ``shrink`` could reach. A :class:`Discard` says the case
     is outside the property's precondition; if every case discards, that is an error.
+
+    ``examples`` are the cases the property must check whatever the RNG does — a row a
+    generator reaches only when the seed is kind is not covered, it is covered *on this seed*,
+    and the guard that says so passes for the same reason. Written into the test, checked first,
+    shrunk and reported like any other case (the report says which example rather than a seed
+    key, because no seed reproduces it).
     """
+    _refuse_a_vacuous_run(label, cases)
     discarded = 0
-    for index in range(cases):
-        value = gen(rng_for(label, index, seed=seed))
+    for drawn, (key, reproduce, value) in enumerate(_cases(label, gen, cases, seed, examples), 1):
         failure = _attempt(prop, value)
         if isinstance(failure, Discard):
             discarded += 1
@@ -99,8 +174,8 @@ def forall(
             continue
         plan = _shrink_plan(value, failure, shrink, budget)
         minimal, failure = _drive(plan, lambda candidate: _attempt(prop, candidate))
-        raise _report(label, index, seed, minimal, failure, show, index + 1)
-    _refuse_an_empty_run(label, discarded, cases)
+        raise _report(label, key, reproduce, minimal, failure, show, drawn)
+    _refuse_an_empty_run(label, discarded, cases + len(examples))
 
 
 async def aforall(
@@ -113,11 +188,12 @@ async def aforall(
     shrink: Callable[[T], Iterator[T]] | None = None,
     show: Callable[[T], str] = repr,
     budget: int = DEFAULT_SHRINK_BUDGET,
+    examples: Sequence[T] = (),
 ) -> None:
     """:func:`forall` for an async property (the scheduler ones); same seeding and reporting."""
+    _refuse_a_vacuous_run(label, cases)
     discarded = 0
-    for index in range(cases):
-        value = gen(rng_for(label, index, seed=seed))
+    for drawn, (key, reproduce, value) in enumerate(_cases(label, gen, cases, seed, examples), 1):
         failure = await _aattempt(prop, value)
         if isinstance(failure, Discard):
             discarded += 1
@@ -126,8 +202,8 @@ async def aforall(
             continue
         plan = _shrink_plan(value, failure, shrink, budget)
         minimal, failure = await _adrive(plan, lambda candidate: _aattempt(prop, candidate))
-        raise _report(label, index, seed, minimal, failure, show, index + 1)
-    _refuse_an_empty_run(label, discarded, cases)
+        raise _report(label, key, reproduce, minimal, failure, show, drawn)
+    _refuse_an_empty_run(label, discarded, cases + len(examples))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -135,9 +211,41 @@ async def aforall(
 # --------------------------------------------------------------------------------------------------
 
 
+def _cases(
+    label: str,
+    gen: Callable[[random.Random], T],
+    cases: int,
+    seed: int,
+    examples: Sequence[T],
+) -> Iterator[tuple[str, str, T]]:
+    """``(key, how to reproduce it, value)`` for every case, the written examples first."""
+    for index, value in enumerate(examples):
+        yield f"{label}#example#{index}", f"examples[{index}] of property {label!r}", value
+    for index in range(cases):
+        yield (
+            seed_key(label, index, seed=seed),
+            f"rng_for({label!r}, {index}, seed={seed})",
+            gen(rng_for(label, index, seed=seed)),
+        )
+
+
+def _refuse_a_vacuous_run(label: str, cases: int) -> None:
+    """A property asked for no cases checks nothing and passes — the one failure a suite hides.
+
+    The TOTAL rule, and deliberately at the driver rather than at the environment variable that
+    is one way to reach it: ``cases`` is also arithmetic (``DEFAULT_CASES // 4``), a constant
+    someone edited, a parameter a caller computed. Every route ends here.
+    """
+    if cases < 1:
+        raise NoCases(
+            f"property {label!r} was asked for cases={cases}: a property that draws no case "
+            "checks nothing and passes, which is worse than not having it at all"
+        )
+
+
 def _refuse_an_empty_run(label: str, discarded: int, cases: int) -> None:
     """A property whose precondition rejected every drawn case checked nothing at all."""
-    if cases and discarded == cases:
+    if discarded == cases:
         raise NoCases(
             f"property {label!r} discarded all {cases} case(s): the generator never produced "
             "a case the property applies to"
@@ -264,20 +372,19 @@ def raises(expected: type[E]) -> Iterator[Raised[E]]:
 
 def _report(
     label: str,
-    index: int,
-    seed: int,
+    key: str,
+    reproduce: str,
     minimal: T,
     failure: BaseException,
     show: Callable[[T], str],
     drawn: int,
 ) -> Falsified:
-    key = seed_key(label, index, seed=seed)
     return Falsified(
         f"property {label!r} falsified after {drawn} case(s)\n"
         f"  seed key:     {key}\n"
         f"  minimal case: {show(minimal)}\n"
         f"  failure:      {type(failure).__name__}: {failure}\n"
-        f"  reproduce:    rng_for({label!r}, {index}, seed={seed})"
+        f"  reproduce:    {reproduce}"
     )
 
 
@@ -437,7 +544,10 @@ __all__ = [
     "BASE_SEED",
     "DEFAULT_CASES",
     "DEFAULT_SHRINK_BUDGET",
+    "ENV_PREFIX",
+    "ENV_RULES",
     "FRAGMENTS",
+    "BadEnvironment",
     "Discard",
     "Falsified",
     "NoCases",
@@ -446,6 +556,7 @@ __all__ = [
     "forall",
     "json_value",
     "raises",
+    "read_environment",
     "rng_for",
     "seed_key",
     "shrink_json",

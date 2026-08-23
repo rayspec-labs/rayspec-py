@@ -155,6 +155,26 @@ _AUDIT_EVENT_KINDS: dict[EventType, str] = {
     EventType.WARNING: "warning",
 }
 
+#: The ``data`` key that only a ``step.started`` row carries — the step's KIND, which the event
+#: payload holds and no other step event repeats (a finish reports ``status``, a retry reports
+#: ``attempt``). :func:`is_step_start_row` is the reader half; both live here so the ledger's
+#: writer and its readers cannot drift apart.
+_STEP_START_KEY = "kind"
+
+
+def is_step_start_row(row: Mapping[str, Any]) -> bool:
+    """Whether ``row`` is the ledger row of a step being handed to its executor.
+
+    ``step.started`` is emitted at that one moment and at no other, so this is the ledger's own
+    answer to "did the run execute this step?" — an answer that stays right however many new
+    statuses, skip reasons or rehearsal modes are added, because none of them are consulted.
+    A step decided against before it began (``when: false``, an upstream failure, the budget
+    breaker) has no such row.
+    """
+    data = row.get("data")
+    return row.get("kind") == "step" and isinstance(data, Mapping) and _STEP_START_KEY in data
+
+
 #: Keys under which a ``tool_call`` carries the command it executes. Adapters disagree about
 #: the shape — the Claude adapter spreads the tool input across ``data``, the others nest it
 #: under ``data["input"]`` — so both are looked at (:func:`tool_command`).
@@ -1214,6 +1234,7 @@ __all__ = [
     "audit_entry_for_stream",
     "audit_log_enabled",
     "finish_audit_row",
+    "is_step_start_row",
     "open_private",
     "secure_mkdir",
     "tool_arguments",

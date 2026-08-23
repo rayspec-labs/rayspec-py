@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.cli.commands.new import agent_text, workflow_text
+from rayspec.schema.common import MAX_IDENT_LEN
 
 
 @pytest.fixture
@@ -227,3 +228,36 @@ def test_new_workflow_defaults_to_the_walked_up_project_root(
     res = CliRunner().invoke(app, ["new", "workflow", "triage"])
     assert res.exit_code == 0, res.output
     assert (project / ".rayspec" / "workflows" / "triage.yaml").is_file()
+
+
+@pytest.mark.parametrize(("kind", "directory"), [("workflow", "workflows"), ("agent", "agents")])
+def test_new_refuses_an_over_long_name_before_the_filesystem_does(
+    kind: str, directory: str, project: Path, home: Path
+) -> None:
+    """rayspec's contract is `error: …` (+ optional `hint:`), never a bare OS errno.
+
+    A 300-character name used to reach `open()` and come back as
+    `error: cannot write the workflow: [Errno 63] File name too long: '/…'` — a message that
+    names no rule, states no limit and depends on the filesystem the user happens to be on.
+    """
+    res = CliRunner().invoke(app, ["new", kind, "a" * 300, "--root", str(project)])
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    assert "Errno" not in res.output and "File name too long" not in res.output
+    assert f"at most {MAX_IDENT_LEN} characters" in res.output
+    assert not list((project / ".rayspec" / directory).glob("aaa*"))
+
+
+@pytest.mark.parametrize(("kind", "directory"), [("workflow", "workflows"), ("agent", "agents")])
+def test_a_name_at_the_limit_is_still_writable(
+    kind: str, directory: str, project: Path, home: Path
+) -> None:
+    """The other half of the bound: the longest name rayspec accepts must really work.
+
+    Raise `MAX_IDENT_LEN` past what a file name can hold and this goes red — which is the point,
+    because the errno would otherwise come back at exactly this length.
+    """
+    name = "a" * MAX_IDENT_LEN
+    res = CliRunner().invoke(app, ["new", kind, name, "--root", str(project)])
+    assert res.exit_code == 0, res.output
+    assert (project / ".rayspec" / directory / f"{name}.yaml").is_file()

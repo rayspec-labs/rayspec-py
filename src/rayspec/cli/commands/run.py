@@ -75,7 +75,7 @@ from rayspec.secrets import (
     used_config_secrets,
 )
 from rayspec.store.file import FileRunStore, StoreError
-from rayspec.store.model import new_run_id
+from rayspec.store.model import RunRecord, identity_strings, new_run_id
 from rayspec.textsafe import safe_text
 
 WaitSlotOption = Annotated[
@@ -112,7 +112,6 @@ def pause_actions(run_id: str, reason: str) -> str:
 
 if TYPE_CHECKING:
     from rayspec.providers.stub import StubScript
-    from rayspec.store.model import RunRecord
 
 
 #: What :func:`_built` returns — the extension object a third-party factory produced.
@@ -913,13 +912,27 @@ def register(app: typer.Typer) -> None:
         # --json does not imply --no-interactive (documented in cli.md): a TTY still prompts
         interactive = runs_common.stdin_is_tty() and not no_interactive and not yes
         # one redactor over every value this run knows — installed on the store (which
-        # covers run.json, outputs, events and streams) and on every sink
+        # covers run.json, outputs, events and streams) and on every sink. It is also told the
+        # strings this run will be RECORDED under: the record has to keep those (resume and
+        # explain resolve the run by them), so a secret that happens to equal one is not
+        # redacted anywhere rather than hidden here and printed in `show`/`runs`/`audit`.
         redactor = build_redactor(
             ctx.config,
             {**config_secrets, **{n: values[n] for n in secret_names if n in values}},
+            identities=identity_strings(
+                RunRecord(
+                    run_id=run_id,
+                    workflow_name=rw.workflow.name,
+                    workflow_path=rw.label,
+                    workflow_hash=rw.hash,
+                    project_slug=slug,
+                    project_root=str(project_root),
+                    workspace=workspace.info(),
+                )
+            ),
         )
         store.redactor = redactor
-        warn_unredactable_secrets(out, redactor)  # a value too short to redact is named
+        warn_unredactable_secrets(out, redactor)  # what redaction cannot cover is named
         try:
             # an id in `extensions:` that names nothing is a usage error, not a crash mid-run
             sinks = _sinks(
@@ -1033,25 +1046,42 @@ def register(app: typer.Typer) -> None:
 
 
 def warn_unredactable_secrets(out: Console, redactor: Redactor) -> None:
-    """Name every secret whose value is too short to redact.
+    """Name every secret this run declared that redaction will not cover, and why.
 
-    :data:`~rayspec.redact.MIN_REDACTABLE_LEN` exists because replacing every ``ab`` in a
-    transcript destroys the log without protecting anything — but silently *not* redacting a
-    value the user declared secret is the opposite of what the feature promises. The names (never
-    the values) are printed once per run, on the same stream as the other pre-run notes, so
-    ``--json`` stays parseable.
+    There are two such cases and rayspec answers both the same way — do not pretend, say so:
+
+    * a value shorter than :data:`~rayspec.redact.MIN_REDACTABLE_LEN`, because replacing every
+      ``ab`` in a transcript destroys the log without protecting anything;
+    * a value that EQUALS one of the strings this run is recorded under (its id, its workflow's
+      name or file, its project root, its workspace directory). The record keeps those — a
+      rewritten one is a run ``resume`` can no longer find — so redacting the value elsewhere
+      would only make two files of the same run disagree, which is what tells a reader which
+      public string the secret is.
+
+    Silently *not* redacting a value the user declared secret is the opposite of what the
+    feature promises, so the names — never the values — are printed once per run, on the same
+    stream as the other pre-run notes, so ``--json`` stays parseable.
     """
-    if not redactor.skipped:
-        return
-    names = ", ".join(redactor.skipped)
-    out.print(
-        Text.assemble(
-            ("warning", "yellow"),
-            f": {names} is shorter than {MIN_REDACTABLE_LEN} characters and is therefore "
-            "not redacted — it can appear in the run store, the logs and the console",
-        ),
-        highlight=False,
-    )
+    if redactor.skipped:
+        out.print(
+            Text.assemble(
+                ("warning", "yellow"),
+                f": {', '.join(redactor.skipped)} is shorter than {MIN_REDACTABLE_LEN} "
+                "characters and is therefore not redacted — it can appear in the run store, "
+                "the logs and the console",
+            ),
+            highlight=False,
+        )
+    if redactor.collisions:
+        out.print(
+            Text.assemble(
+                ("warning", "yellow"),
+                f": {', '.join(redactor.collisions)} is one of the names this run is recorded "
+                "under, which rayspec must keep intact, and is therefore not redacted — it can "
+                "appear in the run store, the logs and the console",
+            ),
+            highlight=False,
+        )
 
 
 def _sinks(

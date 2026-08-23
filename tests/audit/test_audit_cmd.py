@@ -432,3 +432,124 @@ def test_the_stored_ledger_and_the_rendered_one_still_agree(
         if (entry := audit_entry_for_event(event)) is not None and entry["data"].get("reused")
     ]
     assert replayed and all(row in rendered for row in replayed)
+
+
+# --------------------------------------------------------------------------------------------------
+# `--commands` is "only what was executed" — a step the run decided against executed nothing
+# --------------------------------------------------------------------------------------------------
+
+DECIDED_AGAINST = """
+rayspec: 1
+name: work
+isolation: none
+defaults: { on_step_failure: continue }
+steps:
+  - id: ran
+    shell: 'echo ran'
+  - id: when_false
+    when: "false"
+    shell: 'echo never'
+  - id: boom
+    shell: 'exit 3'
+  - id: upstream_failed
+    needs: [boom]
+    shell: 'echo never'
+  - id: upstream_skipped
+    needs: [when_false]
+    shell: 'echo never'
+"""
+
+#: Every step of :data:`DECIDED_AGAINST` the run never starts, and why it does not.
+NOT_EXECUTED = ("when_false", "upstream_failed", "upstream_skipped")
+
+
+@pytest.fixture
+def decided_against(cli: CliRunner, tmp_path: Path, home: Path) -> tuple[str, Path]:
+    """A run whose shell steps are skipped for three different reasons, plus one that ran."""
+    root = tmp_path / "decided"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "work.yaml").write_text(textwrap.dedent(DECIDED_AGAINST))
+    res = cli.invoke(app, ["run", "work", "--root", str(root)])
+    assert res.exit_code == 1, res.output  # `boom` fails the run; the rest is decided
+    (run_id,) = only_store(home).list_run_ids()
+    return run_id, root
+
+
+@pytest.mark.parametrize("step", NOT_EXECUTED)
+def test_commands_drops_a_shell_step_the_run_never_started(
+    step: str, cli: CliRunner, decided_against: tuple[str, Path]
+) -> None:
+    """`--commands` is documented as "only what was executed".
+
+    A `shell:` step the scheduler decided against ran no command — no body, no subprocess — so
+    its row has no business in that view. It used to be kept because the filter asked only
+    whether the step's KIND was `shell`, never whether the run had started it.
+    """
+    run_id, root = decided_against
+    rows = _commands(cli, run_id, root)
+    assert not [r for r in rows if r["step"] == step], rows
+    # ... while the ledger proper still records it: the skip is a fact about the run
+    full = cli.invoke(app, ["audit", run_id, "--json", "--root", str(root)])
+    assert any(r["step"] == step for r in json.loads(full.stdout)["rows"]), full.stdout
+
+
+def test_commands_keeps_every_row_of_a_shell_step_that_did_start(
+    cli: CliRunner, decided_against: tuple[str, Path]
+) -> None:
+    """The other half: a step that started keeps its start AND its outcome, success or failure."""
+    run_id, root = decided_against
+    rows = _commands(cli, run_id, root)
+    for step, outcome in (("ran", "succeeded"), ("boom", "failed")):
+        details = [r["detail"] for r in rows if r["step"] == step]
+        assert any(d.startswith("started") for d in details), (step, rows)
+        assert outcome in details, (step, rows)
+
+
+def test_every_step_in_the_commands_view_has_a_start_row(
+    cli: CliRunner, decided_against: tuple[str, Path]
+) -> None:
+    """The rule itself, asserted as a rule rather than as a list of skip reasons.
+
+    Whatever the engine learns to skip a step for next, this view may only ever show steps it
+    also shows starting. A filter written as an enumeration of statuses passes the cases above
+    and fails here the moment a new one is added.
+    """
+    from rayspec.store.file import is_step_start_row
+
+    run_id, root = decided_against
+    rows = _commands(cli, run_id, root)
+    started = {r["step"] for r in rows if is_step_start_row(r)}
+    shown = {r["step"] for r in rows if r["kind"] == "step"}
+    assert shown and shown == started, rows
+    assert not (shown & set(NOT_EXECUTED)), rows
+
+
+def test_the_start_row_predicate_is_exactly_the_engine_s_step_started_event(
+    cli: CliRunner, decided_against: tuple[str, Path], home: Path
+) -> None:
+    """`is_step_start_row` reads a stored row; the engine writes an event. They must be the
+    same set, or the filter above is asking the wrong question."""
+    from rayspec.cli.commands.audit import collect_rows
+    from rayspec.events.model import EventType
+    from rayspec.store.file import is_step_start_row
+
+    run_id, _root = decided_against
+    store = only_store(home)
+    rows = collect_rows(store, store.load(run_id))
+    from_rows = {r["step"] for r in rows if is_step_start_row(r)}
+    from_events = {
+        e.step_path for e in store.read_events(run_id) if e.type is EventType.STEP_STARTED
+    }
+    assert from_rows == from_events != set()
+
+
+def test_commands_keeps_a_replayed_shell_step(
+    cli: CliRunner, resumed: tuple[str, Path, FileRunStore]
+) -> None:
+    """A resume replays `build` instead of running it again — and the attempt that DID run it is
+    in the same ledger, so both of its rows stay in the executed view."""
+    run_id, root, _store = resumed
+    rows = _commands(cli, run_id, root)
+    details = [r["detail"] for r in rows if r["step"] == "build"]
+    assert any(d.startswith("started") for d in details), rows
+    assert any("not re-executed" in d for d in details), rows

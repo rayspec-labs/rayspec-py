@@ -196,7 +196,7 @@ rayspec show    20260823-0031                  # which step, which status, which
 rayspec explain 20260823-0031 'build[1]/implement'   # WHY that step ran/skipped/failed
 rayspec logs    20260823-0031 --step 'build[1]/implement'   # the transcript: tools, results, answer
 rayspec eval    20260823-0031 'steps.facts.output' --step 'build[2]/review'   # what a template saw
-rayspec audit   20260823-0031 --commands       # every command and shell/python step, one per row
+rayspec audit   20260823-0031 --commands       # every command + every shell/python step it STARTED
 rayspec runs diff <good> <bad> --outputs       # what changed between two runs of one workflow
 rayspec logs    20260823-0031 --follow         # tail a live run (Ctrl-C = 130)
 ```

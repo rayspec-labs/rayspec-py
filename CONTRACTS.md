@@ -419,9 +419,10 @@ Semantics fixed here (tests in `tests/templating/`):
   `${RAYSPEC_V<n>}` reference so bash's quoting rules and the value's trailing bytes are the same
   either side of the threshold, and the slot is a shell variable, **not** exported (exporting it
   would re-hit the environment size limit spilling avoids). Python: JSON,
-  `json.loads(Path(...).read_text())`. `{% macro %}`, `{% call %}`, `{% filter %}` blocks and
-  `{% set x %}…{% endset %}` are rejected at compile time for shell/python (they would
-  re-substitute already substituted text); use `{% set x = expr %}` and inline filters.
+  `json.loads(Path(...).read_text())`. Shell/python bodies accept only the statements
+  `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}`; every other statement is
+  rejected at compile time (an allow-list, so a construct that captures rendered text and
+  re-substitutes it cannot arrive unlisted); use `{% set x = expr %}` and inline filters.
 - `render_value`: single `{{ expr }}` keeps type **including `None`**; the engine must reject
   `None` when str-coercing `env:` values. Text *fields* (prompt, instructions, approve message,
   stop.reason, cwd) go through `render_str`, which rejects `None`/undefined/callables.

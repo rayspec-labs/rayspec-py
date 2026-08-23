@@ -331,8 +331,10 @@ steps (valid on: shell)`.
   `uv run --no-project --with <dep> python -` when `deps:` is set.
 - Code bodies (shell/python) use `{{# ... #}}` as Jinja comment delimiters (bash `${#VAR}` is
   safe); literal `{{` (Go templates, `docker --format '{{.ID}}'`, `printf '{{'`) needs
-  `{% raw %}...{% endraw %}`; `{% macro %}`/`{% call %}`/`{% filter %}`/`{% set x %}…{% endset %}`
-  blocks are compile errors there (use `{% set x = expr %}` and inline filters).
+  `{% raw %}...{% endraw %}`; a code body supports only
+  `{% for %}`/`{% if %}`/`{% set x = expr %}`/`{% with %}`, so `{% macro %}`/`{% call %}`/
+  `{% filter %}`/`{% set x %}…{% endset %}`/`{% block %}` are compile errors there (use
+  `{% set x = expr %}` and inline filters).
 - Strict undefined: a missing attribute, `null`, a failed producer, `.field` on text output
   ("no output_schema — try `| fromjson`") all fail the step with a hint. On a **skipped**
   producer *both* `.output` and `.ok` fail loudly — a skipped step never answered, so `.ok` is
@@ -429,8 +431,9 @@ Each of these exists because the alternative fails in a specific way.
 
 ## Pitfalls and conventions
 
-- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are unique across the whole file, and may not be
-  a context root (`inputs steps run project env iteration each loop self true false none null`).
+- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are at most 128 characters (every identifier
+  becomes a path segment), are unique across the whole file, and may not be a context root
+  (`inputs steps run project env iteration each loop self true false none null`).
 - Unknown keys are errors everywhere, with a suggestion (`unknown field 'allow_failures' for
   shell step; did you mean 'allow_failure'?`). A step with no kind key lists all nine.
 - YAML: a `:` inside a plain scalar breaks the parse — `shell: echo '{"a": 1}'` fails with

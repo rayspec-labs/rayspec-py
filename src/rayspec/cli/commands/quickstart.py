@@ -1346,6 +1346,23 @@ def do_scaffold(
     return target
 
 
+def _has_cases(project_root: Path) -> bool:
+    """Whether ``rayspec test`` has anything to run in ``project_root``.
+
+    Asked of :func:`~rayspec.testing.spec.discover_suites` — the same discovery the command
+    itself performs — rather than of a list of directories, so a project whose cases live in a
+    root ``checks.yaml`` with no ``.rayspec/tests/`` at all answers yes, and a place a case may
+    live in future is covered without this being edited. A malformed case file counts as a case:
+    `rayspec test` will run and report the problem, which is a next step that works.
+    """
+    from rayspec.testing.spec import CaseFileError, discover_suites
+
+    try:
+        return any(suite.checks for suite in discover_suites(project_root))
+    except (CaseFileError, OSError):
+        return True
+
+
 def do_dry_run(
     outcome: Outcome,
     *,
@@ -1371,6 +1388,9 @@ def do_dry_run(
             workflow=name,
             # the same token the executed argv gets, so the line below the run can be copied
             stubs=stubs_argument(stubs, project_root) if has_stubs and stubs else False,
+            # quickstart, unlike `rayspec init`, can stand in a project it did not scaffold, so
+            # the case it would name may not exist. `rayspec test` exits 2 there.
+            tests=_has_cases(project_root),
         )
         if not state.git.binary:
             # `rayspec run` refuses without git, dry runs included — the state block said so and

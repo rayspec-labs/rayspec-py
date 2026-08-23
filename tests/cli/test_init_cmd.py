@@ -90,6 +90,38 @@ def test_init_scaffold_dry_runs_with_its_stubs(kind: str, target: Path, home: Pa
     assert "reviewer" in res.output
 
 
+@pytest.mark.parametrize("kind", sorted(TEMPLATE_KINDS))
+def test_a_scaffolded_project_passes_rayspec_test(
+    kind: str, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rayspec init && rayspec test` is green on a fresh machine.
+
+    `test` is the newcomer's obvious second command and it is a scripted dry run: no git, no
+    login, no network. So this scaffolds into a bare directory that is NOT a git checkout — a
+    scaffold whose cases needed a repository would pass in the `target` fixture and fail for the
+    person who just ran `mkdir demo`.
+
+    Parametrised over every kind, so a kind added later must ship a case of its own to pass.
+    """
+    root = tmp_path / f"fresh-{kind}"
+    root.mkdir()
+    assert CliRunner().invoke(app, ["init", "--kind", kind, "--root", str(root)]).exit_code == 0
+    monkeypatch.chdir(root)
+    res = CliRunner().invoke(app, ["test"])
+    assert res.exit_code == 0, res.output
+    assert "passed" in res.output and "no test cases found" not in res.output
+    assert " 0 passed" not in res.output, res.output
+
+
+@pytest.mark.parametrize("kind", sorted(TEMPLATE_KINDS))
+def test_init_prints_test_as_a_next_step(kind: str, target: Path, home: Path) -> None:
+    """The scaffolded case is worth nothing if `init` never mentions the command that runs it."""
+    res = CliRunner().invoke(app, ["init", "--kind", kind, "--root", str(target)])
+    assert res.exit_code == 0, res.output
+    steps = res.output.split("next steps:", 1)[1]
+    assert "rayspec test" in steps, res.output
+
+
 def test_content_kind_is_not_about_code(target: Path, home: Path) -> None:
     assert (
         CliRunner().invoke(app, ["init", "--kind", "content", "--root", str(target)]).exit_code == 0

@@ -27,14 +27,61 @@ def test_fmt_duration_and_tokens_and_cost() -> None:
     assert common.fmt_cost(0.21, "table", Usage()) == "~$0.21"
 
 
-def test_fmt_when_relative_and_absolute() -> None:
+def test_fmt_when_is_an_age_for_a_watcher_and_a_moment_for_a_stream() -> None:
+    """One question decides the cell — who is reading — and there is no second threshold."""
     now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
-    assert common.fmt_when(None, now=now) == "-"
-    assert common.fmt_when(now - timedelta(seconds=30), now=now) == "30s ago"
-    assert common.fmt_when(now - timedelta(minutes=5), now=now) == "5m ago"
-    assert common.fmt_when(now - timedelta(hours=3), now=now) == "3h ago"
-    assert common.fmt_when(now - timedelta(days=2), now=now) == "2d ago"
-    assert common.fmt_when(now - timedelta(days=40), now=now) == "2026-07-11 12:00"
+    rel = {"relative": True, "now": now}
+    assert common.fmt_when(None, **rel) == "-"
+    assert common.fmt_when(now - timedelta(seconds=30), **rel) == "30s ago"
+    assert common.fmt_when(now - timedelta(minutes=5), **rel) == "5m ago"
+    assert common.fmt_when(now - timedelta(hours=3), **rel) == "3h ago"
+    assert common.fmt_when(now - timedelta(days=2), **rel) == "2d ago"
+    # an age at ANY distance: no fallback to a date, in either direction
+    assert common.fmt_when(now - timedelta(days=40), **rel) == "40d ago"
+    assert common.fmt_when(now + timedelta(hours=3), **rel) == "in 3h"
+    assert common.fmt_when(now + timedelta(days=40), **rel) == "in 40d"
+
+
+def test_fmt_when_without_a_watcher_is_never_relative() -> None:
+    """`relative=False` (a redirected stream) renders the moment, at every distance."""
+    now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+    for delta in (timedelta(seconds=30), timedelta(hours=3), timedelta(days=40)):
+        assert common.fmt_when(now - delta, relative=False, now=now) == common.fmt_stamp(
+            now - delta
+        )
+        assert common.fmt_when(now + delta, relative=False, now=now) == common.fmt_stamp(
+            now + delta
+        )
+    assert common.fmt_when(None, relative=False, now=now) == "-"
+
+
+def test_fmt_age_reads_both_directions_and_never_degrades() -> None:
+    """An age is always an age — `rayspec show` prints it beside the absolute stamp, so an age
+    that fell back to a (shorter) copy of that stamp would fill the slot and say nothing."""
+    now = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+    assert common.fmt_age(None, now=now) == "-"
+    assert common.fmt_age(now, now=now) == "0s ago"
+    assert common.fmt_age(now - timedelta(seconds=30), now=now) == "30s ago"
+    assert common.fmt_age(now - timedelta(minutes=5), now=now) == "5m ago"
+    assert common.fmt_age(now - timedelta(hours=3), now=now) == "3h ago"
+    assert common.fmt_age(now - timedelta(days=2), now=now) == "2d ago"
+    assert common.fmt_age(now - timedelta(days=431), now=now) == "431d ago"
+    # clock skew across two machines sharing a RAYSPEC_HOME, or a restored backup
+    assert common.fmt_age(now + timedelta(seconds=30), now=now) == "in 30s"
+    assert common.fmt_age(now + timedelta(minutes=5), now=now) == "in 5m"
+    assert common.fmt_age(now + timedelta(hours=3), now=now) == "in 3h"
+    assert common.fmt_age(now + timedelta(days=9), now=now) == "in 9d"
+
+
+def test_fmt_stamp_and_clock_name_their_zone() -> None:
+    moment = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+    assert common.fmt_stamp(moment) == "2026-08-20 10:00:00 UTC"
+    assert common.fmt_clock(moment) == "10:00:00 UTC"
+    assert common.fmt_stamp(None) == "-" and common.fmt_clock(None) == "-"
+    # a naive stamp is what an old record holds; it is UTC, and both say so
+    naive = datetime(2026, 8, 20, 10, 0, 0)
+    assert common.fmt_stamp(naive) == "2026-08-20 10:00:00 UTC"
+    assert common.fmt_clock(naive) == "10:00:00 UTC"
 
 
 def test_run_duration_and_progress(seeded: Seeded) -> None:

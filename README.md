@@ -88,7 +88,7 @@ That is the whole first five minutes. `rayspec quickstart` prints what the machi
 `git`, both bundled agent CLIs, whether you are logged in), offers the two things it cannot
 decide for you — a provider login, and `git init` when you are not in a repository — scaffolds
 `.rayspec/`, and then runs a workflow end to end with **scripted agents: no credentials, no
-network, no cost**. It finishes by naming the four commands that matter and saying which one
+network, no cost**. It finishes by naming the commands that matter next and saying which one
 spends money.
 
 Nothing above needs an account. The whole authoring loop — write, validate, plan, dry-run — is
@@ -117,13 +117,14 @@ rayspec version                     # prints `rayspec <version>`
 rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundled CLIs, auth hints; --probe runs one real turn per provider
 
 # the project quickstart scaffolded (rayspec init does this on its own)
-#   .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml}
+#   .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml, tests/example/approves.yaml}
 #   + .claude/skills/{rayspec-workflows,rayspec-cli}/ (the coding-agent skills; --no-skill to skip)
 #   --kind content for a non-code project; rayspec init --force to overwrite
 
 # check it
 rayspec workflows                   # discovered workflows
 rayspec validate                    # schema, graph, references, provider capabilities
+rayspec test                        # the scaffolded case — a scripted dry run, no login needed
 rayspec plan example                # inputs, resolved agents/models, step order, capability report
 
 # dry-run it — providers become a scripted stub, shell steps are skipped, no login needed

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -17,13 +17,43 @@ YAML_SUFFIXES: tuple[str, ...] = (".yaml", ".yml")
 
 @dataclass(frozen=True, slots=True)
 class WorkflowRef:
-    """A discovered workflow file. ``name`` is the file stem (what the CLI accepts)."""
+    """A discovered workflow file. ``name`` is the file stem (what the CLI accepts).
+
+    Discovery is a **directory listing**: a name, a path and a scope. :attr:`description` and
+    :attr:`error` need the file's *contents*, so they are read on first access and remembered —
+    a workflow nobody asks about is never opened.
+
+    Why lazily and not up front: every command that resolves a workflow by name discovers the
+    whole project to do it (:func:`rayspec.cli.commands._loader_common.workflow_label`), so
+    ``rayspec validate`` discovers it once per name it was given. With the description parsed
+    eagerly that made validating a project of N workflows cost N² full YAML parses — 32 s at
+    N=200, and rising with the square. Only ``rayspec workflows`` and ``rayspec doctor`` ever
+    read these two fields.
+    """
 
     name: str
     path: Path
     scope: Scope
-    description: str = ""
-    error: str | None = None
+    #: Memo for :attr:`description`/:attr:`error` — a ref reads its file at most once. Excluded
+    #: from equality and repr: it is a cache, not part of what a discovered workflow IS.
+    _described: list[tuple[str, str | None]] = field(
+        default_factory=list, compare=False, repr=False
+    )
+
+    @property
+    def description(self) -> str:
+        """The workflow's ``description:``; ``""`` when it has none or the file cannot be read."""
+        return self._describe()[0]
+
+    @property
+    def error(self) -> str | None:
+        """Why this file could not be read as a workflow mapping, or ``None`` when it can."""
+        return self._describe()[1]
+
+    def _describe(self) -> tuple[str, str | None]:
+        if not self._described:
+            self._described.append(_describe(self.path))
+        return self._described[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,12 +128,8 @@ def discover_workflows(project_root: Path, *, home: Path | None = None) -> list[
     found: dict[str, WorkflowRef] = {}
     for scope, directory in _scoped_dirs(project_root, home, "workflows"):
         for path in _yaml_files(directory):
-            if path.stem in found:
-                continue
-            description, error = _describe(path)
-            found[path.stem] = WorkflowRef(
-                name=path.stem, path=path, scope=scope, description=description, error=error
-            )
+            if path.stem not in found:
+                found[path.stem] = WorkflowRef(name=path.stem, path=path, scope=scope)
     return [found[name] for name in sorted(found)]
 
 

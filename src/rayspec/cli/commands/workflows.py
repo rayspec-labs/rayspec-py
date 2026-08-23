@@ -17,7 +17,6 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
     short_path,
 )
-from rayspec.loader import discover_workflows
 
 #: Printed by ``workflows`` and ``validate`` when a project has no workflow yet.
 EMPTY_PROJECT_HINT = (
@@ -34,7 +33,7 @@ def register(app: typer.Typer) -> None:
         """List workflows from .rayspec/workflows/ and ~/.rayspec/workflows/."""
         json_ = resolve_output(output, json_)
         ctx = make_context(root)
-        refs = discover_workflows(ctx.project_root, home=ctx.home)
+        refs = ctx.workflow_refs()
         if json_:
             print_json(
                 [

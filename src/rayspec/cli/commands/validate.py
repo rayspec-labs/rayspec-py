@@ -30,7 +30,7 @@ from rayspec.cli.commands.lock import LockedOption, lockfile_in_force
 from rayspec.cli.commands.workflows import EMPTY_PROJECT_HINT
 from rayspec.errors import RayspecError
 from rayspec.limits import check_locked
-from rayspec.loader import discover_workflows, load_workflow, validate_workflow
+from rayspec.loader import load_workflow, validate_workflow
 from rayspec.loader.inputs import secret_input_names
 
 
@@ -40,7 +40,12 @@ def _validate_one(
     """Validate one workflow; returns ``(errors, warnings, json row)``."""
     caps = common.capability_source()
     try:
-        rw = load_workflow(target, project_root=ctx.project_root, home=ctx.home, config=ctx.config)
+        rw = load_workflow(
+            common.workflow_target(target, ctx),
+            project_root=ctx.project_root,
+            home=ctx.home,
+            config=ctx.config,
+        )
     except RayspecError as exc:
         errors = error_entries(exc)
         printer(f"[bold]{escape(target)}[/bold]: [red]FAILED[/red] to load")
@@ -126,7 +131,7 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         targets = list(names or [])
         if not targets:
-            targets = [r.name for r in discover_workflows(ctx.project_root, home=ctx.home)]
+            targets = [r.name for r in ctx.workflow_refs()]
             if not targets:
                 if json_:
                     console().print("[]", markup=False, highlight=False)
