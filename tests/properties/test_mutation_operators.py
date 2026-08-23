@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,10 +32,12 @@ from .mutation.mutate import (
     REPO,
     TARGETS,
     Result,
+    exit_code,
     main,
     mutate,
     null_mutant,
     report,
+    report_destination,
     sites,
 )
 
@@ -229,3 +232,60 @@ def test_the_score_line_separates_the_three_kinds_of_kill() -> None:
     assert "1 killed elsewhere" in text, text
     assert "1 timed out" in text, text
     assert "1 survived" in text, text
+
+
+# -- the harness has to be able to fail -------------------------------------------------------
+
+
+@pytest.mark.parametrize("where", ["report.json", "out/report.json", "./report.json"])
+def test_a_report_destination_inside_the_working_tree_is_refused(where: str) -> None:
+    """The module's bolded claim is that the working tree is never modified — so make it true.
+
+    ``--json report.json`` was the documented example, two lines above that claim, and every
+    person who copied it dropped an untracked file in the repository root.
+    """
+    with pytest.raises(ValueError, match="inside the working tree"):
+        report_destination(Path(where))
+
+
+def test_a_report_destination_outside_the_working_tree_is_accepted(tmp_path: Path) -> None:
+    """The other direction, so the refusal above is a rule and not a blanket no."""
+    assert report_destination(tmp_path / "mutation.json") == (tmp_path / "mutation.json").resolve()
+
+
+def test_the_cli_refuses_a_report_inside_the_tree_before_it_runs_anything() -> None:
+    """Refused while parsing arguments: an hour of mutants must not precede the complaint."""
+    with pytest.raises(SystemExit):
+        main(["--json", "report.json", "--target", "approval_classes", "--no-confirm"])
+    assert not (REPO / "report.json").exists()
+
+
+def test_a_run_that_measured_nothing_exits_non_zero() -> None:
+    """A report over no mutants used to print a tidy score line and exit 0.
+
+    Which is a mutation harness that cannot fail — the exact defect it exists to find in other
+    people's tests. The verdict is taken from the OUTCOME (did this target produce any result?)
+    rather than from a list of the reasons it might not have, so a new way to end up measuring
+    nothing is covered the day it appears.
+    """
+    target = TARGETS["approval_classes"]
+    site = sites(SAMPLE)[0]
+    assert exit_code([target], [Result(target=target.name, site=site, status="killed")]) == 0
+    assert exit_code([target], []) == 1
+    assert (
+        exit_code(
+            [target, TARGETS["redact"]], [Result(target="redact", site=site, status="killed")]
+        )
+        == 1
+    )
+
+
+def test_a_run_with_no_mutants_to_evaluate_exits_non_zero_and_leaves_nothing_behind() -> None:
+    """End to end, because the exit code has to reach the process and not just the function.
+
+    ``--limit 0`` is the cheapest way to reach "no verdicts"; a skipped null mutant is the way
+    that happens in real life, and both take the same route out.
+    """
+    before = set(REPO.iterdir())
+    assert main(["--target", "approval_classes", "--limit", "0", "--no-confirm"]) == 1
+    assert set(REPO.iterdir()) == before, "the harness left something in the working tree"
