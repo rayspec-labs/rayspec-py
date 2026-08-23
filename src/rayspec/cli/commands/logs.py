@@ -179,9 +179,9 @@ async def follow(
 # --------------------------------------------------------------------------------------------------
 
 
-def _stamp(ts: datetime) -> str:
-    moment = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).strftime("%H:%M:%S")
+#: ``10:00:00 UTC`` — one shared rendering with ``rayspec audit``'s time column, and the only
+#: one either command uses. A log line is grepped and pasted on its own, so it carries its zone.
+_stamp = common.fmt_clock
 
 
 def format_event(event: RunEvent, formatter: Any, *, raw: bool = False) -> Text:

@@ -196,7 +196,9 @@ def audit_payload(store: FileRunStore, run: RunRecord, *, commands: bool) -> dic
 
 
 def _stamp(row: dict[str, Any]) -> str:
-    return _row_time(row).astimezone(UTC).strftime("%H:%M:%S")
+    """``10:00:00 UTC`` — the same rendering ``rayspec logs`` prints, zone included: an audit row
+    is evidence, and evidence that does not say whose clock it is worth less."""
+    return common.fmt_clock(_row_time(row))
 
 
 def rows_table(rows: list[dict[str, Any]]) -> Table:
