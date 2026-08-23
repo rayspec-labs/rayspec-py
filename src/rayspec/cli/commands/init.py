@@ -506,18 +506,53 @@ def non_git_warning(target: Path, kind: str) -> str | None:
     )
 
 
-def next_steps(kind: str, *, skill: bool = True) -> list[str]:
-    """The commands to try after ``rayspec init`` (printed, and reused by the docs)."""
-    stubs = f"{PROJECT_DIR}/stubs/example.yaml"
-    real = "rayspec run example" if kind == "code" else 'rayspec run example -i topic="..."'
+def next_steps(
+    kind: str,
+    *,
+    skill: bool = True,
+    doctor: bool = True,
+    workflow: str = "example",
+    stubs: bool | str = True,
+    tests: bool = True,
+) -> list[str]:
+    """The commands to try after ``rayspec init`` (printed, and reused by the docs).
+
+    The keywords are additive and all default to what ``rayspec init`` itself prints, so this
+    stays one wording rather than two. ``doctor=False`` drops the environment check for a caller
+    that has just performed it (`rayspec quickstart`); ``workflow=`` names the workflow the
+    commands operate on, for a project that has no ``example``; ``stubs=False`` drops the
+    ``--stubs <file>`` part when that project ships no stub script for it (a dry run without one
+    still works — the stub provider answers with its defaults).
+
+    ``tests=False`` drops the ``rayspec test`` line for a caller standing in a project that has no
+    cases: that command exits 2 there, and a first-run list whose items exit 2 is the thing this
+    function exists not to print.
+
+    ``stubs`` may also be the path to write after ``--stubs``. ``--stubs`` resolves against the
+    **cwd**, so a caller standing somewhere other than the project root (`rayspec quickstart` in
+    a subdirectory of an existing project) has to pass the path that works from where it is —
+    otherwise the printed line is one nobody can copy.
+    """
+    stub_file = stubs if isinstance(stubs, str) else f"{PROJECT_DIR}/stubs/{workflow}.yaml"
+    real = f"rayspec run {workflow}" if kind == "code" else f'rayspec run {workflow} -i topic="..."'
+    dry = f"rayspec run {workflow} --dry-run"
+    if stubs:
+        dry += f" --stubs {stub_file}"
     lines = [
-        "rayspec doctor                          # SDKs, bundled CLIs, auth hints, git",
         "rayspec validate                        # schema, graph, references, capabilities",
-        "rayspec test                            # the scaffolded case, as a scripted dry run",
-        "rayspec plan example                    # inputs, agents/models, step order",
-        f"rayspec run example --dry-run --stubs {stubs}   # scripted agents, no login needed",
+        *(
+            ["rayspec test                            # the scaffolded case, as a scripted dry run"]
+            if tests
+            else []
+        ),
+        f"{f'rayspec plan {workflow}':<39} # inputs, agents/models, step order",
+        f"{dry}   # scripted agents, no login needed",
         f"{real:<39} # a real run",
     ]
+    if doctor:
+        lines.insert(
+            0, "rayspec doctor                          # SDKs, bundled CLIs, auth hints, git"
+        )
     if skill:
         lines.append(
             "open a fresh Claude Code session here   # the rayspec skills in "

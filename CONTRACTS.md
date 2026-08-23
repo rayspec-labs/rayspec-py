@@ -2120,7 +2120,11 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   (raises `NotADirectoryError`/`IsADirectoryError`/`OSError`, the last also for a symlinked
   target under `--force`), `template_files(kind)`,
   `detect_kind(root) -> kind | None`, `orphan_files(old_kind, new_kind)`, `next_steps(kind, *,
-  skill=True)` (additive keyword);
+  skill=True, doctor=True, workflow="example", stubs: bool | str = True)` (additive keywords —
+  `doctor=False` for a caller that has just run the check itself, `workflow=`/`stubs=` for a
+  project whose workflow is not `example` or that ships no stub script for it, and `stubs=<path>`
+  for a caller standing somewhere other than the project root, since `--stubs` resolves against
+  the cwd — so `init` and `quickstart` teach one wording rather than two);
   `in_git_checkout(path) -> bool` (a `.git` dir *or* file at or above `path`),
   `GIT_DEPENDENT_KINDS = {"code"}`, `non_git_warning(target, kind) -> str | None` — the `code`
   scaffold outside a git checkout prints that stderr `warning:` (names `git init` and
@@ -2202,7 +2206,10 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   unknown (… no ~/.claude/.credentials.json or the macOS keychain …)") / `codex.auth`
   (`OPENAI_API_KEY` ⇒ ok; `$CODEX_HOME/auth.json` present ⇒ info; else warn with
   `codex_login_hint(cli_path)`: `run \`codex login\`` when `codex` is on PATH, else `run
-  \`<bundled path> login\``, or `OPENAI_API_KEY`), `<id>.pricing` (never required; only for providers whose capabilities say
+  \`<bundled path> login\``, or `OPENAI_API_KEY`; `claude.auth`'s warn hint is its mirror,
+  `claude_login_hint(cli_path)`: `run \`claude auth login\`` when `claude` is on PATH, else `run
+  \`<bundled path> auth login\`` — neither bundled binary is on PATH after `pip install rayspec`,
+  so a hint that names the bare command is `command not found`), `<id>.pricing` (never required; only for providers whose capabilities say
   `cost_reporting=False`: `info` = no pricing table at all (nudge `tokens only — add
   pricing.<model> for estimates`) or every model disabled with `null`, `warn` = a table exists
   but misses one of the provider's tier/alias models or is malformed, `ok` = every configured
@@ -2222,8 +2229,136 @@ outside-a-project rule is `runs.is_project_dir` (stderr notice, exit 0, no slug 
   (tests monkeypatch `sys.modules`, `shutil.which` and `doctor.version_of`). Python surface:
   `run_doctor(*, root, probe, providers) -> Report`, `environment_checks`, `claude_checks(settings)`,
   `codex_checks(settings)`, `pricing_check(provider_id, config) -> Check | None`,
-  `pricing_checks(ids, config)`, `probe_checks(ids, config)`, `find_claude_cli`, `find_codex_cli`,
+  `pricing_checks(ids, config)`, `probe_checks(ids, config)`, `find_claude_cli`,
+  `claude_cli(settings)` (`find_claude_cli` with the SDK module resolved the way `claude_checks`
+  resolves it — the one entry point for "which `claude` would rayspec use here"), `find_codex_cli`,
   `known_claude_locations`, `version_of(cmd, *, timeout_s=5)`, `parse_version`, `render_table`.
+
+### CLI `quickstart`
+`src/rayspec/cli/commands/quickstart.py`. Presentation and orchestration only: it owns no facts
+of its own. Every environment answer comes from `doctor`, every file it writes goes through
+`init` + `rayspec.skill`, git is invoked only through `workspace.git.run_git`, and the dry run is
+the **builtin** `run` command invoked with a real argv.
+
+- `rayspec quickstart [--provider claude|codex|both|none] [--yes] [--no-interactive]
+  [--kind code|content] [--no-init] [--no-run] [--no-skill] [--json | --output FORMAT]
+  [--root DIR]`. `--root` is `checked_root(root) or Path.cwd()` resolved (`init`'s rule: writes
+  where it is pointed, no walk-up; a `--root` that is not a directory is exit 2 and is never
+  created). `refuse_rayspec_home(target)` then refuses `Path.home()` and any target whose
+  `.rayspec/` would BE `rayspec_home()` (exit 2, nothing written): scaffolded there the project
+  and rayspec's own state are one directory, the skills land in the *global* `~/.claude/skills/`,
+  and every directory below `$HOME` walks up into that project. `--provider` is a `LoginTarget` StrEnum, deliberately **not** doctor's repeatable
+  `--provider ID`: doctor restricts *checks* over every registration, this chooses a *login
+  flow*, which exists only for the two bundled CLIs. `--json` implies `--no-interactive`
+  (`cancel`'s precedent).
+- **Order: collect, ask, do.** Every question is asked before any work happens, so
+  `--no-interactive` is a pure plan mode rather than a half-run — and the steps that need no
+  answer still happen, which is what makes `rayspec quickstart --no-interactive` usable in a
+  `Dockerfile`. `interactive = stdin_is_tty() and not --no-interactive and not --json`.
+- **State** (`collect_state(target) -> State`) is `run_doctor`'s body minus pricing and probes:
+  `load_env(project_root, home=home, include_project=False)` under `suppress(RayspecError)`, then
+  `doctor.environment_checks(...)` + `doctor.claude_checks(...)` + `doctor.codex_checks(...)`.
+  The project `.rayspec/.env` is **never** applied — it is a credential surface of the checkout
+  and this is a first-run command in a directory that may have just been cloned. Auth state, CLI
+  paths and CLI versions are read off those `Check` rows; nothing here calls
+  `providers.claude.find_cli()` (it ignores `providers.claude.cli_path`) or any private of the
+  codex adapter.
+- **Three git conditions, not two** (`git_state(check, target) -> GitState`): the binary (from
+  doctor's `git` row), the repository (`init.in_git_checkout` — a pure `.git` path walk that
+  needs no binary), and at least one commit (`workspace.git.ref_exists(target, "HEAD")` inside
+  `try/except GitError`; `None` when there is no binary or no repository to ask). Without the
+  binary there are **no runs at all** — `run`'s `prepare_workspace` asks git which directory it
+  is in before anything else, `--dry-run` included — so quickstart skips the dry run, keeps the
+  scaffold and exits 1. `git_install_command(*, system=None, os_release=None)` renders the
+  platform's install line (Darwin · debian/ubuntu · fedora/rhel · alpine · Windows, else "install
+  git with your package manager"); an unreadable `OS_RELEASE_PATH` is an unknown distribution,
+  never an exception.
+- **Login.** `login_command(provider_id, cli_path) -> [cli_path, "auth", "login"]` for claude
+  (`claude login` does not exist) and `[cli_path, "login"]` for codex, always by absolute path
+  (the bundled codex is not on `PATH`). `run_login(argv) -> (ok, why not)` is
+  `subprocess.run(argv, check=False)`: no shell, no captured output (the child owns the terminal
+  for the browser hand-off), inherited environment, no timeout. The argv is printed *before* the
+  spawn. **A login never runs without a terminal, whatever the flags** — with `--no-interactive
+  --provider claude` the command is printed and the step is skipped. `KeyboardInterrupt` during
+  a login is `skipped — login cancelled` and the dry run still happens; a failed login is never
+  exit 1 (the machine is fine, the account is not) and its fallback is
+  `doctor.codex_login_hint(cli_path)` verbatim for codex and "open `<path>` and use /login" for
+  claude. After a login the `<id>.auth` row is re-read; quickstart says "credentials found",
+  never "login verified".
+- **Scaffold.** `existing_project(target, project_root, *, home)` refuses to nest: a `.rayspec/`
+  at the target *or* at the enclosing project root means nothing is written — but never
+  `rayspec_home()`, which is not a project. `~/.rayspec` exists on every machine that has
+  performed a run, and `find_project_root` walks up looking for a `.rayspec/`, so
+  `project_root_for(target, home)` drops that one answer too; otherwise every non-repository
+  directory under `$HOME` resolved to `$HOME` and quickstart wrote nothing there. Otherwise
+  `init.scaffold(target, kind=..., force=False)` (never `--force`) plus, unless `--no-skill`,
+  `install_skill(skill, project_skill_dir(skill, target), force=False)` for every
+  `rayspec.skill.SKILLS` entry. The kind is `--kind`, else `code` inside a git checkout and
+  `content` outside one — the choice `init.non_git_warning()` already asks the user to make.
+- **Dry run.** `dry_run_argv(workflow, *, project_root, stubs, json_)` builds the argv
+  (`<wf> --dry-run [--stubs F] [--root R] --no-interactive [--json --quiet]`); `stubs_argument(
+  stubs, project_root)` is relative when the cwd already is the project root and absolute
+  otherwise, because `--stubs` resolves against the cwd. The **same** function feeds
+  `init.next_steps(..., stubs=<path>)`, so the closing `what to do next:` line is the line that
+  was just run rather than the project-relative default that does not resolve from a
+  subdirectory. `printed_command(argv)` is what is printed **and** what runs.
+  `invoke_run(argv, *, json_)` registers the builtin `run` on a throwaway `typer.Typer()`, then
+  `make_context("run", argv, parent=None)` + `invoke`. Catching `typer.Exit`
+  (`typer._click.exceptions.Exit`, **not** `click.exceptions.Exit` — typer ≥ 0.20 vendors click)
+  is load-bearing: the root `ErrorBoundaryGroup` would otherwise turn a `RayspecError` from
+  inside `run` into exit 2 and quickstart would never print its summary. `parent=None` also
+  means `invoked_command()` does not answer `"run"`, so the checkout's `.rayspec/.env` is not
+  applied. Under `--json` stdout is captured (`redirect_stdout`) and the summary object — the
+  documented last stdout line, validated against `run.SUMMARY_KEYS` — is parsed back; a parse
+  failure degrades to `run_id: null`, never an exception.
+- **Which workflow**: `example` when the project has one, else the first `discover_workflows`
+  entry with no load error. The run is skipped with a named reason (and the `-i NAME=...` command
+  printed) when git is missing, when there is no workflow, when `load_workflow` raises, or when
+  any input is `required: true`.
+- **Isolation** (`isolation_of(declared, git, where, workflow) -> Isolation`) reads the workflow
+  document as well as the machine: both scaffolds declare `isolation: none`, so "you will get a
+  worktree" would be false even on a perfect machine. With no workflow there is no `isolation:`
+  line to read and the answer says so, rather than letting `declared or "worktree"` describe a
+  document that does not exist as one that asked for a worktree per run. `next_run ∈ {worktree, none, blocked}`;
+  `worktree_available` is binary + repository + at least one commit, and the sentence says which
+  of the three is missing.
+- **Exit codes**: `0` finished and nothing is broken (declined a login, no terminal, an existing
+  project respected *with a green dry run*); `1` it did not finish — any step but `login` is
+  `failed` (a scaffold that could not be written), the dry run was performed and did not succeed,
+  or `DryRun.blocking`: nothing ran for a reason nobody chose (no `git`, no workflow, a workflow
+  that does not load). `--no-run`, `--no-init` and a `required: true` input are decisions, not
+  breakage, and stay `0`; a failed login is never `1` (the machine is fine, the account is not).
+  `2` usage, including `$HOME` as the target; `130` Ctrl-C at one of quickstart's own questions
+  (one line, no traceback — end of input is "not now", not 130). `DryRun.blocking` is
+  deliberately not in the `--json` document: `ok`, `exit_code` and `run.skipped_reason` already
+  carry it and the documented key set does not move.
+- **Presentation**: report on stdout through `console()`, questions and warnings on stderr
+  (`err_console()`, `read_answer(prompt)` — the prompt echoed to stderr, the answer read with
+  `input()`), so stdout stays a clean report outside `--json` too. `read_answer` is deliberately
+  not `typer.prompt`/`typer.confirm`: click catches `KeyboardInterrupt` and `EOFError` in one
+  `except` and raises a single `Abort`, so a question asked through it cannot tell Ctrl-C (130,
+  nothing written) from end of input ("not now"). `ask_login` and `ask_git_init` both show their
+  default and re-ask on an answer they do not understand. Glyphs are chosen once from
+  `stdout_can_encode("✓×·")` (UTF `✓ ! × ·`, ASCII `+ ! x -`, all width 1). Under `--json`
+  exactly one document reaches stdout (`print_json`), keys exactly
+  `quickstart.QUICKSTART_KEYS`, asserted where the payload is built (`run.SUMMARY_KEYS`'
+  pattern): `{ok, exit_code, rayspec, root, project_root, interactive, environment{python, git{
+  binary, version, repository, commits, install_command}, providers[{id, cli_path, cli_source,
+  cli_version, cli_ok, credentials, credentials_source, credentials_verified, login_command}]},
+  steps[{id ∈ login|git_init|scaffold|dry_run, action ∈ done|skipped|failed, detail}],
+  project{path, existed, kind, files_written, skills_written}, run{attempted, skipped_reason,
+  workflow, command, run_id, status, exit_code, ok, reason}, isolation{next_run,
+  worktree_available, reason}, next_steps[{command, note, cost ∈ free|provider}],
+  doctor{ok, exit_code, failed_required}}`. `credentials_verified` is **always** `false` and
+  exists precisely so no consumer can read `credentials: true` as "the login works"; `cost` on
+  every next step is how "a real run spends money" survives into the machine-readable form.
+- Python surface: `QUICKSTART_KEYS`, `STEP_IDS`, `LoginTarget`, `Glyphs`, `Step`, `GitState`,
+  `ProviderState`, `State`, `DryRun`, `Project`, `Isolation`, `Outcome`, `RunOutcome`,
+  `git_install_command`, `git_state`, `provider_state`, `auth_row_after_login`, `collect_state`,
+  `login_command`, `run_login`, `login_fallback`, `dry_run_argv`, `printed_command`,
+  `invoke_run`, `choose_workflow`, `required_inputs`, `isolation_of`, `existing_project`,
+  `is_rayspec_home`, `project_root_for`, `refuse_rayspec_home`, `stubs_argument`, `read_answer`,
+  `ask_login`, `ask_git_init`, `next_step_rows`, `payload_of`, `register`.
 
 ### CLI `new`
 `src/rayspec/cli/commands/new.py`; templates are package data under `cli/templates/new/`

@@ -5,6 +5,91 @@ All notable changes to rayspec are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-23
+
+`pip install rayspec` already gave you the whole engine *and* both provider CLIs. What it did not
+give you was any idea what to do next. This release is one command that answers that.
+
+### Added
+- **`rayspec quickstart`** — the first command to type after installing rayspec. It prints what
+  the machine has (Python, `git`, both bundled CLIs with their versions, both auth rows — every
+  row a `rayspec doctor` row, rendered, never a second answer to the same question), offers the
+  two things it cannot decide for you (a provider login, and `git init` when the directory is not
+  a repository), scaffolds `.rayspec/` when there is no project yet, and then **proves the
+  install by performing a dry run**: scripted agents, no credentials, no network, no cost. It
+  closes by naming the commands that matter next and saying which one spends money.
+
+  It never dead-ends, and it never surprises you: nothing is overwritten (that is
+  `rayspec init --force`), no question is asked without a terminal, and **no login is ever
+  spawned without one** — a browser hand-off inside a container is exactly what would hang a
+  build. The login it does spawn is the provider's own CLI by absolute path (`<claude> auth
+  login`, `<codex> login`), printed before it starts, because the bundled `codex` is not on
+  `PATH` and typing `codex login` on a fresh machine says "command not found". A failed login is
+  reported and the dry run still happens.
+
+  Exit `0` when nothing is broken — including "you declined the login", "no terminal so nothing
+  was asked" and "an existing project was respected"; exit `1` when this environment cannot run
+  rayspec, so `rayspec quickstart --no-interactive` works as a CI preflight; `2` for usage and
+  `130` for Ctrl-C at one of its own questions. `--json` prints one document with the whole
+  report, including a `credentials_verified` that is always `false` — credentials being *present*
+  is not a login that *works*, and `rayspec doctor --probe` remains the only thing that knows.
+- `rayspec init` scaffolds a working test case (`.rayspec/tests/example/approves.yaml`) for both
+  kinds, so `rayspec init && rayspec test` passes on a fresh machine — no git checkout, no network,
+  no login — and `rayspec test` appears among the next steps a new project prints.
+
+### Changed
+- `rayspec doctor`'s `git` hint said worktree isolation, project slugs and `--repo` need git.
+  Two of those degrade gracefully; the truth is stronger and is now what it says: **every**
+  `rayspec run` — dry runs included — refuses without git, because rayspec asks git which
+  directory it is in before it starts anything.
+- The README leads with `pip install rayspec` and `rayspec quickstart`, and no longer claims the
+  PyPI name holds a placeholder — 1.0.0 is published there.
+- `rayspec init`'s `next_steps()` gained the additive `doctor=`, `workflow=` and `stubs=`
+  keywords so `init` and `quickstart` teach one wording rather than two; `rayspec doctor` gained
+  `claude_cli(settings)`, the single entry point for "which `claude` would rayspec use here".
+- The generative test driver refuses a run that would check nothing: `RAYSPEC_PROP_CASES` below 1,
+  a non-integer value, or an unrecognised `RAYSPEC_PROP_*` name is an error naming the variable. The
+  mutation harness exits non-zero when a run produced no verdict, and refuses to write its `--json`
+  report inside the working tree. Both harnesses are documented in `CONTRIBUTING.md`.
+
+### Fixed
+- `rayspec audit --commands` no longer lists a `shell:`/`python:` step the run never started: a step
+  decided against (`when: false`, an upstream failure, the run-level cap) executed nothing, and the
+  view is documented as only what was executed. The unfiltered ledger still records it.
+- A `secret: true` value that happens to equal one of the strings a run is recorded under — its id,
+  its workflow's name or file, its project root, its workspace directory — is now treated the same
+  way everywhere, instead of being masked on the console and in `events.jsonl` while `run.json`,
+  `show`, `runs` and `audit` printed it in clear. rayspec cannot take that string out of a record
+  that has to keep it, so it does not half-take it out, and the run says which secret is affected.
+  A secret equal to a step id is unaffected.
+- An over-long workflow, step, input or agent name is refused by the identifier rule with the limit
+  named (`must be at most 128 characters (this one is 300) — it becomes a file name`) instead of
+  reaching the filesystem and coming back as `[Errno 63] File name too long`.
+- `rayspec test --case` accepts the qualified `<suite>:<case>` ids its own "known cases" hint
+  prints, not only the bare case id.
+- `rayspec validate` no longer parses every workflow in the project to read one description, and no
+  longer repeats discovery per name: on a 200-workflow project it went from 32s to under a second,
+  and the report is byte-identical.
+- Every time the CLI prints now says it is UTC: `rayspec logs` and `rayspec audit` label their time
+  column, and `rayspec runs` prints the same `2026-08-20 10:00:00 UTC` as `rayspec show` and
+  `rayspec costs` instead of an unlabelled `2026-08-20 10:00`.
+- A redirected or piped `rayspec runs` listing no longer changes as the clock ticks: relative ages
+  for a terminal, absolute stamps for a stream, so two listings of an unchanged store are
+  byte-identical — the diff-stability `docs/cli.md` promises.
+- `rayspec show` on a run older than a month printed the relative age as a second copy of the
+  absolute stamp; it now reads `(53d ago)` at any distance. A run whose timestamp is ahead of the
+  local clock — clock skew, a restored backup — read `0s ago` and now reads `in 9d`.
+- A `{% block %}` in a `shell:`/`python:` body could capture rendered text and substitute a `{{ }}`
+  slot twice, producing a script that printed `${RAYSPEC_V<n>}` where the value belonged. Code
+  bodies now accept only `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}`; every other
+  statement is a compile error naming the line and the fix. `{% include %}`, `{% import %}` and
+  `{% extends %}` fail with a message that says why instead of a TypeError.
+- A streamed credential matching a builtin detector could be released unredacted when the chunk
+  boundary fell inside it — an AWS key followed by two more alphanumerics reached `stdout.log` and
+  the console in the clear.
+- `docs/cli.md`'s worked example for the `steps` column said a three-step workflow that failed at
+  step 2 reads `1/3`, contradicting the rule in the same paragraph; it reads `2/3`.
+
 ## [1.0.0] — 2026-08-22
 
 First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
@@ -514,5 +599,6 @@ The workflow language, the scheduler, the two provider adapters and the command 
   **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
   version tag, so this release is the first time they execute.
 
-[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0

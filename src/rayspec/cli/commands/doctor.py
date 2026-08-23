@@ -447,7 +447,7 @@ def environment_checks(
             "git",
             required=True,
             version_args=["--version"],
-            hint="install git: worktree isolation, project slugs and --repo need it",
+            hint="install git: every `rayspec run` — dry runs included — refuses without it",
         ),
         _tool_check(
             "uv",
@@ -517,6 +517,18 @@ def find_claude_cli(
     return None
 
 
+def claude_cli(settings: Mapping[str, Any]) -> tuple[str, str] | Check | None:
+    """``(path, source)`` of the ``claude`` binary for ``settings`` — :func:`find_claude_cli` with
+    the SDK module resolved the way :func:`claude_checks` resolves it.
+
+    The one entry point for "which ``claude`` would rayspec use here": a caller outside this
+    module has no business importing the SDK itself to answer that, and
+    ``rayspec.providers.claude.find_cli()`` is the wrong answer because it ignores
+    ``providers.claude.cli_path``.
+    """
+    return find_claude_cli(_import("claude_agent_sdk"), settings)
+
+
 def claude_login_source() -> str | None:
     """Evidence of the ``claude`` CLI's own login (``~/.claude/.credentials.json`` or, on macOS,
     the ``Claude Code-credentials`` keychain item), as reported by the Claude adapter's
@@ -529,6 +541,24 @@ def claude_login_source() -> str | None:
         return adapter.cli_login_source()
     except Exception:  # a diagnosis must never crash on a lookup
         return None
+
+
+def claude_login_hint(cli_path: str | None) -> str:
+    """How to log in to Claude on *this* machine: ``claude auth login`` when ``claude`` is on
+    ``PATH``, else the bundled binary by its full path (it is not on ``PATH``), or an API key.
+
+    The mirror of :func:`codex_login_hint`, and for the same reason: ``pip install rayspec``
+    bundles both CLIs inside site-packages and puts neither on ``PATH``, so "log in once with
+    ``claude``" was a dead end — the exact ``command not found`` this hint exists to prevent.
+    ``claude login`` does not exist; the bundled CLI exposes ``auth {login,logout,status}``.
+    """
+    if shutil.which("claude") is not None:
+        command = "run `claude auth login`"
+    elif cli_path:
+        command = f"run `{cli_path} auth login` (the bundled claude; it is not on PATH)"
+    else:
+        command = "install the claude CLI and run `claude auth login`"
+    return f"{command}, set a key in ~/.rayspec/.env{VERIFY_WITH_PROBE}"
 
 
 def claude_checks(settings: Mapping[str, Any]) -> list[Check]:
@@ -556,7 +586,8 @@ def claude_checks(settings: Mapping[str, Any]) -> list[Check]:
             detail += f" · bundled CLI {bundled_version}"
         checks.append(Check("claude.sdk", "claude SDK", "ok", detail, required=True))
 
-    found = find_claude_cli(sdk, settings)
+    found = claude_cli(settings)
+    cli_path: str | None = None
     if found is None:
         checks.append(
             Check(
@@ -573,6 +604,7 @@ def claude_checks(settings: Mapping[str, Any]) -> list[Check]:
         checks.append(found)
     else:
         path, source = found
+        cli_path = path
         version = parse_version(version_of([path, "-v"]))
         if version is None:
             checks.append(
@@ -609,7 +641,7 @@ def claude_checks(settings: Mapping[str, Any]) -> list[Check]:
                 "warn",
                 "login state unknown (no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, no "
                 f"{CLAUDE_CREDENTIALS_HINT}; a `claude` login elsewhere is still used)",
-                hint=f"log in once with `claude`, set a key in ~/.rayspec/.env{VERIFY_WITH_PROBE}",
+                hint=claude_login_hint(cli_path),
             )
         )
     return checks
@@ -1018,6 +1050,8 @@ __all__ = [
     "Report",
     "apply_probe_policy",
     "claude_checks",
+    "claude_cli",
+    "claude_login_hint",
     "claude_login_source",
     "codex_checks",
     "codex_login_hint",

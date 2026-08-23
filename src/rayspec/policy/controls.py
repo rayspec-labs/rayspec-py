@@ -1001,6 +1001,10 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--kind": ExternalControl(False, "which scaffold `rayspec init` writes"),
     "--from": ExternalControl(False, "the example `rayspec init` copies"),
     "--no-skill": ExternalControl(False, "skip writing the packaged skill"),
+    "--no-init": ExternalControl(False, "`rayspec quickstart` writes no scaffold"),
+    "--no-run": ExternalControl(
+        False, "`rayspec quickstart` skips its own dry run, which stubs every provider anyway"
+    ),
     "--out": ExternalControl(False, "where `rayspec schema` writes"),
     "--values": ExternalControl(False, "the completion values to print"),
     "--all": ExternalControl(False, "list the runs of every project, not just this one"),

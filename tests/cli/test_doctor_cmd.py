@@ -652,6 +652,33 @@ def test_doctor_codex_hint_names_the_bundled_binary_when_codex_is_not_on_path(
     assert "run `codex login`" not in hint
 
 
+def test_doctor_claude_hint_names_the_bundled_binary_when_claude_is_not_on_path(
+    sdks: FakeSdks, project: Path
+) -> None:
+    """`claude` is not on PATH in the fixture (only the bundled binary exists) — which is the
+    `pip install rayspec` machine exactly: both CLIs live inside site-packages and neither is on
+    PATH. The hint said "log in once with `claude`", which is `command not found` there.
+
+    Fails if the claude auth hint is not runnable as written, the way the codex one already is.
+    """
+    _, report = _doctor_json("--root", str(project))
+    auth = _check(report, "claude.auth")
+    assert auth["status"] == "warn"
+    hint = auth["hint"] or ""
+    assert f"`{sdks.claude_bin} auth login`" in hint
+    assert "not on PATH" in hint
+    assert "log in once with `claude`" not in hint
+
+
+def test_doctor_claude_hint_uses_plain_claude_auth_login_when_on_path(
+    sdks: FakeSdks, project: Path, monkeypatch
+) -> None:
+    tools = {"git": "/usr/bin/git", "uv": "/usr/local/bin/uv", "claude": "/opt/bin/claude"}
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: tools.get(name))
+    _, report = _doctor_json("--root", str(project))
+    assert "run `claude auth login`" in (_check(report, "claude.auth")["hint"] or "")
+
+
 def test_doctor_codex_hint_uses_plain_codex_login_when_on_path(
     sdks: FakeSdks, project: Path, monkeypatch
 ) -> None:

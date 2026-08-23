@@ -93,6 +93,8 @@ EQUIVALENT = [
     ("worktrees list", []),
     ("skill show", []),
     ("runs", []),
+    # deterministic with these flags: nothing is asked, nothing is written, nothing is run
+    ("quickstart", ["--no-interactive", "--no-init", "--no-run"]),
 ]
 
 

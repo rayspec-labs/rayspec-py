@@ -144,6 +144,7 @@ def test_contracts_md_documents_the_public_surface() -> None:
         "rayspec skill show [NAME] [--root DIR] [--json]",
         "rayspec skill path [NAME]",
         "rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--root DIR]",
-        "next_steps(kind, *,\n  skill=True)",
+        'next_steps(kind, *,\n  skill=True, doctor=True, workflow="example", '
+        "stubs: bool | str = True)",
     ):
         assert needle in text, needle

@@ -310,6 +310,8 @@ DOCUMENTS = [
     ("doctor", []),
     ("costs", []),
     ("trust list", []),
+    # the flags make it a pure report: no scaffold, no dry run, nothing asked
+    ("quickstart", ["--no-interactive", "--no-init", "--no-run"]),
 ]
 
 #: `--json` commands the parametrisation does not reach: they need a run that already happened
