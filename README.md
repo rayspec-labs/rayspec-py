@@ -70,40 +70,65 @@ verdict, `when:` branches and `stop:`, `approve:` gates (TTY prompt, else pause 
 *and* Codex behind one capability-checked adapter, file-based runs with resume, and a git
 worktree per run by default.
 
-## 5-minute quickstart
-
-Prerequisites: Python ≥ 3.11, `git`, and — for real agent runs — a logged-in `claude` (claude.ai)
-and/or `codex` (`codex login`) on the machine. Dry runs need neither. Both CLIs ship with the
-SDKs rayspec depends on; `rayspec doctor` tells you what is missing.
+## Quickstart
 
 ```bash
-# 1. install
-uv tool install rayspec             # or: pipx install rayspec  ·  pip install rayspec
+pip install rayspec       # the engine AND both agent CLIs — no Node, no npm, nothing else to install
+rayspec quickstart        # check this machine, scaffold a project, prove it with a free dry run
+```
+
+That is the whole first five minutes. `rayspec quickstart` prints what the machine has (Python,
+`git`, both bundled agent CLIs, whether you are logged in), offers the two things it cannot
+decide for you — a provider login, and `git init` when you are not in a repository — scaffolds
+`.rayspec/`, and then runs a workflow end to end with **scripted agents: no credentials, no
+network, no cost**. It finishes by naming the four commands that matter and saying which one
+spends money.
+
+Nothing above needs an account. The whole authoring loop — write, validate, plan, dry-run — is
+free, and only a real agent run needs a login. `rayspec quickstart --no-interactive` asks
+nothing and is safe in a `Dockerfile`; `rayspec doctor` answers "what is missing?" on its own at
+any time.
+
+<details>
+<summary>Other ways in</summary>
+
+```bash
+uv tool install rayspec             # or: pipx install rayspec
 uvx rayspec version                 # one-off, nothing installed
-# or from source:
-uv tool install git+https://github.com/rayspec-labs/rayspec-py      # over HTTPS
-uv tool install git+ssh://git@github.com/rayspec-labs/rayspec-py    # over SSH
+uv tool install git+https://github.com/rayspec-labs/rayspec-py      # from source, over HTTPS
+uv tool install git+ssh://git@github.com/rayspec-labs/rayspec-py    # from source, over SSH
 uvx --from git+https://github.com/rayspec-labs/rayspec-py rayspec version   # one-off, from source
 uv tool install <path-to-checkout>  # from a local clone (or `uv tool install .` inside it)
+```
+
+</details>
+
+### What `quickstart` set up, and what to do with it
+
+```bash
 rayspec version                     # prints `rayspec <version>`
 rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundled CLIs, auth hints; --probe runs one real turn per provider
 
-# 2. scaffold a project in your repo
-rayspec init                        # .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml}
-                                    # + .claude/skills/{rayspec-workflows,rayspec-cli}/ (the coding-agent skills; --no-skill to skip)
-                                    # --kind content for a non-code project; --force to overwrite
+# the project quickstart scaffolded (rayspec init does this on its own)
+#   .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml}
+#   + .claude/skills/{rayspec-workflows,rayspec-cli}/ (the coding-agent skills; --no-skill to skip)
+#   --kind content for a non-code project; rayspec init --force to overwrite
 
-# 3. check it
+# check it
 rayspec workflows                   # discovered workflows
 rayspec validate                    # schema, graph, references, provider capabilities
 rayspec plan example                # inputs, resolved agents/models, step order, capability report
 
-# 4. dry-run it — providers become a scripted stub, shell steps are skipped, no login needed
+# dry-run it — providers become a scripted stub, shell steps are skipped, no login needed
 rayspec run example --dry-run --stubs .rayspec/stubs/example.yaml     # ✓ files · ✓ review · outputs table
 
-# 5. run it for real (the example reviews in place; delete its `isolation: none` line to get a git worktree per run)
+# run it for real (the example reviews in place; delete its `isolation: none` line to get a git worktree per run)
 rayspec run example --input target=src
 ```
+
+For real agent runs you need a logged-in `claude` (claude.ai) or `codex` (`codex login`) — both
+CLIs ship with rayspec, and `rayspec quickstart` offers to run the login for you, by absolute
+path. Dry runs need neither.
 
 Prefer to start from a blank file? A workflow is one YAML document; `--stubs-init` writes the
 stub answers for a dry run from it:
@@ -213,11 +238,10 @@ Released on PyPI: [`rayspec`](https://pypi.org/project/rayspec/) — `pip instal
 `uv tool install rayspec`) gets you this build, and it brings the Claude Code and Codex CLIs with
 it, so no separate install of either is needed.
 
-Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
-`plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `lock`, `workflows`,
-`agents`, `providers`, `plugins`, `projects`, `worktrees`, `trust`, `schema`, `skill`,
-`completion`,
-`version`.
+Commands: `quickstart`, `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`,
+`validate`, `plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `lock`,
+`workflows`, `agents`, `providers`, `plugins`, `projects`, `worktrees`, `trust`, `schema`,
+`skill`, `completion`, `version`.
 
 ## Development
 

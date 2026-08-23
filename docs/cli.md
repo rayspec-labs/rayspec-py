@@ -11,7 +11,7 @@ feeds the candidate list a shell asks for and which is silent by contract (an er
 would be offered as a completion candidate) — the whole command, not only `--values`. `RAYSPEC_HOME`
 (default `~/.rayspec`) holds user-level workflows/agents, `config.yaml`, `.env` and every
 project's runs and worktrees. The commands that read a project (`run`, `validate`, `plan`,
-`workflows`, `agents`, `doctor`) and the run-management commands (`runs`, `costs`, `show`, `logs`,
+`workflows`, `agents`, `doctor`, `quickstart`) and the run-management commands (`runs`, `costs`, `show`, `logs`,
 `resume`, `approve`, `reject`, `cancel`) first load `~/.rayspec/.env` into the environment
 (existing variables are never overridden) and merge `~/.rayspec/config.yaml` +
 `.rayspec/config.yaml`. The **project** `.rayspec/.env` is a credential surface controlled by
@@ -19,8 +19,8 @@ whoever pushed the checkout (`ANTHROPIC_BASE_URL`, `GIT_CONFIG_*`, …), so only
 execute steps apply it — `run`, `resume`, `approve`, `reject` — and they print one dim
 `env: loaded N variables from .rayspec/.env (project): NAME, NAME` line on stderr when they do,
 naming the variables (project wins over the home file there too); the inspection commands
-(`doctor`, `validate`, `plan`, `workflows`, `agents`, `providers`, `runs`, `costs`, `show`,
-`logs`, `worktrees`, `projects`) never load it (`rayspec doctor` lists both files instead, in a
+(`doctor`, `quickstart`, `validate`, `plan`, `workflows`, `agents`, `providers`, `runs`, `costs`,
+`show`, `logs`, `worktrees`, `projects`) never load it (`rayspec doctor` lists both files instead, in a
 `home .env` and a `project .env` row). Neither file may supply an **identity**: a `RAYSPEC_ACTOR`
 loaded from either is refused with a `warning:` on stderr and kept only as `actor.declared_id`,
 because a workflow step can write both — see
@@ -1106,6 +1106,134 @@ Options:
 - `--mark` — Mark the record cancelled without signalling any process (stale record, pid reused by another program); no confirmation prompt.
 - `--json` / `--output json` — Machine-readable output (implies no confirmation prompt): `{run_id, action: "signalled", pid, status}` for a live run, `{run_id, action: "cancelled", pid: null, status, lock_released}` for a paused/dead one, `{run_id, action: "marked", pid: null, status, lock_released}` with `--mark`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
+
+### `rayspec quickstart`
+
+```
+rayspec quickstart [--provider claude|codex|both|none] [--yes] [--no-interactive]
+                   [--kind code|content] [--no-init] [--no-run] [--no-skill]
+                   [--json | --output FORMAT] [--root DIR]
+```
+
+**The first command to type after installing rayspec.** It prints what this machine has, offers
+the two things it cannot decide for you (a provider login, and `git init` when the directory is
+not a repository), scaffolds `.rayspec/` if there is no project yet, and then proves the install
+by performing a dry run — scripted agents, no login, no cost. It ends by naming the four commands
+that matter and saying which of them spends money.
+
+Its promise is that it never dead-ends. The whole authoring loop — write, `validate`, `plan`,
+`run --dry-run` — needs no credentials at all, so every branch finishes with something that
+works, whether or not you ever log in. Three things it deliberately never does: it never
+overwrites a file (that is `rayspec init --force`), it never asks a question without a terminal,
+and it never spawns a login without one — a browser hand-off inside a container is exactly the
+thing that would hang a build.
+
+Every question is asked first and the work is done afterwards, so `--no-interactive` is a pure
+"print the state and the plan" mode rather than a half-run. It is still useful: the steps that
+need no answer still happen, which makes `rayspec quickstart --no-interactive` a sensible line in
+a `Dockerfile` or a CI preflight.
+
+What it prints, in order:
+
+1. **The state block** — Python, `git`, whether this directory is a repository, both bundled CLIs
+   with their versions and where they came from, and both auth rows. Every row is a
+   `rayspec doctor` row, rendered: quickstart never answers those questions a second way. Any
+   other doctor row that is not `ok` (a broken `config.yaml`, an unreadable `.env`, an
+   unwritable `RAYSPEC_HOME`, a failing secret source) is printed too, because those are the
+   states that stop every other command dead. `~/.rayspec/.env` is loaded first, so keys kept
+   there count; the project `.rayspec/.env` is **not** applied — it is a credential surface of
+   the checkout and this is the first command run in a directory you may have just cloned.
+2. **The questions** (a terminal only): a login menu built from what is actually missing — a
+   provider that already has credentials, or whose CLI is not usable, is not offered — and, when
+   `git` is installed and the directory is not a repository, `Run \`git init\` here? [y/N]`. Both
+   go to stderr, so stdout stays a clean report.
+3. **What it did**, one line per step: `login`, `git init`, `project`, `dry run`.
+4. **The dry run**, with the command printed above it. The printed line *is* the argv that was
+   invoked, so it can be copied and re-run.
+5. **The closing block** — the isolation sentence, the credentials sentence, the four commands,
+   and the money line.
+
+Three git conditions, not two, and each one is reported where it is true: the **binary**
+(without it `rayspec run` refuses, dry runs included — see below), the **repository**, and **at
+least one commit** (a worktree is created from a commit, so `git init` alone does not give you
+worktree isolation). The isolation sentence reads the workflow document as well as the machine:
+both scaffolds declare `isolation: none`, so on a perfect machine the honest answer is still
+"the next run happens in place, in this directory".
+
+Without the `git` binary there are no runs at all — `rayspec run` asks git which directory it is
+in before it starts anything, so even `--dry-run` refuses. quickstart therefore does not attempt
+the dry run on such a machine: it keeps the scaffold, names the consequence, prints the install
+command for this platform (`xcode-select --install` · `sudo apt install git` ·
+`sudo dnf install git` · `sudo apk add git` · `winget install --id Git.Git`, else "install git
+with your package manager") and exits **1**.
+
+Nothing is ever overwritten. When `.rayspec/` already exists — here, or in a directory above
+this one — quickstart says so and writes nothing, then dry-runs a workflow of *that* project.
+The workflow is `example` when the project has one, else the first discovered workflow that
+loads; a workflow with a `required: true` input is named and skipped with the `-i NAME=...`
+command to run instead, rather than making your first experience `error: missing input`.
+
+Options:
+
+- `--provider` `claude|codex|both|none` — which provider(s) to offer a login for. Default: ask on
+  a terminal, `none` off one. This is deliberately **not** `rayspec doctor --provider ID`, which
+  is repeatable and restricts the *checks* over every registration (plugins included): this one
+  chooses a *login flow*, and one exists only for the two CLIs rayspec bundles.
+- `--yes` / `-y` — accept every yes/no offer (today: `git init`). It does **not** pick a
+  provider: a login is a browser round-trip, and `--yes` may not choose whose account you sign
+  in with.
+- `--no-interactive` — never ask; print the plan instead. Implied by `--json`.
+- `--kind` `code|content` — the scaffold flavour. Default: `code` inside a git repository,
+  `content` outside one — which is the choice `rayspec init`'s non-git warning already tells you
+  to make; quickstart resolves it and says which flavour it picked and why.
+- `--no-init` — do not scaffold `.rayspec/`.
+- `--no-run` — do not perform the dry run.
+- `--no-skill` — do not write the coding-agent skills to `.claude/skills/` (mirrors
+  `rayspec init --no-skill`).
+- `--json` / `--output json` — one JSON document on stdout and nothing else; the dry run still
+  happens, with its own output captured. `--json` implies `--no-interactive`, as it does for
+  `rayspec cancel`: a machine caller cannot answer a question.
+- `--root` `<path>` — the directory to set up. Default: the cwd — like `rayspec init`, quickstart
+  writes where you point it and does not walk up. A `--root` that is not an existing directory is
+  a usage error (exit 2) and is never created.
+
+The login it spawns is the provider's own CLI, by **absolute path**: `<claude> auth login`
+(`claude login` does not exist) and `<codex> login`. The path is printed before the process
+starts, because the bundled `codex` is not on `PATH` — which is why typing `codex login` on a
+fresh machine says "command not found". Nothing is captured from that child, and quickstart
+neither reads, writes nor echoes a credential. A failed login is never exit 1 and never ends the
+command: the fallback is printed and the dry run still happens.
+
+Exit codes: `0` — quickstart finished and nothing is broken, including "you chose not to log in",
+"no terminal so nothing was asked" and "an existing project was respected". `1` — this
+environment cannot run rayspec: the dry run was performed and did not succeed, or it was blocked
+because `git` is not installed. `2` — usage (`--root` is not a directory, `--json --output
+table`, an invalid `--provider`/`--kind`). `130` — Ctrl-C at one of quickstart's own questions,
+reported as one line with no traceback; end-of-input is not an interruption, it is "not now".
+
+quickstart never claims a login was checked. `credentials` means the file or variable was found;
+`rayspec doctor --probe` is the only thing that proves a login works, and the `--json` document
+carries a `credentials_verified` that is always `false` so no consumer can read it otherwise.
+
+`--json` prints one object:
+
+```
+{ok, exit_code, rayspec, root, project_root, interactive,
+ environment: {python, git: {binary, version, repository, commits, install_command},
+               providers: [{id, cli_path, cli_source, cli_version, cli_ok, credentials,
+                            credentials_source, credentials_verified, login_command}]},
+ steps: [{id: login|git_init|scaffold|dry_run, action: done|skipped|failed, detail}],
+ project: {path, existed, kind, files_written, skills_written},
+ run: {attempted, skipped_reason, workflow, command, run_id, status, exit_code, ok, reason},
+ isolation: {next_run: worktree|none|blocked, worktree_available, reason},
+ next_steps: [{command, note, cost: free|provider}],
+ doctor: {ok, exit_code, failed_required}}
+```
+
+`environment.git.commits` is `null` when it is unknown (no binary, or no repository to ask), and
+`install_command` is set only when the binary is missing. `run.skipped_reason` is non-null
+exactly when `run.attempted` is false. `next_steps[].cost` is the money statement in the shape:
+everything but the last command is `free`.
 
 ### `rayspec init`
 
