@@ -1,6 +1,6 @@
 ---
 name: rayspec-cli
-description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, stub scripts, providers, cost, policy and the run records a .rayspec/ project leaves behind. Use when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow. This skill does not explain the YAML — writing or editing it is the companion rayspec-workflows skill.
+description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, the stub, test-case and policy files, providers, cost, and the run records a .rayspec/ project leaves behind. Use when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow, to write a test case or a policy for one, or to install these skills. This skill does not explain the YAML — writing or editing it is the companion rayspec-workflows skill.
 ---
 
 # rayspec CLI — running, inspecting and governing
@@ -33,7 +33,9 @@ with real credentials against a real checkout.
   `rayspec/<workflow>-<shortid>` under `$RAYSPEC_HOME/projects/<slug>/worktrees/`; steps run
   there (`run.workdir`), while workflows load from your checkout. `isolation: none` or
   `--no-worktree` runs in place; a non-git directory always runs in place. **`--dry-run` forces
-  isolation `none`** and creates no worktree.
+  isolation `none`** and creates no worktree — **unless `--exec-shell`**, which restores worktree
+  isolation because your `shell:`/`python:` steps then really run, and leaves the worktree and
+  branch behind afterwards (`rayspec worktrees clean`).
 - **One run per working directory.** A live run holds a lock on its workdir; a second run or a
   resume in the same directory is exit 2 (`… is already locked by run <id> (pid <n>)`). A paused
   run holds no lock. Fresh `rayspec run`s never collide — each gets its own worktree.
@@ -53,7 +55,8 @@ with real credentials against a real checkout.
 The four commands that *create or describe authoring artifacts* — `rayspec init`,
 `new workflow`, `new agent`, `schema` — live in the **`rayspec-workflows`** skill. Everything
 that executes, inspects or governs a run is here. `rayspec --version` / `-V` and `rayspec <cmd>
---help` always work; a click usage error (unknown command, bad flag, bad enum) is exit 2.
+--help` always work; a click usage error (unknown command, bad flag, bad enum) is exit 2. **Key
+flags is every flag**, not a selection — `--help` aside, a flag missing from a row does not exist.
 
 | Command | Purpose | Key flags | Exit |
 |---|---|---|---|
@@ -82,7 +85,7 @@ that executes, inspects or governs a run is here. `rayspec --version` / `-V` and
 | `rayspec trust list` · `check [names…]` | what `.rayspec/trusted.yaml` holds and whether each entry still matches its hash · exit 0 only when every named workflow is trusted **now** | `--json`, `--output`, `--root` | 0 / 1 / 2 |
 | `rayspec trust add <wf…>` · `remove <wf…>` | record / drop a workflow's resolved hash (the hash covers includes, agent files and prompt files) | `--root` | 0 / 2 |
 | `rayspec worktrees list` | rayspec worktrees of the project: branch, age, dirty/merged/locked | `--repo NAME`, `--json`, `--output`, `--root` | 0 / 2 |
-| `rayspec worktrees clean` | **destructive**: `git worktree remove` + `git branch -D`. Safe by default — only merged, clean, unlocked ones go; the rest are listed as skipped with a reason | `--older-than 7d`, `--merged`, `--merged-into REF`, `--force`, `--dry-run`, `--repo NAME`, `--json`, `--root` | 0 / 2 |
+| `rayspec worktrees clean` | **destructive**: `git worktree remove` + `git branch -D`. Safe by default — only merged, clean, unlocked ones go; the rest are listed as skipped with a reason | `--older-than 7d`, `--merged`, `--merged-into REF`, `--force`, `--dry-run`, `--repo NAME`, `--json`, `--output`, `--root` | 0 / 2 |
 | `rayspec projects list` | the project names usable as `--repo <name>` | `--json`, `--output` | 0 / 2 |
 | `rayspec projects add <name> <src>` · `remove <name>` | register (or update) a name for a checkout path or git URL · unregister it. Both write `~/.rayspec/config.yaml`; `remove` deletes no files | `--base REF` | 0 / 2 |
 | `rayspec skill install [name]` | write both packaged skills into `<project>/.claude/skills/`; a name installs just that one, `--global` targets `~/.claude/skills/` | `--global`, `--force`, `--root` | 0 / 2 |
@@ -114,7 +117,7 @@ command that takes it is in exactly one of these three shapes.
 
 | Shape | Commands | Read it with |
 |---|---|---|
-| **JSONL stream** | `run` · `resume` · `approve` · `reject` | `… --json \| tail -1 \| jq .exit_code` — the **last stdout line is the summary object** `{run_id, status, exit_code, reason, outputs, usage, cost_usd, cost_source, run_dir, workspace, pause}`; the lines before it are `run.started`, `step.started`, `step.finished`, `loop.iteration`, `warning`, `run.decision`, `run.finished` and one `{"type":"stream", "step_path":…, "record":{…}}` per transcript record |
+| **JSONL stream** | `run` · `resume` · `approve` · `reject` | `… --json \| tail -1 \| jq .exit_code` — the **last stdout line is the summary object** `{run_id, status, exit_code, reason, outputs, usage, cost_usd, cost_source, run_dir, workspace, pause}`; the lines before it are `run.started`, `step.started`, `step.finished`, `loop.iteration`, `warning`, `run.decision`, `run.finished` and one `{"type":"stream", "step_path":…, "record":{…}}` per transcript record. **One exception**: `resume`'s approval short-circuit (below) writes no stream and no summary at all — read its exit code |
 | **stored JSONL, verbatim** | `logs` | events exactly as they sit in `events.jsonl`; with `--stream`, step records under the same `{"type":"stream",…}` wrapper |
 | **one JSON document** | array — `runs` · `validate` · `workflows` · `agents` · `providers` · `trust list` · `trust check` · `worktrees list` · `projects list`; object — `plan` · `show` · `explain` · `eval` · `audit` · `costs` · `test` · `doctor` · `lock` · `runs diff` · `cancel` · `worktrees clean` · `skill show` · `plugins` | `… --json \| jq` — indented on a terminal, compact when redirected, keys in the payload's own order |
 
@@ -144,8 +147,13 @@ rayspec run fix_issue -i issue=42                    # only now: real agents, re
 ```
 
 `--render` accepts `--step PATH` for one step and `--stubs FILE` to supply upstream outputs
-instead of placeholders. `--risk` is advisory and never changes the exit code; `--render` and
-`--risk` are different views and are refused together.
+instead of placeholders. Upstream values it has no stub for are *text* placeholders, so a step
+that reads a **field** of another step's output (`{{ steps.block.output.summary }}`) renders as an
+inline `error:` line while the run itself is fine — and `--stubs` does not cure it for a `loop:`,
+`each:` or `include:` step, which no stub script can answer. That error is a limit of the preview,
+not a failure: the exit code stays 0, and a `--dry-run` is what proves such a step. `--risk` is
+advisory and never changes the exit code; `--render` and `--risk` are different views and are
+refused together.
 
 **2 · The offline test loop** (`rayspec test`) — no credentials, no network, no money; it *does*
 write run records under `RAYSPEC_HOME` (deleted for a passing case, kept for a failing one, whose
@@ -197,6 +205,15 @@ the stored context, so it distinguishes "the template was wrong" from "the agent
 step with no record is still explained, with a warning that the sections were re-evaluated.
 `eval` warns when an expression reads `env.*`, because that reads *this* process's environment.
 
+One carve-out on `eval`: it rebuilds the context from `run.json`, and an `each:` step's
+`.items` (the per-item `[{index, item, status, output, error}]` list) is **not persisted**, so
+`steps.<each>.items` is refused with *"is not set for this each step"* even though the run
+rendered it correctly. That message is about the store, not about your workflow. Read the list
+from the transcript of the step that consumed it (`rayspec logs <run> --step <consumer>`), or
+read the per-item step records themselves — `rayspec show <run>` lists `fan[0]/emit`,
+`fan[1]/emit`, … with their status and output. `.output`, `.status` and `.ok` of the same `each`
+step evaluate normally.
+
 **5 · An interrupted run.** Look at the status first (`rayspec runs -n 5`).
 
 | Status | Meaning | Continue with |
@@ -215,30 +232,39 @@ name=value` or `RAYSPEC_INPUT_<NAME>`) while all other inputs are fixed per run;
 recorded at launch is reused automatically.
 And the short-circuit to know: `resume` on a run paused at an **approval** gate, non-interactive
 and without `--yes`/`--approve-class`, prints the decide hint and exits 3 **without restarting the
-engine**. An operational pause is not short-circuited — `resume` re-evaluates the ceiling.
+engine** — and under `--json` that path writes **nothing at all** to stdout (the hint is on
+stderr), so on `resume` read the process exit code, never `… | tail -1 | jq`. An operational pause
+is not short-circuited — `resume` re-evaluates the ceiling.
 
 ## Safety
 
 **Ask the human before the first real run of a workflow you have not run before**, and before
 anything that edits files outside a worktree, pushes, opens a PR, calls a webhook or spends money.
-A dry run first is not politeness, it is how you find out which of those it does.
+To find out which of those it does, read the workflow and then run `rayspec plan <wf>` (the access
+level, provider and model of every agent) and `rayspec plan <wf> --risk` (what the run would be
+*allowed* to do, agent by agent and step by step). A **dry run proves the graph, not the blast
+radius** — it replaces every agent with the stub and skips every `shell:`/`python:` step, so a
+clean dry run says nothing about whether a real run writes, pushes or spends.
 
 Every command of this skill's table is in exactly one of these three classes.
 
 | Class | Commands | What it costs you |
 |---|---|---|
 | **read-only** | `version` · `doctor` · `providers` · `plugins` · `workflows` · `agents` · `completion` · `validate` · `plan` · `runs` · `runs diff` · `show` · `logs` · `explain` · `eval` · `audit` · `costs` · `trust list` · `trust check` · `worktrees list` · `projects list` · `skill show` · `skill path` | nothing: no credentials, no network, no writes. Safe unattended. The one exception is `doctor --probe`, which runs a real one-turn healthcheck per provider and therefore needs a login and costs a little |
-| **writes locally** | `lock` · `trust add` · `trust remove` · `projects add` · `projects remove` · `skill install` · `worktrees clean` · `runs stubs` · `test` · `cancel` | files and records, never money. `worktrees clean` is destructive (`git worktree remove` + `git branch -D`); `runs stubs` writes only where `-o` points; `test` creates run records under `RAYSPEC_HOME` (kept only for a failing case); `cancel` rewrites a run record and may signal a process |
+| **writes locally** | `lock` · `trust add` · `trust remove` · `projects add` · `projects remove` · `skill install` · `worktrees clean` · `runs stubs` · `test` · `cancel` | files and records, never money. `worktrees clean` is destructive (`git worktree remove` + `git branch -D`); `runs stubs` writes only where `-o` points; `test` creates run records under `RAYSPEC_HOME` (kept only for a failing case); `cancel` rewrites a run record and, on a **live** run, signals the process — both `--yes` and `--json` waive the confirmation that guards that |
 | **executes agents** | `run` · `resume` · `approve` · `reject` | money, credentials and your checkout. `approve`/`reject` are not bookkeeping — they resume the run **in this process**, and a gate with `on_reject: continue` keeps spending after a rejection. Only `run --dry-run` is exempt |
 
 - **`--dry-run` is free**: every provider is replaced by the stub, gates are auto-approved
-  (except a class the policy protects — see below), isolation is forced to `none`, no host slot is
-  taken, no login is needed. What it does **not** prove: `shell:` and `python:` steps are
-  *skipped* — they are recorded `succeeded` with a **stand-in output**: `""`, or the *minimal
-  instance* of their `output_schema` when they declare one (`{type: boolean}` → `false`, not the
-  value the script would have produced). A downstream `when:` therefore reads a placeholder, and
-  `runs diff` against a real run flags exactly those steps as changed. Add
-  `--exec-shell` to really run them (and it is then no longer free of side effects), or run the
+  (except a class the policy protects — see below), isolation is forced to `none` (`--exec-shell`
+  restores the worktree — last clause of this bullet), no host slot is taken, no login is needed.
+  What it does **not** prove: `shell:` and `python:` steps are *skipped* — they are recorded
+  `succeeded` with a **stand-in output**: `""`, or the *minimal instance* of their `output_schema`
+  when they declare one (`{type: boolean}` → `false`, not the value the script would have
+  produced). A downstream `when:` therefore reads a placeholder, so a branch gated on a script
+  always takes the same side, and `runs diff` against a real run flags exactly those steps as
+  changed. Add `--exec-shell` to really run them — they then execute for real, in a fresh git
+  worktree on branch `rayspec/<workflow>-<shortid>`, **not** in your checkout, so it is no longer
+  free of side effects and leaves a worktree behind (`rayspec worktrees clean`) — or run the
   command yourself first.
 - **`--yes` waives the interactive prompt at `approve:` gates, and nothing else.** It cannot waive
   an approval class the operator marked `allow_yes: false` (that gate pauses anyway, with a
@@ -252,7 +278,9 @@ Every command of this skill's table is in exactly one of these three classes.
 - Give an unattended experiment its **own `RAYSPEC_HOME`** — every run record, worktree and lock
   lives under it, so a scratch home is a clean slate you can delete.
 - `cancel` on a **live** run asks for confirmation first; without a terminal that is exit 2, so an
-  unattended caller must pass `--yes` (or `--json`).
+  unattended caller must pass `--yes` — **or `--json`, which waives it too**, because a machine
+  caller cannot answer a prompt. Do not reach for `--json` here out of habit: on this one command
+  an output-format flag arms the kill.
 
 ## Governance and trust
 
@@ -350,7 +378,7 @@ steps:                                   # key = a record path or a glob over on
     text: "Implemented; committed."
     events: [ { tool_call: { name: Bash, call_id: c1, data: { command: "pytest -q" } } },
               { tool_result: { call_id: c1, text: "3 passed" } } ]
-    expect: { prompt_contains: ["Fix issue"], not_contains: "{{", model: stub-small }
+    expect: { prompt_regex: "Fix|Address this review", not_contains: "{{", access: workspace-write }
   "build[*]/review": { sequence: ["Fix the flaky test", "BUILD-CLEAN"] }   # nth call; last repeats
   pr: { fail: { kind: api, message: "simulated 529", transient: true, times: 1 }, text: "ok" }
 match:                                   # tried after steps: first prompt regex that matches
@@ -364,7 +392,12 @@ converges in a dry run. `events` are streamed **before** the answer, so `rayspec
 reads like a real transcript. `expect:` asserts what the agent was *asked*
 (`prompt_regex`, `prompt_contains`, `not_contains`, `model`, `access`, `output_schema`, `session`)
 and a mismatch fails the step with `stub_expectation`; an `expect:` under a key that matches no
-prompt step is refused before the run starts, so a renamed step cannot silently disarm it.
+prompt step is refused before the run starts, so a renamed step cannot silently disarm it. Two
+traps: `model:` is the **resolved** model id of the workflow's own agent, which `--dry-run` does
+not replace (`stub-*` matches only an agent declared `provider: stub`; a `provider: codex` agent
+still reports `gpt-…`, so assert `access:` instead when you want a stable check); and a needle
+under a **glob** key is asserted on every call it matches, so it has to hold for iteration 2 of a
+loop as much as for iteration 1.
 
 `--stubs` **without** `--dry-run` is allowed only when every prompt agent is `provider: stub` —
 then it is a *real* run (shell executes, worktree and locks as usual) with scripted answers;
@@ -378,10 +411,12 @@ otherwise exit 2. The absolute path is recorded in `run.json` (`stubs_path`), so
   will show exactly those steps as changed. Use `--exec-shell` when the shell output matters.
 - `--root` must exist (exit 2 otherwise) — a mistyped path is never created. `rayspec init` and
   `new *` take `--root` as the directory *itself*, not a walk-up start.
-- `runs` and `costs` outside a rayspec project are **exit 0** with a stderr notice (`[]` under
-  `--json`), and mint no project directory. `worktrees list|clean` are the opposite: outside a
-  git repository they are exit 2 with a plain-text error **even under `--json`** — so a caller
-  that only parses stdout sees nothing. `new workflow` / `new agent` in a directory without
+- `runs` and `costs` outside a rayspec project are **exit 0** with a stderr notice, and mint no
+  project directory. Under `--json` each keeps its own shape: `runs` prints `[]`, `costs` prints a
+  zeroed document (`{"project":null,…,"runs":0,"workflows":[]}`) — never an array.
+  `worktrees list|clean` are the opposite: outside a git repository they are exit 2 with a
+  plain-text error **even under `--json`** — so a caller that only parses stdout sees nothing.
+  `new workflow` / `new agent` in a directory without
   `.rayspec/` is exit 2 — they grow a project, they never create one.
 - A listing flag placed **before** a `runs` subcommand is exit 2 (`--limit belongs to the rayspec
   runs listing`); only `--root` may go there.

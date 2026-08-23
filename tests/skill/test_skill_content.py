@@ -8,6 +8,7 @@ what is specific to one of them says so by name.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -23,7 +24,7 @@ from rayspec.cli.commands import _loader_common as common
 from rayspec.loader import load_workflow, validate_workflow
 from rayspec.loader.yaml import load_yaml
 from rayspec.providers.stub import StubScript
-from rayspec.schema import parse_step
+from rayspec.schema import STEP_MODELS, parse_step
 from rayspec.skill import CLI_SKILL, SKILLS, WORKFLOWS_SKILL, Skill, skill_dir
 
 _FENCE_RE = re.compile(r"```(?P<lang>[a-z]*)\n(?P<body>.*?)```", re.DOTALL)
@@ -33,8 +34,9 @@ TEXT = {skill.name: (skill_dir(skill) / "SKILL.md").read_text(encoding="utf-8") 
 WORKFLOWS_MD = TEXT[WORKFLOWS_SKILL.name]
 CLI_MD = TEXT[CLI_SKILL.name]
 
-#: What each skill's page must be shaped like: the headings it owns and a size window. A section
-#: moving from one skill to the other has to be a deliberate edit here, not a silent drift.
+#: What each skill's page must be shaped like: the headings it owns, **in order**, and a size
+#: window. A section moving from one skill to the other — or up and down its own page — has to
+#: be a deliberate edit here, not a silent drift.
 SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
     WORKFLOWS_SKILL.name: (
         (
@@ -45,9 +47,9 @@ SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
             "## Templating rules that bite",
             "## Secrets",
             "## Best practices",
+            "## Pitfalls and conventions",
             "## Worked examples",
             "## CLI quick reference",
-            "## Pitfalls and conventions",
             "## References",
         ),
         620,
@@ -149,11 +151,10 @@ def test_skill_md_is_focused(skill: Skill) -> None:
     headings, low, high = SHAPE[skill.name]
     lines = TEXT[skill.name].splitlines()
     assert low <= len(lines) <= high, len(lines)
-    for heading in headings:
-        assert any(line.startswith(heading) for line in lines), heading
-    # and nothing else: a new section is a deliberate change to SHAPE
+    # in this order and nothing else: order is part of the shape (the traps have to come before
+    # the long worked-examples block a reader may stop at), so a move is an edit to SHAPE too
     found = tuple(line.split("(")[0].strip() for line in lines if line.startswith("## "))
-    assert len(found) == len(headings), found
+    assert found == headings, found
 
 
 @pytest.mark.parametrize("skill", SKILLS, ids=[s.name for s in SKILLS])
@@ -179,9 +180,11 @@ def test_the_authoring_loop_hands_off_to_the_cli_skill() -> None:
 
 
 def test_cheat_sheet_covers_every_step_kind() -> None:
+    """PAGE_WORKFLOWS promises fix_issue is "every step kind once, in one file", so the set comes
+    from ``STEP_MODELS``: a ninth kind has to reach the cheat-sheet, not just the page."""
     text = workflow_blocks()["fix_issue"]
-    for kind in ("prompt:", "shell:", "python:", "loop:", "each:", "approve:", "include:", "stop:"):
-        assert kind in text, kind
+    for kind in STEP_MODELS:
+        assert f"{kind}:" in text, kind
     for needle in (
         "join: always",
         "allow_failure: true",
@@ -287,8 +290,6 @@ def test_cheat_sheet_workflow_dry_runs_with_an_edited_stub_scaffold(tmp_path: Pa
         env=env,
     )
     assert res.exit_code == 0, res.output
-    import json
-
     summary = json.loads(res.stdout.splitlines()[-1])
     assert summary["status"] == "succeeded"
     assert summary["outputs"]["verdict"] == "fix"
@@ -306,6 +307,39 @@ def test_stub_snippet_parses() -> None:
         "pr",
     }
     assert script.match
+
+
+def test_the_documented_stub_file_drives_the_documented_workflow(tmp_path: Path) -> None:
+    """The two skills share one example, so the stub file the operating skill prints must really
+    run the workflow the authoring skill prints.
+
+    It did not: the ``expect:`` block asserted a ``model:`` that no ``--dry-run`` of a claude or
+    codex agent ever reports (the stub answers, but the *model* stays the workflow's resolved id)
+    and a ``prompt_contains`` needle the cheat-sheet's prompt does not hold. An agent copying it
+    turned a green dry run red for a reason that was in the document, not in its workflow.
+    """
+    root, home = _project(tmp_path)
+    [block] = [b for b in yaml_blocks(CLI_MD) if "prompt_regex" in b]
+    stubs = tmp_path / "doc_stubs.yaml"
+    stubs.write_text(block)
+    res = CliRunner().invoke(
+        app,
+        [
+            "run",
+            "fix_issue",
+            "--root",
+            str(root),
+            "--dry-run",
+            "--stubs",
+            str(stubs),
+            "-i",
+            "issue=7",
+            "--json",
+        ],
+        env={"RAYSPEC_HOME": str(home)},
+    )
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout.splitlines()[-1])["status"] == "succeeded", res.output
 
 
 def cli_table_section(text: str) -> str:

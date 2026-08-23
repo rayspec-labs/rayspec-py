@@ -1,6 +1,6 @@
 ---
 name: rayspec-workflows
-description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus the agents, prompts, includes, secrets and .rayspec/ files you write by hand. Use when asked to create or edit a rayspec workflow, agent or prompt. This skill runs nothing itself — load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote.
+description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus the agents, prompts, includes and secret inputs you write by hand under .rayspec/, and scaffolding a project with rayspec init. Use when asked to create or edit a rayspec workflow, agent or prompt. This skill runs nothing itself — load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote, and for the stub, test-case and policy files.
 ---
 
 # rayspec workflows — authoring the YAML DSL
@@ -267,6 +267,7 @@ that is not here does not exist. Defaults in parentheses.
 | top level | `rayspec` (must be `1`) · `name` · `description` · `inputs` · `defaults` · `isolation` (`worktree`) · `agents` · `steps` · `outputs` |
 | `defaults:` | `agent` · `timeout` · `max_parallel` (`4`) · `on_unsupported` (`error`) · `on_step_failure` (`drain`) · `budget_usd` (no cap; written `1.5`, `"$1.50"` or `"12 USD"`) · `max_tokens` (no cap; written `500000`, `"500k"` or `"1.5M"`) · `timeout_total` |
 | every step | `id` · `description` · `needs` · `when` · `join` (`all`) · `timeout` · `always_run` (`false`) · `allow_failure` (`false`) · `artifacts` |
+| `always_run:` | re-execute this step on a **resume** instead of replaying its cached record. It is *not* finally-semantics — a step whose upstream skipped is still skipped, `always_run: true` or not; the field that runs a step anyway is `join: always` |
 | `artifacts:` | files the step must leave behind, **relative to its working directory**; absolute paths, `~`, `..`, trailing `/` and `{{`/`{%` are rejected at load time, `./b//r.md` normalises to `b/r.md`. Checked only **after the step succeeds** — a declared file that is missing fails the step; kept files are copied to `<run dir>/artifacts/<step>/…` and listed by `rayspec show`. Not checked on reused records or in `--dry-run` |
 | leaf steps only (`prompt`/`shell`/`python`) | `retry` · `env` (values templated, bool/int/float coerced to text) · `output_schema` |
 | `retry:` | `attempts` (required, 1-10, the TOTAL count) · `delay` (`3s`, doubles each retry) · `on_error` (`transient`, or `all`) — a prompt step with no `retry:` gets `attempts 3 / delay 3s / transient`; shell and python get none |
@@ -298,6 +299,9 @@ steps (valid on: shell)`.
   `auto_if` are **bare expressions** — `when: "{{ x }}"` is an error ("expression fields take a
   bare Jinja expression"); they must evaluate to exactly `true`/`false` (`each`: a list).
   Numeric fields (`max_iterations`, `max_parallel`, `max_turns`, `attempts`) are never templated.
+  The expression field itself is a **string**, so parking a step with a bare YAML `when: false` is
+  a load-time type error (*"Input should be a valid string"*) — write `when: "false"`, or an
+  expression such as `when: 1 == 2`.
 - Context roots: `inputs`, `steps.<id>`, `run` (`id workflow workdir artifacts_dir state_dir
   branch base_branch started_at`), `project` (`root name slug`), `env.<VAR>`, `iteration`
   (`n max first prev.<body id>`), `each` (`index total`), `<as>`. Everything else is undefined.
@@ -400,12 +404,15 @@ Each of these exists because the alternative fails in a specific way.
   without it the first red test skips the reviewer and fails the whole loop on iteration 1
   (`body: iteration 1: step 'check' failed`) — the agent never gets to see what broke.
 - **Dry-run with stubs before you spend.** `--stubs-init` then `--stubs` costs nothing and proves
-  the graph, the templates, the branches and the loop exit. Script a *failure* into one entry too
-  — the branch you never rehearse is the one that breaks live.
+  the graph, the templates, the loop exit and every branch gated on an *agent's* answer. Script a
+  *failure* into one entry too — the branch you never rehearse is the one that breaks live.
 - **Declare `output_schema` properties, not just `type: object`.** A dry run answers a skipped
   shell/python step with the *minimal instance* of its schema, so a bare `{type: object}` hands
   the next step an empty `{}` and its `when:` fails; `properties` + `required` make the rehearsal
-  exercise the real branches.
+  take a **definite** branch instead of erroring. But always the *same* branch: the minimal
+  instance is fixed (`boolean` → `false`, `array` → `[]`, `integer` → `0`), so a `when:` reading a
+  shell or python output is answered identically every time. Stubs cannot help — they script
+  agents, not scripts. To rehearse the other side, add `--exec-shell` so the real script answers.
 - **Name a `class:` on every gate that matters**, so an operator's policy has a handle; and
   **declare `artifacts:`** for files you want after the run — it is both a promise (the step fails
   if the file is missing) and how a file written in the worktree gets copied into the run
@@ -416,6 +423,35 @@ Each of these exists because the alternative fails in a specific way.
 - **No logic in a template.** No arithmetic pipelines, no nested `{% if %}` chains, no JSON
   assembled by hand — that is a `python:` step with an `output_schema`, which is testable,
   greppable and visible in `rayspec show`.
+
+## Pitfalls and conventions
+
+- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are unique across the whole file, and may not be
+  a context root (`inputs steps run project env iteration each loop self true false none null`).
+- Unknown keys are errors everywhere, with a suggestion (`unknown field 'allow_failures' for
+  shell step; did you mean 'allow_failure'?`). A step with no kind key lists all nine.
+- YAML: a `:` inside a plain scalar breaks the parse — `shell: echo '{"a": 1}'` fails with
+  *"mapping values are not allowed here"*; use a block scalar (`shell: |`) or quote the whole
+  value. Quote a scalar that starts with `{{`. Duplicate keys are errors.
+- rayspec's loader takes booleans as `true`/`false` only, so `on`/`off`/`yes`/`no` stay strings
+  (which is what makes `network: off` load) — but PyYAML and most other YAML 1.1 readers turn
+  them into booleans, so an editor, a linter or a script reading the same file disagrees.
+  **Quote them**: `network: "off"`.
+- The expression-vs-template mistake, both directions: `{{ }}` in `when`/`until`/`each`/`auto_if`
+  is an error, and a bare expression in a template field renders as literal text.
+- `each:` rejects a mapping (*"must evaluate to a list, got dict — use .values()/.items()"*);
+  tuples are fine, JSON text needs `| fromjson`.
+- `session:` must name a transitive ancestor prompt step on the SAME provider (or, inside a loop
+  body, the step's own id); otherwise *"'a' must be an ancestor of 'b' (add it to needs:)"*.
+- `retry.attempts` is the TOTAL number of attempts (1-10); a timeout counts as retryable only
+  with `on_error: all`. `allow_failure:` is valid on any step, `timeout:` is not.
+- `access: read-only` cannot `allow` the `edit` or `shell` groups; `instructions` and
+  `instructions_file` are mutually exclusive; `required` + `default` and `secret` + `default` are
+  both load-time errors.
+- `stop:` defaults to `status: cancelled` (exit 4); `stop: {status: succeeded}` still renders
+  `outputs:`. Exhausting a loop is `failed` unless `on_exhausted: continue`.
+- `include:` bodies nest at most 8 deep and may not form a cycle; `with:` keys must be declared
+  inputs of the included workflow.
 
 ## Worked examples
 
@@ -658,35 +694,6 @@ command that executes, inspects or governs a run is in the `rayspec-cli` skill.
 | `rayspec new agent <name>` | add one reusable `.rayspec/agents/<name>.yaml` | `--force`, `--root` | 0 / 2 |
 | `rayspec schema [kind]` | print the published JSON Schemas (`workflow`, `run`, `events`, `stream`) — the machine-readable twin of the field index above | `--out DIR` | 0 / 2 |
 
-## Pitfalls and conventions
-
-- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are unique across the whole file, and may not be
-  a context root (`inputs steps run project env iteration each loop self true false none null`).
-- Unknown keys are errors everywhere, with a suggestion (`unknown field 'allow_failures' for
-  shell step; did you mean 'allow_failure'?`). A step with no kind key lists all nine.
-- YAML: a `:` inside a plain scalar breaks the parse — `shell: echo '{"a": 1}'` fails with
-  *"mapping values are not allowed here"*; use a block scalar (`shell: |`) or quote the whole
-  value. Quote a scalar that starts with `{{`. Duplicate keys are errors.
-- rayspec's loader takes booleans as `true`/`false` only, so `on`/`off`/`yes`/`no` stay strings
-  (which is what makes `network: off` load) — but PyYAML and most other YAML 1.1 readers turn
-  them into booleans, so an editor, a linter or a script reading the same file disagrees.
-  **Quote them**: `network: "off"`.
-- The expression-vs-template mistake, both directions: `{{ }}` in `when`/`until`/`each`/`auto_if`
-  is an error, and a bare expression in a template field renders as literal text.
-- `each:` rejects a mapping (*"must evaluate to a list, got dict — use .values()/.items()"*);
-  tuples are fine, JSON text needs `| fromjson`.
-- `session:` must name a transitive ancestor prompt step on the SAME provider (or, inside a loop
-  body, the step's own id); otherwise *"'a' must be an ancestor of 'b' (add it to needs:)"*.
-- `retry.attempts` is the TOTAL number of attempts (1-10); a timeout counts as retryable only
-  with `on_error: all`. `allow_failure:` is valid on any step, `timeout:` is not.
-- `access: read-only` cannot `allow` the `edit` or `shell` groups; `instructions` and
-  `instructions_file` are mutually exclusive; `required` + `default` and `secret` + `default` are
-  both load-time errors.
-- `stop:` defaults to `status: cancelled` (exit 4); `stop: {status: succeeded}` still renders
-  `outputs:`. Exhausting a loop is `failed` unless `on_exhausted: continue`.
-- `include:` bodies nest at most 8 deep and may not form a cycle; `with:` keys must be declared
-  inputs of the included workflow.
-
 ## References (read on demand — same directory)
 
 - `references/concepts.md` — mental model: DAG + bodies, step paths (`build[2]/implement`),
@@ -699,7 +706,10 @@ command that executes, inspects or governs a run is in the `rayspec-cli` skill.
   self-heal loop, branch-and-stop, fan-out with partial failure, reusable block, finally step.
 - Everything about running what you wrote — `cli.md`, `providers.md`, `testing.md`, `policy.md`,
   `runs-and-resume.md`, `isolation.md`, `ci.md` — is in the **`rayspec-cli`** skill. Load it
-  instead of guessing a flag, a stub field or an exit code.
+  instead of guessing a flag or an exit code, and also to *write* the hand-written files this
+  skill does not cover: stub scripts (`.rayspec/stubs/`), declarative test cases
+  (`.rayspec/tests/<workflow>/<case>.yaml`, `checks.yaml`) and the operator files
+  (`policy.yaml`, `trusted.yaml`, `rayspec.lock`).
 - Online only, in neither skill: `extending.md` (plugins and the provider seam),
   `constitution.md` (why the DSL refuses fields), `agent-skill.md` (these two skills),
   `README.md` (the docs index) — at
