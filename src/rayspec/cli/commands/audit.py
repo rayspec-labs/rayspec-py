@@ -46,6 +46,7 @@ from rayspec.store.file import (
     audit_entry_for_event,
     audit_entry_for_stream,
     finish_audit_row,
+    is_attempt_start_row,
     is_step_end_row,
     is_step_start_row,
 )
@@ -88,19 +89,22 @@ def command_rows(run: RunRecord, rows: Iterable[dict[str, Any]]) -> list[dict[st
     **The rule, in one sentence:** a row is in this view iff it is a ``command`` row, or it is a
     row of a ``shell:``/``python:`` step that lies inside one of that step's executions — the
     span a ``step.started`` row opens (:func:`~rayspec.store.file.is_step_start_row`) and the
-    next end row for the same step closes (:func:`~rayspec.store.file.is_step_end_row`).
+    step's next end row (:func:`~rayspec.store.file.is_step_end_row`) or the next attempt
+    (:func:`~rayspec.store.file.is_attempt_start_row`) closes.
 
-    That is a question about the ROW, and it is total. The engine writes exactly one start per
-    execution and exactly one end per decision, so the two brackets partition a step's rows into
-    executions and everything else, whatever the ledger goes on to say about either. Nothing
-    here reads a status, a skip reason or a replay marker, so a status invented next year is
-    answered without this function changing:
+    That is a question about the ROW, and it is total. The three brackets are event TYPES the
+    engine writes, never a status, a skip reason or a replay marker, so a status invented next
+    year is answered without this function changing:
 
     * a step decided against before it began — ``when: false``, an upstream failure, the budget
       breaker — has an end row and no start to close, so it is outside every execution;
     * a step a resume replayed from its cache likewise has an end row of its own: the earlier
       attempt's execution was closed by the earlier attempt's end row, and nothing ran this time;
     * a retry is an execution and stays inside its start's bracket, so every attempt is kept;
+    * an execution the ledger never saw end — the process was killed between the two rows — is
+      closed by the attempt boundary, because no execution outlives the process that opened it.
+      Its start row stays, since the run really did start executing there, and it is the last
+      row of that execution: what the killed attempt wrote is what the view shows of it;
     * the same step can execute, be skipped and be replayed across the attempts of one run, and
       each of its rows is answered on its own — which is the whole of what a step-wide answer
       (does this run have a ``step.started`` for it *anywhere*?) got wrong on a resumed run.
@@ -108,14 +112,26 @@ def command_rows(run: RunRecord, rows: Iterable[dict[str, Any]]) -> list[dict[st
     Asking per row is also what makes a shell step's *outcome* survive the filter next to its
     start, where matching on the payload's ``kind`` would keep only the start.
 
-    One honest limit: an execution the ledger never saw end — the process was killed between the
-    two rows — stays open until some later row for that step reports an outcome, because that
-    row is the only thing the ledger has that says how the execution ended.
+    A ``--dry-run`` rehearsal is the one whole-run answer: it called no provider and ran no shell
+    body, so nothing it recorded was executed and the view is empty. The engine still brackets
+    every step it rehearsed — a rehearsal is how a run is shaped and the ledger records that
+    shaping — which is exactly why the view cannot be left to read those brackets as work. The
+    printed header says the same thing (``dry run — nothing was executed``).
+
+    The brackets are read left to right, so this is defined over the ledger **in the order the
+    engine wrote it**, which :func:`collect_rows` reconstructs from the timestamps the writer
+    stamps at append time. A store that stopped appending in timestamp order, or a clock that
+    went backwards between two attempts, would reorder the rows and invalidate the brackets.
     """
+    if run.dry_run:
+        return []
     commands = command_step_paths(run)
     executing: set[str] = set()  # step paths whose execution the ledger has open
     kept: list[dict[str, Any]] = []
     for row in rows:
+        if is_attempt_start_row(row):  # a new process: nothing it finds open can still be running
+            executing.clear()
+            continue
         if row["kind"] == "command":  # a command an agent ran: it ran, whoever reported it
             kept.append(row)
             continue

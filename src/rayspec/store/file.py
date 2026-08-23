@@ -155,34 +155,46 @@ _AUDIT_EVENT_KINDS: dict[EventType, str] = {
     EventType.WARNING: "warning",
 }
 
-#: The ``data`` key that only a ``step.started`` row carries — the step's KIND, which the event
-#: payload holds and no other step event repeats (a finish reports ``status``, a retry reports
-#: ``attempt``). :func:`is_step_start_row` is the reader half; both live here so the ledger's
-#: writer and its readers cannot drift apart.
-_STEP_START_KEY = "kind"
+#: The ledger row's ``event`` key: the :class:`~rayspec.events.model.EventType` value the row was
+#: derived from (``"step.started"``, ``"run.resumed"``, …), and ``None`` for the rows that are
+#: not lifecycle events at all — the creation row, which comes from ``run.json``, and every row
+#: derived from a step's ``stream.jsonl``.
+#:
+#: It exists so the ledger's brackets below can be read off what a row IS. The alternative — ask
+#: whether a payload happens to hold a key — is a rule over exactly the payload shapes that exist
+#: today, and it fails in both directions: a step event added later that reported a ``status``
+#: would silently close every open execution, and an executor that put a ``kind`` into a finish
+#: payload (``finish()`` merges ``StepOutcome.event_data`` into it, so any executor can) would
+#: silently open one. An event TYPE cannot be re-classified by a payload, and an event that is
+#: neither bracket is neither by construction rather than by luck.
+ROW_EVENT_KEY = "event"
 
-#: The ``data`` key that only a ``step.finished`` row carries — the step's STATUS, which every
-#: finish reports and no start or retry ever does. :func:`is_step_end_row` is the reader half.
-#: The two keys are the ledger's brackets: a start opens an execution, an end closes it, and
-#: everything an attempt emitted (its retries included) lies between them.
-_STEP_END_KEY = "status"
+#: The lifecycle events that open an ATTEMPT — one process taking the run over. The engine emits
+#: exactly one of them, before it touches a step (``Runner.run``), so no execution can span two.
+_ATTEMPT_START_EVENTS: frozenset[str] = frozenset(
+    {EventType.RUN_STARTED.value, EventType.RUN_RESUMED.value}
+)
 
 
 def is_step_start_row(row: Mapping[str, Any]) -> bool:
     """Whether ``row`` is the ledger row of a step being handed to its executor.
 
     ``step.started`` is emitted at that one moment and at no other, so this is the ledger's own
-    answer to "did the run start executing this step here?" — an answer that stays right however
-    many new statuses, skip reasons or rehearsal modes are added, because none of them are
-    consulted. A step decided against before it began (``when: false``, an upstream failure, the
-    budget breaker) has no such row, and neither has a step a resume replayed from its cache.
+    answer to "did the run hand this step to its executor here?" — an answer that stays right
+    however many new statuses and skip reasons are added, because none of them are consulted. A
+    step decided against before it began (``when: false``, an upstream failure, the budget
+    breaker) has no such row, and neither has a step a resume replayed from its cache.
+
+    It says the run reached the executor, not that a body ran. A ``--dry-run`` rehearsal is
+    dispatched to a stub and gets this row like any other step, which is why "did this run
+    execute anything at all?" is answered for the whole run before the brackets are read
+    (:func:`~rayspec.cli.commands.audit.command_rows`).
     """
-    data = row.get("data")
-    return row.get("kind") == "step" and isinstance(data, Mapping) and _STEP_START_KEY in data
+    return row.get(ROW_EVENT_KEY) == EventType.STEP_STARTED.value
 
 
 def is_step_end_row(row: Mapping[str, Any]) -> bool:
-    """Whether ``row`` is the ledger row of the run settling a step: it reports a status.
+    """Whether ``row`` is the ledger row of the run settling a step: it reports an outcome.
 
     The closing bracket to :func:`is_step_start_row`. ``step.finished`` is emitted once per
     decision the run makes about a step — after it executed, and equally when it was skipped or
@@ -190,8 +202,20 @@ def is_step_end_row(row: Mapping[str, Any]) -> bool:
     ran*. Which of the two happened is the question the pair answers: an end row that closes a
     start the ledger has open ends an execution; one that closes nothing ends a decision.
     """
-    data = row.get("data")
-    return row.get("kind") == "step" and isinstance(data, Mapping) and _STEP_END_KEY in data
+    return row.get(ROW_EVENT_KEY) == EventType.STEP_FINISHED.value
+
+
+def is_attempt_start_row(row: Mapping[str, Any]) -> bool:
+    """Whether ``row`` is one process taking the run over: ``run.started`` or ``run.resumed``.
+
+    The third bracket, and the one that makes the other two total over a ledger somebody's
+    machine died in the middle of. A killed process writes no ``step.finished``, so the step it
+    was executing has a start with nothing to close it — and the next row that settles that step
+    belongs to a *later* attempt, which says nothing about how the killed one ended. An
+    execution cannot outlive the process that opened it, so an attempt boundary ends every
+    execution still open at it, and only the rows the killed attempt really wrote stay inside.
+    """
+    return row.get(ROW_EVENT_KEY) in _ATTEMPT_START_EVENTS
 
 
 #: Keys under which a ``tool_call`` carries the command it executes. Adapters disagree about
@@ -305,6 +329,7 @@ def audit_entry_for_create(run: RunRecord) -> dict[str, Any]:
     return {
         "ts": run.created_at.isoformat(),
         "kind": "run",
+        ROW_EVENT_KEY: None,  # run.json, not an event: the ledger's one row that no event carries
         "step": None,
         "detail": "created",
         "data": {
@@ -319,10 +344,12 @@ def audit_entry_for_create(run: RunRecord) -> dict[str, Any]:
 def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     """The ledger row for one lifecycle event, or ``None`` when it carries no governance fact.
 
-    Rows are ``{ts, kind, step, detail, data}``: ``kind`` is one of ``run``/``step``/
-    ``approval``/``warning``, ``detail`` is the one-line summary and ``data`` the event's own
-    payload. Progress events (loop iterations, ``each`` items) are deliberately dropped — they
-    say how far a run got, not what it did.
+    Rows are ``{ts, kind, event, step, detail, data}``: ``kind`` is one of ``run``/``step``/
+    ``approval``/``warning``, ``event`` is the :class:`~rayspec.events.model.EventType` this row
+    was derived from (:data:`ROW_EVENT_KEY` — ``None`` on the rows that are not events),
+    ``detail`` is the one-line summary and ``data`` the event's own payload. Progress events
+    (loop iterations, ``each`` items) are deliberately dropped — they say how far a run got, not
+    what it did.
 
     A step a resume replayed from the reuse cache (``data["reused"]``) says so in its ``detail``:
     its row stands next to the row of the attempt that really ran it, and two identical
@@ -359,6 +386,7 @@ def audit_entry_for_event(event: RunEvent) -> dict[str, Any] | None:
     return {
         "ts": event.ts.isoformat(),
         "kind": kind,
+        ROW_EVENT_KEY: event.type.value,
         "step": event.step_path,
         "detail": detail,
         "data": data,
@@ -440,6 +468,7 @@ def audit_entry_for_stream(step_path: str, record: StreamRecord) -> dict[str, An
     return {
         "ts": record.ts.isoformat(),
         "kind": kind,
+        ROW_EVENT_KEY: None,  # a step's own stream, not a lifecycle event
         "step": step_path,
         "detail": detail,
         "data": data,
@@ -1238,6 +1267,7 @@ __all__ = [
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
     "PROMPT_TXT",
+    "ROW_EVENT_KEY",
     "RUN_IDENTITY_FIELDS",
     "RUN_JSON",
     "STREAM_JSONL",
@@ -1253,6 +1283,7 @@ __all__ = [
     "audit_entry_for_stream",
     "audit_log_enabled",
     "finish_audit_row",
+    "is_attempt_start_row",
     "is_step_end_row",
     "is_step_start_row",
     "open_private",

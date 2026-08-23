@@ -196,7 +196,7 @@ rayspec show    20260823-0031                  # which step, which status, which
 rayspec explain 20260823-0031 'build[1]/implement'   # WHY that step ran/skipped/failed
 rayspec logs    20260823-0031 --step 'build[1]/implement'   # the transcript: tools, results, answer
 rayspec eval    20260823-0031 'steps.facts.output' --step 'build[2]/review'   # what a template saw
-rayspec audit   20260823-0031 --commands       # every command + every shell/python step it STARTED
+rayspec audit   20260823-0031 --commands       # every command + every shell/python ROW inside an execution
 rayspec runs diff <good> <bad> --outputs       # what changed between two runs of one workflow
 rayspec logs    20260823-0031 --follow         # tail a live run (Ctrl-C = 130)
 ```
@@ -337,6 +337,10 @@ max_concurrent_runs: { claude: 2 }      # host run slots
   --locked` reports drift as an error row instead of refusing.
 - `rayspec audit <run>` answers "what did this run actually do" from `run.json`, `events.jsonl`
   and the step streams — commands, tool calls, file changes, warnings, approvals, and the actor.
+  `--commands` is "only what was executed", drawn **per row**: a `step.started` record opens an
+  execution and the step's next outcome record (or the next attempt) closes it, so a step a
+  resumed run skipped or replayed is out even when another attempt ran it, and a `--dry-run`
+  rehearsal is empty.
   `RAYSPEC_AUDIT_LOG=1` additionally writes `audit.jsonl` into the run directory; it is
   append-only in behaviour but **not tamper-evident**, and local to one machine.
 

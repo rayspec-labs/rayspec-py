@@ -20,15 +20,39 @@ One fix, and the correction of a claim 1.0.1 made about it.
   - the **replay** row of a step a later attempt reused (`succeeded (reused from the previous
     attempt — not re-executed)`) — a row that says in so many words that nothing ran.
 
-  The filter now asks the question the view is named after, about the row in front of it: a
-  `step.started` record opens an execution, the step's next outcome record closes it, and the
-  view is the rows inside one. Nothing reads a status, a skip reason or a replay marker, so a
-  status added later is answered without the filter changing; a retry is an execution and keeps
-  every attempt; and `each:` items and `loop:` iterations are answered one path at a time. The
-  unfiltered `rayspec audit` is unchanged — being decided against and being replayed are real
-  facts about a run and belong in its ledger. A run that never resumed sees no change at all.
+  The filter now asks the question the view is named after, about the row in front of it. Three
+  records the engine writes draw the line, and nothing else does — no status, no skip reason, no
+  replay marker, so a status added later is answered without the filter changing:
 
-  `docs/cli.md` and `docs/runs-and-resume.md` now describe the dividing line as it is drawn.
+  - `step.started` opens an execution;
+  - the step's next `step.finished` closes it;
+  - `run.started`/`run.resumed` closes every execution still open, because no execution outlives
+    the process that opened it. That is what an attempt killed outright leaves behind — a machine
+    loss, an OOM kill, a CI runner timeout write no outcome for the step that was running — and
+    without this the *next* attempt's decision about that step was read as the killed attempt's
+    outcome, which put a `skipped` row back into the executed view. What the view shows of a
+    killed execution is its `started` row: the run really did start executing there, and that is
+    the last thing the ledger saw of it.
+
+  A retry is an execution and keeps every attempt; `each:` items and `loop:` iterations are
+  answered one path at a time. A `--dry-run` rehearsal called no provider and ran no shell body,
+  so its executed view is now empty rather than a full bracket for every step the rehearsal
+  shaped — the header already said `dry run — nothing was executed`, and the table said the
+  opposite. The unfiltered `rayspec audit` is unchanged throughout: being decided against, being
+  replayed and being rehearsed are real facts about a run and belong in its ledger. A run that
+  never resumed and was not a rehearsal sees no change at all.
+
+  `docs/cli.md`, `docs/runs-and-resume.md` and the packaged `rayspec-cli` skill now describe the
+  dividing line as it is drawn, the killed attempt included.
+
+### Changed
+- A ledger row says which lifecycle event it came from: `rayspec audit --json` rows, and an
+  enabled `audit.jsonl`, gain an `event` field (`step.started`, `run.resumed`, …), `null` on the
+  creation row and on the rows derived from a step's stream, which are not lifecycle events. The
+  addition is what `--commands` reads. The line used to be drawn by asking whether a row's
+  payload happened to hold a key named `kind` or `status` — a rule about the payload shapes that
+  exist today rather than about what a row is, and one that a step event added later reporting a
+  `status`, or an executor putting a `kind` into a finish payload, would have moved silently.
 
 ## [1.0.1] — 2026-08-23
 
