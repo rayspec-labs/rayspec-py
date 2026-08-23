@@ -3,66 +3,6 @@
 All notable changes to rayspec are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
-## [Unreleased]
-
-### Changed
-- **The coding-agent skill became two skills.** Authoring a workflow and operating a run are
-  different jobs with different vocabularies, so `rayspec-workflows` (the YAML DSL: every step
-  kind and field, templating, scoping, agents, prompts, stubs) and `rayspec-cli` (the command
-  line: every command, flag, `--json` shape and exit code, plus the stub file, providers, cost and
-  policy) replace the single `rayspec` skill. Each names the other and says when to load it. The
-  old name is retired, not aliased — 1.0.0 was never published, so there is nothing to keep
-  working.
-- `rayspec init` writes both skills (`--no-skill` still opts out of both).
-  `rayspec skill install|show|path` now take an optional skill name: no name acts on both, a name
-  on that one, an unknown name is exit 2 with a did-you-mean.
-- **`rayspec skill show --json` changed shape**: `{"skills": [{name, packaged, project, global},
-  …]}` instead of the single skill's `{packaged, project, global}` object.
-- **Both pages were written for their own job, not split down the middle.**
-  `rayspec-workflows` carries the mental model, the authoring loop, a cheat-sheet using every step
-  kind once, a complete field inventory (a test derives the expected set from the schema models,
-  so a new field cannot be forgotten), the templating rules that bite, secrets, a best-practices
-  section and three complete worked workflows that validate clean and dry-run to completion.
-  `rayspec-cli` carries the run/directory/lock model, every command with its key flags and exit
-  codes, the `--json` shape of every command that takes it, a safety class for every command it
-  documents, the operating loops (check before you spend, offline tests, record and replay,
-  debugging), governance and trust, and the stub file format.
-- Seven docs pages that shipped with neither skill are now references of `rayspec-cli`
-  (`testing.md`, `policy.md`, `runs-and-resume.md`, `isolation.md`, `ci.md` join `cli.md` and
-  `providers.md`), and the ten commands the old skill never mentioned — `test`, `explain`, `eval`,
-  `schema`, `trust`, `lock`, `new`, `plugins`, `completion`, `version` — are documented.
-
-### Fixed
-- **The two skills disagreed about what a dry run produces.** The operating skill said a skipped
-  `shell:`/`python:` step is recorded `succeeded` with *empty output*; a step that declares an
-  `output_schema` actually gets the minimal instance of that schema (`{type: boolean}` → `false`),
-  which is what makes a downstream `when:` fire where a reader expected `""`. Both pages now state
-  the same rule, and the authoring page no longer prints the accepted *formats* of
-  `defaults.budget_usd` / `max_tokens` in the column that means *default* — neither has one.
-- **The skill could go stale without anything failing.** The only check over its CLI table
-  asserted that everything the table *named* existed, with a `len(rows) >= 14` floor; ten commands
-  were added and none was listed while the suite stayed green. The classification is now total and
-  derived from the code: every leaf command and invokable group of the builtin CLI is in exactly
-  one skill's table, every `docs/*.md` page is in exactly one skill's references or in a named
-  online-only list with a reason, and every field of every schema model appears in the authoring
-  skill. Each deliberate omission is a named, justified deny-list entry, so adding a command, a
-  page or a field forces a decision instead of passing silently.
-- A `shell:` value over the 64 KiB spill threshold now behaves exactly like a smaller one. It used
-  to be spliced into the script as `$(cat '<path>')`, and that cost it every trailing newline (a
-  captured build log is both large and newline-terminated, so it was the likeliest value to hit
-  it), made `echo '{{ x }}'` print a command substitution instead of the documented literal
-  `${RAYSPEC_V1}`, and put the run's temporary directory into the step's own output. The body now
-  keeps the plain `${RAYSPEC_V<n>}` reference either side of the threshold, and a preamble line
-  prepended to the script assigns the slot from the spill file with its trailing bytes intact.
-  One difference across the threshold remains, deliberately: a spilled slot is a shell variable
-  and is not exported, so a child process the body starts finds a small slot in its own
-  environment but not a spilled one — exporting it would put a value larger than the threshold
-  back into the environment block that spilling exists to keep it out of (`docs/templating.md`).
-  Because the preamble is part of the rendered script, the step fingerprint of such a step
-  changes: a run started before this version and resumed after it re-runs every `shell:` step
-  whose value crossed the threshold, and reports it as a changed workflow. Runs started on this
-  version resume as before.
-
 ## [1.0.0] — 2026-08-22
 
 First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
@@ -278,6 +218,31 @@ afterwards.
   narrowed before the gate is decided.
 
 ### Changed
+- **The coding-agent skill became two skills.** Authoring a workflow and operating a run are
+  different jobs with different vocabularies, so `rayspec-workflows` (the YAML DSL: every step
+  kind and field, templating, scoping, agents, prompts, stubs) and `rayspec-cli` (the command
+  line: every command, flag, `--json` shape and exit code, plus the stub file, providers, cost and
+  policy) replace the single `rayspec` skill. Each names the other and says when to load it. The
+  old name is retired, not aliased — 1.0.0 was never published, so there is nothing to keep
+  working.
+- `rayspec init` writes both skills (`--no-skill` still opts out of both).
+  `rayspec skill install|show|path` now take an optional skill name: no name acts on both, a name
+  on that one, an unknown name is exit 2 with a did-you-mean.
+- **`rayspec skill show --json` changed shape**: `{"skills": [{name, packaged, project, global},
+  …]}` instead of the single skill's `{packaged, project, global}` object.
+- **Both pages were written for their own job, not split down the middle.**
+  `rayspec-workflows` carries the mental model, the authoring loop, a cheat-sheet using every step
+  kind once, a complete field inventory (a test derives the expected set from the schema models,
+  so a new field cannot be forgotten), the templating rules that bite, secrets, a best-practices
+  section and three complete worked workflows that validate clean and dry-run to completion.
+  `rayspec-cli` carries the run/directory/lock model, every command with its key flags and exit
+  codes, the `--json` shape of every command that takes it, a safety class for every command it
+  documents, the operating loops (check before you spend, offline tests, record and replay,
+  debugging), governance and trust, and the stub file format.
+- Seven docs pages that shipped with neither skill are now references of `rayspec-cli`
+  (`testing.md`, `policy.md`, `runs-and-resume.md`, `isolation.md`, `ci.md` join `cli.md` and
+  `providers.md`), and the ten commands the old skill never mentioned — `test`, `explain`, `eval`,
+  `schema`, `trust`, `lock`, `new`, `plugins`, `completion`, `version` — are documented.
 - **Upgrade note — `defaults.on_step_failure: fail_fast` now takes effect.** In 1.0.0 the field was
   accepted but **inert** (`docs/schema.md` said so outright), so a workflow could carry
   `fail_fast` and still get drain behaviour. It is now honoured: such a workflow will start
@@ -317,6 +282,35 @@ afterwards.
   lockfile, and lints the workflow files.
 
 ### Fixed
+- **The two skills disagreed about what a dry run produces.** The operating skill said a skipped
+  `shell:`/`python:` step is recorded `succeeded` with *empty output*; a step that declares an
+  `output_schema` actually gets the minimal instance of that schema (`{type: boolean}` → `false`),
+  which is what makes a downstream `when:` fire where a reader expected `""`. Both pages now state
+  the same rule, and the authoring page no longer prints the accepted *formats* of
+  `defaults.budget_usd` / `max_tokens` in the column that means *default* — neither has one.
+- **The skill could go stale without anything failing.** The only check over its CLI table
+  asserted that everything the table *named* existed, with a `len(rows) >= 14` floor; ten commands
+  were added and none was listed while the suite stayed green. The classification is now total and
+  derived from the code: every leaf command and invokable group of the builtin CLI is in exactly
+  one skill's table, every `docs/*.md` page is in exactly one skill's references or in a named
+  online-only list with a reason, and every field of every schema model appears in the authoring
+  skill. Each deliberate omission is a named, justified deny-list entry, so adding a command, a
+  page or a field forces a decision instead of passing silently.
+- A `shell:` value over the 64 KiB spill threshold now behaves exactly like a smaller one. It used
+  to be spliced into the script as `$(cat '<path>')`, and that cost it every trailing newline (a
+  captured build log is both large and newline-terminated, so it was the likeliest value to hit
+  it), made `echo '{{ x }}'` print a command substitution instead of the documented literal
+  `${RAYSPEC_V1}`, and put the run's temporary directory into the step's own output. The body now
+  keeps the plain `${RAYSPEC_V<n>}` reference either side of the threshold, and a preamble line
+  prepended to the script assigns the slot from the spill file with its trailing bytes intact.
+  One difference across the threshold remains, deliberately: a spilled slot is a shell variable
+  and is not exported, so a child process the body starts finds a small slot in its own
+  environment but not a spilled one — exporting it would put a value larger than the threshold
+  back into the environment block that spilling exists to keep it out of (`docs/templating.md`).
+  Because the preamble is part of the rendered script, the step fingerprint of such a step
+  changes: a run started before this version and resumed after it re-runs every `shell:` step
+  whose value crossed the threshold, and reports it as a changed workflow. Runs started on this
+  version resume as before.
 - Unresolved merge-conflict markers were committed in the CLI reference and copied by the skill
   generator into both packaged copies, so the wheel shipped them. A guard now scans every tracked
   text file.
@@ -462,10 +456,12 @@ The workflow language, the scheduler, the two provider adapters and the command 
   mark them `(secret)`; example `notify_webhook`.
 - `rayspec resume|approve|reject --stubs PATH` and automatic reuse of the `--stubs` file recorded at
   launch (`run.json` `stubs_path`); a `--dry-run` record resumes as a dry run.
-- **Claude Code skill `rayspec`** shipped as package data (`SKILL.md` + `references/` generated from
-  `docs/` by `scripts/gen_skill.py`, mirrored to `.claude/skills/rayspec/`); `rayspec skill install
-  [--global] [--force]`, `rayspec skill show`, `rayspec skill path`; `rayspec init` writes the project
-  skill (`--no-skill` opts out); `docs/agent-skill.md`.
+- **Two Claude Code skills** shipped as package data — `rayspec-workflows` for authoring the YAML
+  and `rayspec-cli` for operating the engine. Each is a hand-written `SKILL.md` plus a `references/`
+  set generated from `docs/` by `scripts/gen_skill.py` and mirrored to `.claude/skills/<name>/`, and
+  each names the other and says when to load it. `rayspec skill install [NAME] [--global] [--force]`,
+  `rayspec skill show [NAME]`, `rayspec skill path [NAME]` — no name acts on both; `rayspec init`
+  writes both (`--no-skill` opts out); `docs/agent-skill.md`.
 - `run.json` records `pid_started_at`; `rayspec cancel` verifies the pid by it (on top of the
   command-line check) before sending SIGINT.
 - Dogfood `release_check`: a `history` shell step prepares the commit log and merged pull-request
