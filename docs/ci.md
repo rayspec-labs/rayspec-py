@@ -61,7 +61,8 @@ jobs:
 | `fail-on-error` | `true` | fail the check when the dry run did not succeed |
 
 **Outputs.** Two of them, set for every run and not only for the one that went well: `status`
-is `succeeded`, `failed`, `paused`, `cancelled` or `not started (usage error)`, and `exit-code` is
+is `succeeded`, `failed`, `paused`, `cancelled`, `not started (usage error)`, `interrupted`, or
+`exit <code>` for a code no release of rayspec has a name for, and `exit-code` is
 the code rayspec returned ([the table in `rayspec run`](cli.md#exit-codes)). Because they are
 always there, `fail-on-error: false` genuinely hands the verdict over — the check stays green and
 the calling workflow decides what a run that did not succeed means:

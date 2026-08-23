@@ -9,11 +9,14 @@ rather than pretend.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 import subprocess
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from urllib.parse import unquote, urldefrag, urljoin, urlsplit
 
@@ -244,6 +247,47 @@ def test_no_published_page_links_a_checkout_path_by_reference() -> None:
     assert not problems, "reference-style links to checkout paths break on the site:\n" + "\n".join(
         problems
     )
+
+
+def hooks() -> ModuleType:
+    """``scripts/mkdocs_hooks.py``, loaded from its path the way ``mkdocs.yml`` loads it.
+
+    It is a build-time hook rather than an importable module of the package, so there is no
+    ``scripts`` on ``sys.path`` to import it from.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "rayspec_mkdocs_hooks", REPO_ROOT / "scripts" / "mkdocs_hooks.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_link_pointing_out_of_the_checkout_is_left_for_the_strict_build_to_report(
+    tmp_path: Path,
+) -> None:
+    """The rewriter turns a checkout path into a repository URL, and only a checkout path.
+
+    A target outside the checkout has no ``blob/main`` URL, so building one raises: the link
+    ``[x](../../sibling/README.md)`` crashed the whole build with a bare ``ValueError`` on a
+    machine where that sibling happened to exist, and returned the target untouched on one where
+    it did not. Both are the same mistake and it has to report the same way — as the unrecognized
+    relative link mkdocs already names, with the page and the target in the message.
+    """
+    outside = tmp_path / "sibling" / "README.md"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("# outside the checkout, and it exists\n", encoding="utf-8")
+    target = os.path.relpath(outside, DOCS_DIR)
+    assert Path(DOCS_DIR, target).resolve().is_file(), "the case needs a target that exists"
+
+    left_alone = hooks().rewrite_target(
+        target,
+        source_dir=DOCS_DIR,
+        docs_dir=DOCS_DIR,
+        repo_url="https://github.com/rayspec-labs/rayspec-py",
+    )
+    assert left_alone == target
 
 
 def test_the_site_is_not_written_into_the_checkout() -> None:
