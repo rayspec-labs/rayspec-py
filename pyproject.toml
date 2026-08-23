@@ -1,6 +1,6 @@
 [project]
 name = "rayspec"
-version = "1.0.0"
+version = "1.0.1"
 description = "Declarative agent workflows for coding agents (Claude Agent SDK + OpenAI Codex SDK). CLI only."
 readme = "README.md"
 requires-python = ">=3.11"

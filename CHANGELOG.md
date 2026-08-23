@@ -5,6 +5,46 @@ All notable changes to rayspec are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-23
+
+`pip install rayspec` already gave you the whole engine *and* both provider CLIs. What it did not
+give you was any idea what to do next. This release is one command that answers that.
+
+### Added
+- **`rayspec quickstart`** — the first command to type after installing rayspec. It prints what
+  the machine has (Python, `git`, both bundled CLIs with their versions, both auth rows — every
+  row a `rayspec doctor` row, rendered, never a second answer to the same question), offers the
+  two things it cannot decide for you (a provider login, and `git init` when the directory is not
+  a repository), scaffolds `.rayspec/` when there is no project yet, and then **proves the
+  install by performing a dry run**: scripted agents, no credentials, no network, no cost. It
+  closes by naming the four commands that matter and saying which one spends money.
+
+  It never dead-ends, and it never surprises you: nothing is overwritten (that is
+  `rayspec init --force`), no question is asked without a terminal, and **no login is ever
+  spawned without one** — a browser hand-off inside a container is exactly what would hang a
+  build. The login it does spawn is the provider's own CLI by absolute path (`<claude> auth
+  login`, `<codex> login`), printed before it starts, because the bundled `codex` is not on
+  `PATH` and typing `codex login` on a fresh machine says "command not found". A failed login is
+  reported and the dry run still happens.
+
+  Exit `0` when nothing is broken — including "you declined the login", "no terminal so nothing
+  was asked" and "an existing project was respected"; exit `1` when this environment cannot run
+  rayspec, so `rayspec quickstart --no-interactive` works as a CI preflight; `2` for usage and
+  `130` for Ctrl-C at one of its own questions. `--json` prints one document with the whole
+  report, including a `credentials_verified` that is always `false` — credentials being *present*
+  is not a login that *works*, and `rayspec doctor --probe` remains the only thing that knows.
+
+### Changed
+- `rayspec doctor`'s `git` hint said worktree isolation, project slugs and `--repo` need git.
+  Two of those degrade gracefully; the truth is stronger and is now what it says: **every**
+  `rayspec run` — dry runs included — refuses without git, because rayspec asks git which
+  directory it is in before it starts anything.
+- The README leads with `pip install rayspec` and `rayspec quickstart`, and no longer claims the
+  PyPI name holds a placeholder — 1.0.0 is published there.
+- `rayspec init`'s `next_steps()` gained the additive `doctor=`, `workflow=` and `stubs=`
+  keywords so `init` and `quickstart` teach one wording rather than two; `rayspec doctor` gained
+  `claude_cli(settings)`, the single entry point for "which `claude` would rayspec use here".
+
 ## [1.0.0] — 2026-08-22
 
 First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
@@ -514,5 +554,6 @@ The workflow language, the scheduler, the two provider adapters and the command 
   **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
   version tag, so this release is the first time they execute.
 
-[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0
