@@ -45,7 +45,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@2fc00673be225bea41e1e81a80797d646a09d375
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@87b46107f9ac9dcdc0e7ae5c4af10549f5dde7c2
     with:
       workflow: example                    # what `rayspec init` scaffolds — swap in your own
       stubs: .rayspec/stubs/example.yaml   # and the stub script it writes next to it
@@ -78,7 +78,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@2fc00673be225bea41e1e81a80797d646a09d375
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@87b46107f9ac9dcdc0e7ae5c4af10549f5dde7c2
     with:
       workflow: example
       stubs: .rayspec/stubs/example.yaml

@@ -1260,6 +1260,32 @@ def test_every_ref_the_page_tells_a_stranger_to_call_exists() -> None:
     assert not missing, f"docs/ci.md calls refs this repository does not have: {missing}{hint}"
 
 
+def test_every_ref_the_page_pins_carries_the_workflow_the_page_describes() -> None:
+    """Resolving is not enough: a stale sha resolves perfectly and ships the wrong workflow.
+
+    The sibling test above only asks whether the ref exists. It stayed green when the page was
+    re-pinned to a commit predating the workflow entirely, so it could not see a pin left behind by
+    a later change to the very file it points at — which is how the page came to promise statuses
+    the pinned copy could not report. Compare the bytes instead: whatever ref the page hands a
+    stranger must carry the workflow this repository currently ships.
+    """
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        pytest.skip("not a git checkout — the refs the page names cannot be resolved here")
+    here = (REPO_ROOT / ".github" / "workflows" / "rayspec-dry-run.yml").read_text(encoding="utf-8")
+    refs = sorted(set(re.findall(r"uses:\s+rayspec-labs/rayspec-py/(\S+)@(\S+)", _ci_page())))
+    assert refs, "docs/ci.md no longer shows how to call the reusable workflow"
+    stale = []
+    for path, ref in refs:
+        shown = _git("show", f"{ref}:{path}")
+        if shown.returncode != 0 or shown.stdout != here:
+            stale.append(ref)
+    assert not stale, (
+        f"docs/ci.md pins {stale}, whose copy of the reusable workflow differs from the one this "
+        "repository ships — a reader copying the snippet gets a check that behaves differently "
+        "from the page describing it. Re-pin to a commit carrying the current file."
+    )
+
+
 def test_the_copy_paste_example_points_at_files_rayspec_init_writes(
     tmp_path: Path, home: Path
 ) -> None:
