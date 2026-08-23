@@ -26,15 +26,45 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture(autouse=True)
-def _no_ci(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset ``CI`` for every test.
+#: Ambient variables that change what a command DOES or how its output is RENDERED, and which
+#: therefore decide test outcomes by where the suite happens to run. Each is removed for every
+#: test; a test that wants one sets it itself.
+AMBIENT_ENV = (
+    # `--locked` and other defaults tighten under CI.
+    "CI",
+    # Rich reports `is_terminal` true when this is set, whatever the stream really is, so Typer's
+    # help formatter emits colour and a flag name arrives split across escape sequences
+    # (`\x1b[1;36m-\x1b[0m\x1b[1;36m-probe\x1b[0m`). This is what turned every matrix cell red on
+    # the first run this repository's CI ever completed, while the suite was green on the machine
+    # that wrote it.
+    "GITHUB_ACTIONS",
+    # The colour-control family, for the same reason from the other direction. `astral-sh/setup-uv`
+    # exports FORCE_COLOR, so this is not hypothetical either.
+    "FORCE_COLOR",
+    "NO_COLOR",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+)
 
-    Some commands change their DEFAULTS under CI (``--locked`` is the first). A suite whose
-    outcome depends on whether the developer's shell happens to export ``CI`` is not a suite,
-    so the variable is removed here; a test that wants the CI behaviour sets it itself.
+
+@pytest.fixture(autouse=True)
+def _no_ambient_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every variable in :data:`AMBIENT_ENV` for every test.
+
+    A suite whose outcome depends on what the surrounding shell happens to export is not a suite.
+    This started as `CI` alone, which is the shape of the mistake rather than the fix: naming one
+    variable reads as a rule and behaves as an example. `TERM`, `COLUMNS` and `LINES` are
+    deliberately NOT removed — terminal width is something several tests assert about on purpose,
+    so a test that cares sets it explicitly.
     """
-    monkeypatch.delenv("CI", raising=False)
+    for name in AMBIENT_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def ambient_env() -> tuple[str, ...]:
+    """:data:`AMBIENT_ENV`, for the check that the autouse fixture above still removes them."""
+    return AMBIENT_ENV
 
 
 @pytest.fixture
