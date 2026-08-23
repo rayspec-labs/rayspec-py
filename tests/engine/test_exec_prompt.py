@@ -189,16 +189,37 @@ async def test_prompt_timeout_status_not_transient_unless_all(harness: Harness) 
     assert out["b"].record.attempts == 2
 
 
-async def test_prompt_engine_deadline_cancels_slow_provider(harness: Harness) -> None:
-    # no req.timeout_s-based simulation: the stub just sleeps; the engine's fail_after must fire
+async def test_a_provider_faster_than_the_deadline_is_left_alone(harness: Harness) -> None:
+    """A call well inside its deadline succeeds, and one past it reports a timeout.
+
+    Both margins are deliberately lopsided -- 1000x inside the deadline, 100x past it -- so
+    neither half is decided by how busy the machine is. This replaces a version that raced 50 ms
+    of stub latency against a 100 ms deadline and flaked on a shared runner; that version was also
+    named for a cancellation it never asserted, and ended on two lines preparing a case nobody ran.
+
+    TWO independent nets produce the failing outcome, and this pins the pair rather than either
+    one. ``exec_prompt`` hands the provider the same ``ctx.timeout_for(...)`` it gives
+    ``anyio.fail_after``, so ``StubProvider`` sees the deadline and returns ``status="timeout"``
+    after half of it -- it answers first. Behind it, the scheduler's ``fail_after`` cancels the
+    call regardless of what the provider does. Verified by removing them: with either one disabled
+    the assertion still holds, and only with BOTH disabled does the step report success.
+    """
     _, out, _ = await run_wf(
         harness,
-        wf("  - {id: a, prompt: hi, timeout: 0.1}"),
-        {"steps": {"a": {"latency_ms": 50}}},
+        wf("  - {id: a, prompt: hi, timeout: 5}"),
+        {"steps": {"a": {"latency_ms": 5}}},
     )
-    assert out["a"].record.status is StepStatus.SUCCEEDED
+    assert out["a"].record.status is StepStatus.SUCCEEDED, "a fast provider must not be cancelled"
+
     harness.sink.clear()
-    harness.workflow("t", wf("  - {id: a, prompt: hi}"))
+    _, out, _ = await run_wf(
+        harness,
+        wf("  - {id: a, prompt: hi, timeout: 0.05}"),
+        {"steps": {"a": {"latency_ms": 5000}}},
+    )
+    record = out["a"].record
+    assert record.status is StepStatus.FAILED, "a call past its deadline must not report success"
+    assert record.error is not None and record.error.type == "timeout"
 
 
 async def test_structured_enforced_valid(harness: Harness) -> None:
