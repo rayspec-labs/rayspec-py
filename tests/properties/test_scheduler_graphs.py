@@ -56,7 +56,12 @@ DRAIN_REASONS = frozenset({"run_failed", "stopped"})
 BODIES = ("ok", "ok", "fail", "sleep:0.01", "sleep:0.05")
 #: The four failure policies a generated case is run under.
 MODES = ("drain", "fail_fast", "continue", "stop")
-#: Generated cases per property and mode. ``RAYSPEC_PROP_CASES`` raises it for a longer hunt.
+#: Generated cases per property and mode — a quarter of the usual count, because every case
+#: here runs a whole graph. ``RAYSPEC_PROP_CASES`` only ever RAISES it: the floor of 12 is what
+#: the coverage guards below need in order to mean anything, and a value below it would leave
+#: them asserting on a handful of cases. It can never reach zero either way — ``DEFAULT_CASES``
+#: is refused below 1 at import, and :func:`~.generate.forall` refuses a non-positive count
+#: whatever arithmetic produced it.
 CASES = max(12, DEFAULT_CASES // 4)
 
 
@@ -231,6 +236,30 @@ def case_for(mode: str):
         return Case(mode=mode, steps=steps)
 
     return gen
+
+
+def mixed_join_row_case(mode: str) -> Case:
+    """The ``join: any`` row the RNG only reaches when the seed is kind — written down instead.
+
+    ``any`` differs from ``all`` in exactly one row of the table: a step whose needs hold BOTH a
+    skipped and a succeeded outcome runs under ``any`` and skips under ``all``. That row is the
+    entire reason ``join: any`` exists, and :func:`gen_steps` reached it on 4 of 10 seeds — so
+    the guard that says the row was checked was itself passing by luck, and on the other 6 seeds
+    the table's most interesting row went unchecked while the suite reported green.
+
+    Three root steps reach it and nothing else can take them away: ``mix_skipped`` carries
+    ``when: false`` (skipped however the run ends), ``mix_ok`` has no needs and cannot fail, and
+    ``mix_any`` needs both under ``join: any``. Nothing in the case fails or stops, so no mode's
+    teardown ever starts and the row is decided the same way under all four.
+    """
+    return Case(
+        mode=mode,
+        steps=(
+            Gen(id="mix_skipped", kind="leaf", when_false=True),
+            Gen(id="mix_ok", kind="leaf", body="ok"),
+            Gen(id="mix_any", kind="leaf", needs=("mix_skipped", "mix_ok"), join="any"),
+        ),
+    )
 
 
 def with_a_stop(rng: random.Random, steps: tuple[Gen, ...]) -> tuple[Gen, ...]:
@@ -536,7 +565,13 @@ async def test_the_join_table_holds_inside_composites(harness: Harness, mode: st
         seen.update(check_join_table(case, records, cancelled=raised))
 
     await aforall(
-        f"join-table-{mode}", case_for(mode), prop, cases=CASES, shrink=shrink_case, show=str
+        f"join-table-{mode}",
+        case_for(mode),
+        prop,
+        cases=CASES,
+        shrink=shrink_case,
+        show=str,
+        examples=(mixed_join_row_case(mode),),
     )
     assert seen["always"] > 0, f"the generator produced no join: always row to check: {seen}"
     assert seen["nested"] > 0, f"every checked row was at the root: {seen}"
@@ -544,7 +579,9 @@ async def test_the_join_table_holds_inside_composites(harness: Harness, mode: st
     assert seen["verdict:skip"] > 0, f"no row of the table's skip half was drawn: {seen}"
     assert seen["any_mixed"] > 0, (
         f"no join: any step ever saw a mix of skipped and succeeded needs — the row that is "
-        f"the whole reason join: any exists went unchecked: {seen}"
+        f"the whole reason join: any exists went unchecked: {seen}. "
+        f"mixed_join_row_case() is passed as an example so this cannot depend on the seed; "
+        f"if it fails, that case stopped reaching the row"
     )
     if mode == "stop":
         assert seen["always_when"] > 0, (

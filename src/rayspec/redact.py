@@ -144,6 +144,31 @@ def _suffix_prefix_len(text: str, needle: str) -> int:
         start = index + 1
 
 
+def _rewind_for(name: str, text: str) -> int:
+    """How far back a detector's COMPLETE match can start from a boundary.
+
+    The same bound :func:`_open_pattern` reports for the partial-match hold, because it is the
+    same quantity: a pattern is bounded, and no match of it can be longer than that.
+    """
+    if name not in _DETECTOR_OPEN:
+        return len(text)
+    return _open_pattern(name)[1]
+
+
+def _straddling_match(pattern: re.Pattern[str], text: str, cut: int, rewind: int) -> int | None:
+    """Start of the first complete match that begins before ``cut`` and ends after it.
+
+    ``None`` when no match straddles the boundary. Matches that lie wholly before the cut are
+    walked past: they are ready to be replaced in the text being released.
+    """
+    for match in pattern.finditer(text, max(0, cut - rewind)):
+        if match.start() >= cut:
+            return None
+        if match.end() > cut:
+            return match.start()
+    return None
+
+
 def _variants(value: str) -> tuple[str, ...]:
     """The literal plus the forms a writer may serialise it into.
 
@@ -223,9 +248,9 @@ class Redactor:
         Not what it *does* hold back: :meth:`StreamRedactor.feed` holds back only the tail that
         could still grow into a match (usually nothing), so a stream that carries no secret is
         never delayed. This bound is what the documentation quotes as the worst case. It does
-        not cover the one case where more is held: a complete match the boundary would
-        otherwise cut in half is kept whole, and a run of complete matches that overlap each
-        other is held until the run ends.
+        not cover the one case where more is held: a complete match — of a value or of a
+        detector shape — that the boundary would otherwise cut in half is kept whole, and a run
+        of complete matches that overlap each other is held until the run ends.
         """
         if not self:
             return 0
@@ -576,18 +601,31 @@ class StreamRedactor:
         return self._redactor.redact(raw[:cut])
 
     def _keep_matches_whole(self, raw: str, cut: int) -> int:
-        """``cut`` moved back until no COMPLETE match of a known value straddles it.
+        """``cut`` moved back until no COMPLETE match straddles it — value OR detector shape.
 
         A match that starts before the cut and ends after it would have its head released as
         raw text (the replacement only ever sees ``raw[:cut]``) and its tail replaced later, so
         the whole match is held instead. Matches that overlap each other chain the boundary
         further back, at worst to the start of the buffer — the safe answer.
+
+        Both kinds of needle, because the hazard is the same for both and only one of them used
+        to be checked. :meth:`_hold` measures where a match could still BEGIN and grow past the
+        end of the buffer; it looks in a window the size of the longest match, and inside that
+        window it takes the leftmost open — which can sit *after* the start of a match that is
+        already complete. ``AKIA0123456789ABCDEF01`` is the whole of it: the key is complete at
+        offset 20, the window's leftmost ``A`` is at offset 3, and the first three characters
+        were released in the clear while the rest waited for a continuation that never came. A
+        stream is the console and ``stdout.log``, so that is a credential in a file.
         """
         while cut > 0:
             earliest = cut
             for needle, _ in self._redactor.literals:
                 index = raw.find(needle, max(0, cut - len(needle) + 1))
                 if 0 <= index < cut:  # the search start guarantees it ends after the cut
+                    earliest = min(earliest, index)
+            for name, pattern in self._redactor.patterns:
+                index = _straddling_match(pattern, raw, cut, _rewind_for(name, raw))
+                if index is not None:
                     earliest = min(earliest, index)
             if earliest == cut:
                 return cut

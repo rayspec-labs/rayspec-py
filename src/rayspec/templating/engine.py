@@ -31,10 +31,13 @@ plus ``fromjson``/``regex_search``/``has_signal``):
 
 Literal braces in code bodies (Go templates for ``docker --format``, ``gh``, ``kubectl``,
 ``helm``; ``printf '{{'``) must be wrapped in ``{% raw %} … {% endraw %}``. GitHub-Actions
-``${{`` is a lint error (:func:`rayspec.templating.lints.has_gha_syntax`). ``{% macro %}``,
-``{% call %}``, ``{% filter %}`` blocks and ``{% set x %}…{% endset %}`` are compile errors in
-shell/python bodies: they would re-substitute already substituted text (see
-:func:`_reject_refinalizing_constructs`); use ``{% set x = expr %}`` and inline filters.
+``${{`` is a lint error (:func:`rayspec.templating.lints.has_gha_syntax`). A shell/python body
+supports ``{% for %}``, ``{% if %}``, ``{% set x = expr %}`` and ``{% with %}`` and nothing
+else — every other statement (``{% macro %}``, ``{% call %}``, ``{% filter %}``,
+``{% set x %}…{% endset %}``, ``{% block %}``, ``{% include %}``/``{% import %}``/
+``{% extends %}``, ``{% autoescape %}``) is a compile error, because a construct that captures
+rendered text substitutes the placeholders in it a second time (see
+:func:`_reject_unsupported_statements`); use ``{% set x = expr %}`` and inline filters.
 
 Attribute lookup differs from stock Jinja in two deliberate ways: on mappings ``.name`` is an
 item lookup first (``inputs.items`` is the input called ``items``) and falls back only to the
@@ -551,7 +554,7 @@ class TemplateEngine:
         if tpl is None:
             env = self._envs[kind]
             if kind != "text":
-                _reject_refinalizing_constructs(env.parse(text), kind)
+                _reject_unsupported_statements(env.parse(text), kind)
             tpl = env.from_string(text)
             self._templates[key] = tpl
         return tpl
@@ -651,40 +654,89 @@ class TemplateEngine:
             self._collect_refs(child, found)
 
 
-#: Block constructs whose captured output would be finalized a second time (or filtered as
-#: text) in the shell/python environments — rejected at compile time for those kinds.
-_REFINALIZING_NODES: tuple[tuple[type[nodes.Node], str, str], ...] = (
-    (nodes.Macro, "macro", "{% macro %}"),
-    (nodes.CallBlock, "call block", "{% call %}"),
-    (nodes.FilterBlock, "filter block", "{% filter %}"),
-    (nodes.AssignBlock, "set block", "{% set x %}...{% endset %}"),
+#: The Jinja statements a shell/python body MAY contain. An allow-list on purpose: see
+#: :func:`_reject_unsupported_statements` for why the block-list this replaced could not hold.
+_SUPPORTED_STATEMENTS: frozenset[type[nodes.Node]] = frozenset(
+    {
+        nodes.Output,  # literal text and ``{{ expr }}``
+        nodes.For,
+        nodes.If,
+        nodes.Assign,  # ``{% set x = expr %}`` — an expression, never captured text
+        nodes.With,
+        nodes.Scope,  # the wrappers Jinja puts around the bodies of the above
+        nodes.OverlayScope,
+    }
 )
 
+#: Why a refused statement is refused, by class of statement.
+_CAPTURES = (
+    "its output would be substituted twice (the {{ }} placeholder rule is applied to already "
+    "substituted text); use `{% set x = expr %}` and inline filters (`{{ x | lower }}`) instead"
+)
+_NEEDS_LOADER = (
+    "a code body is not loaded from a template directory, so there is no other template to "
+    "resolve the name against; share the text through an `include:` step or an input instead"
+)
+_UNSUPPORTED = (
+    "a code body supports `{% for %}`, `{% if %}`, `{% set x = expr %}` and `{% with %}` and "
+    "nothing else, so that no construct can capture rendered text and feed it back through the "
+    "{{ }} placeholder rule"
+)
 
-def _reject_refinalizing_constructs(tree: nodes.Template, kind: TemplateKind) -> None:
-    """Raise ``TemplateSyntaxError`` for constructs that re-finalize rendered text in code bodies.
+#: How a refused statement is named in the message, and why it is refused. A statement type
+#: missing from here is refused all the same — :func:`_reject_unsupported_statements` falls back
+#: to the node's own class name, which is what keeps the rule total.
+_REFUSED_STATEMENTS: dict[type[nodes.Node], tuple[str, str, str]] = {
+    nodes.Macro: ("macro", "{% macro %}", _CAPTURES),
+    nodes.CallBlock: ("call block", "{% call %}", _CAPTURES),
+    nodes.FilterBlock: ("filter block", "{% filter %}", _CAPTURES),
+    nodes.AssignBlock: ("set block", "{% set x %}...{% endset %}", _CAPTURES),
+    nodes.Block: ("named block", "{% block %}", _CAPTURES),
+    nodes.Include: ("include", "{% include %}", _NEEDS_LOADER),
+    nodes.Import: ("import", "{% import %}", _NEEDS_LOADER),
+    nodes.FromImport: ("import", "{% from ... import %}", _NEEDS_LOADER),
+    nodes.Extends: ("template inheritance", "{% extends %}", _NEEDS_LOADER),
+    nodes.ExprStmt: ("expression statement", "{% do %}", _UNSUPPORTED),
+    nodes.EvalContextModifier: ("autoescape block", "{% autoescape %}", _UNSUPPORTED),
+    nodes.ScopedEvalContextModifier: ("autoescape block", "{% autoescape %}", _UNSUPPORTED),
+}
+
+
+def _reject_unsupported_statements(tree: nodes.Template, kind: TemplateKind) -> None:
+    """Raise ``TemplateSyntaxError`` for every statement a code body does not support.
 
     In the shell/python environments every ``{{ expr }}`` is replaced by a placeholder
-    (``${RAYSPEC_V<n>}`` / a Python literal). A macro, ``{% call %}``, ``{% filter %}`` block or
-    ``{% set x %}…{% endset %}`` captures that already-substituted text and either feeds it
-    through the finalizer again (``echo ${RAYSPEC_V2}`` with ``V2='${RAYSPEC_V1}'`` — bash prints
-    the literal string) or mangles the placeholder with a filter (``${rayspec_v1}``). Both are
-    silent wrong output, so they are rejected with a message naming the fix.
+    (``${RAYSPEC_V<n>}`` / a Python literal). Any construct that CAPTURES rendered text and
+    emits it again feeds that placeholder through the finalizer a second time (``echo
+    ${RAYSPEC_V2}`` with ``V2='${RAYSPEC_V1}'`` — bash prints the literal string) or mangles it
+    with a filter (``${rayspec_v1}``). Both are silent wrong output.
+
+    This used to be a LIST of the four constructs somebody thought of — ``{% macro %}``,
+    ``{% call %}``, ``{% filter %}``, ``{% set x %}…{% endset %}`` — and a list is exactly the
+    wrong shape for the rule. ``{% block b %}{{ x }}{% endblock %}{{ self.b() }}`` captures
+    through ``self`` and was not on it, so it rendered a script that printed
+    ``${RAYSPEC_V2}`` where the value belonged, silently, with the guard against that class
+    sitting right there. Anything Jinja adds later would arrive the same way.
+
+    So it is an allow-list: :data:`_SUPPORTED_STATEMENTS` names what a code body is FOR, and
+    every other statement — a capture construct, a loader construct, an extension's tag, one a
+    future Jinja introduces — is refused with the line it is on. Rejecting something harmless is
+    a message a person can read; accepting something that captures is a wrong value nobody sees.
+    Text bodies (prompts) are untouched: nothing is substituted there, so nothing re-finalizes.
     """
-    worst: tuple[int, str, str] | None = None
-    for node_type, label, tag in _REFINALIZING_NODES:
-        for node in tree.find_all(node_type):
-            if worst is None or node.lineno < worst[0]:
-                worst = (node.lineno, label, tag)
+    worst: tuple[int, type[nodes.Node]] | None = None
+    for node in tree.find_all(nodes.Stmt):
+        if type(node) in _SUPPORTED_STATEMENTS:
+            continue
+        if worst is None or node.lineno < worst[0]:
+            worst = (node.lineno, type(node))
     if worst is None:
         return
-    lineno, label, tag = worst
-    raise TemplateSyntaxError(
-        f"{label} ({tag}) is not supported in {kind} bodies: its output would be substituted "
-        "twice (the {{ }} placeholder rule is applied to already substituted text); use "
-        "`{% set x = expr %}` and inline filters (`{{ x | lower }}`) instead",
-        lineno,
+    lineno, node_type = worst
+    label, tag, why = _REFUSED_STATEMENTS.get(
+        node_type, (node_type.__name__, f"{{% {node_type.__name__.lower()} %}}", _UNSUPPORTED)
     )
+    raise TemplateSyntaxError(f"{label} ({tag}) is not supported in {kind} bodies: {why}", lineno)
 
 
 def _unwind(node: nodes.Node) -> tuple[Ref | None, list[nodes.Node]]:
