@@ -55,14 +55,14 @@ _STRFTIME_RE = re.compile(r"""strftime\(\s*["']([^"']*)["']""")
 
 
 @pytest.fixture
-def ran(cli: CliRunner, home: Path, project: Path) -> tuple[str, Path, RunRecord]:
+def ran(cli: CliRunner, home: Path, project: Path) -> tuple[str, Path, RunRecord, FileRunStore]:
     """A finished (failed) run of the three-step ``WF``, and the record behind it."""
     (project / ".rayspec" / "workflows" / "clocks.yaml").write_text(WF, encoding="utf-8")
     result = cli.invoke(app, ["run", "clocks", "--root", str(project), "--quiet"])
     assert result.exit_code == 1, result.output  # step `two` fails on purpose
     store = FileRunStore(home / "projects" / project_slug_for(project))
     run_id = store.list_run_ids()[0]
-    return run_id, project, store.load(run_id)
+    return run_id, project, store.load(run_id), store
 
 
 def _freeze(monkeypatch: pytest.MonkeyPatch, moment: datetime) -> None:
@@ -105,14 +105,17 @@ def _started_line(output: str) -> str:
     ],
 )
 def test_every_clock_a_command_prints_names_its_zone(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], argv: list[str], prints_a_clock: bool
+    cli: CliRunner,
+    ran: tuple[str, Path, RunRecord, FileRunStore],
+    argv: list[str],
+    prints_a_clock: bool,
 ) -> None:
     """Whichever of these commands prints a time of day, it says which clock it came from.
 
     `explain` reports only durations and delays, so it has no clock to label; the day it grows
     one, this test is already watching it.
     """
-    run_id, project, _record = ran
+    run_id, project, _record, _store = ran
     args = [run_id if a == "@run" else a for a in argv]
     result = cli.invoke(app, [*args, "--root", str(project)])
     assert result.exit_code == 0, result.output
@@ -156,21 +159,30 @@ def test_the_moment_helpers_are_the_only_renderers_and_all_of_them_say_utc() -> 
 
 
 def test_the_commands_that_share_a_moment_render_it_identically(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord]
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore]
 ) -> None:
     """`runs` and `show` print the run's start; `logs` and `audit` print its events. Each pair
     used to disagree — `2026-07-13 17:01` against `2026-07-13 17:01:00 UTC`, and two independent
-    `%H:%M:%S` — which is how a reader ends up comparing two times that are not comparable."""
-    run_id, project, record = ran
+    `%H:%M:%S` — which is how a reader ends up comparing two times that are not comparable.
+
+    The event pair is asked about the FIRST EVENT'S OWN timestamp, not the record's `started_at`.
+    Those are two different moments: the id is minted before the first event is written, and when
+    a second boundary falls between them — `…-141050-…` against an event at `14:10:51` — deriving
+    one from the other makes the test a coin flip on a loaded runner. It was, on 3.13, once.
+    """
+    run_id, project, record, store = ran
     started = record.started_at
     assert started is not None
-    stamp, clock = common.fmt_stamp(started), common.fmt_clock(started)
+    first_event = next(iter(store.read_events(run_id)), None)
+    assert first_event is not None, "the run wrote no events"
 
     for argv in (["runs"], ["show", run_id]):
         out = cli.invoke(app, [*argv, "--root", str(project)]).output
+        stamp = common.fmt_stamp(started)
         assert stamp in out, f"`rayspec {argv[0]}` did not render the start as {stamp!r}:\n{out}"
     for argv in (["logs", run_id], ["audit", run_id]):
         out = cli.invoke(app, [*argv, "--root", str(project)]).output
+        clock = common.fmt_clock(first_event.ts)
         assert clock in out, f"`rayspec {argv[0]}` did not render an event as {clock!r}:\n{out}"
 
 
@@ -180,7 +192,7 @@ def test_the_commands_that_share_a_moment_render_it_identically(
 
 
 def test_a_redirected_listing_is_byte_identical_however_long_you_wait(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`rayspec runs > yesterday.txt` and the same command a year later, over an untouched store.
 
@@ -188,7 +200,7 @@ def test_a_redirected_listing_is_byte_identical_however_long_you_wait(
     of every run, so redirecting it produced a file that diffed against itself on the next tick
     of the clock — every line changed, none of them because a run had.
     """
-    run_id, project, record = ran
+    run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=False)
@@ -206,11 +218,11 @@ def test_a_redirected_listing_is_byte_identical_however_long_you_wait(
 
 
 def test_a_watched_listing_still_answers_in_ages(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The other half: on a terminal the question is "what ran recently", and the answer is an
     age — at any distance, because the `run` column already opens with the date."""
-    _run_id, project, record = ran
+    _run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=True)
@@ -228,11 +240,11 @@ def test_a_watched_listing_still_answers_in_ages(
 
 
 def test_show_prints_an_age_beside_the_stamp_and_never_a_second_copy_of_it(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run older than a month rendered as ``2026-07-01 09:00:00 UTC (2026-07-01 09:00)``: the
     slot reserved for "how long ago" spent itself repeating the stamp two inches to its left."""
-    run_id, project, record = ran
+    run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=True)
@@ -244,12 +256,12 @@ def test_show_prints_an_age_beside_the_stamp_and_never_a_second_copy_of_it(
 
 
 def test_show_reads_a_future_stamp_forwards_instead_of_calling_it_now(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two machines sharing a ``RAYSPEC_HOME`` with skewed clocks, or a restored backup, and the
     run is stamped ahead of now. The age used to be clamped to ``0s ago``, which says the run
     started this second — the one reading that is *never* true."""
-    run_id, project, record = ran
+    run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=True)
@@ -260,10 +272,10 @@ def test_show_reads_a_future_stamp_forwards_instead_of_calling_it_now(
 
 
 def test_show_drops_the_age_when_nobody_is_watching(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Redirected, the header is the stamp and nothing else — same rule as the listing."""
-    run_id, project, record = ran
+    run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=False)
@@ -275,10 +287,10 @@ def test_show_drops_the_age_when_nobody_is_watching(
 
 
 def test_run_stamped_in_the_future_sorts_and_renders_without_pretending_it_is_now(
-    cli: CliRunner, ran: tuple[str, Path, RunRecord], monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, ran: tuple[str, Path, RunRecord, FileRunStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The same skewed stamp in the listing: ``in 8d``, not a run that started ``0s ago``."""
-    _run_id, project, record = ran
+    _run_id, project, record, _store = ran
     started = record.started_at
     assert started is not None
     _watching(monkeypatch, terminal=True)
@@ -290,11 +302,11 @@ def test_run_stamped_in_the_future_sorts_and_renders_without_pretending_it_is_no
 
 
 def test_a_naive_stamp_from_an_old_record_is_still_labelled(
-    ran: tuple[str, Path, RunRecord],
+    ran: tuple[str, Path, RunRecord, FileRunStore],
 ) -> None:
     """A record written before the store wrote offsets holds a naive datetime. It is UTC — the
     store never wrote anything else — and the rendering has to say so rather than go quiet."""
-    _run_id, _project, record = ran
+    _run_id, _project, record, _store = ran
     started = record.started_at
     assert started is not None
     naive = started.replace(tzinfo=None)
@@ -304,11 +316,11 @@ def test_a_naive_stamp_from_an_old_record_is_still_labelled(
 
 
 def test_utc_is_what_is_printed_whatever_the_offset_of_the_moment(
-    ran: tuple[str, Path, RunRecord],
+    ran: tuple[str, Path, RunRecord, FileRunStore],
 ) -> None:
     """An aware stamp in another offset renders as the same instant in UTC, not as its own
     wall clock — otherwise two runs of one project read as hours apart when they were not."""
-    _run_id, _project, record = ran
+    _run_id, _project, record, _store = ran
     started = record.started_at
     assert started is not None
     elsewhere = started.astimezone(_offset(hours=9))
