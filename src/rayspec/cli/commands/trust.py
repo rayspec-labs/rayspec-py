@@ -29,7 +29,7 @@ from rayspec.cli.commands._loader_common import (
     short_path,
 )
 from rayspec.errors import RayspecError
-from rayspec.loader import ResolvedWorkflow, discover_workflows, load_workflow
+from rayspec.loader import ResolvedWorkflow, load_workflow
 from rayspec.policy import TrustEntry, TrustStore, trusted_path
 
 #: What ``trust list`` says about an entry whose workflow no longer hashes to what was trusted.
@@ -177,7 +177,7 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         store = TrustStore.load(ctx.project_root)
         named = list(workflows or [])
-        known = {ref.name for ref in discover_workflows(ctx.project_root, home=ctx.home)}
+        known = {ref.name for ref in ctx.workflow_refs()}
         targets = named or sorted(known)
         for target in named:  # a name given on the command line has to exist
             if target not in known and not Path(target).is_file():

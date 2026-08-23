@@ -41,6 +41,7 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
     short_path,
     workflow_label,
+    workflow_target,
 )
 from rayspec.errors import RayspecError
 from rayspec.limits import (
@@ -55,7 +56,7 @@ from rayspec.limits import (
     merged_workflows,
     write_lockfile,
 )
-from rayspec.loader import ResolvedWorkflow, discover_workflows, load_workflow
+from rayspec.loader import ResolvedWorkflow, load_workflow
 
 LockedOption = Annotated[
     bool | None,
@@ -154,7 +155,10 @@ def enforce_lockfile(
 def _load(target: str, ctx: Context) -> ResolvedWorkflow:
     try:
         return load_workflow(
-            target, project_root=ctx.project_root, home=ctx.home, config=ctx.config
+            workflow_target(target, ctx),
+            project_root=ctx.project_root,
+            home=ctx.home,
+            config=ctx.config,
         )
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
@@ -190,7 +194,7 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         targets = list(names or [])
         if not targets:
-            targets = [r.name for r in discover_workflows(ctx.project_root, home=ctx.home)]
+            targets = [r.name for r in ctx.workflow_refs()]
             if not targets:
                 fail(
                     "no workflows found (nothing to lock)",
