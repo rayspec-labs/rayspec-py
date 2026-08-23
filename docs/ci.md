@@ -132,11 +132,12 @@ The release runs from a tag and needs no credential of mine:
 `workflow_dispatch` on the same workflow is the rehearsal: it builds, checks, generates the bill
 of materials and the notes, and stops short of the two irreversible steps.
 
-Three things stay manual on purpose, and the run's summary says so when it finishes: yanking the
-placeholder that holds the `rayspec` name on PyPI, moving the `v1` tag onto the released commit
-so every repository calling the dry-run workflow at `@v1` gets the new release, and rolling the
-next `## [Unreleased]` heading into `CHANGELOG.md` — together with the released version's link
-reference, which has no target to point at until the tag is pushed.
+Two things stay manual on purpose, and the run's summary says so when it finishes: moving the `v1`
+tag onto the released commit so every repository calling the dry-run workflow at `@v1` gets the new
+release, and rolling the next `## [Unreleased]` heading into `CHANGELOG.md` — together with the
+released version's link reference, which has no target to point at until the tag is pushed. (The
+summary lists a third, yanking the placeholder that held the `rayspec` name on PyPI; that was a
+one-off for 1.0.0 and is done.)
 
 ## The documentation site
 
