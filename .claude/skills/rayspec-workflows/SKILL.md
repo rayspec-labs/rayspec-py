@@ -331,8 +331,10 @@ steps (valid on: shell)`.
   `uv run --no-project --with <dep> python -` when `deps:` is set.
 - Code bodies (shell/python) use `{{# ... #}}` as Jinja comment delimiters (bash `${#VAR}` is
   safe); literal `{{` (Go templates, `docker --format '{{.ID}}'`, `printf '{{'`) needs
-  `{% raw %}...{% endraw %}`; `{% macro %}`/`{% call %}`/`{% filter %}`/`{% set x %}…{% endset %}`
-  blocks are compile errors there (use `{% set x = expr %}` and inline filters).
+  `{% raw %}...{% endraw %}`; a code body supports only
+  `{% for %}`/`{% if %}`/`{% set x = expr %}`/`{% with %}`, so `{% macro %}`/`{% call %}`/
+  `{% filter %}`/`{% set x %}…{% endset %}`/`{% block %}` are compile errors there (use
+  `{% set x = expr %}` and inline filters).
 - Strict undefined: a missing attribute, `null`, a failed producer, `.field` on text output
   ("no output_schema — try `| fromjson`") all fail the step with a hint. On a **skipped**
   producer *both* `.output` and `.ok` fail loudly — a skipped step never answered, so `.ok` is

@@ -473,6 +473,111 @@ def test_a_value_never_runs_a_command(engine: TemplateEngine, tmp_path: Path) ->
     forall("shell-inert", shell_values, prop, cases=25, shrink=shrink_seq)
 
 
+#: Bodies that CAPTURE rendered text and emit it again — the one construct class the placeholder
+#: rule cannot survive, because the captured text already holds ``${RAYSPEC_V<n>}`` and emitting
+#: it puts that text through the finalizer a second time (``V2='${RAYSPEC_V1}'``: bash prints the
+#: name, not the value). Each body writes the value to ``$OUT/0``, so the question the property
+#: asks is the ordinary one — did the value arrive?
+#:
+#: Written out here and NEVER derived from the engine's own list of refused constructs. An
+#: oracle that asks the module under test which constructs are dangerous agrees with it by
+#: construction, and agreeing is the one thing this property must not do: it exists to notice a
+#: capture construct the module does not know about. ``{% block %}`` + ``{{ self.b() }}`` is why
+#: that matters — it was not on the engine's list, it captured, and every property in this file
+#: stayed green while a body printed ``${RAYSPEC_V2}`` where the value belonged.
+CAPTURES: tuple[tuple[str, str], ...] = (
+    ("set block", '{% set cap %}{{ inputs.v0 }}{% endset %}printf %s "{{ cap }}" > "$OUT/0"\n'),
+    ("macro", '{% macro cap() %}{{ inputs.v0 }}{% endmacro %}printf %s "{{ cap() }}" > "$OUT/0"\n'),
+    (
+        "call block",
+        "{% macro wrap() %}{{ caller() }}{% endmacro %}"
+        'printf %s "{% call wrap() %}{{ inputs.v0 }}{% endcall %}" > "$OUT/0"\n',
+    ),
+    (
+        "filter block",
+        'printf %s "{% filter lower %}{{ inputs.v0 }}{% endfilter %}" > "$OUT/0"\n',
+    ),
+    (
+        "named block",
+        ': "{% block cap %}{{ inputs.v0 }}{% endblock %}"\n'
+        'printf %s "{{ self.cap() }}" > "$OUT/0"\n',
+    ),
+)
+
+
+@dataclass(frozen=True)
+class CaptureCase:
+    """One capture construct carrying one value."""
+
+    label: str
+    source: str
+    value: str
+
+    def __str__(self) -> str:
+        return f"{self.label} with {self.value!r}"
+
+
+def capture_case(rng: random.Random) -> CaptureCase:
+    """A capture construct from :data:`CAPTURES` around a generated value."""
+    label, source = rng.choice(CAPTURES)
+    return CaptureCase(label=label, source=source, value=shell_value(rng))
+
+
+def shrink_capture(case: CaptureCase) -> Iterator[CaptureCase]:
+    """Only the value shrinks — the construct IS the case."""
+    for smaller in shrink_text(case.value):
+        yield replace(case, value=smaller)
+
+
+@needs_bash
+def test_a_capture_construct_never_substitutes_a_slot_twice(
+    engine: TemplateEngine, tmp_path: Path
+) -> None:
+    """A body that captures rendered text is refused, or the value still arrives verbatim.
+
+    Two acceptable outcomes and no third: the engine refuses the construct at compile time, or
+    it renders something bash turns back into the value. What is NOT acceptable is the outcome
+    this file could not see before — a script that runs, exits 0 and writes ``${RAYSPEC_V1}``
+    into the output.
+
+    The property is deliberately not "the engine refuses it". Asserting the refusal would pin
+    today's list of refused constructs and pass for every construct nobody listed, which is how
+    ``{% block %}`` got in. Asserting the VALUE holds whatever the engine decides is the promise
+    ``docs/templating.md`` actually makes.
+    """
+    counter = iter(range(10_000))
+    seen: Counter[str] = Counter()
+
+    def prop(case: CaptureCase) -> None:
+        seen[case.label] += 1
+        try:
+            rendered = engine.render_shell(case.source, ctx_of([case.value]), spill_dir=tmp_path)
+        except TemplateRenderError:
+            return  # refused at compile time: nothing was substituted, let alone twice
+        got = run_bash(rendered.script, rendered.env, tmp_path / f"cap{next(counter)}", 1)
+        assert got == [case.value.encode("utf-8")], (
+            f"{case.label} was accepted and the value did not survive it: "
+            f"{got[0]!r} != {case.value.encode('utf-8')!r} (script {rendered.script!r}, "
+            f"env {rendered.env})"
+        )
+
+    forall(
+        "shell-capture",
+        capture_case,
+        prop,
+        cases=40,
+        shrink=shrink_capture,
+        show=str,
+        # one landmine per construct, so which constructs were checked never depends on the seed
+        examples=tuple(
+            CaptureCase(label=label, source=source, value="${RAYSPEC_V1}")
+            for label, source in CAPTURES
+        ),
+    )
+    for label, _ in CAPTURES:
+        assert seen[label] > 0, f"the generator drew no {label}: {seen}"
+
+
 # --------------------------------------------------------------------------------------------------
 # python bodies
 # --------------------------------------------------------------------------------------------------
