@@ -543,13 +543,287 @@ def test_the_start_row_predicate_is_exactly_the_engine_s_step_started_event(
     assert from_rows == from_events != set()
 
 
-def test_commands_keeps_a_replayed_shell_step(
+def test_commands_keeps_the_attempt_that_really_ran_a_replayed_step(
     cli: CliRunner, resumed: tuple[str, Path, FileRunStore]
 ) -> None:
-    """A resume replays `build` instead of running it again — and the attempt that DID run it is
-    in the same ledger, so both of its rows stay in the executed view."""
+    """A resume replays `build` instead of running it again.
+
+    The attempt that DID run it is in the same ledger, so `build` is in the executed view — as
+    its own execution and only that. The replay row ran no body, so it is not a second one.
+    """
     run_id, root, _store = resumed
-    rows = _commands(cli, run_id, root)
-    details = [r["detail"] for r in rows if r["step"] == "build"]
-    assert any(d.startswith("started") for d in details), rows
-    assert any("not re-executed" in d for d in details), rows
+    details = [r["detail"] for r in _commands(cli, run_id, root) if r["step"] == "build"]
+    assert details == ["started (shell)", "succeeded"], details
+
+
+# --------------------------------------------------------------------------------------------------
+# "only what was executed" is a question about a ROW, not about a step: a resumed run holds rows
+# of both kinds for the same step, and the ledger brackets each execution between a start and an end
+# --------------------------------------------------------------------------------------------------
+
+GATED = """
+rayspec: 1
+name: work
+isolation: none
+steps:
+  - id: one
+    shell: 'echo one ran'
+  - id: gate
+    needs: [one]
+    shell: 'test -f GO'
+  - id: three
+    needs: [gate]
+    shell: 'echo three ran'
+"""
+
+
+@pytest.fixture
+def gated(cli: CliRunner, tmp_path: Path, home: Path) -> tuple[str, Path]:
+    """A run that failed at a gate and was resumed once the gate was opened.
+
+    Attempt 1: `one` runs, `gate` fails, `three` is never started. Attempt 2: `one` is replayed
+    from the cache, `gate` runs a second time and `three` runs for the first. So the same three
+    step paths carry rows of every kind the view has to tell apart.
+    """
+    root = tmp_path / "gated"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "work.yaml").write_text(textwrap.dedent(GATED))
+    failed = cli.invoke(app, ["run", "work", "--root", str(root)])
+    assert failed.exit_code == 1, failed.output
+    (run_id,) = only_store(home).list_run_ids()
+    (root / "GO").write_text("")
+    done = cli.invoke(app, ["resume", run_id, "--root", str(root)])
+    assert done.exit_code == 0, done.output
+    assert "reused 1 step(s)" in done.output, done.output
+    return run_id, root
+
+
+def _details(rows: list[dict], step: str) -> list[str]:
+    return [r["detail"] for r in rows if r["kind"] == "step" and r["step"] == step]
+
+
+def test_commands_drops_a_skip_a_later_attempt_reversed(
+    cli: CliRunner, gated: tuple[str, Path]
+) -> None:
+    """`three` was decided against in attempt 1 and executed in attempt 2.
+
+    The skip row still says nothing ran, so it stays out of the executed view — being started
+    later cannot turn an earlier decision into an execution.
+    """
+    details = _details(_commands(cli, *gated), "three")
+    assert details == ["started (shell)", "succeeded"], details
+
+
+def test_commands_drops_the_replay_row_of_a_step_it_shows_executing(
+    cli: CliRunner, gated: tuple[str, Path]
+) -> None:
+    """`one` ran in attempt 1 and was replayed in attempt 2.
+
+    The replay row says in so many words that no body ran; having executed earlier cannot make
+    it an execution either.
+    """
+    details = _details(_commands(cli, *gated), "one")
+    assert details == ["started (shell)", "succeeded"], details
+
+
+def test_the_ledger_proper_still_shows_the_skip_and_the_replay(
+    cli: CliRunner, gated: tuple[str, Path]
+) -> None:
+    """Both are real facts about the run — `rayspec audit` without the flag keeps them."""
+    run_id, root = gated
+    result = cli.invoke(app, ["audit", run_id, "--json", "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)["rows"]
+    assert [r["detail"] for r in rows if r["step"] == "three"] == [
+        "skipped",
+        "started (shell)",
+        "succeeded",
+    ], rows
+    assert any("not re-executed" in r["detail"] for r in rows if r["step"] == "one"), rows
+
+
+def test_a_step_executed_in_both_attempts_keeps_both_executions(
+    cli: CliRunner, gated: tuple[str, Path]
+) -> None:
+    """`gate` really ran twice — a failed step is not reusable — so both brackets are kept."""
+    details = _details(_commands(cli, *gated), "gate")
+    assert details == ["started (shell)", "failed", "started (shell)", "succeeded"], details
+
+
+RETRIED = """
+rayspec: 1
+name: work
+isolation: none
+steps:
+  - id: flaky
+    shell: 'test -f MARK || { : > MARK; exit 1; }'
+    retry: { attempts: 2, delay: 0s, on_error: all }
+"""
+
+
+@pytest.fixture
+def retried(cli: CliRunner, tmp_path: Path, home: Path) -> tuple[str, Path]:
+    """One step that fails its first attempt and succeeds on the retry."""
+    root = tmp_path / "retried"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "work.yaml").write_text(textwrap.dedent(RETRIED))
+    res = cli.invoke(app, ["run", "work", "--root", str(root)])
+    assert res.exit_code == 0, res.output
+    (run_id,) = only_store(home).list_run_ids()
+    return run_id, root
+
+
+def test_a_retried_step_keeps_every_attempt(cli: CliRunner, retried: tuple[str, Path]) -> None:
+    """A retry IS an execution: the second attempt ran the body again.
+
+    The retry row falls between the start and the finish, so the whole bracket is kept — the
+    rule must not mistake "one start, one finish" for "one attempt".
+    """
+    details = _details(_commands(cli, *retried), "flaky")
+    assert details == ["started (shell)", "retry 2", "succeeded"], details
+
+
+FANNED = """
+rayspec: 1
+name: work
+isolation: none
+defaults: { on_step_failure: continue }
+steps:
+  - id: probe
+    always_run: true
+    shell: 'test -f GO && echo yes || echo no'
+  - id: fan
+    needs: [probe]
+    each: "[1, 2]"
+    as: n
+    steps:
+      - id: item
+        when: "n == 2 or steps.probe.output == 'yes'"
+        shell: 'test -f GO'
+  - id: spin
+    needs: [probe]
+    loop:
+      max_iterations: 2
+      steps:
+        - id: turn
+          when: "iteration.n == 2 or steps.probe.output == 'yes'"
+          shell: 'test -f GO'
+"""
+
+
+@pytest.fixture
+def fanned(cli: CliRunner, tmp_path: Path, home: Path) -> tuple[str, Path]:
+    """A resumed run whose `each:` item 0 and `loop:` iteration 1 are skipped, then executed.
+
+    `probe` re-runs on the resume (`always_run`), which flips the `when:` of the body steps that
+    were decided against the first time round — so `fan[0]/item` and `spin[1]/turn` each carry a
+    skip row from attempt 1 and an execution from attempt 2, at one and the same step path.
+    """
+    root = tmp_path / "fanned"
+    (root / ".rayspec" / "workflows").mkdir(parents=True)
+    (root / ".rayspec" / "workflows" / "work.yaml").write_text(textwrap.dedent(FANNED))
+    failed = cli.invoke(app, ["run", "work", "--root", str(root)])
+    assert failed.exit_code == 1, failed.output
+    (run_id,) = only_store(home).list_run_ids()
+    (root / "GO").write_text("")
+    done = cli.invoke(app, ["resume", run_id, "--root", str(root)])
+    assert done.exit_code == 0, done.output
+    return run_id, root
+
+
+@pytest.mark.parametrize("step", ["fan[0]/item", "spin[1]/turn"])
+def test_an_each_item_and_a_loop_iteration_are_answered_one_by_one(
+    step: str, cli: CliRunner, fanned: tuple[str, Path]
+) -> None:
+    """A step path that repeats per item or iteration is still one path in the ledger.
+
+    Item 0 and iteration 1 were decided against in attempt 1 and executed in attempt 2; their
+    skip rows stay out of the executed view exactly as a top-level step's would.
+    """
+    details = _details(_commands(cli, *fanned), step)
+    assert details == ["started (shell)", "succeeded"], details
+
+
+@pytest.mark.parametrize("step", ["fan[1]/item", "spin[2]/turn"])
+def test_the_sibling_item_that_ran_in_both_attempts_keeps_both(
+    step: str, cli: CliRunner, fanned: tuple[str, Path]
+) -> None:
+    """The other half: item 1 and iteration 2 ran (and failed) in attempt 1 and ran again in
+    attempt 2, so the view holds two executions of each."""
+    details = _details(_commands(cli, *fanned), step)
+    assert details == ["started (shell)", "failed", "started (shell)", "succeeded"], details
+
+
+def _inside_an_execution(rows: list[dict], index: int) -> bool:
+    """The rule as a property of ONE row, spelled out independently of how it is implemented.
+
+    A row is inside an execution iff it opens one, or the nearest earlier row of the same step
+    that opens or closes an execution opens it.
+    """
+    from rayspec.store.file import is_step_end_row, is_step_start_row
+
+    row = rows[index]
+    if is_step_start_row(row):
+        return True
+    for earlier in reversed(rows[:index]):
+        if earlier["kind"] != "step" or earlier["step"] != row["step"]:
+            continue
+        if is_step_start_row(earlier):
+            return True
+        if is_step_end_row(earlier):
+            return False
+    return False
+
+
+@pytest.mark.parametrize("fixture", ["gated", "fanned", "retried"])
+def test_the_commands_view_is_exactly_the_rows_inside_an_execution(
+    fixture: str, cli: CliRunner, home: Path, request: pytest.FixtureRequest
+) -> None:
+    """The rule itself, asserted as a rule rather than as a list of statuses to exclude.
+
+    Whatever the engine learns to record about a step next, the executed view is the step rows
+    of a `shell:`/`python:` step that lie between a `step.started` and the end row answering it,
+    plus every command an agent ran. Derived here from the store's own bracket predicates over
+    the FULL ledger, so a filter that enumerates skip reasons cannot satisfy it.
+    """
+    from rayspec.cli.commands.audit import COMMAND_STEP_KINDS
+
+    run_id, root = request.getfixturevalue(fixture)
+    store = only_store(home)
+    record = store.load(run_id)
+    commands = {path for path, rec in record.steps.items() if rec.kind in COMMAND_STEP_KINDS}
+    result = cli.invoke(app, ["audit", run_id, "--json", "--root", str(root)])
+    assert result.exit_code == 0, result.output
+    full = json.loads(result.stdout)["rows"]
+    expected = [
+        row
+        for index, row in enumerate(full)
+        if row["kind"] == "command"
+        or (row["kind"] == "step" and row["step"] in commands and _inside_an_execution(full, index))
+    ]
+    assert _commands(cli, run_id, root) == expected
+    assert any(row["kind"] == "step" for row in expected), full
+
+
+def test_a_run_that_never_resumed_answers_exactly_as_it_did_before(
+    cli: CliRunner, home: Path, decided_against: tuple[str, Path]
+) -> None:
+    """No regression: with one attempt there is one bracket per executed step, so the per-row
+    rule and the per-STEP rule it replaces agree row for row. The fix narrows resumed runs and
+    nothing else — this re-implements the old rule and demands the same answer."""
+    from rayspec.cli.commands.audit import COMMAND_STEP_KINDS, collect_rows
+    from rayspec.store.file import is_step_start_row
+
+    run_id, root = decided_against
+    store = only_store(home)
+    record = store.load(run_id)
+    full = collect_rows(store, record)
+    started = {str(r["step"]) for r in full if r.get("step") and is_step_start_row(r)}
+    kinds = {path for path, rec in record.steps.items() if rec.kind in COMMAND_STEP_KINDS}
+    per_step = kinds & started
+    old = [
+        row
+        for row in full
+        if row["kind"] == "command" or (row["kind"] == "step" and row.get("step") in per_step)
+    ]
+    assert _commands(cli, run_id, root) == old != []

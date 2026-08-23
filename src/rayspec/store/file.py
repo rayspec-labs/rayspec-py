@@ -161,18 +161,37 @@ _AUDIT_EVENT_KINDS: dict[EventType, str] = {
 #: writer and its readers cannot drift apart.
 _STEP_START_KEY = "kind"
 
+#: The ``data`` key that only a ``step.finished`` row carries — the step's STATUS, which every
+#: finish reports and no start or retry ever does. :func:`is_step_end_row` is the reader half.
+#: The two keys are the ledger's brackets: a start opens an execution, an end closes it, and
+#: everything an attempt emitted (its retries included) lies between them.
+_STEP_END_KEY = "status"
+
 
 def is_step_start_row(row: Mapping[str, Any]) -> bool:
     """Whether ``row`` is the ledger row of a step being handed to its executor.
 
     ``step.started`` is emitted at that one moment and at no other, so this is the ledger's own
-    answer to "did the run execute this step?" — an answer that stays right however many new
-    statuses, skip reasons or rehearsal modes are added, because none of them are consulted.
-    A step decided against before it began (``when: false``, an upstream failure, the budget
-    breaker) has no such row.
+    answer to "did the run start executing this step here?" — an answer that stays right however
+    many new statuses, skip reasons or rehearsal modes are added, because none of them are
+    consulted. A step decided against before it began (``when: false``, an upstream failure, the
+    budget breaker) has no such row, and neither has a step a resume replayed from its cache.
     """
     data = row.get("data")
     return row.get("kind") == "step" and isinstance(data, Mapping) and _STEP_START_KEY in data
+
+
+def is_step_end_row(row: Mapping[str, Any]) -> bool:
+    """Whether ``row`` is the ledger row of the run settling a step: it reports a status.
+
+    The closing bracket to :func:`is_step_start_row`. ``step.finished`` is emitted once per
+    decision the run makes about a step — after it executed, and equally when it was skipped or
+    replayed from the resume cache — so this says *an outcome was recorded here*, never *a body
+    ran*. Which of the two happened is the question the pair answers: an end row that closes a
+    start the ledger has open ends an execution; one that closes nothing ends a decision.
+    """
+    data = row.get("data")
+    return row.get("kind") == "step" and isinstance(data, Mapping) and _STEP_END_KEY in data
 
 
 #: Keys under which a ``tool_call`` carries the command it executes. Adapters disagree about
@@ -1234,6 +1253,7 @@ __all__ = [
     "audit_entry_for_stream",
     "audit_log_enabled",
     "finish_audit_row",
+    "is_step_end_row",
     "is_step_start_row",
     "open_private",
     "secure_mkdir",
