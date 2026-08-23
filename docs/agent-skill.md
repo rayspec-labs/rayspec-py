@@ -12,7 +12,7 @@ different vocabularies, and an agent doing one of them should not have to page i
 
 | Skill | What it teaches | Load it when |
 |---|---|---|
-| `rayspec-workflows` | the YAML DSL: every step kind and field, templating and scoping, agents, prompts, includes, stubs, `.rayspec/` project files | writing or editing a workflow, agent or prompt |
+| `rayspec-workflows` | the YAML DSL: every step kind and field, templating and scoping, agents, prompts, includes, secrets, the `.rayspec/` files you write by hand | writing or editing a workflow, agent or prompt |
 | `rayspec-cli` | the CLI: every command, flag, `--json` shape and exit code, plus the stub file, providers and capabilities, cost, policy and runs | validating, planning, running, resuming, auditing or debugging |
 
 Each names the other one in its `description:` and in its text, so an agent that loaded one is
@@ -30,7 +30,8 @@ field back to `rayspec-workflows`.
                               kind, the join truth table, inputs (incl. `secret: true`), agents,
                               the templating rules that bite (env-ref rule, expression vs template
                               fields, strict undefined, scopes), a field index that lists every
-                              field the schema defines, the authoring commands, and pitfalls
+                              field the schema defines, best practices, three complete worked
+                              workflows, the authoring commands, and pitfalls
   references/concepts.md      verbatim copies of docs/concepts.md, docs/schema.md,
   references/schema.md        docs/templating.md and docs/examples.md — each with a three-line
   references/templating.md    "generated from …" header; links between them stay relative, links
@@ -38,10 +39,12 @@ field back to `rayspec-workflows`.
 
 .claude/skills/rayspec-cli/
   SKILL.md                    hand-written core: frontmatter `name: rayspec-cli` +
-                              `description:`, then the run/isolation/exit-code mental model, a CLI
+                              `description:`, then the run/isolation/lock mental model, a CLI
                               table covering every command with its key flags and exit codes, the
-                              stub file format, providers/capabilities/cost, and the operational
-                              pitfalls
+                              exit codes and `--json` contract, the operating loops (check before
+                              you spend, offline tests, record-and-replay, debugging), a safety
+                              class for every command, governance and trust, the stub file format,
+                              providers/capabilities/cost, and the operational pitfalls
   references/cli.md           verbatim copies of docs/cli.md, docs/providers.md, docs/testing.md,
   references/providers.md     docs/policy.md, docs/runs-and-resume.md, docs/isolation.md and
   references/testing.md       docs/ci.md, with the same header and link handling
@@ -67,8 +70,8 @@ Everything the skills state is taken from the docs, and `tests/skill/` holds bot
 the agreement:
 
 - **soundness** — every command and flag a CLI table names exists in the Typer app, every ```yaml
-  fence parses with the real loader, both cheat-sheet workflows validate without warnings and
-  dry-run with the stub provider, and a "fresh agent" workflow written from the skills alone
+  fence parses with the real loader, every workflow the authoring page shows validates without
+  warnings and dry-runs with the stub provider, and a "fresh agent" workflow from the skills alone
   replays `validate` → `plan` → `--dry-run --stubs-init` → `--dry-run --stubs`;
 - **completeness** — every leaf command and invokable group of the CLI is in exactly one skill's
   table, every `docs/*.md` page is in exactly one skill's references or in a named online-only

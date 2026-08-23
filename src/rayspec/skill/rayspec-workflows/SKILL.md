@@ -1,6 +1,6 @@
 ---
 name: rayspec-workflows
-description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus agents, prompts, includes, secrets and .rayspec/ project files. Use when asked to create or edit a rayspec workflow, agent or prompt. Load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote.
+description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus the agents, prompts, includes, secrets and .rayspec/ files you write by hand. Use when asked to create or edit a rayspec workflow, agent or prompt. This skill runs nothing itself — load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote.
 ---
 
 # rayspec workflows — authoring the YAML DSL
@@ -265,7 +265,7 @@ that is not here does not exist. Defaults in parentheses.
 | Where | Fields |
 |---|---|
 | top level | `rayspec` (must be `1`) · `name` · `description` · `inputs` · `defaults` · `isolation` (`worktree`) · `agents` · `steps` · `outputs` |
-| `defaults:` | `agent` · `timeout` · `max_parallel` (`4`) · `on_unsupported` (`error`) · `on_step_failure` (`drain`) · `budget_usd` (`1.5`, `"$1.50"`, `"12 USD"`) · `max_tokens` (`500000`, `"500k"`, `"1.5M"`) · `timeout_total` |
+| `defaults:` | `agent` · `timeout` · `max_parallel` (`4`) · `on_unsupported` (`error`) · `on_step_failure` (`drain`) · `budget_usd` (no cap; written `1.5`, `"$1.50"` or `"12 USD"`) · `max_tokens` (no cap; written `500000`, `"500k"` or `"1.5M"`) · `timeout_total` |
 | every step | `id` · `description` · `needs` · `when` · `join` (`all`) · `timeout` · `always_run` (`false`) · `allow_failure` (`false`) · `artifacts` |
 | `artifacts:` | files the step must leave behind, **relative to its working directory**; absolute paths, `~`, `..`, trailing `/` and `{{`/`{%` are rejected at load time, `./b//r.md` normalises to `b/r.md`. Checked only **after the step succeeds** — a declared file that is missing fails the step; kept files are copied to `<run dir>/artifacts/<step>/…` and listed by `rayspec show`. Not checked on reused records or in `--dry-run` |
 | leaf steps only (`prompt`/`shell`/`python`) | `retry` · `env` (values templated, bool/int/float coerced to text) · `output_schema` |
@@ -700,6 +700,7 @@ command that executes, inspects or governs a run is in the `rayspec-cli` skill.
 - Everything about running what you wrote — `cli.md`, `providers.md`, `testing.md`, `policy.md`,
   `runs-and-resume.md`, `isolation.md`, `ci.md` — is in the **`rayspec-cli`** skill. Load it
   instead of guessing a flag, a stub field or an exit code.
-- Online only: `extending.md` (plugins and the provider seam), `constitution.md` (why the DSL
-  refuses fields), `agent-skill.md` (these two skills) at
+- Online only, in neither skill: `extending.md` (plugins and the provider seam),
+  `constitution.md` (why the DSL refuses fields), `agent-skill.md` (these two skills),
+  `README.md` (the docs index) — at
   https://github.com/rayspec-labs/rayspec-py/blob/main/docs/.

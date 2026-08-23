@@ -1,6 +1,6 @@
 ---
 name: rayspec-cli
-description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, stub scripts, providers, cost, policy and the .rayspec/ project layout. Load when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow — writing or editing the YAML itself is the companion rayspec-workflows skill.
+description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, stub scripts, providers, cost, policy and the run records a .rayspec/ project leaves behind. Use when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow. This skill does not explain the YAML — writing or editing it is the companion rayspec-workflows skill.
 ---
 
 # rayspec CLI — running, inspecting and governing
@@ -234,8 +234,10 @@ Every command of this skill's table is in exactly one of these three classes.
 - **`--dry-run` is free**: every provider is replaced by the stub, gates are auto-approved
   (except a class the policy protects — see below), isolation is forced to `none`, no host slot is
   taken, no login is needed. What it does **not** prove: `shell:` and `python:` steps are
-  *skipped* — they are recorded `succeeded` with **empty output**, so a downstream `when:` or
-  template sees `""`, and `runs diff` against a real run flags exactly those steps as changed. Add
+  *skipped* — they are recorded `succeeded` with a **stand-in output**: `""`, or the *minimal
+  instance* of their `output_schema` when they declare one (`{type: boolean}` → `false`, not the
+  value the script would have produced). A downstream `when:` therefore reads a placeholder, and
+  `runs diff` against a real run flags exactly those steps as changed. Add
   `--exec-shell` to really run them (and it is then no longer free of side effects), or run the
   command yourself first.
 - **`--yes` waives the interactive prompt at `approve:` gates, and nothing else.** It cannot waive
@@ -371,9 +373,9 @@ otherwise exit 2. The absolute path is recorded in `run.json` (`stubs_path`), so
 
 ## Pitfalls and conventions
 
-- A dry run reports `shell:`/`python:` steps as `succeeded` with **empty output**. `runs diff`
-  between a real run and a dry run will show exactly those steps as changed. Use `--exec-shell`
-  when the shell output matters.
+- A dry run reports `shell:`/`python:` steps as `succeeded` without running them — output `""`,
+  or the minimal instance of their `output_schema`. `runs diff` between a real run and a dry run
+  will show exactly those steps as changed. Use `--exec-shell` when the shell output matters.
 - `--root` must exist (exit 2 otherwise) — a mistyped path is never created. `rayspec init` and
   `new *` take `--root` as the directory *itself*, not a walk-up start.
 - `runs` and `costs` outside a rayspec project are **exit 0** with a stderr notice (`[]` under
