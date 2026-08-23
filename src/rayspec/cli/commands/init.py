@@ -513,6 +513,7 @@ def next_steps(kind: str, *, skill: bool = True) -> list[str]:
     lines = [
         "rayspec doctor                          # SDKs, bundled CLIs, auth hints, git",
         "rayspec validate                        # schema, graph, references, capabilities",
+        "rayspec test                            # the scaffolded case, as a scripted dry run",
         "rayspec plan example                    # inputs, agents/models, step order",
         f"rayspec run example --dry-run --stubs {stubs}   # scripted agents, no login needed",
         f"{real:<39} # a real run",

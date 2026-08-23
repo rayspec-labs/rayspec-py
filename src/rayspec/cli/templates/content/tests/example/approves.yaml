@@ -1,0 +1,19 @@
+# A test case for `rayspec test`, created by `rayspec init --kind content`. Run it:
+#   rayspec test                        # every case in this project
+#   rayspec test --case approves        # just this one (or tests/example:approves)
+#
+# The directory names the workflow (example) and the file stem names the case (approves), so
+# neither has to be repeated here. A case loads the workflow, validates it and runs it as a dry
+# run against the stub provider — no login, no network, no worktree — then checks what came out.
+# Everything under `expect:` is optional and what you leave out is not checked.
+# Format: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/testing.md
+inputs: { topic: "why small pull requests are easier to review", audience: engineers }
+stubs: ../../stubs/example.yaml       # relative to THIS file
+expect:
+  status: succeeded
+  exit_code: 0
+  steps:
+    draft: succeeded
+    review: succeeded
+  outputs:
+    verdict: approve                  # the answer scripted in stubs/example.yaml
