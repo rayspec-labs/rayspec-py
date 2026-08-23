@@ -30,7 +30,9 @@ Two layouts are discovered, and they parse into exactly the same case:
 | `.rayspec/dryrun/checks.yaml` — a `checks:` list | `dogfood` | the project |
 
 Use the first for your own workflows: the directory names the workflow, the file stem names the
-case, so `.rayspec/tests/fix_issue/duplicate_issue.yaml` needs no `workflow:` and no `id:`. The
+case, so `.rayspec/tests/fix_issue/duplicate_issue.yaml` needs no `workflow:` and no `id:`. It is
+also what `rayspec init` scaffolds (`.rayspec/tests/example/approves.yaml`), so a fresh project
+answers `rayspec test` with a passing case rather than "no test cases found". The
 suite form exists because each rayspec example is a self-contained project with its own
 `.rayspec/`, and one file per example is easier to read than a directory of stubs — both are
 first-class and both run under `rayspec test`.

@@ -431,8 +431,9 @@ Each of these exists because the alternative fails in a specific way.
 
 ## Pitfalls and conventions
 
-- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are unique across the whole file, and may not be
-  a context root (`inputs steps run project env iteration each loop self true false none null`).
+- Ids/`as:`/`session:` match `^[a-z][a-z0-9_]*$`, are at most 128 characters (every identifier
+  becomes a path segment), are unique across the whole file, and may not be a context root
+  (`inputs steps run project env iteration each loop self true false none null`).
 - Unknown keys are errors everywhere, with a suggestion (`unknown field 'allow_failures' for
   shell step; did you mean 'allow_failure'?`). A step with no kind key lists all nine.
 - YAML: a `:` inside a plain scalar breaks the parse — `shell: echo '{"a": 1}'` fails with

@@ -104,3 +104,47 @@ def test_find_project_root_walks_up(tmp_path: Path):
     other = tmp_path / "plain"
     other.mkdir()
     assert find_project_root(other) == other
+
+
+def _count_reads(monkeypatch, suffix: str = ".yaml") -> dict[str, int]:
+    """Count `Path.read_text` per file name — whichever code path does the reading."""
+    reads: dict[str, int] = {}
+    original = Path.read_text
+
+    def counting(self: Path, *args, **kwargs):
+        if self.name.endswith(suffix):
+            reads[self.name] = reads.get(self.name, 0) + 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    return reads
+
+
+def test_discovery_opens_no_workflow_file(tmp_path: Path, monkeypatch) -> None:
+    """Discovery answers "which workflows are there", which is a directory listing.
+
+    It used to parse every file to read one `description:` — work that every caller paid and
+    almost none used, and that a command resolving N names paid N times over.
+    """
+    root, home = _tree(tmp_path)
+    for i in range(5):
+        (root / f".rayspec/workflows/w{i}.yaml").write_text(WF.format(name=f"w{i}", desc=f"d{i}"))
+    reads = _count_reads(monkeypatch)
+    refs = discover_workflows(root, home=home)
+    assert [r.name for r in refs] == [f"w{i}" for i in range(5)]
+    assert reads == {}, reads
+
+
+def test_a_ref_reads_its_file_once_when_asked_for_the_description(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The other half: the fields are still there, still right, and cost one read each ref."""
+    root, home = _tree(tmp_path)
+    (root / ".rayspec/workflows/w.yaml").write_text(WF.format(name="w", desc="the description"))
+    (root / ".rayspec/workflows/bad.yaml").write_text("a: [oops\n")
+    reads = _count_reads(monkeypatch)
+    good, bad = sorted(discover_workflows(root, home=home), key=lambda r: r.name)[::-1]
+    assert good.description == "the description" and good.error is None
+    assert bad.description == "" and bad.error is not None
+    assert good.description == "the description"  # asked twice, read once
+    assert reads == {"w.yaml": 1, "bad.yaml": 1}, reads

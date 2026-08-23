@@ -14,6 +14,7 @@ from rayspec.schema.agent import (
 from rayspec.schema.base import StrictModel
 from rayspec.schema.common import (
     IDENT_RE,
+    MAX_IDENT_LEN,
     RESERVED_ROOTS,
     Duration,
     Identifier,
@@ -56,6 +57,7 @@ __all__ = [
     "IDENT_RE",
     "KINDS",
     "KIND_KEYS",
+    "MAX_IDENT_LEN",
     "RESERVED_ROOTS",
     "SCHEMA_VERSION",
     "STEP_MODELS",

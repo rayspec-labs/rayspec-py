@@ -154,14 +154,24 @@ def used_config_secrets(
     return out
 
 
-def build_redactor(config: Config, secrets: Mapping[str, Any]) -> Redactor:
+def build_redactor(
+    config: Config, secrets: Mapping[str, Any], *, identities: Iterable[str] = ()
+) -> Redactor:
     """The run's :class:`~rayspec.redact.Redactor`: every known value plus the opt-in detectors.
 
     ``secrets`` is ``{name: value}`` over the declared ``secret: true`` inputs that were given
     **and** every resolved ``config.secrets`` entry — the two sets of values rayspec knows and
     must therefore keep out of the store, the logs and the console.
+
+    ``identities`` are the strings the run is recorded UNDER
+    (:func:`rayspec.store.model.identity_strings`). A secret whose value equals one of them is
+    not redacted anywhere — see :meth:`rayspec.redact.Redactor.build` for why hiding it in some
+    places and not others is worse than not hiding it at all — and is named in
+    :attr:`~rayspec.redact.Redactor.collisions` so the caller can say so.
     """
-    return Redactor.build(secrets, detectors=config.redact.resolved_detectors())
+    return Redactor.build(
+        secrets, detectors=config.redact.resolved_detectors(), identities=identities
+    )
 
 
 __all__ = [

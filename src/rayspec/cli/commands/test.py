@@ -70,12 +70,18 @@ def selected(
 
     ``workflow`` matches the case's ``workflow:`` or its suite name, ``case_id`` the case id and
     ``pattern`` any substring of ``<suite>:<case>``; the filters combine with AND.
+
+    ``case_id`` accepts the bare id (``approves``) and the qualified ``<suite>:<case>``
+    (``tests/example:approves``) — the form :func:`_known` prints, which is where a reader gets
+    the id from. A refusal whose own hint suggests something the flag then rejects is a refusal
+    that cannot be acted on, so what is listed and what is accepted are one thing
+    (:func:`case_names`).
     """
     pairs = [(suite, case) for suite in suites for case in suite.checks]
     if workflow is not None:
         pairs = [(s, c) for s, c in pairs if workflow in {c.workflow, s.name}]
     if case_id is not None:
-        pairs = [(s, c) for s, c in pairs if c.id == case_id]
+        pairs = [(s, c) for s, c in pairs if case_id in {c.id, f"{s.name}:{c.id}"}]
     if pattern is not None:
         pairs = [(s, c) for s, c in pairs if pattern in f"{s.name}:{c.id}"]
     return pairs
@@ -90,8 +96,13 @@ def needs_authorisation(pairs: list[tuple[Suite, Case]]) -> tuple[Suite, Case] |
     return next(((s, c) for s, c in pairs if c.exec_shell), None)
 
 
+def case_names(suites: list[Suite]) -> list[str]:
+    """``<suite>:<case>`` for every discovered case — what a refusal lists and ``--case`` takes."""
+    return [f"{suite.name}:{case.id}" for suite in suites for case in suite.checks]
+
+
 def _known(suites: list[Suite]) -> str:
-    names = [f"{suite.name}:{case.id}" for suite in suites for case in suite.checks]
+    names = case_names(suites)
     shown = ", ".join(names[:12])
     return shown + (f", … ({len(names)} total)" if len(names) > 12 else "")
 
@@ -236,4 +247,4 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=EXIT_FAILED)
 
 
-__all__ = ["EXIT_FAILED", "EXIT_USAGE", "NO_CASES_HINT", "register", "selected"]
+__all__ = ["EXIT_FAILED", "EXIT_USAGE", "NO_CASES_HINT", "case_names", "register", "selected"]

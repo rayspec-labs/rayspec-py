@@ -9,7 +9,18 @@ lives in, and ``workflow_name`` / ``workflow_path`` are what ``resume``/``approv
 used to rewrite it, and the run was permanently unreachable — ``unknown workflow
 '[REDACTED:token]'`` — with no way to undo it.
 
-Everything free-form (inputs, outputs, step data) stays redacted: these tests pin both halves.
+Everything free-form (inputs, outputs, step data) stays redacted — **except** when the secret's
+value IS one of the run's own addresses. Then it is not redacted anywhere, and the run says so
+(``warning: token is one of the names this run is recorded under …``). Redaction cannot remove
+that string from a run that has to keep it, so hiding it in ``events.jsonl`` and the console
+while ``run.json``/``show``/``runs``/``audit`` print it protects nothing and discloses something:
+a ``[REDACTED:token]`` standing where the reader can look the true content up one file over says
+exactly which public string the secret is. Same answer as :data:`MIN_REDACTABLE_LEN` gives to the
+other value redaction cannot help with — do not pretend, and name it.
+
+A secret equal to a **step** id is a different case and stays redacted: a step's address is
+structural on both sides already (``RunEvent.step_path`` is a field of its own, not a key in the
+free-form ``data``), so nothing about it ever disagreed. These tests pin all of it.
 """
 
 from __future__ import annotations
@@ -66,7 +77,7 @@ def _resolved(project: Path, home: Path, name: str) -> ResolvedWorkflow:
 
 
 def test_a_secret_equal_to_the_workflow_name_does_not_brick_the_run(tmp_path: Path) -> None:
-    """The canonical break: the value redacts, ``workflow_name`` does not, and a resume works."""
+    """The canonical break: ``workflow_name`` survives, and a resume works."""
     name = "deploy_tool"
     project = _project(tmp_path, name)
     home = tmp_path / "home"
@@ -84,8 +95,13 @@ def test_a_secret_equal_to_the_workflow_name_does_not_brick_the_run(tmp_path: Pa
     assert raw["workflow_name"] == name, "the record must keep naming its own workflow"
     assert raw["run_id"] == result.run_id, "the record must keep naming its own directory"
     assert raw["workflow_path"].endswith(f"{name}.yaml")
-    # the step's OUTPUT — free-form — is still redacted: nothing was weakened
-    assert raw["outputs"] == {"v": "[REDACTED:token]"}
+    # ... and the value is not redacted ANYWHERE else either. rayspec cannot take this string
+    # out of a run whose record has to keep it, so it does not half-take it out: `[REDACTED:…]`
+    # in `events.jsonl` next to `deploy_tool` in `run.json` is the reader's answer key.
+    assert raw["outputs"] == {"v": name}
+    events = (store.run_dir(result.run_id) / "events.jsonl").read_text(encoding="utf-8")
+    assert f'"workflow":"{name}"' in events
+    assert "REDACTED" not in events
 
     # and the run is still resumable: the engine refuses a run whose recorded workflow name
     # does not match the workflow it was handed
