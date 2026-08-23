@@ -326,6 +326,45 @@ class RunRecord(_Model):
         return sum(costs) if costs else None
 
 
+def identity_strings(model: BaseModel) -> frozenset[str]:
+    """The strings ``model`` is ADDRESSED by: its own, and those of the records it holds singly.
+
+    The declarations are the ``redaction_identity`` class variables of :class:`_Model`
+    (:data:`rayspec.redact.IDENTITY_FIELDS_ATTR`), so this answers for a record shape that grows
+    a new address field the moment it declares one — nobody has to come back here and add it.
+
+    What the answer is FOR: a ``secret: true`` value that equals one of these strings cannot be
+    redacted, because the record has to keep the string — ``resume``/``explain``/``approve``
+    resolve the run by it, and :meth:`rayspec.redact.Redactor.redact_dump` therefore writes it
+    in clear. Handing them to :meth:`rayspec.redact.Redactor.build` is what makes every writer
+    give such a value the SAME treatment, instead of the console and ``events.jsonl`` hiding
+    what ``run.json``, ``show``, ``runs`` and ``audit`` print.
+
+    A record held in a **collection** — the run's ``steps``, keyed by step path — is deliberately
+    not walked. Its addresses are per-step rather than per-run and a run learns them as it goes,
+    so they are not a stable property of the run's redactor: counting them would mean a secret
+    that equals a step id is redacted for the first half of a run and not for the half after a
+    resume. They also need no help, being structural on both sides already (``RunEvent`` carries
+    ``step_path`` as a field of its own, never inside the free-form ``data`` a redactor walks),
+    so nothing about them ever disagrees.
+    """
+    found: set[str] = set()
+    _collect_identity(model, found)
+    return frozenset(found)
+
+
+def _collect_identity(model: BaseModel, found: set[str]) -> None:
+    """Add ``model``'s declared address strings, then descend into its record-valued fields."""
+    for name in getattr(type(model), "redaction_identity", ()):
+        held = getattr(model, name, None)
+        if isinstance(held, str) and held:
+            found.add(held)
+    for name in type(model).model_fields:
+        value = getattr(model, name, None)
+        if isinstance(value, BaseModel):
+            _collect_identity(value, found)
+
+
 __all__ = [
     "RUN_RECORD_SCHEMA_VERSION",
     "ActorInfo",
@@ -340,6 +379,7 @@ __all__ = [
     "SessionRef",
     "StepRecord",
     "WorkspaceInfo",
+    "identity_strings",
     "new_run_id",
     "utcnow",
 ]

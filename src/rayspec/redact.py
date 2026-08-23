@@ -49,6 +49,9 @@ _log = logging.getLogger(__name__)
 
 #: The replacement text; ``name`` is the secret's name or the detector that matched.
 REDACTION = "[REDACTED:{name}]"
+#: The two halves of :data:`REDACTION` around the name, so :func:`_name_in` is its exact inverse
+#: and cannot drift if the marker is ever reworded.
+_MARKER_PREFIX, _MARKER_SUFFIX = REDACTION.split("{name}", 1)
 #: Values shorter than this are never redacted (they would match everywhere).
 MIN_REDACTABLE_LEN = 4
 #: Longest body a ``pem`` block may have and still be caught across a chunk boundary.
@@ -144,6 +147,11 @@ def _suffix_prefix_len(text: str, needle: str) -> int:
         start = index + 1
 
 
+def _name_in(replacement: str) -> str:
+    """The secret's name inside a :data:`REDACTION` marker — the inverse of formatting one."""
+    return replacement[len(_MARKER_PREFIX) : len(replacement) - len(_MARKER_SUFFIX)]
+
+
 def _variants(value: str) -> tuple[str, ...]:
     """The literal plus the forms a writer may serialise it into.
 
@@ -172,11 +180,23 @@ class Redactor:
     patterns: tuple[tuple[str, re.Pattern[str]], ...] = ()
     #: Names whose value was too short to redact (see :data:`MIN_REDACTABLE_LEN`).
     skipped: tuple[str, ...] = ()
+    #: Strings this redactor must never rewrite: the addresses the run is RECORDED under
+    #: (:data:`IDENTITY_FIELDS_ATTR`). See :meth:`build` for why a secret equal to one of them
+    #: is not redacted anywhere rather than in some places.
+    identities: frozenset[str] = frozenset()
+    #: Names whose value IS one of :attr:`identities` and is therefore not redacted at all.
+    collisions: tuple[str, ...] = ()
     #: Length of the longest literal — how much a :class:`StreamRedactor` must hold back.
     max_len: int = field(default=0)
 
     @classmethod
-    def build(cls, secrets: Secrets, *, detectors: Sequence[str] = ()) -> Redactor:
+    def build(
+        cls,
+        secrets: Secrets,
+        *,
+        detectors: Sequence[str] = (),
+        identities: Iterable[str] = (),
+    ) -> Redactor:
         """A redactor for ``{name: value}`` plus the named builtin detectors.
 
         Non-string values are stringified (an integer secret input is still a secret); ``None``
@@ -187,9 +207,32 @@ class Redactor:
         ``secret: true`` inputs — cannot merge them into one mapping first: the two namespaces
         can use the same name for different values, and the merge would drop one of the values
         from the redactor while the step still receives it.
+
+        ``identities`` are the strings the run is RECORDED under — its id, its workflow's name
+        and file, its project root, its workspace (:data:`IDENTITY_FIELDS_ATTR`; the caller
+        collects them with :func:`rayspec.store.model.identity_strings`). A secret whose value
+        EQUALS one of them produces no literal at all, and its name is recorded in
+        :attr:`collisions` for the caller to warn about. Three reasons, in order of weight:
+
+        * the record must keep those strings — ``resume``/``explain``/``approve`` resolve the run
+          by them, and :meth:`redact_dump` therefore already writes them in clear. A redactor
+          that rewrites them everywhere else does not protect the value, it makes two files of
+          one run disagree about the same fact;
+        * that disagreement DISCLOSES the secret. ``[REDACTED:token]`` standing where a reader
+          can look up the true content one file over (``run.json``, ``rayspec runs``) says
+          exactly which public string the secret is. Marking is an oracle here, not a defence;
+        * and nothing is being given up, because the string is public in the project already:
+          it is a file name, a directory, an id. Redacting a workflow's own name removes it from
+          the log and from nowhere else.
+
+        This is the same answer :data:`MIN_REDACTABLE_LEN` gives to the other value redaction
+        cannot help with — do not pretend, and name it — and it is given ONCE, here, so every
+        writer, sink and console shares it by construction.
         """
         literals: list[tuple[str, str]] = []
         skipped: list[str] = []
+        collisions: list[str] = []
+        identity = frozenset(identities)
         seen: set[str] = set()
         items: Iterable[tuple[str, Any]] = (
             cast("Mapping[str, Any]", secrets).items() if isinstance(secrets, Mapping) else secrets
@@ -201,6 +244,9 @@ class Redactor:
             if len(value) < MIN_REDACTABLE_LEN:
                 skipped.append(name)
                 continue
+            if value in identity:
+                collisions.append(name)
+                continue
             for variant in _variants(value):
                 if variant not in seen:
                     seen.add(variant)
@@ -210,6 +256,8 @@ class Redactor:
             literals=tuple(literals),
             patterns=detector_patterns(detectors),
             skipped=tuple(skipped),
+            identities=identity,
+            collisions=tuple(dict.fromkeys(collisions)),
             max_len=max((len(n) for n, _ in literals), default=0),
         )
 
@@ -417,10 +465,13 @@ class Redactor:
         """True when :meth:`redact` would remove ``value`` from any text it appears in.
 
         A value shorter than :data:`MIN_REDACTABLE_LEN` counts as covered: it is deliberately
-        never redacted, so there is nothing a caller could add to change that.
+        never redacted, so there is nothing a caller could add to change that. So does a value
+        that IS one of this redactor's :attr:`identities` — for the same reason, and because a
+        run whose secret happens to equal its own name must still be allowed to start
+        (:meth:`uncovered` is what the engine refuses on).
         """
         text = value if isinstance(value, str) else str(value)
-        if len(text) < MIN_REDACTABLE_LEN:
+        if len(text) < MIN_REDACTABLE_LEN or text in self.identities:
             return True
         return self.redact(text) != text
 
@@ -440,26 +491,55 @@ class Redactor:
         missing = [name for name, value in items if value is not None and not self.covers(value)]
         return tuple(dict.fromkeys(missing))
 
+    def with_identities(self, identities: Iterable[str]) -> Redactor:
+        """This redactor, told which strings the run is RECORDED under.
+
+        Any literal that IS one of them is dropped and its name moved to :attr:`collisions` —
+        the same answer :meth:`build` gives, applied to a redactor that was built before the
+        run's own addresses were known. That is the ordinary case for an **embedded** run: the
+        engine installs the boundary before the record exists (``docs/extending.md``), so the
+        addresses are taught here, in the one step before the first record is written. Returns
+        ``self`` when nothing changes, so the CLI — which already knew them at build time — pays
+        nothing.
+        """
+        identity = self.identities | frozenset(identities)
+        collided = [pair for pair in self.literals if pair[0] in identity]
+        if identity == self.identities and not collided:
+            return self
+        literals = tuple(pair for pair in self.literals if pair[0] not in identity)
+        collisions = tuple(dict.fromkeys(self.collisions + tuple(_name_in(r) for _, r in collided)))
+        return replace(
+            self,
+            literals=literals,
+            identities=identity,
+            collisions=collisions,
+            max_len=max((len(n) for n, _ in literals), default=0),
+        )
+
     def extend(self, secrets: Secrets) -> Redactor:
         """This redactor plus ``{name: value}`` — the same detectors, the union of the literals.
 
         Used where a value becomes known after the redactor was built (the engine adds the
         run's own secrets to whatever the caller installed). Takes the same pairs
-        :meth:`build` does. Returns ``self`` when there is nothing to add and no new name was
-        skipped, so the common path allocates nothing — and a caller can tell from the identity
-        of the result whether this redactor already knew everything.
+        :meth:`build` does, and applies THIS redactor's :attr:`identities` to them, so a value
+        added later gets the same answer as one known from the start. Returns ``self`` when
+        there is nothing to add and no new name was skipped or collided, so the common path
+        allocates nothing — and a caller can tell from the identity of the result whether this
+        redactor already knew everything.
         """
-        added = Redactor.build(secrets)
+        added = Redactor.build(secrets, identities=self.identities)
         known = {needle for needle, _ in self.literals}
         fresh = [pair for pair in added.literals if pair[0] not in known]
         skipped = tuple(dict.fromkeys(self.skipped + added.skipped))
-        if not fresh and skipped == self.skipped:
+        collisions = tuple(dict.fromkeys(self.collisions + added.collisions))
+        if not fresh and skipped == self.skipped and collisions == self.collisions:
             return self
         literals = sorted([*self.literals, *fresh], key=lambda pair: len(pair[0]), reverse=True)
         return replace(
             self,
             literals=tuple(literals),
             skipped=skipped,
+            collisions=collisions,
             max_len=max((len(n) for n, _ in literals), default=0),
         )
 
