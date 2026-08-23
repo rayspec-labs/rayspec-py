@@ -57,13 +57,17 @@ SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
         (
             "## Mental model",
             "## CLI quick reference",
-            "## Stub file",
+            "## Exit codes and the `--json` contract",
+            "## Operating loops",
+            "## Safety",
+            "## Governance and trust",
             "## Providers, capabilities, cost",
+            "## Stub file",
             "## Pitfalls and conventions",
             "## References",
         ),
-        90,
-        400,
+        300,
+        520,
     ),
 }
 
