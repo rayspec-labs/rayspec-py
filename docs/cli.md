@@ -1146,7 +1146,11 @@ What it prints, in order:
 2. **The questions** (a terminal only): a login menu built from what is actually missing — a
    provider that already has credentials, or whose CLI is not usable, is not offered — and, when
    `git` is installed and the directory is not a repository, `Run \`git init\` here? [y/N]`. Both
-   go to stderr, so stdout stays a clean report.
+   go to stderr, so stdout stays a clean report, both show their default and both re-ask on an
+   answer they do not understand: an answer outside the menu is never silently read as "not now".
+   Neither is read through `typer.prompt`/`typer.confirm`, because click catches
+   `KeyboardInterrupt` and `EOFError` in the same `except` and raises one `Abort` for both —
+   quickstart has to tell Ctrl-C (exit 130) from end of input ("not now").
 3. **What it did**, one line per step: `login`, `git init`, `project`, `dry run`.
 4. **The dry run**, with the command printed above it. The printed line *is* the argv that was
    invoked, so it can be copied and re-run.
@@ -1165,10 +1169,23 @@ in before it starts anything, so even `--dry-run` refuses. quickstart therefore 
 the dry run on such a machine: it keeps the scaffold, names the consequence, prints the install
 command for this platform (`xcode-select --install` · `sudo apt install git` ·
 `sudo dnf install git` · `sudo apk add git` · `winget install --id Git.Git`, else "install git
-with your package manager") and exits **1**.
+with your package manager") and exits **1**. On such a machine it also says so only once and
+never contradicts itself: the plan prints `dry run  cannot run` rather than `will run`, and the
+closing block lists `validate` and `plan` (which work) without the two `rayspec run` lines
+(which exit 2) or the money line that pointed at them.
+
+`$HOME` itself is refused (exit 2, nothing written): `~/.rayspec` is `RAYSPEC_HOME`, so a
+project scaffolded there and rayspec's own state become the same directory, the skills land in
+the *global* `~/.claude/skills/` rather than a project's, and every directory below `$HOME` then
+walks up into that project. Make a directory first — `mkdir myproj && cd myproj`. For the same
+reason `RAYSPEC_HOME` is never treated as the enclosing project: `~/.rayspec` exists on every
+machine that has performed a run, and `~/myproj` is a new project, not part of one.
 
 Nothing is ever overwritten. When `.rayspec/` already exists — here, or in a directory above
 this one — quickstart says so and writes nothing, then dry-runs a workflow of *that* project.
+The closing `what to do next:` block is that project's: `--stubs` resolves against the cwd, so
+it carries the same path the command above it just ran with, plus a `cd` line when the project
+root is above where you are standing.
 The workflow is `example` when the project has one, else the first discovered workflow that
 loads; a workflow with a `required: true` input is named and skipped with the `-i NAME=...`
 command to run instead, rather than making your first experience `error: missing input`.
@@ -1205,10 +1222,14 @@ neither reads, writes nor echoes a credential. A failed login is never exit 1 an
 command: the fallback is printed and the dry run still happens.
 
 Exit codes: `0` — quickstart finished and nothing is broken, including "you chose not to log in",
-"no terminal so nothing was asked" and "an existing project was respected". `1` — this
-environment cannot run rayspec: the dry run was performed and did not succeed, or it was blocked
-because `git` is not installed. `2` — usage (`--root` is not a directory, `--json --output
-table`, an invalid `--provider`/`--kind`). `130` — Ctrl-C at one of quickstart's own questions,
+"no terminal so nothing was asked" and "an existing project was respected with a green dry run".
+`1` — it did not finish: a step failed (a scaffold that could not be written), the dry run was
+performed and did not succeed, or nothing ran for a reason nobody chose — `git` is not installed,
+or the project holds no workflow that loads. The two skips that are somebody's *decision* stay
+`0`: `--no-run`/`--no-init`, and a workflow whose `required: true` input is named with the
+`-i NAME=...` command to run instead. A failed login is never `1`: the machine is fine, the
+account is not. `2` — usage (`--root` is not a directory or is `$HOME`, `--json --output table`,
+an invalid `--provider`/`--kind`). `130` — Ctrl-C at one of quickstart's own questions,
 reported as one line with no traceback; end-of-input is not an interruption, it is "not now".
 
 quickstart never claims a login was checked. `credentials` means the file or variable was found;
@@ -1392,9 +1413,11 @@ codex: `providers.codex.codex_bin` from config, else the bundled runtime from
 honoured) or, on macOS, the `Claude Code-credentials` keychain item (existence only: the file is
 never read and the keychain secret never requested; the lookup is bounded and skipped when
 `security` is missing); for Codex `info` when `~/.codex/auth.json` exists (`verify with --probe`);
-otherwise `warn login state unknown` with a login hint. The Codex hint is runnable as written:
-`run \`codex login\`` when `codex` is on `PATH`, else `run \`<bundled path> login\`` (the bundled
-binary is not on `PATH`), or set `OPENAI_API_KEY`. `~/.rayspec/.env` is loaded first, so keys kept
+otherwise `warn login state unknown` with a login hint. Both hints are runnable as written,
+which on a `pip install rayspec` machine means the absolute path: `run \`codex login\`` /
+`run \`claude auth login\`` when that name is on `PATH`, else `run \`<bundled path> login\`` /
+`run \`<bundled path> auth login\`` (neither bundled binary is on `PATH`), or set
+`OPENAI_API_KEY` / a Claude key. `~/.rayspec/.env` is loaded first, so keys kept
 there count; the project `.rayspec/.env` is **not** loaded (it is a credential surface of the
 checkout — only `run`/`resume`/`approve`/`reject` apply it) and shows up as an `info` row
 `project .env: <path> (N vars, applied only by run/resume/approve/reject)` when the file

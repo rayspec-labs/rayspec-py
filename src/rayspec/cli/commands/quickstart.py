@@ -49,6 +49,7 @@ from rayspec.cli.commands._loader_common import (
     checked_root,
     console,
     err_console,
+    fail,
     print_json,
     resolve_output,
     stdout_can_encode,
@@ -266,6 +267,15 @@ class DryRun:
     status: str | None = None
     exit_code: int | None = None
     reason: str | None = None
+    blocking: bool = False
+    """Whether the reason the dry run did not happen is one quickstart could not fix.
+
+    ``--no-run``, ``--no-init`` and "this workflow needs ``-i NAME=...``" are somebody's
+    decision. No workflow at all, and a workflow that does not load, are not: quickstart set out
+    to prove the install and could not. It is deliberately **not** in :meth:`to_dict` — the
+    ``--json`` document already carries the whole answer as ``ok``, ``exit_code`` and
+    ``run.skipped_reason``, and the documented key set does not change.
+    """
 
     @property
     def ok(self) -> bool | None:
@@ -462,8 +472,8 @@ def collect_state(target: Path) -> State:
     credential surface of the checkout, and quickstart is the first command somebody runs in a
     directory they may have just cloned.
     """
-    project_root = find_project_root(target)
     home = rayspec_home()
+    project_root = project_root_for(target, home)
     with contextlib.suppress(RayspecError):  # a broken .env must not stop the diagnosis
         load_env(project_root, home=home, include_project=False)  # the home file only
     checks, config = doctor.environment_checks(start=target, project_root=project_root, home=home)
@@ -522,12 +532,15 @@ def run_login(argv: Sequence[str]) -> tuple[bool, str | None]:
 def login_fallback(provider: ProviderState) -> str:
     """What to try when the login command itself failed, per provider.
 
-    For codex this is :func:`~rayspec.cli.commands.doctor.codex_login_hint` verbatim — it already
-    encodes the trap that the bundled binary is not on ``PATH``, and a second wording of it would
-    drift. For claude it is the version-proof fallback: an older CLI has no ``auth login``.
+    Both are doctor's hint verbatim — they already encode the trap that neither bundled binary
+    is on ``PATH``, and a second wording of either would drift. claude also gets the version-proof
+    fallback appended: an older CLI has no ``auth login``.
     """
     if provider.id == "claude":
-        return f"open `{provider.cli_path}` and use /login"
+        return (
+            f"{doctor.claude_login_hint(provider.cli_path)}"
+            f" — or open `{provider.cli_path}` and use /login"
+        )
     return doctor.codex_login_hint(provider.cli_path)
 
 
@@ -546,19 +559,29 @@ class RunOutcome:
     reason: str | None = None
 
 
+def stubs_argument(stubs: Path, project_root: Path) -> str:
+    """How ``--stubs`` has to be written to work from the directory quickstart was run in.
+
+    Relative to the project root when the cwd already **is** that root — which is what a person
+    typing this by hand would write — and absolute otherwise, because ``--stubs`` resolves
+    against the cwd and ``--root`` does not change that.
+
+    One answer, used twice: for the command quickstart runs and for the command it tells you to
+    run next. They were computed in two places, so from a subdirectory of an existing project
+    the closing ``what to do next:`` line was the one copy-paste in the whole output that failed.
+    """
+    same_cwd = Path.cwd().resolve() == project_root
+    return stubs.relative_to(project_root).as_posix() if same_cwd else str(stubs)
+
+
 def dry_run_argv(
     workflow: str, *, project_root: Path, stubs: Path | None, json_: bool
 ) -> list[str]:
-    """The argv the builtin ``run`` command is invoked with — and the command that is printed.
-
-    ``--stubs`` is written relative to the project root when the cwd already **is** that root
-    (which is what a person typing this by hand would write) and absolutely otherwise, because
-    ``--stubs`` resolves against the cwd and ``--root`` does not change that.
-    """
+    """The argv the builtin ``run`` command is invoked with — and the command that is printed."""
     same_cwd = Path.cwd().resolve() == project_root
     argv = [workflow, "--dry-run"]
     if stubs is not None:
-        argv += ["--stubs", stubs.relative_to(project_root).as_posix() if same_cwd else str(stubs)]
+        argv += ["--stubs", stubs_argument(stubs, project_root)]
     if not same_cwd:  # otherwise `run` walks up to the same root anyway
         argv += ["--root", str(project_root)]
     argv += ["--no-interactive"]  # a dry run auto-approves gates; this is belt and braces
@@ -668,6 +691,10 @@ def isolation_of(
     on a perfect machine; and a repository with no commits cannot produce a worktree at all, so
     ``git init`` on its own is not the whole answer either. Both halves are said where they are
     true.
+
+    With no workflow there is no ``isolation:`` line to read, and ``declared or "worktree"``
+    would describe a document that does not exist as one that asked for a worktree per run. So
+    that case is answered before the machine is consulted at all.
     """
     named = f"`{workflow}` " if workflow else ""
     if not git.binary:
@@ -675,6 +702,14 @@ def isolation_of(
             "blocked",
             False,
             "nothing runs yet — `rayspec run` refuses without git, dry runs included",
+        )
+    if workflow is None:
+        return Isolation(
+            "blocked",
+            git.worktree_available,
+            "nothing to run yet — there is no workflow to read an `isolation:` line from. "
+            f"Write one in {where / init.PROJECT_DIR / 'workflows'} "
+            "(`rayspec new workflow <name>`).",
         )
     available = git.worktree_available
     if (declared or "worktree") == "none":
@@ -784,18 +819,22 @@ def print_state(out: Console, state: State, marks: Glyphs) -> None:
             _row(out, marks.of(check.status), f"{provider.id} CLI", check.detail)
             if check.status != "ok" and check.hint:
                 _note(out, f"hint: {check.hint}")
+    # the note is indented like every other per-row note, so it has to sit under a row that DID
+    # find something — printed after the loop it landed under whichever auth row came last, which
+    # is usually the one that just said nothing was found
+    last_found = next((p.id for p in reversed(state.providers) if p.credentials), None)
     for provider in state.providers:
         check = state.check(f"{provider.id}.auth")
         if check is None:
             continue
         glyph = (marks.ok, "green") if provider.credentials else (marks.warn, "yellow")
         _row(out, glyph, f"{provider.id} auth", check.detail)
-    if any(p.credentials for p in state.providers):
-        _note(
-            out,
-            "credentials found, not checked — `rayspec doctor --probe` is the only thing that "
-            "proves a login.",
-        )
+        if provider.id == last_found:
+            _note(
+                out,
+                "credentials found, not checked — `rayspec doctor --probe` is the only thing "
+                "that proves a login.",
+            )
 
 
 def print_repository_row(out: Console, state: State, marks: Glyphs) -> None:
@@ -858,24 +897,69 @@ def print_menu(err: Console, offered: list[ProviderState]) -> list[str]:
     return keys
 
 
-def ask_login(err: Console, offered: list[ProviderState]) -> tuple[str, ...]:
-    """Ask which provider(s) to log in to. EOF is "not now"; Ctrl-C is the caller's exit 130."""
-    keys = print_menu(err, offered)
+def read_answer(prompt: str) -> str | None:
+    """One typed answer, or ``None`` at end of input. A ``KeyboardInterrupt`` is left to raise.
+
+    Deliberately **not** ``typer.prompt`` / ``typer.confirm``: click catches ``KeyboardInterrupt``
+    and ``EOFError`` in the same ``except`` and raises one ``Abort`` for both, so a question asked
+    through it cannot tell Ctrl-C from end of input. quickstart has to. Ctrl-C is ``quickstart
+    interrupted`` and exit 130 with nothing written; end of input is "not now" and the dry run
+    still happens. Read through click the two questions had drifted to opposite wrong answers —
+    the menu read Ctrl-C as "not now" and said nothing, the ``git init`` question let click's bare
+    ``Aborted.`` and exit **1** through, which is the code that means "this machine cannot run
+    rayspec".
+
+    The prompt goes to stderr, so stdout stays a clean report; ``input()`` reads the answer, so a
+    terminal keeps its line editing and raises the two conditions separately.
+    """
+    typer.echo(prompt, nl=False, err=True)
     try:
-        answer = typer.prompt(
-            ">", default="", err=True, show_choices=False, show_default=False, prompt_suffix=" "
+        return input().strip()
+    except EOFError:
+        return None
+
+
+def ask_login(err: Console, offered: list[ProviderState]) -> tuple[str, ...]:
+    """Ask which provider(s) to log in to.
+
+    An answer outside the menu is re-asked rather than read as "not now": the ``git init``
+    question one line later already re-asks, and two adjacent questions with opposite validation
+    is how somebody who meant to log in walks away believing they did not need to. The default is
+    shown, so Enter is visibly the last entry.
+    """
+    keys = print_menu(err, offered)
+    default = len(keys)  # the last entry is always "Not now"
+    while True:
+        answer = read_answer(f"> [{default}] ")
+        if answer is None:  # end of input: not an answer, and not an interruption either
+            return ()
+        picked = answer or str(default)
+        if picked.isdigit() and 1 <= int(picked) <= len(keys):
+            break
+        err.print(
+            Text(f"Error: answer 1-{default}, or press Enter for {default}", style="red"),
+            soft_wrap=True,
         )
-    except typer.Abort:  # end of input: not an answer, and not an interruption either
-        return ()
-    picked = answer.strip()
-    if not picked.isdigit() or not 1 <= int(picked) <= len(keys):
-        return ()
     key = keys[int(picked) - 1]
     if key == "none":
         return ()
     if key == "both":
         return tuple(p.id for p in offered)
     return (key,)
+
+
+def ask_git_init(err: Console, target: Path) -> bool:
+    """``Run `git init` in <dir>? [y/N]`` — click's re-ask, without click's Ctrl-C."""
+    while True:
+        answer = read_answer(f"\nRun `git init` in {target}? [y/N]: ")
+        if answer is None:  # end of input: rayspec never creates a repository unasked
+            return False
+        value = answer.lower()
+        if value in {"y", "yes"}:
+            return True
+        if value in {"", "n", "no"}:
+            return False
+        err.print(Text("Error: invalid input", style="red"), soft_wrap=True)
 
 
 def plan_lines(
@@ -915,7 +999,16 @@ def plan_lines(
             )
         )
     rows.append(("project", "kept as it is" if no_init else "will be scaffolded"))
-    rows.append(("dry run", "skipped (--no-run)" if no_run else "will run"))
+    if no_run:
+        rows.append(("dry run", "skipped (--no-run)"))
+    elif not state.git.binary:
+        # git-lessness is known before the plan is rendered, so "will run" would be a prediction
+        # this command already knows is false — and the state block said so twelve lines above
+        rows.append(
+            ("dry run", "cannot run — `rayspec run` refuses without git, dry runs included")
+        )
+    else:
+        rows.append(("dry run", "will run"))
     return rows
 
 
@@ -957,16 +1050,22 @@ def print_summary(out: Console, outcome: Outcome, *, exit_code: int) -> None:
             out.print(Text(f"  log in to {provider.id}: {provider.login_command}"), soft_wrap=True)
     if outcome.next_step_lines:
         out.print(Text("\nwhat to do next:"), soft_wrap=True)
+        if Path.cwd().resolve() != outcome.project_root:
+            out.print(Text(f"  cd {outcome.project_root}", style="dim"), soft_wrap=True)
         for line in outcome.next_step_lines:
             out.print(Text(f"  {line}"), soft_wrap=True)
-        out.print(
-            Text(
-                "  the last one calls the provider: it needs a login and it spends money. "
-                "Everything above it is free.",
-                style="dim",
-            ),
-            soft_wrap=True,
-        )
+        # only when one of the listed commands IS a real run: without git the two `rayspec run`
+        # rows are not listed at all, and "the last one spends money" would then point at
+        # `rayspec plan`
+        if any(row["cost"] == "provider" for row in next_step_rows(outcome.next_step_lines)):
+            out.print(
+                Text(
+                    "  the last one calls the provider: it needs a login and it spends money. "
+                    "Everything above it is free.",
+                    style="dim",
+                ),
+                soft_wrap=True,
+            )
     if not state.git.binary:
         out.print(
             Text(
@@ -1129,16 +1228,41 @@ def do_git_init(outcome: Outcome, consented: bool, *, out: Console, json_: bool,
             out.print(Text(f"{'':<{_STEP_LABEL}}{extra}", style="dim"), soft_wrap=True)
 
 
-def existing_project(target: Path, project_root: Path) -> Path | None:
+def is_rayspec_home(directory: Path, home: Path) -> bool:
+    """Whether ``directory/.rayspec`` IS rayspec's own home rather than a project."""
+    return (directory / init.PROJECT_DIR).resolve() == home.resolve()
+
+
+def project_root_for(target: Path, home: Path) -> Path:
+    """:func:`find_project_root` for ``target``, minus the one directory that is not a project.
+
+    ``~/.rayspec`` is RAYSPEC_HOME, and it exists on every machine that has ever performed a run
+    (it holds ``projects/``). ``find_project_root`` walks up looking for a ``.rayspec/``
+    directory, so from any directory under ``$HOME`` that is not itself a project or a git
+    checkout the walk lands on ``$HOME`` — and quickstart then refused to scaffold ``~/myproj``
+    because it believed it was already inside a project, writing nothing and reporting success.
+    rayspec's home is not a project. When the walk lands on it, quickstart writes where it was
+    pointed, which is ``rayspec init``'s rule anyway.
+    """
+    root = find_project_root(target)
+    return target if root != target and is_rayspec_home(root, home) else root
+
+
+def existing_project(target: Path, project_root: Path, *, home: Path) -> Path | None:
     """The ``.rayspec/`` project ``target`` is already part of, or ``None``.
 
     A refinement over ``rayspec init``, whose ``--root`` writes exactly where it is pointed and
     would happily nest a second project inside an existing one. A first-run command must not:
-    "an existing project is respected" has to mean the enclosing one too.
+    "an existing project is respected" has to mean the enclosing one too — but never
+    ``rayspec_home()``, which is not a project and is above every directory in ``$HOME``.
     """
-    if (target / init.PROJECT_DIR).is_dir():
+    if (target / init.PROJECT_DIR).is_dir() and not is_rayspec_home(target, home):
         return target
-    if project_root != target and (project_root / init.PROJECT_DIR).is_dir():
+    if (
+        project_root != target
+        and (project_root / init.PROJECT_DIR).is_dir()
+        and not is_rayspec_home(project_root, home)
+    ):
         return project_root
     return None
 
@@ -1155,7 +1279,7 @@ def do_scaffold(
     """Step 6 — scaffold ``.rayspec/`` (never with ``--force``), and return the project root."""
     state = outcome.state
     target = state.target
-    enclosing = existing_project(target, state.project_root)
+    enclosing = existing_project(target, state.project_root, home=state.home)
     if enclosing is not None:
         detail = (
             f"{enclosing / init.PROJECT_DIR} already exists; nothing was written"
@@ -1223,7 +1347,13 @@ def do_scaffold(
 
 
 def do_dry_run(
-    outcome: Outcome, *, project_root: Path, no_run: bool, out: Console, json_: bool
+    outcome: Outcome,
+    *,
+    project_root: Path,
+    no_run: bool,
+    no_init: bool,
+    out: Console,
+    json_: bool,
 ) -> None:
     """Steps 7 + 8 — pick a workflow, say why not when there is none, otherwise prove it works."""
     state = outcome.state
@@ -1234,9 +1364,20 @@ def do_dry_run(
     stubs = project_root / init.PROJECT_DIR / "stubs" / f"{name}.yaml" if name is not None else None
     has_stubs = stubs is not None and stubs.is_file()
     if name is not None:
-        outcome.next_step_lines = init.next_steps(
-            kind or "code", skill=False, doctor=False, workflow=name, stubs=has_stubs
+        lines = init.next_steps(
+            kind or "code",
+            skill=False,
+            doctor=False,
+            workflow=name,
+            # the same token the executed argv gets, so the line below the run can be copied
+            stubs=stubs_argument(stubs, project_root) if has_stubs and stubs else False,
         )
+        if not state.git.binary:
+            # `rayspec run` refuses without git, dry runs included — the state block said so and
+            # the isolation sentence says so again. Listing it as a next step three lines later
+            # hands a first-time user a list where half the items exit 2.
+            lines = [line for line in lines if not line.startswith("rayspec run ")]
+        outcome.next_step_lines = lines
     outcome.isolation = isolation_of(
         resolved.workflow.isolation if resolved is not None else None,
         state.git,
@@ -1249,14 +1390,19 @@ def do_dry_run(
         reason = "not run (--no-run)"
     elif not state.git.binary:
         reason = "`rayspec run` refuses without git — dry runs included (see above)"
+        dry.blocking = True
     elif problem is not None:
+        # no workflow at all, or one that does not load: quickstart set out to prove the install
+        # and could not. Unless the caller declined the project, that is not a finished run.
         reason = problem
+        dry.blocking = not no_init
     elif resolved is not None and (needed := required_inputs(resolved)):
         placeholders = " ".join(f"-i {n}=..." for n in needed)
         reason = f"`{name}` needs {placeholders}"
         dry.command = f"rayspec run {name} {placeholders} --dry-run"
     if reason is not None or resolved is None:
         dry.attempted = False
+        dry.blocking = dry.blocking or reason is None
         dry.skipped_reason = reason or "no workflow to run"
         outcome.skipped("dry_run", dry.skipped_reason)
         if not json_:
@@ -1359,6 +1505,7 @@ def register(app: typer.Typer) -> None:
         # `init`'s rule, not the walk-up: quickstart writes where it is pointed. A `--root` that
         # is not a directory is a usage error and is never created.
         target = (checked_root(root) or Path.cwd()).resolve()
+        refuse_rayspec_home(target)
         try:
             outcome, code = _quickstart(
                 target=target,
@@ -1377,6 +1524,27 @@ def register(app: typer.Typer) -> None:
         if json_:
             print_json(payload_of(outcome, exit_code=code))
         raise typer.Exit(code=code)
+
+
+def refuse_rayspec_home(target: Path) -> None:
+    """Refuse to scaffold ``$HOME`` itself — a first-run command must not create that trap.
+
+    The README's getting-started is two lines and a user who has just opened a terminal is
+    standing in ``$HOME``. Scaffolded there, ``.rayspec/`` **is** RAYSPEC_HOME: the project and
+    rayspec's own home become the same directory (the policy row prints the same path twice),
+    the skills land in the user's *global* ``~/.claude/skills/`` rather than a project's, and
+    from then on every directory under ``$HOME`` walks up and finds that project, so quickstart
+    is a permanent no-op there. Nothing is written and the way out is one line.
+    """
+    home = rayspec_home()
+    if target != Path.home().resolve() and not is_rayspec_home(target, home):
+        return
+    fail(
+        f"{target} is your home directory, not a project — {target / init.PROJECT_DIR} is where "
+        "rayspec keeps its own state (runs, logs, home-scope workflows), and scaffolding a "
+        "project on top of it makes every directory below it part of that project",
+        hint="make a directory first:  mkdir myproj && cd myproj && rayspec quickstart",
+    )
 
 
 def _quickstart(
@@ -1417,9 +1585,7 @@ def _quickstart(
         if provider is None and not yes and offered:
             chosen = ask_login(err, offered)
         if state.git.binary and not state.git.repository:
-            consented = yes or typer.confirm(
-                f"\nRun `git init` in {target}?", default=False, err=True
-            )
+            consented = yes or ask_git_init(err, target)
         if not json_:
             out.print(Text(""), soft_wrap=True)
     else:
@@ -1437,13 +1603,21 @@ def _quickstart(
         outcome, kind=kind, no_init=no_init, no_skill=no_skill, out=out, json_=json_
     )
     outcome.project_root = project_root
-    do_dry_run(outcome, project_root=project_root, no_run=no_run, out=out, json_=json_)
+    do_dry_run(
+        outcome, project_root=project_root, no_run=no_run, no_init=no_init, out=out, json_=json_
+    )
 
-    # The exit code says whether this machine can run rayspec — not whether somebody logged in.
-    # A failed login is never exit 1: the machine is fine, the account is not.
-    failed_run = outcome.dry_run.attempted and outcome.dry_run.ok is False
+    # The exit code says whether quickstart finished and nothing is broken — not whether
+    # somebody logged in. A failed login is never exit 1: the machine is fine, the account is
+    # not. Every OTHER failed step is, and so is a dry run that never happened for a reason
+    # nobody chose: a scaffold that could not be written, or a project with no workflow in it,
+    # used to print a hard `error:` line, run nothing, and then say "you are set up." with exit
+    # 0 and `"ok": true` — which is the one thing a first-run command must never get wrong.
+    failed_step = any(
+        step.action == "failed" for sid, step in outcome.steps.items() if sid != "login"
+    )
     blocked = not state.git.binary
-    code = 1 if (failed_run or blocked) else 0
+    code = 1 if (failed_step or blocked or outcome.dry_run.blocking) else 0
 
     # ---- step 9 --------------------------------------------------------------------------
     if not json_:
@@ -1468,6 +1642,8 @@ __all__ = [
     "RunOutcome",
     "State",
     "Step",
+    "ask_git_init",
+    "ask_login",
     "auth_row_after_login",
     "choose_workflow",
     "collect_state",
@@ -1476,14 +1652,19 @@ __all__ = [
     "git_install_command",
     "git_state",
     "invoke_run",
+    "is_rayspec_home",
     "isolation_of",
     "login_command",
     "login_fallback",
     "next_step_rows",
     "payload_of",
     "printed_command",
+    "project_root_for",
     "provider_state",
+    "read_answer",
+    "refuse_rayspec_home",
     "register",
     "required_inputs",
     "run_login",
+    "stubs_argument",
 ]

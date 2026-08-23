@@ -10,6 +10,12 @@ Declarative, YAML-defined workflows for coding agents — running on the
 [OpenAI Codex SDK](https://learn.chatgpt.com/docs/codex-sdk). A pure CLI: no server, no UI,
 no database.
 
+```bash
+mkdir myproj && cd myproj
+pip install rayspec       # the engine AND both agent CLIs — no Node, no npm, nothing else
+rayspec quickstart        # check this machine, scaffold a project, prove it with a free dry run
+```
+
 > **YAML coordinates. Code computes. Agents judge.**
 
 A workflow says *what runs, in what order, under which gates, with which agent*. Deterministic
@@ -73,6 +79,7 @@ worktree per run by default.
 ## Quickstart
 
 ```bash
+mkdir myproj && cd myproj                  # quickstart scaffolds where you stand — not in $HOME
 pip install rayspec       # the engine AND both agent CLIs — no Node, no npm, nothing else to install
 rayspec quickstart        # check this machine, scaffold a project, prove it with a free dry run
 ```

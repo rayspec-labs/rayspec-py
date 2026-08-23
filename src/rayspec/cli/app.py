@@ -47,6 +47,10 @@ def build_app(*, plugins: bool = True) -> typer.Typer:
         add_completion=False,
         rich_markup_mode="rich",
         cls=ErrorBoundaryGroup,
+        # 24 commands in one alphabetical list say nothing about where to start, and a bare
+        # `rayspec` is the first thing a fresh install types
+        epilog="New here? Run [bold]rayspec quickstart[/bold] — it checks this machine, "
+        "scaffolds a project and proves it with a dry run that needs no login and costs nothing.",
     )
 
     @app.callback()

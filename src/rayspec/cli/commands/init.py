@@ -512,7 +512,7 @@ def next_steps(
     skill: bool = True,
     doctor: bool = True,
     workflow: str = "example",
-    stubs: bool = True,
+    stubs: bool | str = True,
 ) -> list[str]:
     """The commands to try after ``rayspec init`` (printed, and reused by the docs).
 
@@ -522,8 +522,13 @@ def next_steps(
     commands operate on, for a project that has no ``example``; ``stubs=False`` drops the
     ``--stubs <file>`` part when that project ships no stub script for it (a dry run without one
     still works — the stub provider answers with its defaults).
+
+    ``stubs`` may also be the path to write after ``--stubs``. ``--stubs`` resolves against the
+    **cwd**, so a caller standing somewhere other than the project root (`rayspec quickstart` in
+    a subdirectory of an existing project) has to pass the path that works from where it is —
+    otherwise the printed line is one nobody can copy.
     """
-    stub_file = f"{PROJECT_DIR}/stubs/{workflow}.yaml"
+    stub_file = stubs if isinstance(stubs, str) else f"{PROJECT_DIR}/stubs/{workflow}.yaml"
     real = f"rayspec run {workflow}" if kind == "code" else f'rayspec run {workflow} -i topic="..."'
     dry = f"rayspec run {workflow} --dry-run"
     if stubs:

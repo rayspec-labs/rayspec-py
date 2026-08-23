@@ -136,6 +136,59 @@ def quickstart(*args: str, tty: bool = False, stdin: str = "") -> Any:
     return runner.invoke(app, ["quickstart", *args], input=stdin)
 
 
+class ScriptedStdin:
+    """A stdin that answers, then raises what a real terminal raises.
+
+    ``CliRunner`` installs a stdin of its own, and the Ctrl-C tests are about exactly what the
+    read from ``sys.stdin`` raises, so they drive the click command directly with this instead.
+    ``fileno`` refuses, which is what sends ``input()`` down its non-tty path.
+    """
+
+    def __init__(self, *answers: str | type[BaseException]) -> None:
+        self.answers = list(answers)
+
+    def readline(self, *_args: Any) -> str:
+        item = self.answers.pop(0) if self.answers else ""
+        if isinstance(item, type):
+            raise item()
+        return item
+
+    def isatty(self) -> bool:
+        return True
+
+    def fileno(self) -> int:
+        raise OSError("not a real file")
+
+
+def quickstart_with_stdin(monkeypatch: pytest.MonkeyPatch, args: list[str], stdin: Any) -> int:
+    """`rayspec quickstart` through the real click entry point, over `stdin`; the exit code."""
+    from typer.main import get_command
+
+    monkeypatch.setattr(sys, "stdin", stdin)
+    command: Any = get_command(app)
+    try:
+        command.main(["quickstart", *args], prog_name="rayspec", standalone_mode=True)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    return 0
+
+
+def stubs_token(line: str) -> str:
+    """The ``--stubs`` argument of a printed `rayspec run` line."""
+    argv = shlex.split(line.split("#")[0].strip().removeprefix("$ "))
+    return argv[argv.index("--stubs") + 1]
+
+
+def next_step_dry_run(output: str) -> str:
+    """The `what to do next:` dry-run line (the one a user copy-pastes)."""
+    after = output.split("what to do next:", 1)[1]
+    return next(
+        line.strip()
+        for line in after.splitlines()
+        if line.strip().startswith("rayspec run ") and "--dry-run" in line
+    )
+
+
 @pytest.fixture
 def tty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the CLI believe stdin can be answered (CliRunner's stdin is a pipe)."""
@@ -236,20 +289,79 @@ def test_no_interactive_never_spawns_a_login(
     assert shlex.join([str(sdks.claude_bin), "auth", "login"]) in res.output
 
 
-def test_ctrl_c_at_a_question_is_130_without_a_traceback(
+def test_ctrl_c_at_the_login_menu_is_130_and_writes_nothing(
+    sdks: FakeSdks, git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """Read through `typer.prompt`, click catches KeyboardInterrupt and EOFError in the same
+    `except` and raises one `Abort` for both — so Ctrl-C here was indistinguishable from "not
+    now" and the command carried on with no acknowledgement at all.
+
+    Fails if the interrupt is swallowed, escapes as a traceback, or ends in a code other than
+    130 (docs/cli.md, CONTRACTS.md and the packaged skill all promise 130 here).
+    """
+    code = quickstart_with_stdin(
+        monkeypatch, ["--root", str(git_repo), "--no-skill"], ScriptedStdin(KeyboardInterrupt)
+    )
+    captured = capsys.readouterr()
+    assert code == 130, captured.out + captured.err
+    assert "quickstart interrupted" in captured.err
+    assert "Traceback" not in captured.out + captured.err
+    assert not (git_repo / ".rayspec").exists()
+
+
+def test_ctrl_c_at_the_git_init_question_is_130_not_a_bare_aborted(
+    sdks: FakeSdks, plain_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The second question was left on `typer.confirm`, whose `Abort` reached the root error
+    boundary as click's bare `Aborted.` and exit **1** — the code that means "this environment
+    cannot run rayspec".
+
+    Fails if Ctrl-C at the `git init` prompt is anything but one line and exit 130.
+    """
+    code = quickstart_with_stdin(
+        monkeypatch,
+        ["--root", str(plain_dir), "--no-skill"],
+        ScriptedStdin("4\n", KeyboardInterrupt),  # "not now" at the menu, Ctrl-C at git init
+    )
+    captured = capsys.readouterr()
+    assert code == 130, captured.out + captured.err
+    assert "quickstart interrupted" in captured.err
+    assert "Aborted" not in captured.err
+    assert not (plain_dir / ".rayspec").exists()
+    assert not (plain_dir / ".git").exists()
+
+
+def test_end_of_input_at_both_questions_is_not_now_and_still_green(
+    sdks: FakeSdks, git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """The other half of the same rule: end of input is "not now", not an interruption."""
+    code = quickstart_with_stdin(
+        monkeypatch, ["--root", str(git_repo), "--no-skill"], ScriptedStdin()
+    )
+    captured = capsys.readouterr()
+    assert code == 0, captured.out + captured.err
+    assert "not now" in captured.out
+    assert "succeeded" in captured.out
+
+
+def test_an_answer_outside_the_menu_is_re_asked_not_silently_not_now(
     sdks: FakeSdks, git_repo: Path, tty: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fails if the exception escapes as a traceback or a different code."""
+    """`5`, `banana` and `1)` were all read as "not now" in silence, while the `git init`
+    question one line later re-asked on the same input.
 
-    def interrupt(*args: Any, **kwargs: Any) -> str:
-        raise KeyboardInterrupt
+    Fails if an out-of-range answer is accepted, or if the chosen login does not run.
+    """
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        quickstart_mod, "run_login", lambda argv: (seen.append(list(argv)), (True, None))[1]
+    )
 
-    monkeypatch.setattr(quickstart_mod.typer, "prompt", interrupt)
+    res = quickstart("--root", str(git_repo), "--no-skill", "--no-run", stdin="5\nbanana\n1\n")
 
-    res = quickstart("--root", str(git_repo), "--no-skill")
-
-    assert res.exit_code == 130, res.output
-    assert "Traceback" not in res.output
+    assert res.exit_code == 0, res.output
+    assert res.output.count("Error: answer 1-4") == 2, res.output
+    assert seen == [[str(sdks.claude_bin), "auth", "login"]], seen
 
 
 # --------------------------------------------------------------------------------------------
@@ -387,6 +499,27 @@ def test_missing_git_json_marks_the_run_skipped(
     assert dry["action"] == "skipped"
     assert payload["run"]["attempted"] is False and payload["run"]["skipped_reason"]
     assert payload["isolation"]["next_run"] == "blocked"
+
+
+def test_without_git_it_neither_predicts_nor_recommends_a_run(
+    no_git: None, sdks: FakeSdks, plain_dir: Path
+) -> None:
+    """git-lessness is known before the plan is rendered, yet the plan still promised
+    `dry run  will run` twelve lines after the state block said every run refuses — and the
+    closing block then recommended two `rayspec run` commands that both exit 2.
+
+    Fails if either half contradicts the same screen again.
+    """
+    res = quickstart("--root", str(plain_dir), "--no-skill", "--no-interactive")
+
+    assert res.exit_code == 1, res.output
+    assert "will run" not in res.output
+    assert "dry run  cannot run" in res.output
+    after = res.output.split("what to do next:", 1)[1]
+    assert "rayspec validate" in after
+    assert "rayspec plan example" in after
+    assert not [line for line in after.splitlines() if line.strip().startswith("rayspec run ")]
+    assert "spends money" not in res.output
 
 
 @pytest.mark.parametrize(
@@ -816,6 +949,57 @@ def test_a_failed_dry_run_is_exit_1_with_a_next_step(sdks: FakeSdks, git_repo: P
     assert payload["ok"] is False
 
 
+def test_a_failed_scaffold_is_exit_1_and_never_says_you_are_set_up(
+    sdks: FakeSdks, plain_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exit-code decision looked only at a dry run that was *attempted*, so a scaffold that
+    could not be written printed a hard `error:` line, created nothing, ran nothing — and then
+    said "you are set up.", exited 0 and reported `"ok": true`.
+
+    Fails if a failed step is invisible to the exit code, in prose or in the machine contract.
+    """
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(init_mod, "scaffold", boom)
+
+    res = quickstart("--root", str(plain_dir), "--no-skill", "--no-interactive")
+
+    assert res.exit_code == 1, res.output
+    assert "cannot write the scaffold" in res.output
+    assert "you are set up." not in res.output
+    assert "not finished." in res.output
+
+    res = quickstart("--root", str(plain_dir), "--no-skill", "--no-interactive", "--json")
+    assert res.exit_code == 1, res.output
+    payload = _payload(res)
+    assert payload["ok"] is False and payload["exit_code"] == 1
+    [scaffold] = [s for s in payload["steps"] if s["id"] == "scaffold"]
+    assert scaffold["action"] == "failed"
+
+
+def test_a_project_with_no_workflow_is_not_a_finished_quickstart(
+    sdks: FakeSdks, plain_dir: Path
+) -> None:
+    """A `.rayspec/` that exists but holds no workflow (a `mkdir`, a partial clone) was
+    "project skipped · dry run skipped · you are set up." with exit 0, while `rayspec plan` and
+    `rayspec run` from that directory both exit 2.
+
+    Fails if nothing-ran reports success, or if the isolation sentence invents a workflow that
+    "asks for a worktree per run" when there is no workflow at all.
+    """
+    (plain_dir / ".rayspec").mkdir()
+
+    res = quickstart("--root", str(plain_dir), "--no-skill", "--no-interactive")
+
+    assert res.exit_code == 1, res.output
+    assert "no workflow" in res.output
+    assert "you are set up." not in res.output
+    assert "workflow asks for a worktree" not in res.output
+    assert "there is no workflow to read an `isolation:` line from" in res.output
+
+
 def test_no_init_no_run_no_skill(sdks: FakeSdks, git_repo: Path, plain_dir: Path) -> None:
     """Fails if a flag is ignored."""
     res = quickstart("--root", str(plain_dir), "--no-init", "--no-interactive")
@@ -833,6 +1017,69 @@ def test_no_init_no_run_no_skill(sdks: FakeSdks, git_repo: Path, plain_dir: Path
     assert not (git_repo / ".claude").exists()
 
 
+def test_home_itself_is_refused_because_its_rayspec_is_rayspec_home(
+    sdks: FakeSdks, tmp_path: Path
+) -> None:
+    """The README's getting-started is two lines and a fresh terminal starts in `$HOME`, where
+    `.rayspec/` IS `RAYSPEC_HOME`: the project and rayspec's own state become one directory (the
+    policy row printed the same path twice), the skills land in the user's *global*
+    `~/.claude/skills/`, and from then on every directory below `$HOME` finds that project, so
+    quickstart is a permanent no-op there.
+
+    Fails if `$HOME` is scaffolded, or if the refusal writes anything.
+    """
+    home = tmp_path / "userhome"
+    res = quickstart("--root", str(home), "--no-skill")
+
+    assert res.exit_code == 2, res.output
+    assert "home directory" in res.output
+    assert "mkdir myproj" in res.output
+    assert not (home / ".rayspec" / "workflows").exists()
+    assert not (home / ".claude").exists()
+
+
+def test_a_directory_under_home_is_scaffolded_even_after_a_run(
+    sdks: FakeSdks, tmp_path: Path
+) -> None:
+    """`~/.rayspec` exists on every machine that has ever performed a run (it holds `projects/`)
+    and `find_project_root` walks up looking for a `.rayspec/`, so from any non-repository
+    directory under `$HOME` the walk landed on `$HOME` and quickstart wrote nothing at all —
+    reporting that no-op as success.
+
+    Fails if rayspec's own home is treated as a project the new directory is "inside".
+    """
+    home = tmp_path / "userhome"
+    (home / ".rayspec" / "projects").mkdir(parents=True)  # what any run leaves behind
+    proj = home / "myproj"
+    proj.mkdir()
+
+    res = quickstart("--root", str(proj), "--no-skill", "--no-interactive")
+
+    assert res.exit_code == 0, res.output
+    assert (proj / ".rayspec" / "workflows" / "example.yaml").is_file()
+    assert "inside the rayspec project at" not in res.output
+    assert "succeeded" in res.output
+
+
+def test_the_credentials_note_sits_under_a_row_that_found_something(
+    sdks: FakeSdks, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Printed once after the provider loop, the "found, not checked" note landed under the LAST
+    auth row — which, with only claude configured, is the codex row that found nothing.
+
+    Fails if the note is not attached to the last row that did find credentials.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    res = quickstart("--root", str(git_repo), "--no-skill")
+
+    assert res.exit_code == 0, res.output
+    lines = [line for line in res.output.splitlines() if "auth" in line or "not checked" in line]
+    note = next(i for i, line in enumerate(lines) if "credentials found, not checked" in line)
+    assert "claude auth" in lines[note - 1], lines
+    assert "codex auth" in lines[note + 1], lines
+
+
 def test_the_skills_are_written_unless_asked_otherwise(sdks: FakeSdks, git_repo: Path) -> None:
     res = quickstart("--root", str(git_repo))
     assert res.exit_code == 0, res.output
@@ -844,8 +1091,42 @@ def test_the_four_next_steps_are_inits_four(sdks: FakeSdks, git_repo: Path) -> N
     """Fails if the two commands start teaching different commands."""
     res = quickstart("--root", str(git_repo), "--no-skill")
     assert res.exit_code == 0, res.output
-    for line in init_mod.next_steps("code", skill=False, doctor=False):
+    stubs = quickstart_mod.stubs_argument(
+        git_repo.resolve() / ".rayspec" / "stubs" / "example.yaml", git_repo.resolve()
+    )
+    for line in init_mod.next_steps("code", skill=False, doctor=False, stubs=stubs):
         assert line in res.output, line
+
+
+def test_the_next_step_stubs_line_is_the_one_that_was_just_run(
+    sdks: FakeSdks, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--stubs` resolves against the cwd, so from a subdirectory of an existing project the
+    executed command used an absolute path while the closing `what to do next:` line kept the
+    project-relative default — the one copy-paste line in the whole output that exited 2.
+
+    Fails if the two drift again, in either direction.
+    """
+    first = quickstart("--root", str(git_repo), "--no-skill")
+    assert first.exit_code == 0, first.output
+    child = git_repo / "sub" / "deeper"
+    child.mkdir(parents=True)
+
+    res = quickstart("--root", str(child), "--no-skill")
+
+    assert res.exit_code == 0, res.output
+    ran = next(
+        line for line in res.output.splitlines() if line.strip().startswith("$ rayspec run ")
+    )
+    printed = next_step_dry_run(res.output)
+    assert stubs_token(printed) == stubs_token(ran), (printed, ran)
+    assert Path(stubs_token(printed)).is_file(), printed
+
+    # and standing in the root itself it stays the relative path a person would type
+    monkeypatch.chdir(git_repo)
+    res = quickstart("--no-skill")
+    assert res.exit_code == 0, res.output
+    assert stubs_token(next_step_dry_run(res.output)) == ".rayspec/stubs/example.yaml"
 
 
 def test_quickstart_is_registered_and_documented() -> None:
