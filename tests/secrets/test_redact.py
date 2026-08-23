@@ -126,6 +126,26 @@ def test_a_self_overlapping_secret_is_never_cut_in_half(secret: str) -> None:
         assert out == "[[REDACTED:tok]]", (secret, cut)
 
 
+@pytest.mark.parametrize("trailing", ["", "0", "01", "0123456789", "ABCDEFGHIJKLMNOPQRST"])
+def test_a_detector_shape_is_never_cut_in_half_either(trailing: str) -> None:
+    """The same defect as the one above, on the half of the buffer that had no guard at all.
+
+    The hold measures where a match could still BEGIN, inside a window the size of the longest
+    match. Let the run of ``[0-9A-Z]`` reach past that window and the leftmost open it finds
+    sits AFTER the start of a key that is already COMPLETE — so the boundary lands inside the
+    key and its head goes out in the clear, exactly as a self-overlapping value used to. Found
+    by the generated cases in ``tests/properties/test_redactor.py``; a stream is the console and
+    ``stdout.log``, so this was a credential in a file.
+    """
+    red = Redactor.build({}, detectors=["aws"])
+    text = f"AKIA0123456789ABCDEF{trailing}"
+    for cut in range(len(text) + 1):
+        stream = red.stream()
+        out = stream.feed(text[:cut]) + stream.feed(text[cut:]) + stream.flush()
+        assert out == f"[REDACTED:aws]{trailing}", (trailing, cut)
+        assert "AKIA" not in out, (trailing, cut)
+
+
 def _assert_split_invariant(red: Redactor, text: str) -> None:
     """The documented invariant: chunking may move boundaries, never change the result."""
     whole = red.redact(text)
