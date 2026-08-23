@@ -89,13 +89,14 @@ rayspec version                     # prints `rayspec <version>`
 rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundled CLIs, auth hints; --probe runs one real turn per provider
 
 # 2. scaffold a project in your repo
-rayspec init                        # .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml}
+rayspec init                        # .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml, tests/example/approves.yaml}
                                     # + .claude/skills/{rayspec-workflows,rayspec-cli}/ (the coding-agent skills; --no-skill to skip)
                                     # --kind content for a non-code project; --force to overwrite
 
 # 3. check it
 rayspec workflows                   # discovered workflows
 rayspec validate                    # schema, graph, references, provider capabilities
+rayspec test                        # the scaffolded case — a scripted dry run, no login needed
 rayspec plan example                # inputs, resolved agents/models, step order, capability report
 
 # 4. dry-run it — providers become a scripted stub, shell steps are skipped, no login needed

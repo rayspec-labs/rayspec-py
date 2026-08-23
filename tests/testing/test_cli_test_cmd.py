@@ -72,6 +72,27 @@ def test_filters(cases: Path, home: Path) -> None:
     assert invoke(["demo"], cases, home).exit_code == 0
 
 
+def test_every_case_id_the_refusal_lists_is_one_case_can_pass_back(cases: Path, home: Path) -> None:
+    """A hint that suggests something the flag then rejects cannot be acted on.
+
+    The refusal prints `known cases: tests/demo:happy, tests/demo:second`, and typing one of
+    those back was exit 2 with the same hint again — a loop with no way out. The cases here come
+    from the listing itself (`case_names`), so the two cannot drift apart again.
+    """
+    from rayspec.cli.commands.test import case_names
+    from rayspec.testing.spec import discover_suites
+
+    listed = case_names(discover_suites(cases))
+    assert listed, "nothing discovered — this guard has stopped working"
+    for name in listed:
+        result = invoke(["--case", name], cases, home)
+        assert result.exit_code == 0, (name, result.output)
+        assert result.output.count("tests/demo:") == 1, (name, result.output)
+        assert name in result.output, (name, result.output)
+    # the bare id keeps working: this widened what is accepted, it narrowed nothing
+    assert invoke(["--case", "happy"], cases, home).exit_code == 0
+
+
 def test_an_unknown_filter_is_a_usage_error(cases: Path, home: Path) -> None:
     result = invoke(["--case", "nope"], cases, home)
     assert result.exit_code == 2, result.output

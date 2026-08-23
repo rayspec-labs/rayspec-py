@@ -470,7 +470,9 @@ A passing case deletes the run it created (a suite must not bury the project's r
 failing case keeps it, so `rayspec logs <run_id>` and `rayspec show <run_id>` explain it.
 
 The positional `<workflow>` keeps only cases of that workflow (or of a suite with that name),
-`--case ID` only that case id, `-k` / `--select PATTERN` only cases whose `<suite>:<case>` contains
+`--case ID` only that case — either the bare id (`approves`) or the qualified `<suite>:<case>`
+(`tests/example:approves`), which is the form a refusal lists, so what you are shown is always
+something you can type back — `-k` / `--select PATTERN` only cases whose `<suite>:<case>` contains
 the substring; the filters combine. `--exec-shell` makes `shell:`/`python:` steps of every case
 execute for real instead of being simulated — **it is the only thing that can start a subprocess,
 and only you can pass it**. A case file's `exec_shell: true` is a declaration that the case wants
@@ -916,7 +918,7 @@ The rows are derived from the run's own `run.json` (its creation, which is where
 
 Options:
 
-- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps, which are rayspec running a command itself. A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
+- `--commands` — Only what was executed: every command an agent ran — a Codex `command_start`, or any tool call that carries a command line, which is how the Claude adapter reports a `Bash` call — plus the `shell:`/`python:` steps the run **started**, which are rayspec running a command itself. A step the run decided against before it began — `when: false`, an upstream failure, the run-level cap — ran no body and is not in this view; it is still in the ledger proper, where the skip is a fact about the run. (The dividing line is the step's own `step.started` record, so it holds for whatever reason a step is skipped for next.) A step row names the step and its kind, not its body: the rendered body is not kept in the run directory, and `rayspec explain {run} {step}` re-renders it from the workflow.
 - `--json` / `--output json` — Machine-readable output: `{run_id, workflow, status, dry_run, actor, workdir, branch, rows: [{ts, kind, step, detail, data}]}`, where `kind` is `run`, `step`, `command`, `tool`, `file`, `warning` or `approval`.
 - `--root` `<path>` — Project root (the directory containing .rayspec/). Default: walk up from the cwd.
 
@@ -1118,11 +1120,12 @@ rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--ro
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
-config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus **both rayspec
+config.yaml, stubs/example.yaml, tests/example/approves.yaml}` from the templates packaged with
+rayspec, plus **both rayspec
 skills for coding agents** in `.claude/skills/rayspec-workflows/` and `.claude/skills/rayspec-cli/`
 (`SKILL.md` + `references/*.md` each, the same files `rayspec skill install` writes — see
 [agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md); `--no-skill` opts out of both), then print the next steps
-(`doctor`, `validate`, `plan example`, `run example --dry-run --stubs
+(`doctor`, `validate`, `test`, `plan example`, `run example --dry-run --stubs
 .rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here — the skills
 load automatically"). `--root DIR` is the directory that receives `.rayspec/` and
 `.claude/skills/` (default: the cwd — `init` does **not** walk up to an enclosing project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
@@ -1160,6 +1163,11 @@ Both kinds ship the same `config.yaml` (commented `tiers`/`aliases`/`pricing`/`p
 blocks) and a `stubs/example.yaml` that makes `rayspec run example --dry-run --stubs
 .rayspec/stubs/example.yaml` succeed without any login (its header comment links the stub file
 format in [providers.md](providers.md#stub-stub) by URL).
+
+Both also ship one test case, `.rayspec/tests/example/approves.yaml`, so `rayspec init && rayspec
+test` passes on a fresh machine: the case is a scripted dry run against that same stub file, needs
+no git checkout and no credentials, and is a newcomer's first sight of the case format (see
+[testing.md](testing.md)).
 
 #### Starting from an example
 
@@ -1225,8 +1233,11 @@ Add one workflow to a project that already exists — `rayspec init` is for crea
 `new` for growing it. Writes `.rayspec/workflows/<name>.yaml` (one read-only agent step, one
 `target` input, `isolation: none`) and prints `rayspec validate <name>` / `plan` / `run <name>
 --dry-run`; the fresh workflow validates and dry-runs without any login. `<name>` is both the
-`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, not a
-reserved context root such as `run`); anything else is a usage error naming the rule. `--agent
+`name:` and the file name, so it must be a workflow identifier (`^[a-z][a-z0-9_]*$`, at most 128
+characters, not a reserved context root such as `run`); anything else is a usage error naming the
+rule — the length included, which is checked here rather than left to the filesystem
+(`error: invalid workflow name: invalid identifier 'aaaa…': must be at most 128 characters (this
+one is 300) — it becomes a file name`, never a bare `[Errno 63] File name too long`). `--agent
 NAME` references `.rayspec/agents/<NAME>.yaml` (or `~/.rayspec/agents/<NAME>.yaml`) instead of
 writing an inline agent into the workflow; that file has to exist, because a workflow pointing at
 a missing agent fails the `rayspec validate <name>` the command itself prints next — an unknown
