@@ -6,8 +6,10 @@ it did when ``runs`` was a flat command: default scope is the current project's 
 (``$RAYSPEC_HOME/projects/<slug>``); ``--all`` lists every project under the home (adds a project
 column). Outside a project (no ``.rayspec/`` and no git repository at or above the cwd /
 ``--root``) nothing is listed and no slug is minted: a one-line notice points at ``--all``.
-The ``steps`` column is ``done/total`` with skipped steps counted as done and, for
-running/paused/interrupted runs, the workflow's planned steps in the total.
+The ``steps`` column is ``done/total`` with skipped steps counted as done and, for every run
+that has not succeeded, the workflow's planned steps in the total. The ``started`` column is the
+run's start as an age on a terminal and as an absolute UTC stamp on a redirected stream, so a
+listing written to a file is a function of the store alone (see ``_runs_common``'s moments).
 
 Module boundary: listing, formatting and argument plumbing only. The run lookup and the store
 live in :mod:`rayspec.cli._runs_common`, the stub-script shape in
@@ -75,10 +77,17 @@ def runs_table(
     runs: list[RunRecord],
     *,
     show_project: bool,
+    relative_ages: bool,
     planned: dict[str, set[str] | None] | None = None,
 ) -> Table:
     """The ``rayspec runs`` table (``planned`` = run id → planned step paths, see
-    :func:`rayspec.cli._runs_common.planned_step_paths`)."""
+    :func:`rayspec.cli._runs_common.planned_step_paths`).
+
+    ``relative_ages`` decides what the ``started`` column says — ``3h ago`` for a reader watching
+    a terminal, the absolute UTC stamp for a stream that will be diffed. It is a required
+    argument, not a default: the caller knows who is reading, and the cell that ticks by itself
+    is the one nobody chose. See :func:`rayspec.cli._runs_common.ages_are_relative`.
+    """
     table = new_table()
     table.add_column("run")
     table.add_column("workflow")
@@ -104,7 +113,7 @@ def runs_table(
         cells.extend(
             [
                 status,
-                common.fmt_when(run.started_at or run.created_at),
+                common.fmt_when(run.started_at or run.created_at, relative=relative_ages),
                 common.fmt_duration(common.run_duration_ms(run)),
                 f"{done}/{total}",
                 common.fmt_tokens(usage.total) if usage.total else "-",
@@ -140,7 +149,14 @@ def list_runs(*, all_: bool, limit: int | None, root: Path | None, json_: bool) 
         scope = "any project" if all_ else f"project {ctx.slug}"
         out.print(f"no runs for {scope} (run dir {ctx.store.root / 'runs'})", markup=False)
         return
-    out.print(runs_table(records, show_project=all_, planned=planned))
+    out.print(
+        runs_table(
+            records,
+            show_project=all_,
+            relative_ages=common.ages_are_relative(),
+            planned=planned,
+        )
+    )
 
 
 def stub_script_text(store: FileRunStore, run: RunRecord) -> str:

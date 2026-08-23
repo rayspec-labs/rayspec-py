@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -26,21 +27,30 @@ def test_runs_table_newest_first_current_project(cli: CliRunner, seeded: Seeded)
     assert "failed" in lines[1]
 
 
-def test_runs_table_header_is_one_line_at_eighty_columns(seeded: Seeded) -> None:
+@pytest.mark.parametrize(
+    ("width", "relative_ages"),
+    # the two renderings that can actually occur: a terminal is as narrow as 80 columns and gets
+    # ages; a redirected stream is fixed at 200 columns (`_loader_common.console`) and gets
+    # absolute stamps. Rendering the wide form into a narrow terminal is not a real combination.
+    [(80, True), (200, False)],
+)
+def test_runs_table_header_is_one_line(seeded: Seeded, width: int, relative_ages: bool) -> None:
     """80 columns is the terminal this listing has to work on, in its widest form (``--all``).
 
     A column label wide enough to fold puts half the header on a second physical line, which
     costs `head -1`, `grep` and `awk` the one-line shape they read the listing by, and costs the
     run column — the cell a reader copies into the next command — the characters the second line
-    took. Rich still shortens a label that does not fit; what it must not do is wrap one.
+    took. Rich still shortens a label that does not fit; what it must not do is wrap one. The
+    same has to hold for the redirected rendering, whose ``started`` cell is three times as wide
+    (``2026-08-20 10:00:00 UTC``) — that is what pays for its 200 columns.
     """
     from rayspec.cli.commands.runs import runs_table
 
     records = sorted(seeded.store.list_runs(), key=lambda r: r.run_id, reverse=True)
     assert records, "the seeded project has runs"
     buffer = io.StringIO()
-    Console(file=buffer, width=80, highlight=False).print(
-        runs_table(records, show_project=True, planned={})
+    Console(file=buffer, width=width, highlight=False).print(
+        runs_table(records, show_project=True, relative_ages=relative_ages, planned={})
     )
     rendered = buffer.getvalue()
     lines = [line for line in rendered.splitlines() if line.strip()]

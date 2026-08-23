@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rayspec.cli.commands import _loader_common as loader_common
-from rayspec.cli.commands._loader_common import Context, fail, make_context
+from rayspec.cli.commands._loader_common import Context, fail, make_context, stdout_is_tty
 from rayspec.config import Config
 from rayspec.engine.context import cost_source_of
 from rayspec.engine.runtime import EXIT_USAGE
@@ -55,18 +55,18 @@ _log = logging.getLogger(__name__)
 #: Characters kept of an output preview (``rayspec show``).
 PREVIEW_LIMIT = 60
 
-#: Statuses whose listings count the *planned* steps of the workflow in the total: the
-#: run may still continue (live, paused, or resumable with ``rayspec resume``), so the recorded
-#: steps under-report its size. Only a succeeded run is final.
-_RESUMABLE_STATUSES = frozenset(
-    {
-        RunStatus.RUNNING,
-        RunStatus.PAUSED,
-        RunStatus.INTERRUPTED,
-        RunStatus.FAILED,
-        RunStatus.CANCELLED,
-    }
-)
+
+def may_still_gain_steps(status: RunStatus) -> bool:
+    """Whether a listing counts the workflow's *planned* steps in this run's total.
+
+    The rule is total by construction — **only a succeeded run is final** — rather than a list of
+    the statuses that happen to exist today (running, paused, interrupted, failed, cancelled).
+    Every one of those may still continue: live, waiting at a gate, or resumable with
+    ``rayspec resume``, so its recorded steps under-report the run's size. A status added later
+    is on the unfinished side by default, which is the side that reports honestly: a total that
+    is too small says a run finished work it never reached.
+    """
+    return status is not RunStatus.SUCCEEDED
 
 
 # --------------------------------------------------------------------------------------------------
@@ -204,34 +204,109 @@ def fmt_cost(cost_usd: float | None, cost_source: str, usage: Usage) -> str:
     return format_cost(cost_usd, cost_source, usage)
 
 
-def fmt_when(moment: datetime | None, *, now: datetime | None = None) -> str:
-    """Relative (``30s ago``, ``5m ago``, ``3h ago``, ``2d ago``) within a month, else a date."""
+# --- moments ---------------------------------------------------------------------------------
+#
+# Every wall-clock moment the CLI prints is UTC and SAYS SO. A run record is written on one
+# machine and read on another, and `~/.rayspec` outlives the laptop it was created on, so a bare
+# ``17:01`` is not a time — it is a guess about whose clock. The zone therefore belongs to the
+# value, not to a column header the reader may never have seen (a grepped line, a pasted row).
+#
+# Three renderings, and they are the ONLY place in this package that turns a ``datetime`` into
+# text (``tests/cli/test_time_rendering.py`` holds that rule):
+#
+#   fmt_stamp   2026-08-20 10:00:00 UTC   a full moment
+#   fmt_clock   10:00:00 UTC              one run's own timeline (`logs`, `audit`): same day
+#   fmt_age     3h ago · in 2h            a distance from NOW — a terminal affordance only
+#
+# ``fmt_age`` must never reach a redirected stream: `docs/cli.md` promises that
+# ``rayspec runs > yesterday.txt`` and the same command tomorrow "differ where the runs differ
+# and nowhere else", and an age ticks where nothing differed at all. :func:`ages_are_relative`
+# is that decision, :func:`fmt_when` the listing cell that acts on it.
+
+
+def _utc(moment: datetime) -> datetime:
+    """``moment`` as UTC. A naive stamp is read as UTC — that is what the store writes."""
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def ages_are_relative() -> bool:
+    """Whether this stdout may carry ages (``3h ago``) instead of absolute stamps.
+
+    Only a terminal may: there a reader is watching now, and "3h ago" is the answer. A redirected
+    or piped listing is read by ``diff``, ``grep`` and a future person, and it must be a function
+    of the stored records alone — the same store rendered an hour later has to produce the same
+    bytes. This is the same reasoning that already fixes the width of a redirected listing at 200
+    columns rather than the shell's: what is on the other end of the pipe is not a session.
+    """
+    return stdout_is_tty()
+
+
+def fmt_span(seconds: int) -> str:
+    """``30s`` · ``5m`` · ``3h`` · ``2d`` — the magnitude of a distance, without a direction."""
+    seconds = abs(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86_400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86_400}d"
+
+
+def fmt_age(moment: datetime | None, *, now: datetime | None = None) -> str:
+    """A distance from now, in both directions: ``30s ago`` … ``2d ago`` … ``431d ago``, and
+    ``in 5m`` … ``in 2d`` for a moment that has not happened yet; ``-`` when unknown.
+
+    Always relative, at any distance. Its callers print the absolute stamp right beside it, so an
+    age that "degraded" into a second copy of that stamp past some threshold would occupy the slot
+    while saying nothing (`rayspec show` did exactly that for a run older than a month).
+
+    A moment in the FUTURE is not hypothetical — clock skew between two machines that share a
+    ``RAYSPEC_HOME``, a restored backup, a container with a wrong date all produce one. It reads
+    ``in 9d``, not the clamped ``0s ago``, which claims a run that has not started yet started now.
+    """
     if moment is None:
         return "-"
     now = now or datetime.now(UTC)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    delta = now - moment
-    seconds = int(delta.total_seconds())
-    seconds = max(seconds, 0)
-    if seconds < 60:
-        return f"{seconds}s ago"
-    if seconds < 3600:
-        return f"{seconds // 60}m ago"
-    if seconds < 86_400:
-        return f"{seconds // 3600}h ago"
-    if seconds < 30 * 86_400:
-        return f"{seconds // 86_400}d ago"
-    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M")
+    seconds = int((now - _utc(moment)).total_seconds())
+    span = fmt_span(seconds)
+    return f"in {span}" if seconds < 0 else f"{span} ago"
 
 
 def fmt_stamp(moment: datetime | None) -> str:
-    """``2026-08-20 10:00:00 UTC`` or ``-``."""
+    """``2026-08-20 10:00:00 UTC`` or ``-`` — a full moment, zone included."""
     if moment is None:
         return "-"
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return _utc(moment).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def fmt_clock(moment: datetime | None) -> str:
+    """``10:00:00 UTC`` or ``-`` — a time of day inside ONE run's timeline (`logs`, `audit`),
+    whose id the reader just typed and which opens with the date (``20260820-100000-h2nx``).
+
+    The zone is repeated on every row rather than announced once in a column header: these two
+    commands exist to be grepped, tailed and pasted one line at a time, and a line that leaves
+    its zone behind in a header it was cut away from is the defect this rule exists to stop."""
+    if moment is None:
+        return "-"
+    return _utc(moment).strftime("%H:%M:%S UTC")
+
+
+def fmt_when(moment: datetime | None, *, relative: bool, now: datetime | None = None) -> str:
+    """One listing cell for a moment: its :func:`fmt_age` when ``relative``, else the absolute
+    :func:`fmt_stamp`; ``-`` when unknown.
+
+    There is no threshold between the two — that is the point. The cell used to switch from an
+    age to a date once a run passed thirty days, which bought nothing (a listing's ``run`` column
+    already opens with the date: ``20260711-120000-k3fa``) and cost two defects: an age that
+    quietly turned into a second copy of the stamp beside it in ``rayspec show``, and a listing
+    whose two halves were rendered by different rules. Who is reading is the only question, and
+    ``relative`` has no default so that every caller has to answer it with
+    :func:`ages_are_relative` — the value nobody chose is the one that ticks.
+    """
+    if moment is None:
+        return "-"
+    return fmt_age(moment, now=now) if relative else fmt_stamp(moment)
 
 
 def run_duration_ms(run: RunRecord, *, now: datetime | None = None) -> int | None:
@@ -287,14 +362,14 @@ def planned_step_paths(
 ) -> set[str] | None:
     """The workflow's statically known step paths (root steps and ``include:`` bodies, not the
     iterations of ``loop``/``each`` bodies) for a run that may still continue or be resumed
-    (running/paused/interrupted/failed/cancelled) — ``None`` for a succeeded run or when the
+    (:func:`may_still_gain_steps`) — ``None`` for a succeeded run or when the
     workflow cannot be loaded any more (old record, file gone, *any* loader failure: a listing
     must never fail because a workflow somewhere is broken).
 
     ``cache`` (one dict per listing) memoises the result per ``(project root, workflow)`` so
     ``rayspec runs --all`` loads every workflow file once, not once per run.
     """
-    if run.status not in _RESUMABLE_STATUSES:
+    if not may_still_gain_steps(run.status):
         return None
     key = (run.project_root or str(ctx.project_root), run.workflow_path or run.workflow_name)
     if cache is not None and key in cache:
@@ -1130,10 +1205,14 @@ def release_workdir_lock(ctx: RunsContext, run: RunRecord) -> bool:
 __all__ = [
     "PREVIEW_LIMIT",
     "RunsContext",
+    "ages_are_relative",
     "check_workflow_unchanged",
     "find_run",
+    "fmt_age",
+    "fmt_clock",
     "fmt_cost",
     "fmt_duration",
+    "fmt_span",
     "fmt_stamp",
     "fmt_tokens",
     "fmt_when",
@@ -1142,6 +1221,7 @@ __all__ = [
     "load_resolved_for",
     "lookup_run",
     "make_runs_context",
+    "may_still_gain_steps",
     "on_other_host",
     "output_preview",
     "pid_alive",
