@@ -314,11 +314,14 @@ steps (valid on: shell)`.
   (`{tool, reason, call_id}`) on a prompt step and `[]` when nothing was refused. Loop output =
   `{<body id>: output}` of the last iteration; each output = one such mapping per item, in order
   (and `.items` is `[{index, item, status, output, error}]`); include output = its `outputs:`.
-- **Shell env-ref rule**: in a `shell:` body every `{{ expr }}` renders to `${RAYSPEC_V<n>}` with
-  the value exported — never spliced into the script, so `$(rm -rf /)` inside a value stays inert
-  text. Quote it: `"{{ x }}"`; single quotes and `<<'EOF'` heredocs do NOT expand it (you get the
-  literal `${RAYSPEC_V2}`); lists/objects arrive as JSON (pipe to `jq`); a value over 64 KiB
-  spills to a file and renders as `$(cat '…')` instead. `${{ x }}` (GitHub syntax) is an error.
+- **Shell env-ref rule**: in a `shell:` body every `{{ expr }}` renders to `${RAYSPEC_V<n>}` —
+  never spliced into the script, so `$(rm -rf /)` inside a value stays inert text. Up to 64 KiB the
+  value is in the step's environment; above that it is written to a file and read back into the
+  same slot by a preamble line, so it is a plain shell variable and a child process the body starts
+  does not inherit it. The slot reads the same either side of the threshold: quote it
+  `"{{ x }}"`, and single quotes and `<<'EOF'` heredocs do NOT expand it (you get the literal
+  `${RAYSPEC_V2}`) whatever the size. Lists/objects arrive as JSON (pipe to `jq`).
+  `${{ x }}` (GitHub syntax) is an error.
 - **Env of every shell/python step**: `RAYSPEC_INPUT_<NAME>` per input, `RAYSPEC_RUN_ID`,
   `RAYSPEC_WORKDIR`, `RAYSPEC_ARTIFACTS_DIR`, `RAYSPEC_STATE_DIR`, and `RAYSPEC_CONTEXT` — a JSON
   file holding `inputs`, `steps`, `run`, `project` (`env` is deliberately left out):

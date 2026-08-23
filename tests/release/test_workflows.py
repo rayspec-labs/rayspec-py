@@ -202,6 +202,47 @@ def test_ci_never_re_resolves_the_lockfile() -> None:
     assert not problems, "\n".join(problems)
 
 
+#: What makes ``uv run`` use the environment as it stands instead of deriving one of its own.
+KEEPS_THE_ENVIRONMENT = ("--no-sync", "--no-project", "--isolated")
+
+
+def test_no_step_re_derives_the_environment_a_sync_step_already_built() -> None:
+    """Once a job has run ``uv sync``, that environment is the one its later steps must get.
+
+    A bare ``uv run`` builds the environment again from scratch: it re-reads ``.python-version``
+    and syncs to the DEFAULT groups, and where the interpreter disagrees it deletes ``.venv`` and
+    recreates it. A job that syncs one interpreter with every group and then runs a bare
+    ``uv run`` is checking something other than what it asked for — which is how a four-
+    interpreter matrix came to run 3.12 in every cell, each of them missing the docs group and so
+    unable to type-check ``scripts/mkdocs_hooks.py``.
+
+    Either the job says the environment is already built (``UV_NO_SYNC``), or the step says so
+    itself. A job with no sync step is not covered: there ``uv run`` IS how the environment is
+    built, which is what ``docs.yml`` does on purpose.
+    """
+    problems = []
+    for path in workflow_files():
+        workflow = load(path)
+        for job, spec in workflow["jobs"].items():
+            synced = False
+            for step in spec.get("steps") or []:
+                env: dict[str, Any] = {}
+                for source in (workflow.get("env"), spec.get("env"), step.get("env")):
+                    env.update(source or {})
+                for line in str(step.get("run", "")).splitlines():
+                    command = line.strip()
+                    words = command.split()
+                    if words[:2] == ["uv", "sync"]:
+                        synced = True
+                    elif words[:2] == ["uv", "run"] and synced:
+                        if any(flag in command for flag in KEEPS_THE_ENVIRONMENT):
+                            continue
+                        if str(env.get("UV_NO_SYNC", "")).strip():
+                            continue
+                        problems.append(f"{path.name}: {job}: {command}")
+    assert not problems, "\n".join(problems)
+
+
 # --------------------------------------------------------------------------- release.yml
 
 
@@ -550,7 +591,12 @@ def test_the_warning_is_a_single_annotation_that_says_where_the_report_is() -> N
         pytest.param(
             "gh: Resource not accessible by integration (HTTP 403)",
             "pull-requests: write",
-            id="403",
+            id="403-denied",
+        ),
+        pytest.param(
+            "gh: API rate limit exceeded for installation ID 1234. (HTTP 403)",
+            "rate limit",
+            id="403-rate-limited",
         ),
         pytest.param("gh: Not Found (HTTP 404)", "o/r#7", id="404"),
         pytest.param("dial tcp: lookup api.github.com: no such host", "no such host", id="network"),
@@ -565,6 +611,10 @@ def test_the_warning_names_what_actually_went_wrong(
     A missing grant is a 403 and the caller can fix it; a 404 is a pull request this token cannot
     see, and a network blip is neither. Blaming ``pull-requests: write`` for all three is how a
     green repository spends an afternoon on its permissions block.
+
+    And a 403 is not by itself a missing grant: a rate limit — primary or secondary — and an
+    archived repository carry the same code, so gh's own words have to reach the warning rather
+    than be replaced by the one diagnosis the caller has already ruled out.
     """
     done, _calls = _post_comment(tmp_path, "default", gh_exit=1, gh_said=gh_said)
     assert done.returncode == 0, done.stdout + done.stderr
@@ -757,6 +807,7 @@ DOCUMENTED_OUTCOMES: list[tuple[int, str]] = [
     (2, "not started (usage error)"),
     (3, "paused"),
     (4, "cancelled"),
+    (130, "interrupted"),
 ]
 
 
@@ -836,6 +887,33 @@ def test_every_documented_outcome_sets_both_documented_outputs(
     done, outputs, _work = _run_step(tmp_path, code)
     assert done.returncode == 0, done.stdout + done.stderr
     assert outputs.get("exit-code") == str(code), outputs
+    assert outputs.get("status") == status, outputs
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    DOCUMENTED_OUTCOMES,
+    ids=[status for _code, status in DOCUMENTED_OUTCOMES],
+)
+def test_the_report_and_the_output_call_one_outcome_by_one_name(
+    tmp_path: Path, code: int, status: str
+) -> None:
+    """Two tables turn an exit code into a name: the run step's ``case`` and the report's.
+
+    Different audiences read them — a person reads the comment, a calling workflow reads
+    ``status`` — and they drifted: an interrupted run was ``interrupted`` in the comment and
+    ``exit 130`` in the output, which reads as two different things having happened.
+
+    The event stream is empty here on purpose. A real run puts its own status in the summary
+    event and the report prefers it; the table below is what answers when there is no stream to
+    read, which is exactly the case nobody looks at.
+    """
+    _done, outputs, _work = _run_step(tmp_path, code)
+    events = tmp_path / f"events-{code}.jsonl"
+    events.write_text("", encoding="utf-8")
+    comment = _render(tmp_path, events, code)
+    [heading] = [line for line in comment.splitlines() if line.startswith("###")]
+    assert heading.endswith(status), heading
     assert outputs.get("status") == status, outputs
 
 
@@ -1031,6 +1109,10 @@ def _install_step(
         pytest.param("v1.0.0", "tool install rayspec==1.0.0", id="tag-shaped"),
         pytest.param(">=1.0.0,<2", "tool install rayspec>=1.0.0,<2", id="range"),
         pytest.param("==1.0.0", "tool install rayspec==1.0.0", id="operator"),
+        # A repository variable with a stray space is the accident this guards; `rayspec 1.0.0`
+        # is not a specifier and uv refuses it with a message that never mentions whitespace.
+        pytest.param(" 1.0.0 ", "tool install rayspec==1.0.0", id="padded"),
+        pytest.param(">= 1.0.0, < 2", "tool install rayspec>=1.0.0,<2", id="spaced-range"),
     ],
 )
 def test_the_version_input_becomes_the_specifier_it_reads_as(
@@ -1041,15 +1123,28 @@ def test_the_version_input_becomes_the_specifier_it_reads_as(
     assert expected in calls, calls
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" ", id="one-space"),
+        pytest.param("\t", id="tab"),
+        pytest.param("  ", id="two-spaces"),
+    ],
+)
 def test_an_empty_version_is_refused_instead_of_resolving_to_whatever_is_newest(
-    tmp_path: Path,
+    tmp_path: Path, version: str
 ) -> None:
     """The ``rayspec`` name was parked on PyPI with a 0.0.1 placeholder before the first release.
 
     *Latest* therefore had a wrong answer available, and an empty input is how a consumer
     following the documentation installed it — as a passing check that ran a stub.
+
+    Whitespace is the same input wearing a different coat, and the likelier accident of the two:
+    a repository variable with a stray space became ``rayspec `` — a name with no specifier,
+    which resolves to the latest release — and only the empty string was ever refused.
     """
-    done, calls = _install_step(tmp_path, "")
+    done, calls = _install_step(tmp_path, version)
     assert done.returncode != 0, done.stdout
     assert "rayspec-version" in done.stdout + done.stderr
     assert not calls, "PyPI was reached before the input was looked at"
@@ -1134,6 +1229,35 @@ def test_the_page_says_the_outputs_are_set_whatever_happened() -> None:
     [paragraph] = [block for block in page.split("\n\n") if "**Outputs.**" in block]
     assert "`status`" in paragraph and "`exit-code`" in paragraph
     assert "fail-on-error" in paragraph, "the page does not say who decides when they are set"
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """``git`` in this repository, never raising — the caller reads the return code."""
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
+    )
+
+
+def test_every_ref_the_page_tells_a_stranger_to_call_exists() -> None:
+    """The page pinned ``@v1`` while no tag of that name had ever been pushed.
+
+    A ``uses:`` ref that does not resolve is not a slow failure: GitHub rejects the call before any
+    job of the caller's workflow starts, so the copy-paste example broke on the reader's first pull
+    request while reading as the finished thing. Every ref the page names is resolved against this
+    repository — a commit sha or a tag, both of which ``rev-parse`` answers without a network.
+    """
+    if _git("rev-parse", "--git-dir").returncode != 0:
+        pytest.skip("not a git checkout — the refs the page names cannot be resolved here")
+    refs = sorted(set(re.findall(r"uses:\s+rayspec-labs/rayspec-py/\S+@(\S+)", _ci_page())))
+    assert refs, "docs/ci.md no longer shows how to call the reusable workflow"
+    missing = [
+        ref
+        for ref in refs
+        if _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode != 0
+    ]
+    shallow = _git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+    hint = " — this checkout is shallow, so it cannot see them either" if shallow else ""
+    assert not missing, f"docs/ci.md calls refs this repository does not have: {missing}{hint}"
 
 
 def test_the_copy_paste_example_points_at_files_rayspec_init_writes(

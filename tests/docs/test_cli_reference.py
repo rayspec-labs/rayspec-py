@@ -78,3 +78,31 @@ def test_every_option_is_mentioned_in_its_section(docs_dir: Path) -> None:
 def test_typer_app_is_the_documented_entry_point() -> None:
     assert isinstance(app, typer.Typer)
     assert "run" in cli_commands()
+
+
+def test_fail_fast_says_it_overrides_the_workflow_failure_policy(docs_dir: Path) -> None:
+    """``--fail-fast`` beats ``defaults.on_step_failure`` and may only ever tighten it.
+
+    That is the only place the *only-tightens* rule shows up in a user's day: they set a policy in
+    the workflow, pass the flag, and get something other than what the file says. Neither the help
+    text nor the option table said the two interact at all, which left the schema reference as the
+    only way to find out — and nobody reads it to look up a flag.
+    """
+    commands = cli_commands()
+    for name in ("run", "resume"):
+        flag = [param for param in commands[name].params if "--fail-fast" in param.opts]
+        assert flag, f"rayspec {name} has no --fail-fast"
+        help_text = flag[0].help or ""
+        assert "on_step_failure" in help_text, (
+            f"rayspec {name}: --fail-fast never says it overrides `defaults.on_step_failure` "
+            f"— its help is {help_text!r}"
+        )
+
+    rows = [
+        line
+        for line in documented_commands(docs_dir)["run"].splitlines()
+        if line.startswith("| `--fail-fast`")
+    ]
+    assert len(rows) == 1, rows
+    assert "on_step_failure" in rows[0], "the option table does not say what the flag overrides"
+    assert "tighten" in rows[0], "the option table does not say the override may only tighten"

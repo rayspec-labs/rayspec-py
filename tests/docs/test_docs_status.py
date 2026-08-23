@@ -13,9 +13,12 @@ from pathlib import Path
 
 from typer.main import get_command
 
+from rayspec.skill import SKILLS
+
 from .conftest import DOCS_DIR, README, REPO_ROOT
 
 EXAMPLES_README = REPO_ROOT / "examples" / "README.md"
+SKILL_SRC = REPO_ROOT / "src" / "rayspec" / "skill"
 
 
 def _text(path: Path) -> str:
@@ -136,3 +139,71 @@ def test_secrets_warning_is_present_where_inputs_and_the_run_store_are_introduce
     assert "clear text" in concepts
     assert "secret: true" in concepts, "concepts.md must name the field, not call it roadmap"
     assert any(ref in concepts for ref in ahead), "concepts.md must say where the gap lives"
+
+
+def test_the_shell_slot_pages_do_not_promise_an_export_above_the_spill_threshold() -> None:
+    """A slot is exported only up to 64 KiB; a spilled one is a plain shell variable.
+
+    Three places state the slot rule before a reader ever reaches the paragraph that explains
+    spilling — the packaged skill's one-line summary, the opening of the "Shell bodies" section
+    and the environment table, which is read out of order. Each used to say the value is in the
+    step's environment full stop. A workflow author who believes that hands a slot to a child
+    process through the environment; it works for every value they test with and fails only
+    above the threshold. The behaviour itself is pinned in
+    ``tests/properties/test_templating_slots.py``; this pins the pages that describe it.
+    """
+    # Whichever packaged skill states the rule must qualify it. Derived from the registry rather
+    # than from a path, and the count is asserted: if the heading is ever renamed this fails loudly
+    # instead of passing over an empty list.
+    stating = [
+        (skill.name, text)
+        for skill in SKILLS
+        if "**Shell env-ref rule**" in (text := _text(SKILL_SRC / skill.name / "SKILL.md"))
+    ]
+    assert len(stating) == 1, f"exactly one skill should state the slot rule, got {stating!r}"
+    for name, text in stating:
+        rule = text.split("**Shell env-ref rule**", 1)[1].split("\n- ", 1)[0]
+        assert "64 KiB" in rule, (
+            f"{name}: the slot rule must name the threshold the export stops at"
+        )
+        assert "the value exported" not in rule, f"{name}: the export is not unconditional"
+        assert "$(cat" not in rule, f"{name}: a spilled slot no longer renders as a substitution"
+
+    templating = _text(DOCS_DIR / "templating.md")
+    opening = templating.split("## Shell bodies", 1)[1].split("\n\n", 1)[1]
+    assert "64 KiB" in opening, "the Shell bodies opening must qualify where the value lives"
+    assert "the value is placed in the step's environment, never spliced" not in templating
+
+    table_row = next(
+        line for line in templating.splitlines() if line.startswith("| `RAYSPEC_V<n>` |")
+    )
+    assert "64 KiB" in table_row, "the environment table must not list a spilled slot unqualified"
+
+
+def test_templating_md_states_both_halves_of_the_nul_failure() -> None:
+    """NUL fails loudly below the threshold and silently above it — the doc must say both.
+
+    "cannot reach a step at all" reads as "rayspec refuses it". Below the threshold that is
+    right: the step never starts. Above it the step succeeds with the NUL removed and every
+    other byte intact, which is the half a reader has to act on, and the half the sentence
+    denied. Both are pinned as behaviour in ``tests/properties/test_templating_slots.py``.
+    """
+    templating = _text(DOCS_DIR / "templating.md")
+    assert "cannot reach a step at all" not in templating
+    bullet = next(para for para in templating.split("\n- ") if para.startswith("A NUL byte"))
+    assert "embedded null byte" in bullet, "the loud half: the step never starts below 64 KiB"
+    assert "one byte short" in bullet, "the silent half: above it the step runs on without it"
+
+
+def test_cli_md_describes_where_an_oversize_value_is_elided_in_a_preview() -> None:
+    """The slot of an oversize value keeps its reference; the placeholder stands for the PATH.
+
+    While a spilled value was spliced into the body as ``$(cat '<path>')`` the placeholder did
+    stand where the slot was, so "its slot reads <N bytes …>" was accurate. It no longer is:
+    the slot reads ``${RAYSPEC_V<n>}`` and the elided path sits in the preamble line above the
+    body. What matters — no scratch path in a preview — is unchanged and pinned in
+    ``tests/engine/test_context_rebuild.py``.
+    """
+    cli = _text(DOCS_DIR / "cli.md")
+    assert "its slot reads `<N bytes" not in cli
+    assert "too large to inline here" in cli

@@ -128,7 +128,7 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
 | `--verbose` | also print `step.started` lines |
 | `--allow-unsupported` | downgrade provider-capability mismatches to warnings |
-| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain); recorded on the run, so every resume of it keeps the same blast radius |
+| `--fail-fast` | on a failure, cancel running siblings instead of letting them finish (drain); overrides the workflow's `defaults.on_step_failure` and may only ever **tighten** it — it beats `continue` and `drain`, and never loosens a workflow that asked for `fail_fast`; recorded on the run, so every resume of it keeps the same blast radius |
 | `--resume RUN_ID` | resume a run (unique prefix accepted) of **this** workflow in the current project's store; inputs come from `run.json` (`--inputs-file` is refused; `--input` only re-supplies secret inputs — exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN` when one is missing); the other flags are **yours**, not the record's (except `--fail-fast`, which is recorded on the run and may only be tightened, never dropped) — a `--dry-run --stubs` record of a workflow with a non-stub agent needs `--dry-run` again (else exit 2 `run <id> was launched with --dry-run --stubs <path>; its recorded stubs file requires --dry-run …`, hint `pass --dry-run …`; `rayspec resume` inherits the dry run instead); refused when the run belongs to another workflow (always), the workflow hash changed (unless `--force`), the run still has a live pid or is recorded as running on another host (unless `--force`); cannot be combined with `--repo` — use [`rayspec resume`](#rayspec-resume), which finds the run in any project |
 | `--force` | resume despite a changed workflow (steps whose fingerprint changed re-run) or a recorded live pid; overwrite an existing `--stubs-init` file |
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
@@ -954,8 +954,10 @@ omitted:
   read back from `steps/<path>/prompt.txt` (the agent's rendered `instructions` — the system
   prompt — are not persisted and are not shown); for `shell:`/`python:` the rendered script with
   its `${RAYSPEC_V<n>}` slots and their values. A value over 64 KiB is not inlined into a
-  preview: its slot reads `<N bytes — too large to inline here; read it in the producing step's
-  output file under the run dir>`. Only the first 20 lines are shown without `--full`.
+  preview: the slot still reads `${RAYSPEC_V<n>}`, and the spill path the script would read —
+  the preamble line above a `shell:` body, the `Path(...)` call of a `python:` one — stands in as
+  `<N bytes — too large to inline here; read it in the producing step's output file under the run
+  dir>`. Only the first 20 lines are shown without `--full`.
 - **fingerprint / output** — the step fingerprint, whether the run *replayed* the step from a
   previous one (`reused`), and the output file.
 

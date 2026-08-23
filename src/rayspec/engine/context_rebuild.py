@@ -378,7 +378,7 @@ class RenderedBody:
 
 
 def oversize_placeholder(size: int) -> str:
-    """What a value too large to inline (>64 KiB) reads as in a preview.
+    """What the spill *path* of a value too large to inline (>64 KiB) reads as in a preview.
 
     A *run* spills such a value to a file under the run's ``tmp/`` and reads it back at
     execution time; a preview has no run dir and would throw the whole script away over one

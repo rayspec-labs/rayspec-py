@@ -26,9 +26,13 @@ Two CI-only behaviours are worth knowing before the first red build:
 
 ## The dry-run check, as a workflow you can call
 
-rayspec ships the check as a reusable workflow. It installs the published package from PyPI, runs
-one dry run and reports the result — as a pull-request comment that is edited in place on every
-push, and always into the run's job summary.
+rayspec ships the check as a reusable workflow. It installs rayspec from PyPI, runs one dry run
+and reports the result — as a pull-request comment that is edited in place on every push, and
+always into the run's job summary.
+
+**Before the first release.** There is no `v1` tag yet, and the `rayspec` name on PyPI still holds
+only a 0.0.1 placeholder — so the `uses:` ref below is pinned to a commit, which is what to keep
+using until the tag exists, and the version it asks for cannot install until 1.0.0 is published.
 
 <!-- rayspec:skip a GitHub Actions workflow, not a rayspec one -->
 ```yaml
@@ -41,7 +45,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@2fc00673be225bea41e1e81a80797d646a09d375
     with:
       workflow: example                    # what `rayspec init` scaffolds — swap in your own
       stubs: .rayspec/stubs/example.yaml   # and the stub script it writes next to it
@@ -61,7 +65,8 @@ jobs:
 | `fail-on-error` | `true` | fail the check when the dry run did not succeed |
 
 **Outputs.** Two of them, set for every run and not only for the one that went well: `status`
-is `succeeded`, `failed`, `paused`, `cancelled` or `not started (usage error)`, and `exit-code` is
+is `succeeded`, `failed`, `paused`, `cancelled`, `not started (usage error)`, `interrupted`, or
+`exit <code>` for a code no release of rayspec has a name for, and `exit-code` is
 the code rayspec returned ([the table in `rayspec run`](cli.md#exit-codes)). Because they are
 always there, `fail-on-error: false` genuinely hands the verdict over — the check stays green and
 the calling workflow decides what a run that did not succeed means:
@@ -73,7 +78,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@v1
+    uses: rayspec-labs/rayspec-py/.github/workflows/rayspec-dry-run.yml@2fc00673be225bea41e1e81a80797d646a09d375
     with:
       workflow: example
       stubs: .rayspec/stubs/example.yaml
@@ -99,14 +104,15 @@ that reason alone.
 design. The job summary carries the same report. Do not reach for `pull_request_target` to work
 around it: that runs the fork's code with a writable token.
 
-**Pinning.** `@v1` is a tag that moves with the 1.x line — by hand, as the last step of a release
-(below); pin a commit sha instead if you would rather not track it. `rayspec-version` defaults to
-`>=1.0.0,<2`, the same 1.x line, deliberately rather than to *latest*: the `rayspec` name on PyPI
-was parked with a 0.0.1 placeholder before the first release, so "whatever is newest" had a wrong
-answer available and an unpinned check could quietly install a stub. Pin an exact version anyway —
-a check that silently changes with someone else's release is a check nobody trusts. A bare version
-(`1.0.0`) is pinned exactly; anything starting with an operator (`>=1.2,<2`) is passed through as
-a specifier; an empty string is refused rather than resolved.
+**Pinning.** `@v1` will be a tag that moves with the 1.x line — set by hand, as the last step of a
+release (below); until it exists, and afterwards if you would rather not track a moving tag, pin a
+commit sha as the snippets above do. `rayspec-version` defaults to `>=1.0.0,<2`, the same 1.x line,
+deliberately rather than to *latest*: the `rayspec` name on PyPI is parked with a 0.0.1 placeholder
+until the first release lands, so "whatever is newest" has a wrong answer available and an unpinned
+check could quietly install a stub. Pin an exact version anyway — a check that silently changes
+with someone else's release is a check nobody trusts. A bare version (`1.0.0`) is pinned exactly;
+anything starting with an operator (`>=1.2,<2`) is passed through as a specifier; an empty string
+is refused rather than resolved.
 
 ## How rayspec itself is released
 
@@ -134,7 +140,8 @@ of materials and the notes, and stops short of the two irreversible steps.
 Three things stay manual on purpose, and the run's summary says so when it finishes: yanking the
 placeholder that holds the `rayspec` name on PyPI, moving the `v1` tag onto the released commit
 so every repository calling the dry-run workflow at `@v1` gets the new release, and rolling the
-next `## [Unreleased]` heading into `CHANGELOG.md`.
+next `## [Unreleased]` heading into `CHANGELOG.md` — together with the released version's link
+reference, which has no target to point at until the tag is pushed.
 
 ## The documentation site
 

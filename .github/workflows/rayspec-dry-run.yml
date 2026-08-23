@@ -78,7 +78,9 @@ on:
         type: boolean
     outputs:
       status:
-        description: succeeded · failed · paused · cancelled · not started (usage error)
+        description: >-
+          succeeded · failed · paused · cancelled · not started (usage error) · interrupted,
+          or `exit <code>` for a code no release of rayspec has a name for
         value: ${{ jobs.dry-run.outputs.status }}
       exit-code:
         description: The exit code rayspec returned.
@@ -106,9 +108,13 @@ jobs:
           VERSION: ${{ inputs.rayspec-version }}
         run: |
           set -euo pipefail
+          # A PEP 508 specifier never needs whitespace, and a stray space is not a version: an
+          # input of " " walked past the guard below and became `rayspec `, which resolves to the
+          # latest release — the one thing this step exists to refuse.
+          VERSION="$(printf '%s' "$VERSION" | tr -d '[:space:]')"
           case "$VERSION" in
             "")
-              echo "::error::rayspec-version is empty — that installs whatever PyPI serves as the latest release. Pass a version, or leave the input out for the default."
+              echo "::error::rayspec-version is blank — that installs whatever PyPI serves as the latest release. Pass a version, or leave the input out for the default."
               exit 1
               ;;
             # `v1.0.0` is the tag this workflow is called at, so a caller reaches for it here
@@ -149,6 +155,9 @@ jobs:
             2) status="not started (usage error)" ;;
             3) status=paused ;;
             4) status=cancelled ;;
+            130) status=interrupted ;;
+            # Reachable: a code this release of rayspec does not define, and 127 for a rayspec
+            # that never installed. Reporting it verbatim beats reporting nothing.
             *) status="exit $code" ;;
           esac
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
@@ -188,6 +197,7 @@ jobs:
               2: "not started (usage error)",
               3: "paused",
               4: "cancelled",
+              130: "interrupted",
           }
           ICON = {
               "succeeded": "white_check_mark",
@@ -328,13 +338,16 @@ jobs:
           }
           # `gh` fails for more than one reason and the report must not misdiagnose the one it
           # got: a missing grant is 403, a pull request this token cannot see is 404, and a
-          # network blip is neither. Its own stderr is quoted when it is none of those.
+          # network blip is neither. Its own stderr is quoted whenever it said anything, because
+          # a code alone does not distinguish the refusals that share one.
           rc=0
           said=$(post 2>&1) || rc=$?
           if [ "$rc" -ne 0 ]; then
             said=$(printf '%s' "$said" | tr '\n\r' '  ' | tail -c 300)
             case "$said" in
-              *"HTTP 403"*) why="the calling job needs permissions: pull-requests: write" ;;
+              # Four different refusals share this code — a denied grant, both rate limits and an
+              # archived repository — so gh's own words come first and the grant is a suggestion.
+              *"HTTP 403"*) why="gh exited $rc: $said — if that is a refusal and not a rate limit, the calling job needs permissions: pull-requests: write" ;;
               *"HTTP 404"*) why="$REPO#$NUMBER is not visible to this job's token" ;;
               *[![:space:]]*) why="gh exited $rc: $said" ;;
               *) why="gh exited $rc without a message — a network problem, most likely" ;;
