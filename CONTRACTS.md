@@ -3084,6 +3084,14 @@ from rayspec.store.file import (
     #   redaction is exact match, so a multi-line or overlong secret would survive shaping.
     tool_command,           # (StreamRecord) -> str | None  the command a tool_call executes
     tool_arguments,         # (StreamRecord) -> Mapping | None  data["input"], else data itself
+    is_step_start_row,      # (row) -> the row of a step being handed to its executor: kind
+    is_step_end_row,        # (row) -> the row of the run settling a step: it reports a status
+    #   The ledger's brackets, and the reader halves of what the engine writes: a step.started
+    #   payload carries `kind` and nothing else does; every step.finished carries `status` and no
+    #   start or retry does. A start opens an execution, the next end for the same step closes
+    #   it, and everything the attempt emitted (its retries included) lies between them. An end
+    #   that closes no open start reports a DECISION, not an execution — a skip, or a resume
+    #   replay. `rayspec audit --commands` is exactly the rows inside a bracket.
 )
 # FileRunStore(root, *, redactor=NULL_REDACTOR, audit: bool | None = None)
 #   audit: True/False pin the ledger on/off; None (default) asks AUDIT_ENV at write time
@@ -3139,7 +3147,14 @@ from rayspec.cli.commands.audit import (  # `rayspec audit <run> [--commands] [-
     #                  becomes an `unreadable_row` warning, never a silently empty step.
     audit_payload,   # (store, run, *, commands) -> {run_id, workflow, status, dry_run, actor,
     #                  workdir, branch, rows}   (dry_run is also marked in the printed header)
-    is_command_row,  # a "command" row, or a step row whose data.kind is shell/python
+    command_rows,    # (run, rows) -> the `--commands` view: a row is in it iff it is a "command"
+    #                  row, or a row of a shell:/python: step (COMMAND_STEP_KINDS, read off the
+    #                  step RECORD by `command_step_paths`) lying inside one of that step's
+    #                  executions — the span `is_step_start_row` opens and the step's next
+    #                  `is_step_end_row` closes. Per ROW, not per step: on a resumed run one step
+    #                  path carries executions, skips and replays, and each is answered on its
+    #                  own. No status, skip reason or replay marker is read.
+    command_step_paths,  # (run) -> the paths whose step record kind is shell/python
     print_audit, rows_table, actor_line, unreadable_row, ROW_STYLES, COMMAND_STEP_KINDS,
 )
 ```
