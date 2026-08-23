@@ -11,14 +11,18 @@ plus ``fromjson``/``regex_search``/``has_signal``):
   arbitrary objects → error (no ``<bound method ...>`` reprs in prompts). ``render_text``
   returns the raw value for a template that is exactly one ``{{ expr }}``; text *fields* use
   ``render_str`` which applies the same rule to that value.
-- **shell**: every ``{{ expr }}`` renders to the env-var reference ``${RAYSPEC_V<n>}`` and the
+- **shell**: every ``{{ expr }}`` renders to the variable reference ``${RAYSPEC_V<n>}`` and the
   stringified value is collected into the returned env (never spliced into the script, so bash's
   own quoting applies and ``$(rm -rf /)`` in a value stays inert). Values over 64 KiB spill to
   ``<spill_dir>/v<n>-<random>`` (``mkstemp``; ``spill_dir`` is made absolute and may be shared
-  by parallel steps) and render as ``$(cat '<path>')``. Comment delimiters are ``{{# … #}}`` so
-  bash ``${#VAR}`` survives. Because the substitution is a plain ``${VAR}`` reference, bash's
-  own rules decide whether it expands: inside single quotes or a quoted heredoc (``<<'EOF'``)
-  it stays the literal text ``${RAYSPEC_V<n>}`` — use double quotes / an unquoted heredoc.
+  by parallel steps); the body still reads ``${RAYSPEC_V<n>}`` and a preamble line prepended to
+  the script assigns the slot from that file (:func:`_read_back`), so the reference behaves the
+  same either side of the threshold and no scratch path reaches the body. A spilled slot is a
+  *shell* variable and is not exported — the one difference that remains, and a deliberate one
+  (:func:`_read_back` says why). Comment delimiters are ``{{# … #}}`` so bash ``${#VAR}``
+  survives. Because the substitution is a plain ``${VAR}`` reference, bash's own rules decide
+  whether it expands: inside single quotes or a quoted heredoc (``<<'EOF'``) it stays the
+  literal text ``${RAYSPEC_V<n>}`` — use double quotes / an unquoted heredoc.
 - **python**: ``{{ expr }}`` renders ``repr()`` of JSON-like values (str/int/float/bool/None/
   list/dict with str keys → a valid Python literal); anything else is an error. Oversized
   literals spill to a JSON file and render as ``json.loads(Path(...).read_text())``. Same comment
@@ -98,7 +102,11 @@ class Ref:
 @dataclass(frozen=True)
 class RenderedScript:
     """A rendered shell/python body: the script text, the ``RAYSPEC_V<n>`` env slots and the
-    spill files written (the engine must add the exported ``RAYSPEC_*`` env itself)."""
+    spill files written (the engine must add the exported ``RAYSPEC_*`` env itself).
+
+    ``script`` carries the preamble for any spilled slot; it is part of the script rather than a
+    separate field so every consumer — the executor, the fingerprint, ``explain`` — handles the
+    two sides of the spill threshold without knowing there are two."""
 
     script: str
     env: dict[str, str] = field(default_factory=dict)
@@ -220,12 +228,49 @@ def _check_str_keys(value: Any, where: str) -> None:
             _check_str_keys(item, f"{where}[{i}]")
 
 
+def _shell_quote(text: str) -> str:
+    """*text* as one single-quoted POSIX word — the only quoting that is literal throughout."""
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _read_back(name: str, path: Path) -> str:
+    """The preamble assignment that puts a spilled file's exact bytes into ``$<name>``.
+
+    Every part of it earns its place:
+
+    - ``unset`` first. rayspec can be run *from* a shell step, so ``RAYSPEC_V<n>`` may already
+      be in the environment; assigning to an exported name keeps the export attribute, which
+      would push a value larger than the threshold straight back into the environment block
+      that spilling exists to keep it out of. After ``unset`` the assignment makes a plain
+      shell variable, which is **not** exported — a child process started by the body reads a
+      small slot from its own environment but not a spilled one. That difference across the
+      threshold is deliberate and is the one that remains.
+    - ``&& printf x`` rather than ``; printf x``, and ``|| exit $?``: with ``;`` the sentinel is
+      printed even when ``cat`` failed, the slot becomes the empty string and the body runs on
+      with it. This form fails the script where the read failed, with ``cat``'s own message,
+      also when the caller did not set ``-e``.
+    - ``${name%x}`` removes the sentinel, and the sentinel is the point: ``$( )`` strips every
+      trailing newline, so a non-newline last byte is what makes the read verbatim.
+
+    POSIX only — ``unset``, ``$( )`` and ``${v%x}`` are in the standard, ``$(<file)`` and
+    ``read -r -d ''`` are not: the same rendered script also runs under ``interpreter: sh``.
+    """
+    return (
+        f"unset {name}; {name}=$(cat {_shell_quote(str(path))} && printf x) || exit $?; "
+        f"{name}=${{{name}%x}}"
+    )
+
+
 class _SlotCollector:
-    """Per-render collector for shell ``${RAYSPEC_V<n>}`` slots and spill files.
+    """Per-render collector for shell ``${RAYSPEC_V<n>}`` slots, spill files and the preamble.
 
     Spill files are created with :func:`tempfile.mkstemp` (``<spill_dir>/v<n>-<random>``) so
     concurrent renders — parallel steps sharing the run's ``tmp/`` directory — never overwrite
     each other; ``spill_dir`` is made absolute so the embedded path survives a step ``cwd:``.
+
+    Slot indices restart at 1 per render, but a preamble line and the slot it assigns are in
+    the same script and each script is its own process, so two concurrently rendered scripts
+    cannot see each other's variables however much their numbering overlaps.
     """
 
     def __init__(self, spill_dir: Path | None, threshold: int) -> None:
@@ -233,6 +278,7 @@ class _SlotCollector:
         self.threshold = threshold
         self.env: dict[str, str] = {}
         self.spills: list[Path] = []
+        self.preamble: list[str] = []
         self._n = 0
 
     def next_index(self) -> int:
@@ -260,11 +306,12 @@ class _SlotCollector:
     def shell_ref(self, value: Any) -> str:
         text = stringify_text(value)
         n = self.next_index()
+        name = f"RAYSPEC_V{n}"
         if len(text.encode("utf-8")) > self.threshold:
-            path = self.spill(n, text)
-            return "$(cat '" + str(path).replace("'", "'\"'\"'") + "')"
-        self.env[f"RAYSPEC_V{n}"] = text
-        return f"${{RAYSPEC_V{n}}}"
+            self.preamble.append(_read_back(name, self.spill(n, text)))
+        else:
+            self.env[name] = text
+        return f"${{{name}}}"
 
     def python_ref(self, value: Any) -> str:
         literal = _python_literal(value)
@@ -575,6 +622,8 @@ class TemplateEngine:
                 script = tpl.render(dict(ctx))
         finally:
             _current_collector.reset(token)
+        if collector.preamble:
+            script = "\n".join([*collector.preamble, script])
         return RenderedScript(script=script, env=collector.env, spills=collector.spills)
 
     def _collect_refs(self, node: nodes.Node, found: set[Ref]) -> None:

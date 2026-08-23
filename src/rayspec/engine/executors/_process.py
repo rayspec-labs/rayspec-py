@@ -411,8 +411,9 @@ def script_fingerprint(
 ) -> str:
     """sha256 over the rendered script, its slot values, cwd and the step env.
 
-    Spilled values (> 64 KiB) render as ``$(cat '<random tmp path>')`` / ``Path(...)``; the
-    path is replaced by a digest of the spill's content so the fingerprint stays stable.
+    Spilled values (> 64 KiB) name a random tmp path — in the shell preamble that assigns the
+    slot, or in the python ``Path(...)`` call; the path is replaced by a digest of the spill's
+    content so the fingerprint stays stable.
     """
     script = rendered.script
     for spill in rendered.spills:

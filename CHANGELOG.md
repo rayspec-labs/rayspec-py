@@ -3,6 +3,25 @@
 All notable changes to rayspec are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [Unreleased]
+
+### Fixed
+- A `shell:` value over the 64 KiB spill threshold now behaves exactly like a smaller one. It used
+  to be spliced into the script as `$(cat '<path>')`, and that cost it every trailing newline (a
+  captured build log is both large and newline-terminated, so it was the likeliest value to hit
+  it), made `echo '{{ x }}'` print a command substitution instead of the documented literal
+  `${RAYSPEC_V1}`, and put the run's temporary directory into the step's own output. The body now
+  keeps the plain `${RAYSPEC_V<n>}` reference either side of the threshold, and a preamble line
+  prepended to the script assigns the slot from the spill file with its trailing bytes intact.
+  One difference across the threshold remains, deliberately: a spilled slot is a shell variable
+  and is not exported, so a child process the body starts finds a small slot in its own
+  environment but not a spilled one — exporting it would put a value larger than the threshold
+  back into the environment block that spilling exists to keep it out of (`docs/templating.md`).
+  Because the preamble is part of the rendered script, the step fingerprint of such a step
+  changes: a run started before this version and resumed after it re-runs every `shell:` step
+  whose value crossed the threshold, and reports it as a changed workflow. Runs started on this
+  version resume as before.
+
 ## [1.0.0] — 2026-08-22
 
 First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
@@ -453,4 +472,5 @@ The workflow language, the scheduler, the two provider adapters and the command 
   free only on public repositories, so every workflow file here — CI, the release pipeline, the
   reusable check, the docs publish — is written and locally checked but has not executed for real.
 
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0

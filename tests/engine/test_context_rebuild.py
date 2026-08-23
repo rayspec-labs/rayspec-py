@@ -228,7 +228,7 @@ def test_render_body_shows_the_script_when_a_value_is_too_large_to_inline() -> N
     ctx: dict[str, Any] = {"inputs": {"big": "x" * 70_000}}
     shell = context_rebuild.render_body(engine, "wc -c '{{ inputs.big }}'", ctx, kind="shell")
     assert shell.error is None
-    assert shell.text is not None and shell.text.startswith("wc -c ")
+    assert shell.text is not None and shell.text.splitlines()[-1].startswith("wc -c ")
     assert "spill_dir" not in shell.text
     assert "70000 bytes" in shell.text and "output file" in shell.text
     python = context_rebuild.render_body(engine, "v = {{ inputs.big }}", ctx, kind="python")

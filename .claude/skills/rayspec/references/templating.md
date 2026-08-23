@@ -67,9 +67,10 @@ Prompts, instructions, `approve.message`, `stop.reason`, `cwd`, `outputs:`, `wit
 
 ## Shell bodies
 
-Every `{{ expr }}` in a `shell:` body renders to an **environment-variable reference**
-`${RAYSPEC_V<n>}`; the value is placed in the step's environment, never spliced into the script.
-Bash's own quoting rules therefore apply, and a value such as `$(rm -rf /)` stays inert.
+Every `{{ expr }}` in a `shell:` body renders to a **variable reference** `${RAYSPEC_V<n>}`;
+the value is placed in the step's environment — over 64 KiB, in a file the script reads back
+into the same slot (see below) — and is never spliced into the script. Bash's own quoting rules
+therefore apply, and a value such as `$(rm -rf /)` stays inert.
 
 ```yaml
 - id: pr
@@ -85,14 +86,27 @@ gh pr create --base "${RAYSPEC_V1}" --title "fix: #${RAYSPEC_V2}" \
   --body "${RAYSPEC_V3}"
 ```
 
-with `RAYSPEC_V1=main`, `RAYSPEC_V2=123`, `RAYSPEC_V3=<the review text>` exported.
+with `RAYSPEC_V1=main`, `RAYSPEC_V2=123`, `RAYSPEC_V3=<the review text>` exported — except
+for values over 64 KiB, which the script assigns to itself instead (see below).
 
 Consequences:
 
 - **Quote them**: `"{{ x }}"` is one word even when the value has spaces; bare `{{ x }}` splits.
 - Single quotes and quoted heredocs (`<<'EOF'`) do **not** expand: `echo '{{ x }}'` prints the
   literal `${RAYSPEC_V1}`. Use double quotes or an unquoted heredoc.
-- Values over 64 KiB spill to a file under the run's `tmp/` and render as `$(cat '<path>')`.
+- Values over 64 KiB spill to a file under the run's `tmp/`. The body still reads
+  `${RAYSPEC_V<n>}`: a preamble line prepended to the script assigns the slot from that
+  file, so quoting and the value's own bytes behave the same either side of the threshold,
+  and the scratch path never reaches the body. What does change at the threshold is the
+  export: a spilled slot is a **shell** variable, not an exported one, so a child process
+  the body starts finds a small slot in its own environment but not a spilled one — pass it
+  on (`cmd "${RAYSPEC_V1}"`, or on stdin). Exporting it would put a value larger than the
+  threshold back into the environment block that spilling exists to keep it out of.
+- A NUL byte survives neither half of that mechanism, and the two halves fail differently:
+  below 64 KiB the step never starts and the run fails with `embedded null byte` (a process
+  environment has no room for a NUL); above it the shell drops the NUL, and the step runs to
+  completion with a value one byte short and nothing said about it. Keep NUL out of
+  `{{ }}` values.
 - Lists and mappings render as JSON text — pipe them to `jq`.
 - Comment delimiters are `{{# ... #}}`, so `${#VAR}` is plain bash.
 - Literal `{{` (Go templates, `printf '{{'`) → `{% raw %}docker ps --format '{{.ID}}'{% endraw %}`.
@@ -165,7 +179,7 @@ Anything else is a `python:` step.
 | `RAYSPEC_RUN_ID`, `RAYSPEC_WORKDIR`, `RAYSPEC_ARTIFACTS_DIR`, `RAYSPEC_STATE_DIR` | the run id, working directory, `<run dir>/artifacts`, the run directory |
 | `RAYSPEC_CONTEXT` | path to `steps/<path>/context.json`, a JSON dump of the step's template context **without the `env` root** (the script already has the real environment; API keys must not end up in the run directory) — step views as objects, undefined as `null`; the `jq` escape hatch |
 | `RAYSPEC_STEP_PATH` | the step's record path (`build[2]/check`) |
-| `RAYSPEC_V<n>` | the `{{ }}` slots of a shell body |
+| `RAYSPEC_V<n>` | the `{{ }}` slots of a shell body — exported up to 64 KiB; a larger value is a plain shell variable the script assigns itself, so a child process does not inherit it |
 | plus | the process environment and the step's own `env:` (templated, str-coerced) |
 
 ```yaml
