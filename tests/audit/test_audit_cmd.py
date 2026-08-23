@@ -464,10 +464,19 @@ steps:
   - id: upstream_skipped
     needs: [when_false]
     shell: 'echo never'
+  - id: when_not_bool
+    when: "'neither true nor false'"
+    shell: 'echo never'
 """
 
 #: Every step of :data:`DECIDED_AGAINST` the run never starts, and why it does not.
-NOT_EXECUTED = ("when_false", "upstream_failed", "upstream_skipped")
+#:
+#: ``when_not_bool`` is the one that matters to the rule rather than to the list. A `when:` that
+#: does not evaluate to a bool is recorded **failed** — `scheduler.py`'s `failed_outcome(record,
+#: verdict)` — and, like every decision taken before a step begins, without a `step.started`. So it
+#: is a row that executed nothing and is not called `skipped`, which is exactly what a filter
+#: enumerating skip statuses would keep and the bracket rule drops.
+NOT_EXECUTED = ("when_false", "upstream_failed", "upstream_skipped", "when_not_bool")
 
 
 @pytest.fixture
@@ -785,7 +794,7 @@ def _inside_an_execution(rows: list[dict], index: int) -> bool:
     return False
 
 
-@pytest.mark.parametrize("fixture", ["gated", "fanned", "retried", "killed"])
+@pytest.mark.parametrize("fixture", ["gated", "fanned", "retried", "killed", "decided_against"])
 def test_the_commands_view_is_exactly_the_rows_inside_an_execution(
     fixture: str, cli: CliRunner, home: Path, request: pytest.FixtureRequest
 ) -> None:
