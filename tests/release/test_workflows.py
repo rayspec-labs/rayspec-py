@@ -303,10 +303,19 @@ def test_the_release_notes_are_the_changelog_section() -> None:
     assert "scripts/release_notes.py" in runs
 
 
-def test_the_release_workflow_names_the_step_that_is_still_manual() -> None:
-    """The placeholder on PyPI has to be yanked by a person; the run has to say so."""
-    text = RELEASE.read_text(encoding="utf-8").lower()
-    assert "yank" in text and "placeholder" in text
+def test_the_release_workflow_names_the_steps_that_are_still_manual() -> None:
+    """A person still has to move `v1` and roll the changelog; the run summary has to say so.
+
+    This used to pin the PyPI yank instead. That was correct until 1.0.0: the `rayspec` name was
+    parked with a 0.0.1 placeholder that a person had to yank, and the run had to say so. The
+    placeholder was yanked on release day and there is not another one, so pinning it would hold
+    the workflow to a step that can never apply again. What stays manual every release is the
+    tag move and the changelog roll-over, and those are what this asserts now.
+    """
+    # The summary is echoed from a shell step, so its backticks are backslash-escaped in the YAML.
+    text = RELEASE.read_text(encoding="utf-8").lower().replace("\\`", "`")
+    assert "move the `v1` tag" in text, "the summary must name the tag move"
+    assert "`## [unreleased]`" in text, "the summary must name the changelog roll-over"
 
 
 def publishing_jobs() -> list[tuple[str, dict[str, Any]]]:

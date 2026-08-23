@@ -77,10 +77,13 @@ and/or `codex` (`codex login`) on the machine. Dry runs need neither. Both CLIs 
 SDKs rayspec depends on; `rayspec doctor` tells you what is missing.
 
 ```bash
-# 1. install from git (a PyPI release is planned):
+# 1. install
+uv tool install rayspec             # or: pipx install rayspec  ·  pip install rayspec
+uvx rayspec version                 # one-off, nothing installed
+# or from source:
 uv tool install git+https://github.com/rayspec-labs/rayspec-py      # over HTTPS
 uv tool install git+ssh://git@github.com/rayspec-labs/rayspec-py    # over SSH
-uvx --from git+https://github.com/rayspec-labs/rayspec-py rayspec version   # one-off, nothing installed
+uvx --from git+https://github.com/rayspec-labs/rayspec-py rayspec version   # one-off, from source
 uv tool install <path-to-checkout>  # from a local clone (or `uv tool install .` inside it)
 rayspec version                     # prints `rayspec <version>`
 rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundled CLIs, auth hints; --probe runs one real turn per provider
@@ -203,17 +206,18 @@ Shipped: the schema, loader and validator, templating, the Claude and Codex adap
 (`budget_usd`, `max_tokens`, `timeout_total`), step-level `artifacts:`, the file store, worktree
 isolation and `--repo`, the Rich live console (`rayspec run` on a TTY; one line per step
 otherwise), `secret: true` inputs, extension entry points for commands, stores, sinks and approval
-prompts, the packaged Claude Code skill, and the `examples/` gallery.
+prompts, the two packaged Claude Code skills (`rayspec-workflows` for authoring the YAML and
+`rayspec-cli` for operating the engine), and the `examples/` gallery.
+
+Released on PyPI: [`rayspec`](https://pypi.org/project/rayspec/) — `pip install rayspec` (or
+`uv tool install rayspec`) gets you this build, and it brings the Claude Code and Codex CLIs with
+it, so no separate install of either is needed.
 
 Commands: `init`, `new`, `doctor`, `run`, `resume`, `approve`, `reject`, `cancel`, `validate`,
 `plan`, `test`, `explain`, `eval`, `show`, `logs`, `audit`, `runs`, `costs`, `lock`, `workflows`,
 `agents`, `providers`, `plugins`, `projects`, `worktrees`, `trust`, `schema`, `skill`,
 `completion`,
 `version`.
-
-Not in this build: a PyPI release — the `rayspec` name on PyPI currently holds a placeholder, so
-`pip install rayspec` does not yet get you this. Install from git (above) until the real release
-lands.
 
 ## Development
 
