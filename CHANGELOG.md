@@ -3,6 +3,8 @@
 All notable changes to rayspec are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [Unreleased]
+
 ## [1.0.0] — 2026-08-22
 
 First release: a **CLI-only, file-based, provider-neutral engine for declarative agent workflows**
@@ -511,3 +513,6 @@ The workflow language, the scheduler, the two provider adapters and the command 
   the wheel into a clean environment, and writes the notes and the bill of materials.
   **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
   version tag, so this release is the first time they execute.
+
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0
