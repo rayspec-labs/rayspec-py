@@ -1,21 +1,21 @@
 """``rayspec.resources.walk_files``: the one recursive listing of a packaged data tree.
 
-The walk is shared by the skill, the ``rayspec init`` scaffolds and the example corpus, so its
+The walk is shared by the skills, the ``rayspec init`` scaffolds and the example corpus, so its
 contract is checked directly rather than through whichever of the three happens to exercise it.
 """
 
 from __future__ import annotations
 
-from importlib import resources
 from importlib.resources.abc import Traversable
 
 import pytest
 
 from rayspec.resources import walk_files
+from rayspec.skill import WORKFLOWS_SKILL, skill_dir
 
 
 def _skill_tree() -> Traversable:
-    return resources.files("rayspec.skill") / "rayspec"
+    return skill_dir(WORKFLOWS_SKILL)
 
 
 def test_predicates_see_paths_relative_to_the_walk_root() -> None:

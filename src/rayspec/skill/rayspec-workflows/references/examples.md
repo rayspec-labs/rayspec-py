@@ -1,6 +1,6 @@
 <!-- Generated from docs/examples.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/examples.md -->
-<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · cli.md · providers.md · examples.md -->
+<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · examples.md -->
 
 # Examples
 

@@ -1,4 +1,4 @@
-"""``SKILL.md`` teaches the secret-input seam: the snippet and the hand-written
+"""The **authoring** skill teaches the secret-input seam: its snippet and its hand-written
 paragraph must match the implementation.
 
 ``inputs.<name>.secret`` shipped in 1.0.0, so these tests always run. The skill text is
@@ -19,15 +19,18 @@ from typer.testing import CliRunner
 
 from rayspec.cli.app import app
 from rayspec.schema import InputSpec
-from rayspec.skill import skill_dir
+from rayspec.skill import WORKFLOWS_SKILL, skill_dir
 
 assert "secret" in InputSpec.model_fields, (
     "inputs.<name>.secret shipped in 1.0.0 — this suite must never be skipped again"
 )
 
-SKILL_MD = (skill_dir() / "SKILL.md").read_text(encoding="utf-8")
+SKILL_MD = (skill_dir(WORKFLOWS_SKILL) / "SKILL.md").read_text(encoding="utf-8")
 _FENCE_RE = re.compile(r"```yaml\n(?P<body>.*?)```", re.DOTALL)
-PARAGRAPH = SKILL_MD.split("A secret value is delivered", 1)[1].split("\n\n", 1)[0]
+#: The whole ``## Secrets`` section. Anchoring on the section rather than on one sentence
+#: keeps the needles below pinned to the place that teaches the seam, wherever inside it
+#: they are written — and still fails if the section is dropped or emptied.
+PARAGRAPH = SKILL_MD.split("\n## Secrets\n", 1)[1].split("\n## ", 1)[0]
 
 
 def secret_snippet() -> str:
@@ -59,7 +62,7 @@ def test_skill_text_states_the_seam() -> None:
         "RAYSPEC_INPUT_<NAME>",
         "exit 2 listing the missing secret inputs",
     ):
-        assert needle in PARAGRAPH or needle in SKILL_MD, needle
+        assert needle in PARAGRAPH, needle
 
 
 def test_snippet_validates_and_plan_validate_mark_the_input_secret(tmp_path: Path) -> None:

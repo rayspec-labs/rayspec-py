@@ -13,9 +13,12 @@ from pathlib import Path
 
 from typer.main import get_command
 
+from rayspec.skill import SKILLS
+
 from .conftest import DOCS_DIR, README, REPO_ROOT
 
 EXAMPLES_README = REPO_ROOT / "examples" / "README.md"
+SKILL_SRC = REPO_ROOT / "src" / "rayspec" / "skill"
 
 
 def _text(path: Path) -> str:
@@ -149,10 +152,22 @@ def test_the_shell_slot_pages_do_not_promise_an_export_above_the_spill_threshold
     above the threshold. The behaviour itself is pinned in
     ``tests/properties/test_templating_slots.py``; this pins the pages that describe it.
     """
-    skill = _text(REPO_ROOT / "src" / "rayspec" / "skill" / "rayspec" / "SKILL.md")
-    rule = skill.split("**Shell env-ref rule**", 1)[1].split("\n- ", 1)[0]
-    assert "64 KiB" in rule, "the skill's slot rule must name the threshold the export stops at"
-    assert "renders to `${RAYSPEC_V<n>}` with\n  the value exported" not in skill
+    # Whichever packaged skill states the rule must qualify it. Derived from the registry rather
+    # than from a path, and the count is asserted: if the heading is ever renamed this fails loudly
+    # instead of passing over an empty list.
+    stating = [
+        (skill.name, text)
+        for skill in SKILLS
+        if "**Shell env-ref rule**" in (text := _text(SKILL_SRC / skill.name / "SKILL.md"))
+    ]
+    assert len(stating) == 1, f"exactly one skill should state the slot rule, got {stating!r}"
+    for name, text in stating:
+        rule = text.split("**Shell env-ref rule**", 1)[1].split("\n- ", 1)[0]
+        assert "64 KiB" in rule, (
+            f"{name}: the slot rule must name the threshold the export stops at"
+        )
+        assert "the value exported" not in rule, f"{name}: the export is not unconditional"
+        assert "$(cat" not in rule, f"{name}: a spilled slot no longer renders as a substitution"
 
     templating = _text(DOCS_DIR / "templating.md")
     opening = templating.split("## Shell bodies", 1)[1].split("\n\n", 1)[1]

@@ -87,7 +87,7 @@ rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundle
 
 # 2. scaffold a project in your repo
 rayspec init                        # .rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/, config.yaml, stubs/example.yaml}
-                                    # + .claude/skills/rayspec/ (the coding-agent skill; --no-skill to skip)
+                                    # + .claude/skills/{rayspec-workflows,rayspec-cli}/ (the coding-agent skills; --no-skill to skip)
                                     # --kind content for a non-code project; --force to overwrite
 
 # 3. check it
@@ -157,18 +157,21 @@ continue an interrupted or paused run with `rayspec resume <run>` (or `rayspec r
 
 ## Use rayspec from a coding agent
 
-rayspec ships a [Claude Code skill](docs/agent-skill.md) (a skill file plus compressed references
-to these docs) that teaches an agent to author, validate, dry-run, run and debug workflows without
-reading this repository. `rayspec init` writes it into the project; you can also install it by hand:
+rayspec ships two [Claude Code skills](docs/agent-skill.md) — each a skill file plus compressed
+references to these docs — that teach an agent to author, validate, dry-run, run and debug
+workflows without reading this repository: `rayspec-workflows` for the YAML DSL and `rayspec-cli`
+for the command line. Each points at the other. `rayspec init` writes both into the project; you
+can also install them by hand:
 
 ```bash
-rayspec skill install             # <project>/.claude/skills/rayspec/  (project-local)
-rayspec skill install --global    # ~/.claude/skills/rayspec/          (every project)
+rayspec skill install             # <project>/.claude/skills/{rayspec-workflows,rayspec-cli}/
+rayspec skill install --global    # ~/.claude/skills/…                    (every project)
+rayspec skill install rayspec-cli # just one of them
 ```
 
-Open a fresh Claude Code session afterwards — the skill loads automatically. `rayspec skill show`
-tells you whether an installed copy is up to date; `rayspec skill install --force` refreshes it
-after upgrading rayspec.
+Open a fresh Claude Code session afterwards — the skills load automatically. `rayspec skill show`
+tells you whether the installed copies are up to date; `rayspec skill install --force` refreshes
+them after upgrading rayspec.
 
 ## Documentation
 
@@ -218,7 +221,7 @@ lands.
 uv sync --all-groups
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest -q -m 'not live'
 uv run python scripts/gen_capability_matrix.py     # regenerate the matrix in docs/providers.md
-uv run python scripts/gen_skill.py                 # regenerate the skill's references/ from docs/ + mirror .claude/skills/rayspec/ (--check in the gate)
+uv run python scripts/gen_skill.py                 # regenerate both skills' references/ from docs/ + mirror .claude/skills/ (--check in the gate)
 ```
 
 Python ≥ 3.11, anyio-only concurrency.

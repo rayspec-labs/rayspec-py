@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`rayspec skill install|show|path` — the packaged Claude Code skill for coding agents.
+"""`rayspec skill install|show|path [NAME]` — the packaged Claude Code skills for coding agents.
 
-Boundary: CLI presentation only; the data and the copy/compare helpers live in
-:mod:`rayspec.skill`. ``install`` writes ``<project>/.claude/skills/rayspec/`` (or
-``~/.claude/skills/rayspec/`` with ``--global``) with the same idempotence as ``rayspec init``;
-``show`` compares the installed copies with the packaged skill; ``path`` prints the packaged dir.
+Boundary: CLI presentation only; the registry and the copy/compare helpers live in
+:mod:`rayspec.skill`. rayspec ships two skills (``rayspec-workflows``, ``rayspec-cli``); every
+subcommand takes an optional NAME — no name means *all of them*, a name means that one, an
+unknown name is exit 2 with a did-you-mean. ``install`` writes
+``<project>/.claude/skills/<name>/`` (or ``~/.claude/skills/<name>/`` with ``--global``) with the
+same idempotence as ``rayspec init``; ``show`` compares the installed copies with the packaged
+skills; ``path`` prints the packaged dirs.
 """
 
 from __future__ import annotations
@@ -28,9 +31,14 @@ from rayspec.cli.commands._loader_common import (
 )
 from rayspec.cli.commands._skill_common import print_install_result, session_hint
 from rayspec.loader import find_project_root
+from rayspec.schema.base import suggest
 from rayspec.skill import (
+    SKILL_NAMES,
+    SKILLS,
     InstalledState,
+    Skill,
     content_digest,
+    find_skill,
     global_skill_dir,
     install_skill,
     installed_state,
@@ -43,9 +51,18 @@ RootOption = Annotated[
     Path | None,
     typer.Option(
         "--root",
-        help="Project root (the existing directory that gets `.claude/skills/rayspec/`). "
+        help="Project root (the existing directory that gets `.claude/skills/`). "
         "Default: the nearest directory with `.rayspec/`, then `.git`, else the cwd. "
         "Not with --global.",
+        show_default=False,
+    ),
+]
+
+NameArgument = Annotated[
+    str | None,
+    typer.Argument(
+        metavar="[NAME]",
+        help="One skill (`rayspec-workflows` or `rayspec-cli`). Default: all of them.",
         show_default=False,
     ),
 ]
@@ -59,6 +76,21 @@ def resolve_root(root: Path | None) -> Path:
     tree this command creates on the way to reporting success.
     """
     return (checked_root(root) or find_project_root(Path.cwd())).resolve()
+
+
+def resolve_skills(name: str | None) -> tuple[Skill, ...]:
+    """The skills a subcommand acts on: every one, or the named one; unknown ⇒ exit 2."""
+    if name is None:
+        return SKILLS
+    skill = find_skill(name)
+    if skill is not None:
+        return (skill,)
+    hint = suggest(name, list(SKILL_NAMES))
+    fail(
+        f"unknown skill {name!r}",
+        hint=(f"did you mean {hint!r}?" if hint else f"the skills are: {', '.join(SKILL_NAMES)}"),
+    )
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _state_line(label: str, state: InstalledState) -> str:
@@ -81,20 +113,35 @@ def _state_dict(state: InstalledState) -> dict[str, Any]:
     return {"path": str(state.path), "state": state.state, "digest": state.digest}
 
 
+def _skill_report(skill: Skill, project_root: Path) -> dict[str, Any]:
+    return {
+        "name": skill.name,
+        "packaged": {
+            "path": str(skill_dir(skill)),
+            "rayspec_version": __version__,
+            "digest": content_digest(skill),
+            "files": [rel for rel, _ in skill_files(skill)],
+        },
+        "project": _state_dict(installed_state(skill, project_skill_dir(skill, project_root))),
+        "global": _state_dict(installed_state(skill, global_skill_dir(skill))),
+    }
+
+
 def register(app: typer.Typer) -> None:
     skill = typer.Typer(
-        help="The rayspec skill for coding agents (Claude Code): install, show, path.",
+        help="The rayspec skills for coding agents (Claude Code): install, show, path.",
         no_args_is_help=True,
     )
     app.add_typer(skill, name="skill")
 
     @skill.command("install")
     def install(
+        name: NameArgument = None,
         global_: Annotated[
             bool,
             typer.Option(
                 "--global",
-                help="Install user-wide into `~/.claude/skills/rayspec/` instead of the project.",
+                help="Install user-wide into `~/.claude/skills/` instead of the project.",
             ),
         ] = False,
         force: Annotated[
@@ -102,65 +149,66 @@ def register(app: typer.Typer) -> None:
         ] = False,
         root: RootOption = None,
     ) -> None:
-        """Write the packaged skill to `<project>/.claude/skills/rayspec/` (or `--global`)."""
+        """Write the packaged skills to `<project>/.claude/skills/` (or `--global`)."""
         if global_ and root is not None:
             fail(
                 "--global and --root are mutually exclusive (a global install ignores the project)"
             )
+        chosen = resolve_skills(name)
         if global_:
-            target = global_skill_dir()
-            directory = target.parent.parent.parent
+            directory = global_skill_dir(chosen[0]).parent.parent.parent
         else:
             directory = resolve_root(root)
-            target = project_skill_dir(directory)
-        try:
-            results = install_skill(target, force=force)
-        except OSError as exc:  # NotADirectoryError / IsADirectoryError / permissions …
-            fail(f"cannot write the skill: {exc}")
-            return  # unreachable: fail() raises typer.Exit
-        print_install_result(results, target, label="global" if global_ else "project")
-        created = sum(1 for r in results if r.action != "skipped")
-        if not created:
+        written = 0
+        total = 0
+        for one in chosen:
+            target = global_skill_dir(one) if global_ else project_skill_dir(one, directory)
+            try:
+                results = install_skill(one, target, force=force)
+            except OSError as exc:  # NotADirectoryError / IsADirectoryError / permissions …
+                fail(f"cannot write the skill: {exc}")
+                return  # unreachable: fail() raises typer.Exit
+            print_install_result(results, target, label="global" if global_ else "project")
+            written += sum(1 for r in results if r.action != "skipped")
+            total += len(results)
+        if not written:
             err_console().print(
-                f"[yellow]warning:[/yellow] nothing written — all {len(results)} file(s) exist; "
+                f"[yellow]warning:[/yellow] nothing written — all {total} file(s) exist; "
                 "use --force to overwrite them"
             )
         console().print(escape(session_hint(directory, global_install=global_)))
 
     @skill.command("show")
     def show(
-        root: RootOption = None, json_: JsonOption = False, output: OutputOption = None
+        name: NameArgument = None,
+        root: RootOption = None,
+        json_: JsonOption = False,
+        output: OutputOption = None,
     ) -> None:
-        """Show the packaged skill (version, digest, path) and the installed copies."""
+        """Show the packaged skills (version, digest, path) and the installed copies."""
         json_ = resolve_output(output, json_)
         project_root = resolve_root(root)
-        packaged = skill_dir()
-        digest = content_digest()
-        project_state = installed_state(project_skill_dir(project_root))
-        global_state = installed_state(global_skill_dir())
+        chosen = resolve_skills(name)
         if json_:
-            print_json(
-                {
-                    "packaged": {
-                        "path": str(packaged),
-                        "rayspec_version": __version__,
-                        "digest": digest,
-                        "files": [rel for rel, _ in skill_files()],
-                    },
-                    "project": _state_dict(project_state),
-                    "global": _state_dict(global_state),
-                }
-            )
+            print_json({"skills": [_skill_report(one, project_root) for one in chosen]})
             return
         out = console()
-        out.print(
-            f"{'packaged':<9} {escape(str(packaged))}  "
-            f"rayspec {escape(__version__)}, digest {digest}, {len(skill_files())} files"
-        )
-        out.print(_state_line("project", project_state))
-        out.print(_state_line("global", global_state))
+        for index, one in enumerate(chosen):
+            if index:
+                out.print()
+            out.print(f"[bold]{escape(one.name)}[/bold] — {escape(one.summary)}")
+            out.print(
+                f"{'packaged':<9} {escape(str(skill_dir(one)))}  "
+                f"rayspec {escape(__version__)}, digest {content_digest(one)}, "
+                f"{len(skill_files(one))} files"
+            )
+            out.print(
+                _state_line("project", installed_state(one, project_skill_dir(one, project_root)))
+            )
+            out.print(_state_line("global", installed_state(one, global_skill_dir(one))))
 
     @skill.command("path")
-    def path() -> None:
-        """Print the packaged skill directory (holds SKILL.md and references/)."""
-        typer.echo(str(skill_dir()))
+    def path(name: NameArgument = None) -> None:
+        """Print the packaged skill directories (each holds SKILL.md and references/)."""
+        for one in resolve_skills(name):
+            typer.echo(str(skill_dir(one)))

@@ -215,16 +215,25 @@ def test_a_missing_reference_in_a_prompt_body_fails_the_run_check(tmp_path: Path
     assert check_examples.check_doc_block(block, home=tmp_path)
 
 
-def test_the_markers_do_not_ship_in_the_packaged_skill() -> None:
+def test_the_markers_do_not_ship_in_any_packaged_skill() -> None:
     """The skill references are model-facing input, not a copy of this repo's test conventions.
 
     An agent reading them would see a convention it has no way to satisfy — and might imitate it
     when it writes docs or workflows for somebody else's project.
+
+    The directories come from the registry, and each one is asserted to exist: a hard-coded path
+    that a rename made stale would glob nothing and let this pass over an empty set.
     """
+    from rayspec.skill import SKILLS
+
     directories = [
-        REPO_ROOT / "src" / "rayspec" / "skill" / "rayspec" / "references",
-        REPO_ROOT / ".claude" / "skills" / "rayspec" / "references",
+        root / skill.name / "references"
+        for skill in SKILLS
+        for root in (REPO_ROOT / "src" / "rayspec" / "skill", REPO_ROOT / ".claude" / "skills")
     ]
+    for directory in directories:
+        assert directory.is_dir(), directory
+        assert sorted(directory.glob("*.md")), directory
     leaked = [
         f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}"
         for directory in directories

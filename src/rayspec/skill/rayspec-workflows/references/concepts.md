@@ -1,12 +1,12 @@
 <!-- Generated from docs/concepts.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/concepts.md -->
-<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · cli.md · providers.md · examples.md -->
+<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · examples.md -->
 
 # Concepts
 
 rayspec runs *declarative workflows for coding agents*. This page is the mental model; the
 field-by-field reference is [schema.md](schema.md), the template language is
-[templating.md](templating.md), and the commands are in [cli.md](cli.md).
+[templating.md](templating.md), and the commands are in [cli.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/cli.md).
 
 > **YAML coordinates. Code computes. Agents judge.**
 
@@ -23,7 +23,7 @@ governs a run without understanding the content of prompts or scripts
 | **step** | One entry of `steps:`. Exactly one *kind key* decides what it does: `prompt:`/`prompt_file:` (an agent), `shell:`, `python:`, `loop:`, `each:`, `approve:`, `include:`, `stop:`. |
 | **agent** | A reusable bundle of provider + model + access + tools + instructions (`agents:` in the workflow, `.rayspec/agents/<name>.yaml`, or `~/.rayspec/agents/<name>.yaml`). Only `prompt:` steps use agents. |
 | **run** | One execution of a workflow. It has an id (`YYYYMMDD-HHMMSS-xxxx`), fixed inputs, a working directory and a run directory under `~/.rayspec/projects/<slug>/runs/<run-id>/` that holds every checkpoint ([runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md)). |
-| **provider** | The SDK behind an agent: `claude` (Claude Agent SDK), `codex` (OpenAI Codex SDK) or `stub` (scripted, used by `--dry-run`). Each declares *capabilities*; a workflow that uses a feature its provider lacks fails `rayspec validate` ([providers.md](providers.md)). |
+| **provider** | The SDK behind an agent: `claude` (Claude Agent SDK), `codex` (OpenAI Codex SDK) or `stub` (scripted, used by `--dry-run`). Each declares *capabilities*; a workflow that uses a feature its provider lacks fails `rayspec validate` ([providers.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md)). |
 
 ## The DAG and its bodies
 
@@ -146,7 +146,7 @@ runs against another project. See [isolation.md](https://github.com/rayspec-labs
 (`AgentRequest` → streamed events → `AgentResult`). Each provider declares what it can honour
 (structured output, sessions, tool groups, `max_turns`, …); `rayspec validate` maps YAML fields
 onto those flags and refuses (or, with `--allow-unsupported` / `defaults.on_unsupported: warn`,
-warns about) mismatches. `rayspec providers` prints the matrix. See [providers.md](providers.md).
+warns about) mismatches. `rayspec providers` prints the matrix. See [providers.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md).
 
 ## Exit codes
 

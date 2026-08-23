@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from rayspec.skill import SKILLS, SKILLS_SUBDIR
+
 REPO = Path(__file__).resolve().parents[2]
 
 #: The example the state is planted in — any of them would do.
@@ -165,7 +167,14 @@ def test_no_published_artefact_carries_local_state(tmp_path: Path, gitignore: bo
     # nothing — and `rayspec init --from` has something to copy.
     assert "rayspec/cli/commands/init.py" in wheel
     assert f"rayspec/examples/{EXAMPLE}/.rayspec/workflows/{EXAMPLE}.yaml" in wheel
-    assert ".claude/skills/rayspec/SKILL.md" in sdist, (
-        "the tracked skill mirror `scripts/gen_skill.py --check` compares against is missing, so "
-        "the suite cannot run from an unpacked sdist"
+    # Derived from the registry, not spelled out: a skill added or renamed later changes this
+    # assertion with it. Naming the directory here is how this went stale the first time.
+    missing_mirrors = [
+        rel
+        for skill in SKILLS
+        if (rel := f"{SKILLS_SUBDIR.as_posix()}/{skill.name}/SKILL.md") not in sdist
+    ]
+    assert missing_mirrors == [], (
+        f"the tracked skill mirrors `scripts/gen_skill.py --check` compares against are missing "
+        f"({missing_mirrors}), so the suite cannot run from an unpacked sdist"
     )

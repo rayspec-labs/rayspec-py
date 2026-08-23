@@ -3,7 +3,7 @@
 
 Boundary: copies the packaged templates (:mod:`rayspec.cli.templates`) — or, with ``--from``, one
 of the packaged example projects — into ``<root>/.rayspec/``, writes the packaged coding-agent
-skill (:mod:`rayspec.skill`) to ``<root>/.claude/skills/rayspec/`` unless ``--no-skill``, and
+skills (:mod:`rayspec.skill`) to ``<root>/.claude/skills/<name>/`` unless ``--no-skill``, and
 prints next steps. No loader/engine logic lives here; the templates and examples are validated by
 tests.
 """
@@ -28,7 +28,7 @@ from rayspec.cli.commands._loader_common import checked_root, console, err_conso
 from rayspec.cli.commands._skill_common import print_install_result
 from rayspec.resources import walk_files
 from rayspec.schema.base import suggest
-from rayspec.skill import install_skill, project_skill_dir
+from rayspec.skill import SKILLS, InstalledFile, Skill, install_skill, project_skill_dir
 
 #: The scaffold kinds, one template directory each under ``rayspec.cli.templates``.
 TEMPLATE_KINDS: tuple[str, ...] = ("code", "content")
@@ -341,8 +341,8 @@ def example_next_steps(name: str, *, skill: bool = True, readme: bool = True) ->
         )
     if skill:
         lines.append(
-            "open a fresh Claude Code session here   # the rayspec skill in "
-            ".claude/skills/rayspec/ loads automatically (rayspec skill show)"
+            "open a fresh Claude Code session here   # the rayspec skills in "
+            ".claude/skills/ load automatically (rayspec skill show)"
         )
     return lines
 
@@ -519,8 +519,8 @@ def next_steps(kind: str, *, skill: bool = True) -> list[str]:
     ]
     if skill:
         lines.append(
-            "open a fresh Claude Code session here   # the rayspec skill in "
-            ".claude/skills/rayspec/ loads automatically (rayspec skill show)"
+            "open a fresh Claude Code session here   # the rayspec skills in "
+            ".claude/skills/ load automatically (rayspec skill show)"
         )
     return lines
 
@@ -576,7 +576,7 @@ def register(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--no-skill",
-                help="Do not write the coding-agent skill to `.claude/skills/rayspec/`.",
+                help="Do not write the coding-agent skills to `.claude/skills/`.",
             ),
         ] = False,
         root: Annotated[
@@ -590,7 +590,7 @@ def register(app: typer.Typer) -> None:
         ] = None,
     ) -> None:
         """Scaffold `.rayspec/` (example workflow, reviewer agent, prompts, config, stubs) — or a
-        whole packaged example with --from — and the rayspec skill for coding agents."""
+        whole packaged example with --from — and the rayspec skills for coding agents."""
         if from_ is not None and kind is not None:
             fail(
                 "--from and --kind are mutually exclusive: an example ships its own workflow",
@@ -632,16 +632,19 @@ def register(app: typer.Typer) -> None:
         except OSError as exc:  # NotADirectoryError / IsADirectoryError / permissions …
             fail(f"cannot write the scaffold: {exc}")
             return  # unreachable: fail() raises typer.Exit
-        skill_results = []
+        skill_results: list[tuple[Skill, list[InstalledFile]]] = []
         if not no_skill:
-            try:
-                skill_results = install_skill(project_skill_dir(target), force=force)
-            except OSError as exc:
-                fail(
-                    f"cannot write the skill: {exc} (the {PROJECT_DIR}/ scaffold was written; "
-                    "re-run with --no-skill to skip the skill)"
-                )
-                return  # unreachable
+            for one in SKILLS:
+                try:
+                    skill_results.append(
+                        (one, install_skill(one, project_skill_dir(one, target), force=force))
+                    )
+                except OSError as exc:
+                    fail(
+                        f"cannot write the skill: {exc} (the {PROJECT_DIR}/ scaffold was written; "
+                        "re-run with --no-skill to skip the skills)"
+                    )
+                    return  # unreachable
         for item in results:
             if item.action == "skipped":
                 out.print(
@@ -658,10 +661,10 @@ def register(app: typer.Typer) -> None:
             summary += f", {skipped} kept"
         where = target if from_ is not None else target / PROJECT_DIR
         out.print(f"[bold]{label}[/bold] scaffold in {where}: {summary}")
-        if skill_results:
-            print_install_result(skill_results, project_skill_dir(target), label="project")
-            created += sum(1 for r in skill_results if r.action != "skipped")
-            skipped += sum(1 for r in skill_results if r.action == "skipped")
+        for one, one_results in skill_results:
+            print_install_result(one_results, project_skill_dir(one, target), label="project")
+            created += sum(1 for r in one_results if r.action != "skipped")
+            skipped += sum(1 for r in one_results if r.action == "skipped")
         if skipped and not created:
             err.print(
                 f"[yellow]warning:[/yellow] nothing written — all {skipped} file(s) exist; "

@@ -1,6 +1,6 @@
 <!-- Generated from docs/cli.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/cli.md -->
-<!-- Sibling references in this directory: concepts.md · schema.md · templating.md · cli.md · providers.md · examples.md -->
+<!-- Sibling references in this directory: cli.md · providers.md · testing.md · policy.md · runs-and-resume.md · isolation.md · ci.md -->
 
 # CLI reference
 
@@ -28,7 +28,7 @@ naming the variables (project wins over the home file there too); the inspection
 `home .env` and a `project .env` row). Neither file may supply an **identity**: a `RAYSPEC_ACTOR`
 loaded from either is refused with a `warning:` on stderr and kept only as `actor.declared_id`,
 because a workflow step can write both — see
-[runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#who-ran-it). `providers`, `projects *`,
+[runs-and-resume.md](runs-and-resume.md#who-ran-it). `providers`, `projects *`,
 `worktrees *` and `version` do **not** load any `.env` (`worktrees` reads `config.yaml` only to
 resolve `--repo`), so variables they need — e.g. `RAYSPEC_HOME` or git credentials — must come
 from the shell. A malformed `config.yaml` or `.env` (either layer: YAML syntax, an unsafe tag, a
@@ -43,7 +43,7 @@ the failed `config` check instead).
 | `0` | succeeded |
 | `1` | the run failed |
 | `2` | usage error: unknown workflow, validation errors, bad inputs, `--stubs` without `--dry-run` when an agent is not `provider: stub`, store/workspace errors |
-| `3` | the run paused: an `approve:` gate is waiting for a person, **or** an operational ceiling stopped it (`policy.budget`, `max_consecutive_failures` — see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#operational-limits-policy-not-workflow)). `run.json`'s `pause.reason` tells them apart (`approval` · `budget` · `failures`), and the console footer says what to type next. They are not answered the same way: `approve` on a ceiling pause **waives** it |
+| `3` | the run paused: an `approve:` gate is waiting for a person, **or** an operational ceiling stopped it (`policy.budget`, `max_consecutive_failures` — see [runs-and-resume.md](runs-and-resume.md#operational-limits-policy-not-workflow)). `run.json`'s `pause.reason` tells them apart (`approval` · `budget` · `failures`), and the console footer says what to type next. They are not answered the same way: `approve` on a ceiling pause **waives** it |
 | `4` | the run was cancelled (`stop:` or a rejected gate) |
 | `130` | interrupted (Ctrl-C / SIGTERM) |
 
@@ -125,8 +125,8 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--stubs-from RUN_ID` | replay a stored run's recorded answers instead of a `--stubs` file (run id or unique prefix, resolved in the current project first and then in every project under `RAYSPEC_HOME`) — the in-memory equivalent of `rayspec runs stubs <run> -o f.yaml` followed by `--stubs f.yaml`. Mutually exclusive with `--stubs`; an unknown/ambiguous id or a run with secret inputs is exit 2. The donor run — not a file — is recorded in `run.json` as `stubs_path: "run:<run id>"`, so `resume`/`approve`/`reject` and `run --resume` rebuild the same script from it (a donor that was deleted is exit 2 naming it; an explicit `--stubs`/`--stubs-from` on the resume entry overrides it) |
 | `--stubs-init PATH` | write a stub scaffold (one entry per prompt step) and exit; refuses to overwrite an existing file unless `--force` |
 | `--exec-shell` | run shell/python steps for real inside `--dry-run` (worktree isolation applies again) |
-| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false` in the `approvals:` block of a [policy.yaml](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md#approval-classes) |
-| `--approve-class NAME` | pre-approve gates of one [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class marked `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
+| `--yes`, `-y` | auto-approve every gate (`decision.by: "--yes"`) — except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false` in the `approvals:` block of a [policy.yaml](policy.md#approval-classes) |
+| `--approve-class NAME` | pre-approve gates of one [approval class](runs-and-resume.md#approval-classes) (repeatable, `decision.by: "--approve-class"`); gates of every other class still ask. A class marked `allow_yes: false` is never pre-approved, and a name no gate uses pre-approves nothing (the run pauses as it would have) |
 | `--no-interactive` | never prompt; a gate pauses the run (exit 3) |
 | `--json` | JSONL events on stdout followed by **the final summary object as the last stdout line** (shapes below; `rayspec run … --json \| tail -1 \| jq .exit_code`); warnings and errors go to stderr. `--json` does not imply `--no-interactive`: on a terminal an `approve:` step still prompts (on stderr) — pass `--no-interactive` (pause, exit 3) or `--yes` for unattended pipelines |
 | `--quiet` | only run-level lines, warnings, retries and non-green step finishes |
@@ -137,7 +137,7 @@ is a discovered name (`rayspec workflows`) or a file path.
 | `--force` | resume despite a changed workflow (steps whose fingerprint changed re-run) or a recorded live pid; overwrite an existing `--stubs-init` file |
 | `--worktree` / `--no-worktree` | override the workflow's `isolation:` |
 | `--base BRANCH` | base ref for the worktree (default: current branch; `origin/HEAD` for URL repos) |
-| `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/isolation.md#--repo)) |
+| `--repo SOURCE` | run against a local path, a registered project name or a git URL ([isolation.md](isolation.md#--repo)) |
 | `--locked` / `--no-locked` | refuse to run when an agent resolves to a different model or effort than `.rayspec/rayspec.lock` pins ([`rayspec lock`](#rayspec-lock)); the error names the agent, the pinned id and the resolved one. **On by default under `CI`** (any `CI` value other than empty/`0`/`false`/`no`/`off`), off otherwise; `--no-locked` opts out again. A missing lockfile is refused when the **flag** is passed — asking for `--locked` is a promise the models were pinned, and "nothing to check" must not read as "everything is fine". The `CI` **default** may not break a project that never opted in, so it enforces a lockfile that exists and prints one `warning:` line on stderr when there is none — never silence |
 | `--wait-slot DURATION` | when the host's run slots for this workflow's providers are all taken (`policy.max_concurrent_runs`), queue instead of failing: a duration (`--wait-slot 30m`, `--wait-slot 1h30m`), a bare number of seconds (`--wait-slot 90`), or `forever` — the only spelling that waits indefinitely. `--wait-slot 0` does **not** wait (the default); a negative duration is a usage error. Otherwise exit 2, naming the run that holds the slot. A `--dry-run` takes no slot |
 
@@ -182,7 +182,7 @@ line, so `rayspec run … --json | tail -1 | jq .exit_code` works (the same hold
 
 Event types: `run.started` · `run.resumed` · `run.paused` · `run.decision` · `run.finished` ·
 `step.started` · `step.retry` · `step.finished` · `loop.iteration` · `each.item` ·
-`workspace.created` · `warning` (data keys in [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#eventsjsonl)).
+`workspace.created` · `warning` (data keys in [runs-and-resume.md](runs-and-resume.md#eventsjsonl)).
 Stream records wrap agent events (`text_delta`, `tool_call`, …) and shell output
 (`stdout`, `stderr`, `exit`).
 
@@ -210,7 +210,7 @@ the command a CI job is likeliest to run, so it is the last one that may answer 
 Under each status line comes the policy line — `policy: .rayspec/policy.yaml,
 ~/.rayspec/policy.yaml`, or `policy: none in force (searched <path>, <path>)` when no layer was
 found, so a `policy.yaml` that is not being read is visible rather than assumed (policy is
-discovered against `--root`, see [policy.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md)). A workflow with `secret: true` inputs
+discovered against `--root`, see [policy.md](policy.md)). A workflow with `secret: true` inputs
 gets a dim marker line too — `secret inputs: token (secret; env-only, never persisted)`.
 `--json`: `[{name, path, ok, errors: [...], warnings: [...], secret_inputs: [...],
 policy: {layers, searched}, problems: [...]}]` (exit 2 when any entry has errors); `errors` is
@@ -246,7 +246,7 @@ Exit codes: `0` written / in sync · `1` `--check` found drift · `2` usage (unk
 workflow that does not load, an unreadable lockfile). A path that is *there* but is not a
 readable file — a dangling symlink, a symlink loop, a directory — is exit 2 naming what it is,
 never "no lockfile": a guardrail that disappears because nobody could `stat` it is worse than
-none, and [`policy.yaml`](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md) makes the same promise.
+none, and [`policy.yaml`](policy.md) makes the same promise.
 
 ```console
 $ rayspec lock
@@ -291,7 +291,7 @@ the checked-in copies drift). The workflow schema is an editor aid, not the vali
 relaxed where a field accepts more spellings than its type says (`timeout: 30m`,
 `budget_usd: "$1.50"`, `approve: <message>`), and it knows nothing about the graph, references,
 includes or provider capabilities — `rayspec validate` stays authoritative. See
-[schema.md → Editor support](schema.md#editor-support).
+[schema.md → Editor support](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/schema.md#editor-support).
 
 ### `rayspec plan`
 
@@ -400,9 +400,9 @@ Findings, worst first, each with where it is, the evidence, and what to do about
 | `shell-credentials` | medium | `gh auth`, `docker login`, `aws configure`, … |
 | `python-process` | medium | a `python:` body shells out, so what it runs cannot be read off the workflow |
 | `reject-ignored` | medium | a gate with `on_reject: continue` — rejecting it does not stop the run |
-| `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) holds shut |
+| `self-approving-gate` | medium | a gate with `auto_if:` that no [approval class](runs-and-resume.md#approval-classes) holds shut |
 | `templated-body` | medium | a `shell:`/`python:` body or a `cwd:` assembled at run time — what it runs is not what is written |
-| `unheld-class` | medium | a gate names an [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) that nothing in force defines, so the name holds nothing |
+| `unheld-class` | medium | a gate names an [approval class](runs-and-resume.md#approval-classes) that nothing in force defines, so the name holds nothing |
 | `no-isolation` | low | `isolation: none` — steps run in the project directory itself, not in a worktree |
 | `waivable-gate` | low | a gate `--yes` approves — it names no class, or its class is not marked `allow_yes: false` |
 
@@ -442,7 +442,7 @@ Run the project's declarative workflow cases: every case is a **dry run against 
 provider**, so a suite needs no network and no worktree, starts no subprocess and is given no
 credentials — the project's `.rayspec/.env` is deliberately *not* loaded for this command. It is
 the edit → check loop after changing a prompt, a `when:` or a stub, and it is safe to run against
-a checkout you have not read. Cases are discovered from the layouts below (see [testing.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/testing.md)
+a checkout you have not read. Cases are discovered from the layouts below (see [testing.md](testing.md)
 for the file format):
 
 - `.rayspec/tests/<workflow>/<case>.yaml` — one case per file; the directory names the workflow
@@ -477,7 +477,7 @@ and only you can pass it**. A case file's `exec_shell: true` is a declaration th
 real execution; without the flag the command refuses to run at all (exit 2, naming the case's
 `file:line`) rather than letting a checked-in data file widen what the command does. Note that
 `--exec-shell` takes no workdir lock, so do not run it beside a real `rayspec run` on the same
-checkout, and that a case is bound by the same [approval classes](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes)
+checkout, and that a case is bound by the same [approval classes](runs-and-resume.md#approval-classes)
 a run is: a gate whose class may not be approved automatically pauses the case and fails it rather
 than running the step behind it. `--junit FILE` writes a JUnit XML report (one `<testsuite>` per suite, the four-line
 blocks as the `<failure>` text) — written whether cases pass, fail, or the suite could not start
@@ -557,7 +557,7 @@ Record each workflow's current hash in `.rayspec/trusted.yaml`. The hash covers 
 contributed to the resolved workflow — the document, every `include:`d body, every agent file and
 every `prompt_file`/`instructions_file` — so trust is a statement about what will actually run.
 Adding a workflow that is already listed replaces its entry (`updated`). See
-[policy.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md).
+[policy.md](policy.md).
 
 ### `rayspec trust list`
 
@@ -794,7 +794,7 @@ any estimate in the mix makes the group an estimate, and anything missing makes 
 The **tokens** column carries `≥` too, because a step that was interrupted before the provider
 reported any usage leaves the run's token count a lower bound (`usage_unknown`, the same figure
 `rayspec run` prints as `tokens: ≥N`; see
-[runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#failures-retries-and-timeouts)). When nothing at all was
+[runs-and-resume.md](runs-and-resume.md#failures-retries-and-timeouts)). When nothing at all was
 reported the cell reads `unknown` rather than `-`, which would claim the run used no tokens.
 
 The **cost source** column is the breakdown that keeps the marker honest: one count per run,
@@ -908,11 +908,11 @@ Options:
 rayspec audit [OPTIONS] {run}    # --output table|json (--json is the older spelling)
 ```
 
-Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (created, started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. An approval row names both halves — `approved by alice@example.com (cli)` — because `by` says which door the decision came through (`cli` for `rayspec approve`/`reject`, `tty` for the run's own prompt, `--yes`, `dry-run`) and the actor says whose hand it was. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch; a `--dry-run` rehearsal is marked `dry run — nothing was executed`, because it called no provider and ran no shell body. Where a `.env` file tried to supply a `RAYSPEC_ACTOR`, both the header and the approval row say so — `approved by you (cli) — a .env declared 'security-team@corp.invalid', which is not an identity` — because that value was refused (a workflow step can write those files: see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#which-sources-are-allowed-and-why)). Two honest limits: the header's actor is read straight out of `run.json`, while the approval row is re-resolved from the decision, so on a record somebody edited after the fact the two can disagree — and the decision row's guarantee is about the moment it was *recorded*, not about the file afterwards.
+Answer "what did that agent actually **do**?" in one screen. The ledger is one line per fact the run left behind, oldest first: the run itself (created, started/resumed, workspace, paused, finished), every step, every command an agent started, every tool it called, every file it reported changing, every warning, and every approval with the identity behind it. An approval row names both halves — `approved by alice@example.com (cli)` — because `by` says which door the decision came through (`cli` for `rayspec approve`/`reject`, `tty` for the run's own prompt, `--yes`, `dry-run`) and the actor says whose hand it was. The header names the run, its status, the **actor** (`run.json`'s `actor`: who launched it, where the identity came from, the CI system and any provider account) and the workdir/branch; a `--dry-run` rehearsal is marked `dry run — nothing was executed`, because it called no provider and ran no shell body. Where a `.env` file tried to supply a `RAYSPEC_ACTOR`, both the header and the approval row say so — `approved by you (cli) — a .env declared 'security-team@corp.invalid', which is not an identity` — because that value was refused (a workflow step can write those files: see [runs-and-resume.md](runs-and-resume.md#which-sources-are-allowed-and-why)). Two honest limits: the header's actor is read straight out of `run.json`, while the approval row is re-resolved from the decision, so on a record somebody edited after the fact the two can disagree — and the decision row's guarantee is about the moment it was *recorded*, not about the file afterwards.
 
-A step a resume **replayed** from the reuse cache is marked as one: `succeeded (reused from the previous attempt — not re-executed)`. Its shell body did not run and no provider was called, so its row sits next to the row of the attempt that really did the work and must not read like a second execution of it (`--json` carries the same fact as `data.reused`). See [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#resume).
+A step a resume **replayed** from the reuse cache is marked as one: `succeeded (reused from the previous attempt — not re-executed)`. Its shell body did not run and no provider was called, so its row sits next to the row of the attempt that really did the work and must not read like a second execution of it (`--json` carries the same fact as `data.reused`). See [runs-and-resume.md](runs-and-resume.md#resume).
 
-The rows are derived from the run's own `run.json` (its creation, which is where the actor is recorded), `events.jsonl` and per-step `stream.jsonl` — the same derivation an enabled `audit.jsonl` stores (see [runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#the-local-audit-log)), so a rendered ledger and a stored one always agree. A step whose stream cannot be read is a `warning` row saying so, never a silently empty step. Reading only: the command never writes to the run directory, never re-runs anything and never contacts a network service. It is a report over the files of **one** run on **this** machine — it proves nothing about them (anybody who can read a run directory can also edit it) and knows nothing about other runs, projects or people. Every cell is untrusted text, printed with control characters and terminal escape sequences removed.
+The rows are derived from the run's own `run.json` (its creation, which is where the actor is recorded), `events.jsonl` and per-step `stream.jsonl` — the same derivation an enabled `audit.jsonl` stores (see [runs-and-resume.md](runs-and-resume.md#the-local-audit-log)), so a rendered ledger and a stored one always agree. A step whose stream cannot be read is a `warning` row saying so, never a silently empty step. Reading only: the command never writes to the run directory, never re-runs anything and never contacts a network service. It is a report over the files of **one** run on **this** machine — it proves nothing about them (anybody who can read a run directory can also edit it) and knows nothing about other runs, projects or people. Every cell is untrusted text, printed with control characters and terminal escape sequences removed.
 
 Options:
 
@@ -1034,14 +1034,14 @@ Resume a paused, failed or interrupted run: the run is re-executed from the top 
 
 Two things are not in `run.json` and come from the command line again — both are checked **before** anything is written, after the workflow-hash guard and after the pending-gate pointer (a run paused at a gate, non-TTY without `--yes`, exits 3 pointing at `approve`/`reject` first — that is what such a run needs):
 
-- **Secret inputs** (`secret: true`, [schema.md](schema.md#secret-inputs)) are never persisted: every secret that was given at launch must be supplied again with `--input NAME=VALUE` (accepted on resume for secret inputs only — any other name is `inputs are fixed per run`, exit 2) or through `RAYSPEC_INPUT_<NAME>` in the environment; otherwise exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN`. An optional secret that was not given at launch is not required (but may be supplied now — it is then recorded as `<secret>` and exported like the others).
+- **Secret inputs** (`secret: true`, [schema.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/schema.md#secret-inputs)) are never persisted: every secret that was given at launch must be supplied again with `--input NAME=VALUE` (accepted on resume for secret inputs only — any other name is `inputs are fixed per run`, exit 2) or through `RAYSPEC_INPUT_<NAME>` in the environment; otherwise exit 2 `missing secret input(s): token — pass --input token=… or set RAYSPEC_INPUT_TOKEN`. An optional secret that was not given at launch is not required (but may be supplied now — it is then recorded as `<secret>` and exported like the others).
 - **The failure policy**, on the other hand, *is* in `run.json`: `--fail-fast` is recorded on the run, so a resume continues it with the blast radius it started with rather than draining what the first half would have cancelled. The workflow's own `defaults.on_step_failure` needs no recording — it is part of the workflow, and the hash guard above already refuses a resume of a changed one.
 - **The stub script**: a run launched with `--stubs` recorded the file's absolute path (`stubs_path`); `resume` loads it again (a missing/unreadable file is exit 2 with the hint `pass --stubs <path>`), `--stubs PATH` overrides it (and becomes the recorded path). A run launched with `--stubs-from <run>` recorded that donor run instead (`stubs_path: "run:<run id>"`) and rebuilds its answers from the store — a replay that pauses at an approval gate finishes with the recorded answers, never with the stub provider's default. A `--dry-run` record resumes as a dry run (stub providers, shell/python skipped), so its stubs keep applying; the rule holds as on `run` (a non-stub agent may only be scripted in a dry run).
 
 Options:
 
 - `--force` — Resume even if the workflow changed, the run already finished, or its pid/host cannot be verified.
-- `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md#approval-classes) is `allow_yes: false`).
+- `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
 - `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
 - `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again. A run paused at a gate records it on the way out too (`--fail-fast recorded on the run: …`, still exit 3), so the blast radius can be narrowed *before* the gate is decided with `approve`/`reject`. `rayspec runs --json`, `rayspec show` and `rayspec show --json` report the recorded policy (`fail_fast`).
@@ -1118,15 +1118,15 @@ rayspec init [--kind code|content | --from EXAMPLE] [--force] [--no-skill] [--ro
 ```
 
 Scaffold a project: `.rayspec/{workflows/example.yaml, agents/reviewer.yaml, prompts/*.md,
-config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus the **rayspec
-skill for coding agents** in `.claude/skills/rayspec/` (`SKILL.md` + `references/*.md`, the same
-files `rayspec skill install` writes — see [agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md); `--no-skill` opts
-out), then print the next steps (`doctor`, `validate`, `plan example`, `run example --dry-run
---stubs .rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here —
-the skill loads automatically"). `--root DIR` is the directory that receives `.rayspec/` and
-`.claude/skills/rayspec/` (default: the cwd — `init` does **not** walk up to an enclosing
-project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
-that is not there is exit 2 and nothing is written. Files that already exist — scaffold and skill alike — are kept and listed as
+config.yaml, stubs/example.yaml}` from the templates packaged with rayspec, plus **both rayspec
+skills for coding agents** in `.claude/skills/rayspec-workflows/` and `.claude/skills/rayspec-cli/`
+(`SKILL.md` + `references/*.md` each, the same files `rayspec skill install` writes — see
+[agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md); `--no-skill` opts out of both), then print the next steps
+(`doctor`, `validate`, `plan example`, `run example --dry-run --stubs
+.rayspec/stubs/example.yaml`, a real run, and "open a fresh Claude Code session here — the skills
+load automatically"). `--root DIR` is the directory that receives `.rayspec/` and
+`.claude/skills/` (default: the cwd — `init` does **not** walk up to an enclosing project). It has to exist: `init` scaffolds a directory, it does not create one, so a `--root`
+that is not there is exit 2 and nothing is written. Files that already exist — scaffold and skills alike — are kept and listed as
 `exists … (skipped; use --force to overwrite)`; `--force` overwrites them — keeping the mode of
 the file it replaces (a `config.yaml` you chmodded to `0600` stays `0600`) and refusing a target
 that is a *symbolic link*, which is an error like a directory in the way: a scaffold writes files
@@ -1141,8 +1141,8 @@ stderr, no traceback) for an unknown `--kind`, a `--root` that is not a director
 where a template file goes (e.g. `.rayspec/config.yaml/`), a symlink where `--force` would
 write, or any other filesystem error
 (`error: cannot write the skill: … (the .rayspec/ scaffold was written; re-run with --no-skill
-to skip the skill)` for the skill files — the scaffold is complete at that point). Nothing is
-written outside `.rayspec/` and `.claude/skills/rayspec/`; runs live under `RAYSPEC_HOME`.
+to skip the skills)` for the skill files — the scaffold is complete at that point). Nothing is
+written outside `.rayspec/` and `.claude/skills/`; runs live under `RAYSPEC_HOME`.
 
 Switching kinds is per file: `rayspec init --kind content` over an untouched `code` scaffold adds
 only the files `code` does not ship (`prompts/draft.md`) and keeps the rest, which leaves a mixed
@@ -1213,7 +1213,7 @@ next steps:
 
 The catalogue is whatever the build ships (`rayspec init --from ''` prints it); today that is
 `fix_issue`, `hello_review`, `notify_webhook`, `pr_review`, `release_check`, `review_sweep`,
-`secret_via_tool`, `triage_fanout` and `unsupported_demo` — see [examples.md](examples.md).
+`secret_via_tool`, `triage_fanout` and `unsupported_demo` — see [examples.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/examples.md).
 
 ### `rayspec new workflow`
 
@@ -1313,45 +1313,51 @@ detail, required, hint}]}` (keys in that order).
 ### `rayspec skill install`
 
 ```
-rayspec skill install [--global] [--force] [--root DIR]
+rayspec skill install [NAME] [--global] [--force] [--root DIR]
 ```
 
-Write the packaged rayspec skill for coding agents ([agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md):
-`SKILL.md` + `references/{concepts,schema,templating,cli,providers,examples}.md`) to
-`<project>/.claude/skills/rayspec/` — `--root DIR` names an existing project directory (a
+Write the packaged rayspec skills for coding agents ([agent-skill.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/agent-skill.md):
+`rayspec-workflows` with `references/{concepts,schema,templating,examples}.md` and `rayspec-cli`
+with `references/{cli,providers,testing,policy,runs-and-resume,isolation,ci}.md`) to
+`<project>/.claude/skills/<name>/` — `--root DIR` names an existing project directory (a
 `--root` that is not there is exit 2, not a new directory tree); default: the nearest
 directory with `.rayspec/`, then `.git`, else the cwd — or, with `--global`, to
-`~/.claude/skills/rayspec/` for every project of this user. Same idempotence as `init`: one line
+`~/.claude/skills/<name>/` for every project of this user. Without `NAME` **both** skills are
+written; `NAME` (`rayspec-workflows` or `rayspec-cli`) writes just that one, and an unknown name
+is exit 2 with a did-you-mean and the real names. Same idempotence as `init`: one line
 per file (`created` / `overwrote` / `exists … (skipped; use --force to overwrite)`), a summary
-line with the target path, a stderr `warning: nothing written …` when every file existed (exit
-stays 0), and the hint `open a fresh Claude Code session in <dir> — the rayspec skill loads
-automatically`. `--force` overwrites (how you update after upgrading rayspec). Exit 2 (`error:
-cannot write the skill: …`, no traceback) for a `--root` that is not a directory, a directory
-where a skill file goes, or any other filesystem error; `--global` together with `--root` is a
-usage error (exit 2, `--global and --root are mutually exclusive`).
+line per skill with its target path, a stderr `warning: nothing written …` when every file of
+every selected skill existed (exit stays 0), and the hint `open a fresh Claude Code session in
+<dir> — the rayspec skills load automatically`. `--force` overwrites (how you update after
+upgrading rayspec). Exit 2 (`error: cannot write the skill: …`, no traceback) for a `--root` that
+is not a directory, a directory where a skill file goes, or any other filesystem error;
+`--global` together with `--root` is a usage error (exit 2, `--global and --root are mutually
+exclusive`).
 
 ### `rayspec skill show`
 
 ```
-rayspec skill show [--root DIR] [--json | --output FORMAT]
+rayspec skill show [NAME] [--root DIR] [--json | --output FORMAT]
 ```
 
-Print the packaged skill (its directory, the rayspec version and a 12-hex-digit content digest
-that identifies the skill's files, the file count) and the state of the project install
-(`<root>/.claude/skills/rayspec`, `--root` as for `install`) and the global install
-(`~/.claude/skills/rayspec`): `not installed`, `digest … — up to date` (byte-identical to the
+For each selected skill (both by default, one with `NAME`) print a `<name> — <summary>` header,
+the packaged copy (its directory, the rayspec version and a 12-hex-digit content digest that
+identifies that skill's files, the file count) and the state of the project install
+(`<root>/.claude/skills/<name>`, `--root` as for `install`) and the global install
+(`~/.claude/skills/<name>`): `not installed`, `digest … — up to date` (byte-identical to the
 packaged skill) or `digest … — differs from the packaged skill (… rayspec skill install
---force …)`. `--json`: `{packaged: {path, rayspec_version, digest, files}, project: {path,
-state: missing|current|stale, digest}, global: {…}}`. Exit 0.
+--force …)`. `--json`: `{skills: [{name, packaged: {path, rayspec_version, digest, files},
+project: {path, state: missing|current|stale, digest}, global: {…}}]}` — one entry per selected
+skill, in registry order. Exit 0.
 
 ### `rayspec skill path`
 
 ```
-rayspec skill path
+rayspec skill path [NAME]
 ```
 
-Print the packaged skill directory (the one `install` copies; it holds `SKILL.md` and
-`references/`). Exit 0.
+Print the packaged skill directories, one per line (the ones `install` copies; each holds
+`SKILL.md` and `references/`). `NAME` prints just that one. Exit 0.
 
 ### `rayspec completion`
 
