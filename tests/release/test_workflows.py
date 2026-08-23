@@ -202,6 +202,47 @@ def test_ci_never_re_resolves_the_lockfile() -> None:
     assert not problems, "\n".join(problems)
 
 
+#: What makes ``uv run`` use the environment as it stands instead of deriving one of its own.
+KEEPS_THE_ENVIRONMENT = ("--no-sync", "--no-project", "--isolated")
+
+
+def test_no_step_re_derives_the_environment_a_sync_step_already_built() -> None:
+    """Once a job has run ``uv sync``, that environment is the one its later steps must get.
+
+    A bare ``uv run`` builds the environment again from scratch: it re-reads ``.python-version``
+    and syncs to the DEFAULT groups, and where the interpreter disagrees it deletes ``.venv`` and
+    recreates it. A job that syncs one interpreter with every group and then runs a bare
+    ``uv run`` is checking something other than what it asked for — which is how a four-
+    interpreter matrix came to run 3.12 in every cell, each of them missing the docs group and so
+    unable to type-check ``scripts/mkdocs_hooks.py``.
+
+    Either the job says the environment is already built (``UV_NO_SYNC``), or the step says so
+    itself. A job with no sync step is not covered: there ``uv run`` IS how the environment is
+    built, which is what ``docs.yml`` does on purpose.
+    """
+    problems = []
+    for path in workflow_files():
+        workflow = load(path)
+        for job, spec in workflow["jobs"].items():
+            synced = False
+            for step in spec.get("steps") or []:
+                env: dict[str, Any] = {}
+                for source in (workflow.get("env"), spec.get("env"), step.get("env")):
+                    env.update(source or {})
+                for line in str(step.get("run", "")).splitlines():
+                    command = line.strip()
+                    words = command.split()
+                    if words[:2] == ["uv", "sync"]:
+                        synced = True
+                    elif words[:2] == ["uv", "run"] and synced:
+                        if any(flag in command for flag in KEEPS_THE_ENVIRONMENT):
+                            continue
+                        if str(env.get("UV_NO_SYNC", "")).strip():
+                            continue
+                        problems.append(f"{path.name}: {job}: {command}")
+    assert not problems, "\n".join(problems)
+
+
 # --------------------------------------------------------------------------- release.yml
 
 

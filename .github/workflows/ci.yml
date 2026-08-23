@@ -14,6 +14,15 @@ jobs:
         python: ["3.11", "3.12", "3.13", "3.14"]
     env:
       PYTHON: ${{ matrix.python }}
+      # `.python-version` is tracked and says 3.12, and a bare `uv run` obeys it: on every other
+      # cell it deletes the environment the sync step below just built and recreates it on 3.12
+      # with the default groups only. The matrix then tests one interpreter four times, and the
+      # rebuilt environment has lost the docs group, which is how `uv run pyright` fails on
+      # `mkdocs.structure.files`. Setting the interpreter uv should use, and telling it the sync
+      # step owns the environment, keeps every `uv run` below on the cell's own Python — added
+      # here rather than as flags on each step so a step added later inherits it.
+      UV_PYTHON: ${{ matrix.python }}
+      UV_NO_SYNC: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -21,7 +30,27 @@ jobs:
           version: "0.12.5"
           enable-cache: true
       - run: uv python install "$PYTHON"
-      - run: uv sync --locked --all-groups --python "$PYTHON"
+      # The sync decides the environment, so the sync is where it proves it got the one it
+      # asked for. The assertion is deliberately a BARE `uv run`, the same shape as the checks
+      # below, so it fails if that shape ever stops resolving to what this step just built.
+      - run: |
+          uv sync --locked --all-groups --python "$PYTHON"
+          uv run python - <<'PY'
+          import importlib.util, os, sys
+
+          want = os.environ["PYTHON"]
+          got = ".".join(map(str, sys.version_info[:2]))
+          if got != want:
+              raise SystemExit(
+                  f"uv run is on Python {got}, not this cell's {want} ({sys.executable}) — the "
+                  "matrix has collapsed onto one interpreter and is testing it four times"
+              )
+          if importlib.util.find_spec("mkdocs") is None:
+              raise SystemExit(
+                  "the docs group is missing from the environment uv run uses, so the checks "
+                  "below cannot see mkdocs and pyright will fail on scripts/mkdocs_hooks.py"
+              )
+          PY
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -29,6 +58,12 @@ jobs:
   examples:
     # every example + dogfood workflow: validate, plan, dry-run with stubs (+ the coverage matrix)
     runs-on: ubuntu-latest
+    env:
+      # Same reason as the test job: a bare `uv run` re-reads `.python-version` and re-syncs.
+      # This job happens to pin the interpreter that file names, so nothing breaks today — but
+      # that is two numbers agreeing by hand, and only one of them is in this file.
+      UV_PYTHON: "3.12"
+      UV_NO_SYNC: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1

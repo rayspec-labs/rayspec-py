@@ -7,6 +7,7 @@ is what makes an unvetted persistence backend safe to install.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -152,10 +153,14 @@ def test_the_wrapper_is_a_run_store_and_implements_every_protocol_member() -> No
     """A protocol member added later must be implemented here — not delegated blindly."""
     store = RedactingStore(RecordingStore())
     assert isinstance(store, RunStore)
+    # ``__protocol_attrs__`` is a CPython 3.12+ internal; walk the MRO instead so this
+    # guard also runs on 3.11, the declared floor. Verified to yield the identical set.
     members = {
         name
-        for name in RunStore.__protocol_attrs__  # type: ignore[attr-defined]
-        if name != "redactor"
+        for base in inspect.getmro(RunStore)
+        if base.__name__ not in {"Protocol", "Generic", "object"}
+        for name in (*vars(base), *getattr(base, "__annotations__", {}))
+        if not name.startswith("_") and name != "redactor"
     }
     assert members <= set(vars(RedactingStore))
     assert not members & (READ_THROUGH | WRITE_THROUGH)
