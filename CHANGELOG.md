@@ -503,8 +503,11 @@ The workflow language, the scheduler, the two provider adapters and the command 
 - Cost for Codex models is shown as tokens only unless a `pricing:` entry is configured.
 - POSIX shell semantics: a value is passed as `${RAYSPEC_V<n>}` and never spliced into a script, so
   single quotes stop the shell expanding it — the one thing most likely to surprise you.
-- This release was verified with the local gate (`ruff`, `ruff format`, `pyright`,
-  `pytest -m "not live"`, `scripts/check_examples.py`) on Python 3.12, and by installing the wheel
-  and running it on 3.11. **GitHub Actions has never produced a green run**: standard runners are
-  free only on public repositories, so every workflow file here — CI, the release pipeline, the
-  reusable check, the docs publish — is written and locally checked but has not executed for real.
+- This release is verified by the local gate (`ruff`, `ruff format`, `pyright`,
+  `pytest -m "not live"`, `scripts/check_examples.py`) and by CI on Python 3.11, 3.12, 3.13 and
+  3.14, plus the example matrix and a lint of the workflow files. The documentation site builds and
+  publishes from the same pipeline. The release workflow has been rehearsed end to end on a runner
+  through its `workflow_dispatch` path, which builds both artefacts, checks the metadata, installs
+  the wheel into a clean environment, and writes the notes and the bill of materials.
+  **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
+  version tag, so this release is the first time they execute.
