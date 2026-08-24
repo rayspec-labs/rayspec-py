@@ -8,7 +8,7 @@ All notable changes to rayspec are documented here. The format follows
 ## [1.0.3] — 2026-08-24
 
 Nothing runs differently after installing this. Four sentences in the documentation described a
-rayspec that does not exist, and three of them ship **inside the wheel**: the packaged skills are
+rayspec that does not exist, and all four ship **inside the wheel**: the packaged skills are
 near-verbatim copies of `docs/`, so a wrong line there is not read by a person deciding what to
 write — it is read by the agent doing the writing. A docs-site fix reaches readers on the next
 deploy; only a release replaces the copy an installed skill hands to a coding agent.

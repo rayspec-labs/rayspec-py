@@ -67,11 +67,17 @@ jobs:
   unlocked:
     name: Resolve like a user does
     # Every other job installs from `uv.lock`. Nobody installing rayspec does: `pip install
-    # rayspec` reads the floors in `pyproject.toml` and resolves whatever is newest. On
-    # 2026-08-24 that was four packages ahead of the lock -- `rich` by two major versions, and
-    # `claude-agent-sdk` at a release published two days before 1.0.2 shipped. The gate was green
-    # against all of it, which is the point: nothing had told us either way, because no cell had
-    # ever run that resolution. This job is the one that does.
+    # rayspec` reads the floors in `pyproject.toml` and resolves whatever is newest. Measured
+    # against 1.0.3: such an install resolves 43 packages, exactly one of which differs from the
+    # lock -- `claude-agent-sdk` 0.2.142 against 0.2.144, published two days before 1.0.2 shipped.
+    # One is not a reassuring number: it is a pre-1.0 SDK and it is the whole product path.
+    #
+    # (A floor is not a pin, and reading it as one overcounts this badly. `pyproject.toml` says
+    # `rich>=13.7`; the lock already pins rich 15.0.0. The comparison that means anything is
+    # resolved-versus-locked, which is what this job prints below.)
+    #
+    # The gate is green against that resolution, which is the point: nothing had said so either
+    # way, because no cell had ever run it. This job is the one that does.
     #
     # It is deliberately NOT a cell of `test`. It can go red because somebody else published a
     # release, which is a fact worth learning the day it happens and not a reason to block a pull
