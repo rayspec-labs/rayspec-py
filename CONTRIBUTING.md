@@ -65,6 +65,12 @@ uv run python scripts/gen_capability_matrix.py --check       # provider capabili
 
 Each generator writes the artefact when you drop `--check`; commit what it produced.
 
+One CI job never runs on a pull request, so you will not see it here: it installs the dependencies
+the way `pip install rayspec` resolves them — newest that satisfies the floors — instead of from
+the lock file, and runs the gate against that. It is the only place the versions people actually
+get are exercised. It runs on `main` and once a week, and it can go red because somebody else
+published a release rather than because of anything you wrote.
+
 ## Tests
 
 Write the failing test first, run it, watch it fail, then write the smallest thing that makes it

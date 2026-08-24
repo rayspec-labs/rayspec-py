@@ -126,9 +126,24 @@ def _ci_check_commands() -> list[tuple[str, str]]:
 
 
 def _ci_test_job() -> str:
-    """The job that runs the test suite — the one the gate is a local copy of."""
-    jobs = {job for job, command in _ci_check_commands() if "pytest" in command}
-    assert len(jobs) == 1, f"expected exactly one CI job to run pytest, found {jobs}"
+    """The job that runs the suite across the interpreter matrix -- the one the gate copies.
+
+    A second job runs pytest too: the one that resolves the dependencies afresh instead of from
+    the lock file. "Runs pytest" therefore no longer picks this one out; the interpreter matrix
+    does. The gate is what every supported interpreter has to pass, so a second job growing a
+    matrix of its own would be a real ambiguity rather than a naming accident, and this still
+    fails if one ever does.
+    """
+    workflow: Any = yaml.safe_load(_text(CI_WORKFLOW))
+    jobs = {
+        job
+        for job, command in _ci_check_commands()
+        if "pytest" in command
+        and "python" in ((workflow["jobs"][job].get("strategy") or {}).get("matrix") or {})
+    }
+    assert len(jobs) == 1, (
+        f"expected exactly one CI job to run pytest over the interpreter matrix, found {jobs}"
+    )
     return jobs.pop()
 
 
