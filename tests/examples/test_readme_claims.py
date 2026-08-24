@@ -274,7 +274,12 @@ def test_review_sweep_keeps_the_reports_of_a_run_that_really_ran(
     )  # fmt: skip
     assert inv.exit_code == 0, inv.output
     shown = _shown(_run_id(inv), review_sweep_project, home)
-    assert [a["path"] for a in shown["artifacts"]] == [
+    # The three angles run together (`max_parallel: 3`, and the workflow says so in a comment),
+    # and `show` lists artifacts in record order -- so which report is recorded first is the
+    # scheduler's business, not a promise. Sorting is what the claim actually is: all three were
+    # written, hashed and kept. Asserting the order instead turned `test (3.13)` red on `main`
+    # while the other three interpreters passed.
+    assert sorted(a["path"] for a in shown["artifacts"]) == [
         "reports/api.md",
         "reports/docs.md",
         "reports/tests.md",
