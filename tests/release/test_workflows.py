@@ -187,18 +187,33 @@ def test_the_workflow_linter_is_pinned_to_a_version_and_its_bytes_are_checked() 
     assert "sha256sum -c" in step["run"], "the download is not verified against a checksum"
 
 
-def test_ci_never_re_resolves_the_lockfile() -> None:
-    """A ``uv.lock`` that has drifted from ``pyproject.toml`` fails the build, silently never."""
+def test_ci_installs_from_the_lockfile_wherever_it_gates_a_change() -> None:
+    """A ``uv.lock`` that has drifted from ``pyproject.toml`` fails the build, silently never.
+
+    One job resolves afresh on purpose: the floors in ``pyproject.toml`` are what a user's
+    ``pip install`` reads, and no locked cell can say what they pull. The exemption is a property
+    rather than a name on a list, because a list is exactly how this would come loose: a job that
+    does not install from the lock has to be kept off pull requests, so it can never be the thing
+    that says a change is fine. A job that resolves afresh AND gates a pull request fails here
+    whatever it is called.
+    """
     problems = []
     for path in workflow_files():
-        for _job, step in steps_of(load(path)):
-            for line in str(step.get("run", "")).splitlines():
-                command = line.strip()
-                resolves = command.startswith("uv sync") or (
-                    "uv run" in command and "--group" in command
-                )
-                if resolves and "--locked" not in command and "--frozen" not in command:
-                    problems.append(f"{path.name}: {command}")
+        workflow = load(path)
+        for job, spec in workflow["jobs"].items():
+            for step in spec.get("steps", []):
+                for line in str(step.get("run", "")).splitlines():
+                    command = line.strip()
+                    resolves = command.startswith("uv sync") or (
+                        "uv run" in command and "--group" in command
+                    )
+                    if not resolves or "--locked" in command or "--frozen" in command:
+                        continue
+                    if "pull_request" not in str(spec.get("if", "")):
+                        problems.append(
+                            f"{path.name}: job {job!r} runs {command!r}, which resolves afresh, "
+                            "and nothing keeps it off pull requests"
+                        )
     assert not problems, "\n".join(problems)
 
 
