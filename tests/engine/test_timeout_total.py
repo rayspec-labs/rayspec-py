@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import anyio
 import pytest
 
-from rayspec.engine.context import BUDGET_SKIP_REASON
+from rayspec.engine.context import BUDGET_SKIP_REASON, RunContext
 from rayspec.events.model import EventType
+from rayspec.providers.base import AgentRequest, AgentResult, EmitFn
 from rayspec.providers.stub import StubProvider
-from rayspec.schema import Defaults, RunStatus, SchemaError, parse_workflow
+from rayspec.schema import Defaults, RunStatus, SchemaError, StepStatus, parse_workflow
 
 from .conftest import Harness
 
@@ -56,14 +58,80 @@ CHAIN = """
 """
 
 
-async def test_the_clock_trips_the_breaker_and_no_new_step_starts(harness: Harness) -> None:
+#: What the injected clock reports once the run is past its cap — far enough beyond the ``0.4``
+#: the workflows below set that the reason string reads unambiguously.
+OVER_CAP_S = 5.0
+
+
+def clock_trips_after(monkeypatch: pytest.MonkeyPatch, path: str) -> anyio.Event:
+    """Have the run-level clock read recorded state instead of the wall clock.
+
+    ``RunContext.elapsed_s`` is the engine's only reading of the wall clock, so replacing it
+    states the instant the breaker trips: the run is inside its cap until the step at ``path``
+    is recorded ``succeeded``, and past it from then on. Nothing about the breaker itself is
+    stubbed — the ready-set gate, the permit-side gate, the skip reason, the drain and the
+    run's own reason all stay the engine's.
+
+    Measured against the real clock these tests asked something else: that the run's own
+    startup (two fsynced ``run.json`` writes plus the toolchain probe) fit inside the 0.4s cap.
+    It does not reliably — that startup alone has been timed at 0.37s on an idle machine.
+
+    The returned event is set the first time the clock reads over the cap, i.e. at the trip.
+    """
+    tripped = anyio.Event()
+
+    def elapsed_s(self: RunContext) -> float:
+        record = self.run.steps.get(path)
+        if record is None or record.status is not StepStatus.SUCCEEDED:
+            return 0.0
+        tripped.set()
+        return OVER_CAP_S
+
+    monkeypatch.setattr(RunContext, "elapsed_s", elapsed_s)
+    return tripped
+
+
+class HoldsSlowUntilTripped(StubProvider):
+    """Holds ``slow`` open until the run-level breaker has tripped, and holds ``quick`` until
+    ``slow`` is in flight.
+
+    Both halves are needed, and the second one is the half that is easy to leave out. ``quick``
+    finishing is what runs the clock out, so if it finishes before ``slow`` has entered its body
+    there is no running leaf to drain: the breaker skips ``slow`` as a step that has not started,
+    which is the breaker doing its job and the test asserting the wrong thing. Which of the two
+    the scheduler reaches first is the machine's business — both are ready at once and neither
+    needs the other — so waiting here is what makes the overlap a fact rather than a hope. It
+    reproduced as ``slow == skipped`` on a loaded machine roughly one run in three.
+
+    Neither wait can deadlock: ``quick`` blocking yields to the scheduler, which has three free
+    slots and launches ``slow``, which sets the arrival before waiting on anything itself.
+    """
+
+    def __init__(self, tripped: anyio.Event) -> None:
+        super().__init__()
+        self._tripped = tripped
+        self._slow_running = anyio.Event()
+
+    async def run(self, req: AgentRequest, emit: EmitFn) -> AgentResult:
+        if req.step_path == "slow":
+            self._slow_running.set()
+            with anyio.fail_after(10):  # hang detector: only the trip ends this wait
+                await self._tripped.wait()
+        elif req.step_path == "quick":
+            with anyio.fail_after(10):  # hang detector: only ``slow`` arriving ends this wait
+                await self._slow_running.wait()
+        return await super().run(req, emit)
+
+
+async def test_the_clock_trips_the_breaker_and_no_new_step_starts(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     harness.workflow("t", wf("  timeout_total: 0.4", CHAIN))
-    provider = StubProvider(script={"steps": {"a": {"latency_ms": 900}}})
-    result = await harness.run("t", providers={"claude": provider})
+    clock_trips_after(monkeypatch, "a")  # the run is over its cap the moment ``a`` is done
+    result = await harness.run("t", providers={"claude": StubProvider()})
     assert result.status is RunStatus.FAILED and result.exit_code == 1
     assert result.reason is not None
-    assert result.reason.startswith("time limit exceeded (elapsed ")
-    assert "> timeout_total 0.4s)" in result.reason
+    assert result.reason == "time limit exceeded (elapsed 5.0s > timeout_total 0.4s)"
     assert harness.statuses(result.run_id) == {"a": "succeeded", "b": "skipped", "c": "skipped"}
     run = harness.record(result.run_id)
     assert run.steps["b"].skip_reason == BUDGET_SKIP_REASON
@@ -73,7 +141,9 @@ async def test_the_clock_trips_the_breaker_and_no_new_step_starts(harness: Harne
     assert harness.events(EventType.RUN_FINISHED)[0].data["reason"] == result.reason
 
 
-async def test_running_leaves_drain_when_the_clock_runs_out(harness: Harness) -> None:
+async def test_running_leaves_drain_when_the_clock_runs_out(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     harness.workflow(
         "t",
         wf(
@@ -86,13 +156,12 @@ async def test_running_leaves_drain_when_the_clock_runs_out(harness: Harness) ->
 """,
         ),
     )
-    provider = StubProvider(
-        script={"steps": {"quick": {"latency_ms": 600}, "slow": {"latency_ms": 1500}}}
-    )
-    result = await harness.run("t", providers={"claude": provider})
+    # ``quick`` finishing is what runs the clock out; ``slow`` holds its slot until that happened
+    tripped = clock_trips_after(monkeypatch, "quick")
+    result = await harness.run("t", providers={"claude": HoldsSlowUntilTripped(tripped)})
     assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
     statuses = harness.statuses(result.run_id)
-    # ``slow`` was already running when the cap tripped: it finished (drain, no cancellation)
+    # ``slow`` was still running when the cap tripped: it finished (drain, no cancellation)
     assert statuses["quick"] == "succeeded" and statuses["slow"] == "succeeded"
     assert statuses["after_quick"] == "skipped" and statuses["after_slow"] == "skipped"
 
@@ -141,9 +210,16 @@ async def test_resume_measures_from_the_original_start(harness: Harness) -> None
     assert harness.statuses(first.run_id) == {"a": "succeeded", "b": "succeeded"}
 
 
-async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Harness) -> None:
+async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The gate is asked again once the permit is held: a queued step is a step that has not
-    started, and a wall-clock cap that keeps launching queued work is not a cap."""
+    started, and a wall-clock cap that keeps launching queued work is not a cap.
+
+    ``b``, ``c`` and ``cleanup`` are queued for the single slot before ``a`` can release it —
+    ``a`` cannot finish without at least one ``to_thread`` write of ``run.json``, and the three
+    siblings were started (and blocked on the limiter) at ``a``'s first suspension.
+    """
     harness.workflow(
         "t",
         wf(
@@ -156,8 +232,8 @@ async def test_a_leaf_queued_for_a_slot_does_not_start_after_the_cap(harness: Ha
 """,
         ),
     )
-    provider = StubProvider(script={"steps": {"a": {"latency_ms": 900}}})
-    result = await harness.run("t", providers={"claude": provider})
+    clock_trips_after(monkeypatch, "a")  # the slot frees up only after the cap has run out
+    result = await harness.run("t", providers={"claude": StubProvider()})
     assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
     statuses = harness.statuses(result.run_id)
     assert statuses["a"] == "succeeded"
@@ -188,9 +264,11 @@ async def test_the_tripped_clock_outranks_a_stop_step(harness: Harness) -> None:
     assert not run.outputs
 
 
-async def test_each_items_queued_behind_the_item_limiter_do_not_start(harness: Harness) -> None:
-    """The same guarantee inside a fan-out: every item's body is a leaf, so the permit gate is
-    the choke point an item queued behind ``each.max_parallel`` has to pass."""
+async def test_each_items_queued_behind_the_item_limiter_do_not_start(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same guarantee inside a fan-out: an item held behind ``each.max_parallel`` while the
+    clock runs out is an item that has not started, and it does not start afterwards."""
     harness.workflow(
         "t",
         wf(
@@ -201,10 +279,12 @@ async def test_each_items_queued_behind_the_item_limiter_do_not_start(harness: H
     as: name
     max_parallel: 1
     steps:
-      - {id: work, shell: "sleep 0.5"}
+      - {id: work, shell: "echo {{ name }}"}
 """,
         ),
     )
+    # the first item uses the run up; items 1 and 2 are still waiting for the item limiter
+    clock_trips_after(monkeypatch, "fan[0]/work")
     result = await harness.run("t")
     assert result.status is RunStatus.FAILED and "timeout_total" in (result.reason or "")
     statuses = harness.statuses(result.run_id)
