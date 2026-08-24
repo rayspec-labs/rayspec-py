@@ -215,19 +215,35 @@ none:
   a file on your machine — but the identity rule does not fix it, and this build does not either.
   Keep an eye on it the way you would on `~/.bashrc`; `rayspec doctor` lists both files.
 - **The defence is per process, and a shell startup file is outside it.** A step runs as you, so
-  it can append `export RAYSPEC_ACTOR=someone-else` to `~/.zshrc`, `~/.bashrc` or `~/.profile`.
+  it can append `export RAYSPEC_ACTOR=someone-else` to any file your shell reads at startup.
   Nothing happens to the run that did it, or to any process already running: rayspec never reads
   those files, and a variable that is not in a process cannot be read out of it. But your **next
   shell** exports it, and from that moment the value really is in the environment you handed over
   — indistinguishable, by construction, from you having typed it, and it will be recorded as
   `source: env` on everything you run from that shell.
 
+  How much later that is depends on which file, and the reach is wider than the next window you
+  open. `~/.zshenv` is read by zsh on **every** invocation, so a `zsh -c` inside a script or a cron
+  job exports it too, with no terminal involved anywhere. `~/.zprofile` and `~/.bash_profile` are
+  read by a login shell, which on macOS is what a new terminal window starts.
+
   This is not a hole the identity rule can close, and pretending otherwise would be the third
   guarantee this area described wider than it was built. Close it where it actually lives: run
   workflows in a container or a sandbox that has no write access to your dotfiles, or review those
-  files the way you would review anything else that decides what your shell does. A quick check
-  after an unfamiliar workflow: `grep RAYSPEC_ACTOR ~/.zshrc ~/.bashrc ~/.profile`, and `rayspec
-  audit <run> --commands` shows what the run executed.
+  files the way you would review anything else that decides what your shell does. A spot check
+  after an unfamiliar workflow:
+
+  ```bash
+  grep -r RAYSPEC_ACTOR ~/.zshenv ~/.zprofile ~/.zshrc ~/.zlogin \
+                        ~/.bash_profile ~/.bashrc ~/.profile \
+                        ~/.config/fish/config.fish ~/.config/fish/conf.d 2>/dev/null
+  ```
+
+  A spot check is all that is: a startup file can source another file, your shell may be neither
+  zsh nor bash, and a login shell, an interactive shell and `sh -c` each read a different set. A
+  list is an enumeration where the honest answer is that you cannot enumerate this. `rayspec audit
+  <run> --commands` shows what the run actually executed, which is the check that does not depend
+  on having guessed the list right.
 
 It is an **identity, not a credential and not a permission**. rayspec never reads a token, key or
 password to build it — a provider *account* comes only from a variable that names one, never from

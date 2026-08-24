@@ -40,7 +40,7 @@ outputs: {}               # name → template (deep-rendered when the run succee
 | Field | Default | Meaning |
 |---|---|---|
 | `agent` | `null` | Agent used by `prompt:` steps that set no `agent:`. |
-| `timeout` | `null` | Per-attempt timeout applied to every step that sets none (a [duration](#durations)). |
+| `timeout` | `null` | Per-attempt timeout applied to every step that sets none (a [duration](#durations)) — every step except `approve:` and `stop:`. A gate is not bounded by it and cannot be: it waits for a person for as long as that takes. `--no-interactive` is how you get "do not wait". |
 | `max_parallel` | `4` | Leaf steps (prompt/shell/python) running at once, run-wide. |
 | `on_unsupported` | `error` | `error` or `warn`: what a provider-capability mismatch is at validation time (`--allow-unsupported` also downgrades). |
 | `on_step_failure` | `drain` | `drain`, `fail_fast` or `continue`. `drain` lets already-running siblings finish and starts nothing new; `fail_fast` cancels running siblings as soon as a step fails; `continue` keeps scheduling independent branches (the failed step's downstream cone skips (`upstream_failed`, then `upstream_skipped` below it)), **inside `each:`/`loop:`/`include:` bodies too** — the policy is lexically scoped, and an `include:`d workflow that states its own value governs its body (see the note under [`each:`](#each)). **All three still fail the run** — `continue` is not `allow_failure` (per-step, *tolerates* the failure) and not `each.on_failure: continue` (per-item; see the note under [`each:`](#each)). `--fail-fast` on the command line may only ever tighten: it beats both `drain` and `continue`, and never downgrades a workflow that asked for `fail_fast`. |
@@ -322,7 +322,8 @@ resolved agents.
 
 ## Steps
 
-Exactly one kind key per step. Fields that are valid on every kind:
+Exactly one kind key per step. Fields that are valid on every kind — with one exception, marked
+in the table:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -331,7 +332,7 @@ Exactly one kind key per step. Fields that are valid on every kind:
 | `needs` | `[]` | sibling ids (same `steps:` list only) |
 | `when` | `null` | **expression**; must evaluate to exactly `true`/`false` (`false` → skipped with `when_false`; anything else or an error → the step **fails**) |
 | `join` | `all` | `all` · `any` · `always` (see the [truth table](#join-truth-table)); a warning without `needs` |
-| `timeout` | `null` | [duration](#durations) > 0; per attempt for leaves, whole-step for composites; falls back to `defaults.timeout` |
+| `timeout` | `null` | [duration](#durations) > 0; per attempt for leaves, whole-step for composites; falls back to `defaults.timeout`. **The exception: `approve:` and `stop:` take no `timeout` at all** — written on either it is refused when the workflow loads, and neither falls back to `defaults.timeout`. |
 | `always_run` | `false` | ignore the resume cache (re-run on `--resume`) |
 | `allow_failure` | `false` | a failure is recorded as `failed` + `tolerated: true` (`ok: false`); joins treat it as satisfied; the run status is unaffected |
 | `artifacts` | `[]` | files this step promises to write, relative to its working directory (`cwd:` for `shell:`/`python:`, else the run's workdir). Checked after the step succeeds — a missing one, one that is not a regular file, or one outside the run's workspace, **fails the step** — then copied into the run directory and recorded with a sha256. Absolute paths, `~`, `..` and control characters are refused when the workflow loads, and so is `{{ … }}`: the entry is **not templated** — name a fixed file and put what varies per item in the step's `cwd:`, which *is* rendered (and which an earlier step has to create: see [`shell:`](#shell)). The same file declared twice is kept once. See [runs-and-resume.md](runs-and-resume.md#declared-artifacts). |
@@ -500,6 +501,13 @@ A human gate. On a terminal (and without `--no-interactive`/`--yes`) it prompts 
 cancelled, run `cancelled` (exit 4); `continue` → succeeded with `approved: false`; `fail` →
 failed. Output: the approver's comment (`''` if none); attribute `approved`. Details in
 [runs-and-resume.md](runs-and-resume.md#approval-gates).
+
+A gate has no time bound, and none of the three timeout knobs reaches it: `timeout:` is refused
+here when the workflow loads, `defaults.timeout` does not apply, and `defaults.timeout_total` does
+not end it either — the run-level cap is measured when the scheduler decides what to do next, and a
+blocking gate is not one of those moments. An unanswered gate waits, holding its worktree open. Use
+`--no-interactive` anywhere unattended: the run pauses at the gate (exit 3) instead of waiting, and
+`rayspec resume` picks it up.
 
 ### `include:`
 

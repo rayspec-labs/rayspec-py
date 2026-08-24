@@ -450,9 +450,11 @@ change guard: 2 limit(s) exceeded since 4bba429fd0a1
 ```
 
 The measurement lives in `rayspec.workspace` (`check_change_guard`, `diff_since`, `match_path`)
-and works on anything that is a git worktree with a base commit. Wiring it into the prompt executor
-is one call; until that exists, `workspace:` is a recorded intention and `rayspec validate` says so
-on every run that sets it.
+and works on anything that is a git worktree with a base commit. Turning that into enforcement is
+not one call: a workflow with `isolation: none` has no base commit to measure against, and whether
+`shell:` and `python:` steps count towards a limit is undecided — questions to answer, not a line to
+add. Until they are answered, `workspace:` is a recorded intention and `rayspec validate` says so on
+every run that sets it.
 
 ## Trusted workflows
 

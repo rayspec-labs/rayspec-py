@@ -168,7 +168,10 @@ resume <id>`. On a terminal an `approve:` step prompts with `[a]pprove [r]eject 
 changes the run's status — the store keeps every event.
 
 `--json` shapes — **stdout** is pure JSONL, one event or stream record per line (`ts` is ISO-8601
-UTC with microseconds), ending with the `run.finished` event and then the summary object:
+UTC ending in `Z`, with microseconds — *except* on the exact whole second, where there is no
+fractional part at all: `2026-08-20T13:26:44Z`. Parse it with something that accepts both, such as
+`datetime.fromisoformat`; a fixed `%Y-%m-%dT%H:%M:%S.%fZ` breaks on roughly one event in a
+million), ending with the `run.finished` event and then the summary object:
 
 ```json
 {"type": "step.finished", "run_id": "20260820-132644-h2nx", "ts": "2026-08-20T13:26:44.930795Z",

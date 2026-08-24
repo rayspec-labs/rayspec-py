@@ -266,7 +266,7 @@ that is not here does not exist. Defaults in parentheses.
 |---|---|
 | top level | `rayspec` (must be `1`) · `name` · `description` · `inputs` · `defaults` · `isolation` (`worktree`) · `agents` · `steps` · `outputs` |
 | `defaults:` | `agent` · `timeout` · `max_parallel` (`4`) · `on_unsupported` (`error`) · `on_step_failure` (`drain`) · `budget_usd` (no cap; written `1.5`, `"$1.50"` or `"12 USD"`) · `max_tokens` (no cap; written `500000`, `"500k"` or `"1.5M"`) · `timeout_total` |
-| every step | `id` · `description` · `needs` · `when` · `join` (`all`) · `timeout` · `always_run` (`false`) · `allow_failure` (`false`) · `artifacts` |
+| every step | `id` · `description` · `needs` · `when` · `join` (`all`) · `timeout` (not on `approve:`/`stop:`) · `always_run` (`false`) · `allow_failure` (`false`) · `artifacts` |
 | `always_run:` | re-execute this step on a **resume** instead of replaying its cached record. It is *not* finally-semantics — a step whose upstream skipped is still skipped, `always_run: true` or not; the field that runs a step anyway is `join: always` |
 | `artifacts:` | files the step must leave behind, **relative to its working directory**; absolute paths, `~`, `..`, trailing `/` and `{{`/`{%` are rejected at load time, `./b//r.md` normalises to `b/r.md`. Checked only **after the step succeeds** — a declared file that is missing fails the step; kept files are copied to `<run dir>/artifacts/<step>/…` and listed by `rayspec show`. Not checked on reused records or in `--dry-run` |
 | leaf steps only (`prompt`/`shell`/`python`) | `retry` · `env` (values templated, bool/int/float coerced to text) · `output_schema` |
