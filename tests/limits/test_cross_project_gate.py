@@ -44,6 +44,20 @@ def config_text(*, tier_model: str, secret: bool = False) -> str:
     return text
 
 
+#: Model names for the three configurations these tests tell apart. They are long on purpose.
+#: The assertions below ask whether a model name is present in or absent from command output, and
+#: that output carries a run id -- ``YYYYMMDD-HHMMSS-`` plus four characters drawn from
+#: ``abcdefghijklmnopqrstuvwxyz234567`` (``store/model.py``). A two-character probe like ``m2``
+#: therefore appears in roughly one run id in 341 by chance alone, which is what turned
+#: ``test (3.14)`` red on the 1.0.3 release commit while the other three interpreters passed.
+#: An absent-probe assertion fails when the dice say so; a present-probe assertion is worse, since
+#: it PASSES when the dice say so and the behaviour it guards can rot unnoticed. Names containing a
+#: hyphen and a whole word cannot occur in a run id at all, so the dice are out of it.
+RUNS_MODEL = "model-in-the-run"
+CALLERS_MODEL = "model-in-the-caller"
+DRIFTED_MODEL = "model-after-drift"
+
+
 def make_project(path: Path, *, tier_model: str, secret: bool = False) -> Path:
     (path / ".rayspec" / "workflows").mkdir(parents=True)
     (path / ".rayspec" / "workflows" / "g.yaml").write_text(GATE, encoding="utf-8")
@@ -69,9 +83,9 @@ def elsewhere(
     the run's project declares the ``TOK`` secret, and only its workflow is pinned.
     """
     monkeypatch.setenv("SRC_TOKEN", "sekrit-token-value")
-    project = make_project(tmp_path / "proj", tier_model="m1", secret=True)
+    project = make_project(tmp_path / "proj", tier_model=RUNS_MODEL, secret=True)
     assert invoke("lock", "--root", str(project)).exit_code == 0
-    caller = make_project(tmp_path / "caller", tier_model="m2")
+    caller = make_project(tmp_path / "caller", tier_model=CALLERS_MODEL)
     started = invoke("run", "g", "--root", str(project), "--no-interactive")
     assert started.exit_code == 3, started.output
     (run_id,) = run_store(home).list_run_ids()
@@ -91,7 +105,7 @@ def test_approve_from_another_project_resolves_models_in_the_runs_project(
     monkeypatch.setenv("CI", "true")  # --locked is on by default here
     result = invoke("approve", run_id, "ship it", "--root", str(caller))
     assert result.exit_code == 0, result.output
-    assert "lockfile" not in result.output and "m2" not in result.output
+    assert "lockfile" not in result.output and CALLERS_MODEL not in result.output
 
 
 def test_resume_from_another_project_reports_paused_not_a_lockfile_error(
@@ -121,13 +135,13 @@ def test_a_drift_in_the_runs_project_is_still_refused_from_anywhere(
     same command refuses, naming the pin and what the agent resolves to now."""
     project, caller, run_id = elsewhere
     (project / ".rayspec" / "config.yaml").write_text(
-        config_text(tier_model="m9", secret=True), encoding="utf-8"
+        config_text(tier_model=DRIFTED_MODEL, secret=True), encoding="utf-8"
     )
     monkeypatch.setenv("CI", "true")
     result = invoke("approve", run_id, "--root", str(caller))
     assert result.exit_code == 2, result.output
     assert "agents.worker" in result.output
-    assert "m1" in result.output and "m9" in result.output
+    assert RUNS_MODEL in result.output and DRIFTED_MODEL in result.output
 
 
 def test_the_resumed_half_reads_the_runs_config_secrets(
