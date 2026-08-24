@@ -189,9 +189,12 @@ def test_logs_follow_cli_with_background_writer(cli: CliRunner, seeded: Seeded) 
         )
         time.sleep(0.1)
         store.append_stream(run.run_id, "a", StreamRecord(kind="text", text="hi from a"))
-        run.status = RunStatus.FAILED
-        run.reason = "boom"
-        store.save(run)
+        # closing event first, terminal status second — deliberately NOT the engine's order.
+        # A reader that sees the terminal status does one last drain and stops; if the status
+        # landed first, the event could still be unwritten and the drain would legitimately
+        # miss it, so the assertions below would be timing-dependent rather than about
+        # `--follow`. The event still arrives after the reader's first poll, so the drain is
+        # exercised either way. Do not "restore" this to mirror the engine.
         store.append_event(
             run.run_id,
             RunEvent(
@@ -200,6 +203,9 @@ def test_logs_follow_cli_with_background_writer(cli: CliRunner, seeded: Seeded) 
                 data={"status": "failed", "reason": "boom"},
             ),
         )
+        run.status = RunStatus.FAILED
+        run.reason = "boom"
+        store.save(run)
 
     thread = threading.Thread(target=writer)
     thread.start()

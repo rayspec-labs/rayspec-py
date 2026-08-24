@@ -18,6 +18,7 @@ import pytest
 from rayspec.engine.context import (
     ON_STEP_FAILURE_ORDER,
     RunOptions,
+    StepOutcome,
     strictest_on_step_failure,
 )
 from rayspec.engine.scheduler import run_graph
@@ -109,16 +110,40 @@ steps:
     harness.workflow(
         "t",
         wf("""
-  - {id: outer, shell: "sleep:0.05"}
-  - {id: run_block, include: block, allow_failure: true}
+  - {id: outer, shell: block}
+  - {id: run_block, include: block}
+  - {id: after, needs: [run_block], join: always, shell: ok}
 """),
     )
     g = make_graph_harness(harness, harness.load("t"))
-    with anyio.fail_after(5):
-        outcomes = await run_graph(g.graph, g.scope, g.ctx)
+
+    async def release_outer_once_the_root_has_decided() -> None:
+        """Let ``outer`` finish, but not before the root has settled the failed body.
+
+        That settle is the moment a leaked ``fail_fast`` would cancel ``outer``, so it is the
+        only moment this test can observe the leak — ``outer`` must still be running then. A
+        ``sleep:`` step only guesses at that (the whole window measured about 35 ms wide, and
+        the leak goes unseen the moment the guess is off), so ``outer`` is held open instead.
+        ``after`` is decided only once ``run_block`` has settled: it starting IS the root
+        having made its call.
+        """
+        while "after" not in g.leaf.started:
+            await anyio.sleep(0.005)
+        g.leaf.release.set()
+
+    # bound inside the group below, and a task group is allowed to swallow what its body raised
+    # — so this stays None if the run never returned, and the assertion after it says so
+    outcomes: dict[str, StepOutcome] | None = None
+    with anyio.fail_after(15):  # hang detector: every wait here is on observed state
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(release_outer_once_the_root_has_decided)
+            outcomes = await run_graph(g.graph, g.scope, g.ctx)
+    assert outcomes is not None, "the graph never returned its outcomes"
     statuses = harness.statuses(g.run.run_id)
     assert statuses["run_block/slow"] == "interrupted"
-    # the including graph never entered fail-fast: its own sibling finished
+    # the including graph never entered fail-fast: its own sibling ran to completion. Note
+    # ``run_block`` carries no ``allow_failure:`` — a tolerated failure never arms fail-fast at
+    # all, so this line could not tell a contained policy from a leaked one.
     assert outcomes["outer"].record.status is StepStatus.SUCCEEDED
 
 

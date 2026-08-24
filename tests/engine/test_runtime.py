@@ -176,26 +176,53 @@ async def test_sigterm_also_cancels() -> None:
 
 
 async def test_second_sigint_calls_hard_exit_hook() -> None:
+    """Ctrl-C twice: the first cancels, the second flushes and hard-exits.
+
+    Both deliveries are sequenced on observed state. Standard signals are not queued, so a
+    second SIGINT sent while the first is still pending is dropped and the runtime only ever
+    sees one — sleeping between the two ``os.kill`` calls is a bet against that, and it loses
+    (roughly one run in twenty under heavy CPU oversubscription, as ``flushed == []``).
+    """
     hard_exits: list[int] = []
     flushed: list[str] = []
+    root_cancelled = anyio.Event()
+    hard_exited = anyio.Event()
+    before = signal.getsignal(signal.SIGINT)
 
     async def body() -> None:
-        # ignore the first cancellation on purpose so a second SIGINT can arrive
-        with anyio.CancelScope(shield=True):
-            await anyio.sleep(0.3)
+        try:
+            await anyio.sleep_forever()
+        except anyio.get_cancelled_exc_class():
+            root_cancelled.set()  # the first signal reached the root scope
+            # ignore that cancellation on purpose (shielded) so the second signal has a run to
+            # interrupt, and stay open until the hard-exit path has been through. The guard is
+            # a hang detector: the real wait is the handler's next turn of the loop, so it
+            # gives up only when the second signal produced nothing, and the assertions below
+            # then say so.
+            with anyio.CancelScope(shield=True), anyio.move_on_after(5):
+                await hard_exited.wait()
+            raise
+
+    def hard_exit(code: int) -> None:
+        hard_exits.append(code)
+        hard_exited.set()
 
     async def fire() -> None:
-        await anyio.sleep(0.05)
+        while signal.getsignal(signal.SIGINT) is before:
+            # the receiver installs its own SIGINT handler as it opens; a signal fired before
+            # that goes to whatever the test runner had installed instead of to the runtime
+            await anyio.sleep(0)
         os.kill(os.getpid(), signal.SIGINT)
-        await anyio.sleep(0.05)
+        await root_cancelled.wait()  # delivered and acted on — the next one cannot coalesce
         os.kill(os.getpid(), signal.SIGINT)
 
     result: SignalResult[Any] | None = None
-    async with anyio.create_task_group() as tg:
-        tg.start_soon(fire)
-        result = await run_with_signals(
-            body, on_hard_exit=lambda: flushed.append("flush"), hard_exit=hard_exits.append
-        )
+    with anyio.fail_after(30):  # hang detector for the unshielded waits above
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(fire)
+            result = await run_with_signals(
+                body, on_hard_exit=lambda: flushed.append("flush"), hard_exit=hard_exit
+            )
     assert result is not None
     assert result.interrupted is True
     assert flushed == ["flush"]

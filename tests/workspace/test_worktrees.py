@@ -113,6 +113,7 @@ def test_create_worktree_non_git(tmp_path: Path, home: Path) -> None:
 def test_list_worktrees_only_rayspec_branches(repo: Path, home: Path, tmp_path: Path) -> None:
     project = project_from_root(repo)
     git("worktree", "add", "-q", "-b", "other", str(tmp_path / "other-wt"), cwd=repo)
+    t0 = time.time()
     a = create_worktree(project, home=home, workflow_name="wf", run_id="20260820-101500-aaaa")
     b = create_worktree(project, home=home, workflow_name="wf", run_id="20260820-101500-bbbb")
     infos = list_worktrees(project)
@@ -122,7 +123,11 @@ def test_list_worktrees_only_rayspec_branches(repo: Path, home: Path, tmp_path: 
     assert by_branch[a.branch].head_sha == a.head_sha
     assert by_branch[a.branch].created_at is not None
     age = by_branch[a.branch].age
-    assert age is not None and age >= timedelta(0)
+    # Bounded by the wall clock the pointer file's mtime comes from, so an `age` read off the
+    # wrong epoch — the naive-local-time-labelled-UTC swap — is off by the machine's UTC offset
+    # and breaks one end or the other. The 60s of slack makes the bound insensitive to the box.
+    assert age is not None
+    assert timedelta(0) <= age <= timedelta(seconds=time.time() - t0 + 60)
     # nothing committed yet → the worktree head equals main → counts as merged
     assert by_branch[a.branch].merged is True
     assert by_branch[a.branch].dirty is False

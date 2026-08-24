@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
+import threading
+import time
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -11,6 +15,7 @@ from rich.console import Console
 
 from rayspec.events import EventSink, EventType, RunEvent, StreamRecord
 from rayspec.events.sinks import ConsoleSink, QuietConsoleSink
+from rayspec.events.sinks import console as console_module
 from rayspec.events.sinks.console import RunView, StepView
 
 pytestmark = pytest.mark.anyio
@@ -542,11 +547,90 @@ async def test_pause_before_any_event_does_not_start_live():
     await sink.aclose()
 
 
-async def test_concurrent_emits_are_serialised():
+class _Section:
+    """Who is inside the model's guarded region right now, and whether two ever were.
+
+    Its own lock, so replacing the sink's locks with no-ops cannot also disarm the detector.
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._inside: list[str] = []
+        self.overlaps: list[tuple[str, ...]] = []
+
+    @contextlib.contextmanager
+    def entered(self, who: str) -> Iterator[None]:
+        with self._guard:
+            self._inside.append(who)
+            if len(self._inside) > 1:
+                self.overlaps.append(tuple(self._inside))
+        try:
+            yield
+        finally:
+            with self._guard:
+                self._inside.remove(who)
+
+
+async def test_concurrent_emits_are_serialised(monkeypatch):
+    """Eight tasks fold events into one model while a reader renders it, and the two never overlap.
+
+    The state at the end cannot show this. Nothing inside the guarded region of ``emit`` or
+    ``emit_stream`` awaits, so a coroutine that enters it runs to completion before the event
+    loop can switch, and eight tasks arrive at the same eight finished roots with the locks or
+    without them. What the locks buy is the OTHER party: ``_model_lock`` exists for the Live
+    refresh thread, which reads the model on its own timer while engine tasks are writing to it.
+    The ``reader`` thread below stands in for that thread and asks the one question that
+    separates a locked sink from an unlocked one — was anybody else inside at the time?
+
+    A rendered frame is not evidence either way: ``_get_renderable`` catches everything a torn
+    read can raise and logs it, so the display keeps running whatever it saw. The overlap is the
+    evidence, and the write side sleeps a millisecond inside the region — a window some three
+    orders of magnitude wider than a render — so an unlocked sink is caught rather than raced.
+    """
     import anyio
 
     sink = ConsoleSink(tty_console())
+    section = _Section()
+
+    real_apply, real_apply_stream = sink._apply, sink._apply_stream
+
+    def apply(event: RunEvent) -> None:
+        with section.entered("writer"):
+            real_apply(event)
+            time.sleep(0.001)
+
+    def apply_stream(step_path: str, record: StreamRecord) -> None:
+        with section.entered("writer"):
+            real_apply_stream(step_path, record)
+            time.sleep(0.001)
+
+    sink._apply, sink._apply_stream = apply, apply_stream  # both run under `_model_lock`
+
+    real_render_view = console_module.render_view
+
+    def render_view(*args: Any, **kwargs: Any) -> Any:
+        with section.entered("reader"):
+            return real_render_view(*args, **kwargs)
+
+    monkeypatch.setattr(console_module, "render_view", render_view)
+
+    stopped = threading.Event()
+    raised: list[BaseException] = []
+
+    def read_frames() -> None:
+        while not stopped.is_set():
+            try:
+                sink.render(height=40)
+            except BaseException as exc:  # a torn model raises; record it, do not stop
+                raised.append(exc)
+            # a render is ~0.3ms, so this reads the model roughly as often as an event
+            # arrives; spinning instead starves the writer and buys no extra coverage
+            time.sleep(0.001)
+
+    reader = threading.Thread(target=read_frames, daemon=True)
+
     await sink.emit(ev(EventType.RUN_STARTED, workflow="wf"))
+    reader.start()
 
     async def worker(i: int) -> None:
         path = f"s{i}"
@@ -555,9 +639,17 @@ async def test_concurrent_emits_are_serialised():
             await sink.emit_stream(path, rec("stdout", f"{path} line {n}\n"))
         await sink.emit(ev(EventType.STEP_FINISHED, path, status="succeeded", duration_ms=1))
 
-    async with anyio.create_task_group() as tg:
-        for i in range(8):
-            tg.start_soon(worker, i)
+    try:
+        async with anyio.create_task_group() as tg:
+            for i in range(8):
+                tg.start_soon(worker, i)
+    finally:
+        stopped.set()
+        reader.join(timeout=30)
+    assert not reader.is_alive()
+
+    assert section.overlaps == []  # nobody read the model while it was being written
+    assert raised == []
     assert len(sink.view.roots) == 8
     assert all(s.status == "succeeded" for s in sink.view.roots)
     await sink.aclose()

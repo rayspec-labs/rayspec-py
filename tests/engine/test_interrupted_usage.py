@@ -29,7 +29,14 @@ pytestmark = pytest.mark.anyio
 
 class HangingProvider(StubProvider):
     """Emits scripted ``usage`` events, then hangs until :attr:`answer` is set (then answers
-    like the stub)."""
+    like the stub).
+
+    :attr:`hanging` is set the moment the attempt is stuck — every scripted ``usage`` event has
+    been emitted and folded into the record by then. A test that wants to interrupt an attempt
+    mid-flight waits for it instead of guessing a duration: the run has to stamp and fsync
+    ``run.json`` twice, probe the toolchain, spawn a real subprocess for ``a`` and mint
+    ``think``'s record first, which was measured between 17 ms and 324 ms on one machine.
+    """
 
     def __init__(
         self,
@@ -42,6 +49,8 @@ class HangingProvider(StubProvider):
         self.usage_events = usage_events
         self.answer = answer
         self.raise_after = raise_after
+        #: set immediately before the attempt hangs — the instant it is safe to interrupt it
+        self.hanging = anyio.Event()
 
     async def run(self, req: AgentRequest, emit: EmitFn) -> AgentResult:
         total = Usage()
@@ -68,6 +77,7 @@ class HangingProvider(StubProvider):
             raise ProviderError("boom after usage", transient=True, kind="api")
         if self.answer:
             return await super().run(req, emit)
+        self.hanging.set()
         await anyio.sleep_forever()
         raise AssertionError("unreachable")
 
@@ -112,8 +122,11 @@ async def test_interrupted_attempt_usage_counts_in_the_totals_after_resume(
     harness.workflow("t", _wf())
     provider = HangingProvider([{"input": 200, "output": 20}])
     runner = harness.runner("t", run_id="20260820-000000-usg", providers={"claude": provider})
-    with anyio.move_on_after(0.8):
-        await runner.run()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner.run)
+        with anyio.fail_after(10):  # hang detector, not a deadline: the wait is on the state
+            await provider.hanging.wait()
+        tg.cancel_scope.cancel()  # interrupt the attempt exactly where it reported its usage
     run = harness.record("20260820-000000-usg")
     assert run.status is RunStatus.INTERRUPTED
     think = run.steps["think"]
@@ -142,8 +155,11 @@ async def test_interrupted_attempt_without_usage_stays_unknown_after_resume(
     harness.workflow("t", _wf())
     provider = HangingProvider([])
     runner = harness.runner("t", run_id="20260820-000000-unk", providers={"claude": provider})
-    with anyio.move_on_after(0.8):
-        await runner.run()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner.run)
+        with anyio.fail_after(10):  # hang detector, not a deadline: the wait is on the state
+            await provider.hanging.wait()
+        tg.cancel_scope.cancel()  # interrupt the attempt after it reported nothing at all
     run = harness.record("20260820-000000-unk")
     assert run.steps["think"].usage_unknown is True and run.steps["think"].usage.total == 0
     harness.sink.clear()
@@ -163,6 +179,9 @@ async def test_provider_timeout_status_without_usage_is_unknown(harness: Harness
     result = await harness.run("t", providers={"claude": stub})
     rec = result.steps["think"]
     assert rec.status is StepStatus.FAILED and rec.error and rec.error.type == "timeout"
+    # the branch this test is named for is the PROVIDER's own verdict, not the engine deadline
+    # firing first — both end FAILED/timeout/unknown, and only the message tells them apart
+    assert rec.error.message == "stub: latency 5000ms exceeds timeout 0.4s"
     assert rec.usage_unknown is True
 
 

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import anyio
 import pytest
 
 from rayspec.engine.approval import ApprovalAnswer, ApprovalRequest
-from rayspec.engine.context import RunOptions
+from rayspec.engine.context import RunOptions, StepOutcome
 from rayspec.engine.errors import RunPaused, RunStopped
+from rayspec.engine.executors import each as each_executor
 from rayspec.engine.scheduler import run_graph
 from rayspec.events.model import EventType
 from rayspec.providers.stub import StubProvider
 from rayspec.schema import StepStatus
 from rayspec.store.model import Decision, PauseInfo
 
-from .conftest import Harness, make_graph_harness
+from .conftest import FakeLeaf, Harness, make_graph_harness
 
 pytestmark = pytest.mark.anyio
 
@@ -60,19 +63,50 @@ async def test_approve_auto_with_yes_and_dry_run(harness: Harness) -> None:
         assert decision.data["by"] == ("--yes" if opts.yes else "dry-run")
 
 
-async def test_approve_tty_prompt_quiesces_and_records_comment(harness: Harness) -> None:
+async def test_approve_tty_prompt_quiesces_and_records_comment(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt is shown only once the run has gone quiet — on a run that had a leaf to wait for.
+
+    ``slow`` is nobody's dependency, so nothing made it overlap the gate: it was a 0.2s sleep set
+    against the time the gate's own branch takes to reach the gate, which is one step's
+    bookkeeping — two threaded fsynced writes of ``run.json``, 50-75ms measured on this harness.
+    That margin did hold here (the reading below came out 1 in every run of the old form measured,
+    idle and under saturating load alike), but a run where it had not would have passed just as
+    quietly: ``quiesced_at_prompt == [0]`` reads the same whether the quiesce waited for a running
+    leaf or found nothing to wait for. A ``slow`` that had not started yet reads the same way too
+    — a leaf still behind the launch gate is not active either.
+
+    So the overlap is established rather than timed. ``slow`` is held in its body, ``built`` (the
+    gate's only need) is held until it is in there, and the reading taken as the gate closes says
+    what the quiesce was up against: ``active_at_gate_close == [1]``. Releasing ``slow`` from that
+    same spy is what lets the quiesce finish, so the two readings cannot both come from a run in
+    which nothing ever overlapped.
+    """
     harness.workflow(
         "t",
         wf("""
-  - {id: a, shell: "ok:built"}
-  - {id: slow, shell: "sleep:0.2"}
-  - {id: gate, needs: [a], approve: {message: "Ship {{ steps.a.output }}?"}}
+  - {id: built, shell: "block:built"}
+  - {id: slow, shell: "block:slow"}
+  - {id: gate, needs: [built], approve: {message: "Ship {{ steps.built.output }}?"}}
   - {id: after, needs: [gate], shell: "ok:{{ steps.gate.output }}"}
 """),
     )
     prompt = FakePrompt(ApprovalAnswer(True, "looks good"))
     g = make_graph_harness(harness, harness.load("t"), prompt=prompt)
-    rt = g.ctx.runtime
+    rt, leaf = g.ctx.runtime, g.leaf
+
+    active_at_gate_close: list[int] = []
+    close_gate = rt.close_gate
+
+    def close_the_gate_on_a_running_leaf() -> None:
+        close_gate()
+        # ``slow`` is held, so this reading cannot drift between the gate closing and the moment
+        # it is taken: it is the leaf the quiesce has to wait for, and it must not be zero.
+        active_at_gate_close.append(rt.active_leaves)
+        leaf.releases["slow"].set()  # ... and only now may that leaf finish
+
+    monkeypatch.setattr(rt, "close_gate", close_the_gate_on_a_running_leaf)
 
     quiesced_at_prompt: list[int] = []
 
@@ -82,11 +116,23 @@ async def test_approve_tty_prompt_quiesces_and_records_comment(harness: Harness)
         return await prompt(request)
 
     g.ctx.approval_prompt = spy
-    out = await run_graph(g.graph, g.scope, g.ctx)
-    assert quiesced_at_prompt == [0]  # the slow leaf finished before the prompt was shown
+
+    async def open_the_gates_branch_once_slow_is_running() -> None:
+        # the gate may only become reachable while ``slow`` is in its body: the wait IS the
+        # assertion, since a ``slow`` the engine refuses to launch never arrives
+        await leaf.wait_started("slow")
+        leaf.releases["built"].set()
+
+    out: dict[str, StepOutcome] = {}
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(open_the_gates_branch_once_slow_is_running)
+        out = await run_graph(g.graph, g.scope, g.ctx)
+    assert active_at_gate_close == [1]  # the gate closed on a leaf that was still running
+    assert quiesced_at_prompt == [0]  # ... and the prompt waited until that leaf had finished
     assert rt.gate_open
     assert prompt.requests[0].message == "Ship built?"
-    assert prompt.requests[0].needs[0].path == "a" and prompt.requests[0].needs[0].tail == "built"
+    assert prompt.requests[0].needs[0].path == "built"
+    assert prompt.requests[0].needs[0].tail == "built"
     assert out["gate"].output == "looks good" and out["gate"].record.approved is True
     assert out["after"].output == "looks good"
 
@@ -503,7 +549,91 @@ async def test_on_step_failure_continue_inside_a_loop_body(harness: Harness) -> 
     assert "cycle[1]/later" in g.leaf.started, f"queued-after step must run: {g.leaf.started}"
 
 
-async def test_each_max_parallel_and_on_failure(harness: Harness) -> None:
+class WatchedAnyio:
+    """The ``anyio`` the ``each`` executor sees, with the item limiter it builds handed to the test.
+
+    ``each.max_parallel`` becomes a ``CapacityLimiter`` local to one ``run_each`` call, and its
+    queue is the only witness there is to a cap that is actually holding items back. Only
+    ``CapacityLimiter`` is intercepted, and it is intercepted by building the real one: the
+    executor gets exactly the limiter it would have got and behaves exactly as it would have,
+    while the test gets a reference to the object it can ask.
+    """
+
+    def __init__(self, built: list[anyio.CapacityLimiter]) -> None:
+        self._built = built
+
+    def __getattr__(self, name: str) -> Any:
+        return self._capacity_limiter if name == "CapacityLimiter" else getattr(anyio, name)
+
+    def _capacity_limiter(self, total: float) -> anyio.CapacityLimiter:
+        limiter = anyio.CapacityLimiter(total)
+        self._built.append(limiter)
+        return limiter
+
+
+#: How often :func:`wait_for_item_queue` looks again. Not a margin: the loop ends on the queue,
+#: never on elapsed time, so this only trades CPU against how soon the fact is noticed.
+_POLL = 0.005
+
+
+async def wait_for_item_queue(
+    built: list[anyio.CapacityLimiter], leaf: FakeLeaf, *, timeout: float = 30.0
+) -> None:
+    """Return once every ``each.max_parallel`` slot is held by an item in its body, with more
+    items queued behind them.
+
+    The fact an *upper-bound* reading of ``leaf.peak`` needs, and not the same fact as "items have
+    started". Every item starts eventually, so a test that gates four items, waits for two to
+    arrive and then reads the peak reads it before the items a missing cap would have admitted
+    could have shown up — they are still inside their own bookkeeping, which is two threaded
+    fsynced writes of ``run.json`` per step. Measured on this harness a widened cap does let the
+    rest in, some 0.3s later, and every such reading is long finished by then.
+
+    A queue is the positive form of the same statement: while items are parked on the fan-out's
+    limiter, the ones holding its slots are all it will ever run at once, so the peak read here is
+    the fan-out's real ceiling. Widen the cap and nobody ever queues; drop it and no limiter is
+    built at all — either way this fails by name instead of passing quietly.
+
+    ``timeout`` is a loudness backstop, not a race: the queue forms as fast as the engine can
+    launch items, so 30s is two orders of magnitude of headroom, and it is here so that a queue
+    which will never form fails the test instead of hanging the suite.
+    """
+    try:
+        with anyio.fail_after(timeout):
+            while True:
+                if built:
+                    stats = built[0].statistics()
+                    if stats.tasks_waiting >= 1 and leaf.running >= stats.borrowed_tokens:
+                        return
+                await anyio.sleep(_POLL)
+    except TimeoutError:
+        stats = built[0].statistics() if built else None
+        seen = (
+            "the fan-out never built an item limiter at all"
+            if stats is None
+            else (
+                f"{stats.borrowed_tokens:g} of {stats.total_tokens:g} slot(s) taken, "
+                f"{stats.tasks_waiting} queued and {leaf.running} item(s) in a body"
+            )
+        )
+        raise AssertionError(
+            f"expected at least one item queued behind each.max_parallel within {timeout:g}s, "
+            f"with every slot of it held by an item in its body — saw {seen}"
+        ) from None
+
+
+async def test_each_max_parallel_and_on_failure(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Items run concurrently under ``each.max_parallel``, and ``on_failure: continue`` keeps a
+    failed item from failing the step.
+
+    The three items that do not fail are held in their bodies, so the cap is *binding* when the
+    peak is read: two of them hold its slots and the rest are queued behind them (see
+    :func:`wait_for_item_queue` for why the queue, and not the arrivals, is the fact). ``strict``
+    waits for ``fan`` rather than running beside it — its items are leaves too, and they would
+    add to a peak that is meant to describe the fan-out alone.
+    """
     harness.workflow(
         "t",
         wf("""
@@ -512,23 +642,40 @@ async def test_each_max_parallel_and_on_failure(harness: Harness) -> None:
     max_parallel: 2
     on_failure: continue
     steps:
-      - {id: w, shell: "{{ 'fail' if item == 2 else 'sleep:0.03' }}"}
+      - {id: w, shell: "{{ 'fail' if item == 2 else 'block:w' }}"}
   - id: strict
+    needs: [fan]
     each: "[1, 2]"
     steps:
       - {id: v, shell: "{{ 'fail' if item == 2 else 'ok' }}"}
 """),
     )
+    built: list[anyio.CapacityLimiter] = []
+    monkeypatch.setattr(each_executor, "anyio", WatchedAnyio(built))
     g = make_graph_harness(harness, harness.load("t"))
     real_leaf = g.leaf
-    out = await run_graph(g.graph, g.scope, g.ctx)
+    peak_while_the_cap_binds: list[int] = []
+
+    async def read_the_peak_once_the_cap_binds() -> None:
+        await wait_for_item_queue(built, real_leaf)
+        peak_while_the_cap_binds.append(real_leaf.peak)
+        real_leaf.releases["w"].set()  # ... and only now may the held items finish
+
+    out: dict[str, StepOutcome] = {}
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(read_the_peak_once_the_cap_binds)
+        out = await run_graph(g.graph, g.scope, g.ctx)
     fan = out["fan"].record
     assert fan.status is StepStatus.SUCCEEDED
     assert out["fan"].output == [{"w": "w"}, None, {"w": "w"}, {"w": "w"}]
     assert fan.each and (fan.each.total, fan.each.succeeded, fan.each.failed) == (4, 3, 1)
     assert out["fan"].items is not None and out["fan"].items[1]["status"] == "failed"
     assert "exit code 1" in out["fan"].items[1]["error"]
-    assert real_leaf.peak == 2  # items run concurrently, bounded by each.max_parallel
+    # items run concurrently, bounded by each.max_parallel — read with both of its slots held by
+    # items in their bodies and a further item queued for one, so a cap that admitted more would
+    # have had those in their bodies by then too
+    assert peak_while_the_cap_binds == [2]
+    assert real_leaf.peak == 2  # and releasing the held items does not widen it either
     strict = out["strict"].record
     assert strict.status is StepStatus.FAILED and strict.error and "1 of 2" in strict.error.message
 

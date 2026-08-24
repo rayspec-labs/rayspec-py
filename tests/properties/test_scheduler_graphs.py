@@ -29,11 +29,17 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import TypeVar
 
 import anyio
 import pytest
+from anyio import to_thread
 
+# ``GraphHarness`` is a type, not a fixture: it comes straight from the engine harness that
+# ``tests/properties/conftest.py`` re-exports the fixtures of, so the two cannot drift apart.
+from engine.conftest import GraphHarness
 from rayspec.engine.context import RunOptions
 from rayspec.engine.errors import RunStopped
 from rayspec.engine.scheduler import run_graph
@@ -41,9 +47,11 @@ from rayspec.schema import StepStatus
 from rayspec.store.model import StepRecord
 
 from .conftest import Harness, make_graph_harness
-from .generate import DEFAULT_CASES, aforall, raises, shrink_seq
+from .generate import DEFAULT_CASES, Raised, aforall, raises, shrink_seq
 
 pytestmark = pytest.mark.anyio
+
+T = TypeVar("T")
 
 #: Statuses a step can only have because it was actually dispatched.
 RAN = frozenset({StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.INTERRUPTED})
@@ -51,9 +59,20 @@ RAN = frozenset({StepStatus.SUCCEEDED, StepStatus.FAILED, StepStatus.INTERRUPTED
 FAILED_STATUSES = frozenset({StepStatus.FAILED, StepStatus.INTERRUPTED, StepStatus.REJECTED})
 #: ``skip_reason`` values that mean "the graph ended", not "this step's needs decided it".
 DRAIN_REASONS = frozenset({"run_failed", "stopped"})
-#: Leaf bodies the fake executor understands; the sleeps put siblings in flight concurrently,
-#: which is the only state in which a teardown has anything to tear down.
-BODIES = ("ok", "ok", "fail", "sleep:0.01", "sleep:0.05")
+#: The marker :func:`gen_steps` expands to ``block:<the step's own id>`` — see :data:`BODIES`.
+GATE = "block"
+#: Leaf bodies the fake executor understands. Two of the five are GATES: a ``block:<id>`` step
+#: enters its body and stays there until the test releases it, which is what puts siblings in
+#: flight concurrently — the only state in which a teardown has anything to tear down.
+#:
+#: The gates replaced the two sleeps this list used to carry. A sleep only *guesses* at that
+#: state, and it guessed against the engine's own per-step bookkeeping: two ``anyio.to_thread``
+#: writes of ``run.json``, each a temp file, an fsync and a rename, of the same order as the
+#: sleeps themselves. Whether a sibling was still running when the teardown began was therefore
+#: the machine's business rather than the test's, and ``seen["interrupted"]`` — the count that
+#: says this property looked at a teardown with something to tear down — moved from run to run.
+#: A gate makes it a fact: the step is in its body until :func:`run_case` says otherwise.
+BODIES = ("ok", "ok", "fail", GATE, GATE)
 #: The four failure policies a generated case is run under.
 MODES = ("drain", "fail_fast", "continue", "stop")
 #: Generated cases per property and mode — a quarter of the usual count, because every case
@@ -169,6 +188,24 @@ def by_id(steps: tuple[Gen, ...]) -> dict[str, Gen]:
     return {step.id: step for step in walk(steps)}
 
 
+def gate_of(step: Gen) -> str | None:
+    """The gate a leaf's body parks on (``block:<id>`` → ``<id>``), or ``None`` for a body that
+    runs straight through."""
+    if step.kind == "leaf" and step.body.startswith(f"{GATE}:"):
+        return step.body.split(":", 1)[1]
+    return None
+
+
+def gates_of(steps: tuple[Gen, ...]) -> frozenset[str]:
+    """Every gate name in a sibling list, composites' bodies included.
+
+    The name is the step's own id, so the gate a running step is parked on is the last segment
+    of its record path — ``s1[0]/s4`` is parked on ``s4``. Ids are unique across a whole case,
+    which is what makes that reading unambiguous.
+    """
+    return frozenset(name for step in walk(steps) if (name := gate_of(step)) is not None)
+
+
 def owner_of(case: Case, path: str) -> Gen | None:
     """The generated step a record path names: ``s1[0]/s4`` → ``s4``, ``s3[2]`` → ``s3``.
 
@@ -207,13 +244,14 @@ def gen_steps(rng: random.Random, counter: list[int], *, depth: int, size: int) 
             if kind in {"loop", "each", "include"}
             else ()
         )
+        body = rng.choice(BODIES)
         steps.append(
             Gen(
                 id=sid,
                 kind=kind,
                 needs=needs,
                 join=rng.choice(["all", "any", "any", "always"]) if needs else "all",
-                body=rng.choice(BODIES),
+                body=f"{GATE}:{sid}" if body == GATE else body,
                 allow_failure=rng.random() < 0.15,
                 when_false=rng.random() < 0.2,
                 children=children,
@@ -260,6 +298,46 @@ def mixed_join_row_case(mode: str) -> Case:
             Gen(id="mix_any", kind="leaf", needs=("mix_skipped", "mix_ok"), join="any"),
         ),
     )
+
+
+def torn_down_cases(mode: str) -> tuple[Case, Case]:
+    """The two shapes in which a teardown has something to tear down — written down, not hoped for.
+
+    ``seen["interrupted"]`` is the count that says this property looked at a teardown with a step
+    still inside it, and :func:`gen_steps` reaches that shape only when the seed is kind. A
+    generated root list has one to three entry points and everything else hangs off them, so by
+    the time the step that fails gets to fail it is usually the only thing the graph had left to
+    do. Measured over the fifteen drawn cases of a ``fail_fast`` run: one of them. A guard resting
+    on that passes for the same reason the row it guards is missing.
+
+    So both shapes are stated. ``held`` parks in its body and only the teardown ends it — in the
+    first case the trip is ready alongside it, in the second it is a stage further on, which is
+    the shape a failure deep in a graph and a cleanup at its root have. Under ``drain`` and
+    ``continue`` nothing cancels: ``held`` is then let go once the graph has nothing else to do,
+    which is the drain those modes' own half of the invariant is about.
+
+    The trip itself is whatever tears a list down in this mode — a ``stop:`` under ``stop``, an
+    untolerated failure under the other three.
+    """
+
+    def trip(step_id: str, needs: tuple[str, ...] = ()) -> Gen:
+        if mode == "stop":
+            return Gen(id=step_id, kind="stop", needs=needs)
+        return Gen(id=step_id, kind="leaf", body="fail", needs=needs)
+
+    together = Case(
+        mode=mode,
+        steps=(Gen(id="held", kind="leaf", body=f"{GATE}:held"), trip("trip")),
+    )
+    a_stage_apart = Case(
+        mode=mode,
+        steps=(
+            Gen(id="held_across", kind="leaf", body=f"{GATE}:held_across"),
+            Gen(id="first", kind="leaf", body="ok"),
+            trip("trip_across", needs=("first",)),
+        ),
+    )
+    return together, a_stage_apart
 
 
 def with_a_stop(rng: random.Random, steps: tuple[Gen, ...]) -> tuple[Gen, ...]:
@@ -528,23 +606,162 @@ def check_teardown(case: Case, records: dict[str, StepRecord], *, raised: bool) 
 
 
 # --------------------------------------------------------------------------------------------------
+# the gate keeper: who opens a ``block:`` body, and when
+# --------------------------------------------------------------------------------------------------
+
+
+#: How often the keeper looks at the run, and how many turns of the event loop it then gives the
+#: engine to prove it is still going. Neither is a margin an assertion rests on: a graph that is
+#: getting somewhere moves :func:`pulse` between any two looks however they are spaced, and one
+#: that is parked on a gate moves nothing however long anybody waits. They only decide how
+#: promptly a stalled graph is let go, and how much the keeper costs while it watches.
+GATE_LOOK_S = 0.005
+GATE_LOOP_TURNS = 6
+
+
+def pulse(harness: Harness, g: GraphHarness) -> tuple[int, int, int, int]:
+    """Everything about a run that moves while the graph is getting somewhere.
+
+    Leaves entering and leaving their bodies, the events the engine emitted, and whether a worker
+    thread is busy — ``run.json`` is written through ``anyio.to_thread``, so a step in the middle
+    of its own bookkeeping shows in none of the first three and plainly in the fourth. That last
+    term is the one that earns its place: the instant a failing step's record lands is also the
+    instant before its outcome reaches the scheduler, and without the thread reading that instant
+    looks exactly like a graph with nothing left to do — the one moment the keeper must not open
+    anything.
+
+    A graph parked on a gate moves none of the four, ever, which is what makes "these stopped
+    changing" a state the keeper reads rather than a duration it guesses.
+    """
+    return (
+        len(g.leaf.started),
+        len(g.leaf.finished),
+        len(harness.sink.events),
+        to_thread.current_default_thread_limiter().statistics().borrowed_tokens,
+    )
+
+
+def held_gates(g: GraphHarness, gates: frozenset[str], opened: set[str]) -> set[str]:
+    """The gates a step is parked on right now and nobody has opened yet.
+
+    A leaf is in flight between its entry in ``started`` and its entry in ``finished``, and the
+    gate it is parked on is the last segment of its path (see :func:`gates_of`).
+    """
+    in_flight = set(g.leaf.started) - set(g.leaf.finished)
+    return {path.rsplit("/", 1)[-1] for path in in_flight} & (gates - opened)
+
+
+async def still_parked(harness: Harness, g: GraphHarness, seen: tuple[int, int, int, int]) -> bool:
+    """Whether the run is still exactly where ``seen`` left it after the loop has been round.
+
+    ``anyio.sleep(0)`` hands the event loop to every task that can run, so a step whose outcome
+    was already in the scheduler's stream when the keeper looked gets delivered, acted on and
+    recorded inside these turns. What survives them is a graph with nobody left to run.
+    """
+    for _ in range(GATE_LOOP_TURNS):
+        await anyio.sleep(0)
+        if pulse(harness, g) != seen:
+            return False
+    return True
+
+
+async def keep_the_gates(harness: Harness, g: GraphHarness, gates: frozenset[str]) -> None:
+    """Hold every ``block:`` step in its body until the graph cannot get past it, then let it go.
+
+    This is the half of the gate that keeps a generated case from hanging, and the generator can
+    put one anywhere: on a step the rest of the graph needs, on all four ``max_parallel`` slots at
+    once, on a ``join: always`` cleanup that the WIND-DOWN launches after the teardown has already
+    torn the task group down. So the rule is not "open after a while" but "open once the graph has
+    stopped moving", which :func:`pulse` states exactly — and a graph parked on a gate has stopped
+    moving for good, so the opening always comes.
+
+    Opening late is the point and costs nothing: while a gate is held the graph either has other
+    work, in which case it does it and says so, or it has not, in which case the next look says
+    that. Opening EARLY is what would cost something — a step let go before a sibling failed or a
+    ``stop:`` fired is a step the teardown no longer has anything to tear down — which is why a
+    look that finds nothing moving is confirmed against the loop itself before it is believed.
+
+    Only the gates parked right now are opened; the ones a later stage will reach stay shut, so a
+    run's second and third teardown find as much in flight as its first.
+    """
+    opened: set[str] = set()
+    last = pulse(harness, g)
+    while True:
+        await anyio.sleep(GATE_LOOK_S)
+        now = pulse(harness, g)
+        held = held_gates(g, gates, opened)
+        if held and now == last and now[3] == 0 and await still_parked(harness, g, now):
+            for name in held:
+                g.leaf.releases[name].set()
+            opened |= held
+        last = pulse(harness, g)
+
+
+async def under_the_keeper(
+    harness: Harness, g: GraphHarness, gates: frozenset[str], body: Callable[[], Awaitable[T]]
+) -> T:
+    """Await ``body`` with :func:`keep_the_gates` alongside it, and open every gate on the way out.
+
+    The unconditional opening at the end is what makes a gate safe to generate at all: a signal
+    that bubbled, an assertion that failed and the 30s backstop all leave through here, and none
+    of them may leave a step parked in a body — a property multiplies one hung case by every case
+    the shrinker then tries.
+
+    The one thing standing between the body and the driver is the task group, and a task group
+    wraps whatever the body raised in an ``ExceptionGroup``. The driver reports the exception it
+    caught, so wrapping would replace every falsified case's message with "unhandled errors in a
+    TaskGroup (1 sub-exception)" — measured against a change that made a ``stop:`` outrank the
+    pause, which this file's own report then said nothing about. A lone sub-exception is
+    therefore handed on as itself. ``ExceptionGroup`` and not ``BaseExceptionGroup``: a group
+    that carries a cancellation belongs to the scope that raised it and must leave as it came.
+    """
+    try:
+        try:
+            with anyio.fail_after(30):
+                async with anyio.create_task_group() as tg:
+                    if gates:
+                        tg.start_soon(keep_the_gates, harness, g, gates)
+                    result = await body()
+                    tg.cancel_scope.cancel()  # the run is over; nothing left to keep
+                    return result
+            # a cancel scope may swallow what happened inside it; this one has nothing to
+            # swallow — the body either returned above or the backstop raised
+            raise AssertionError("the 30s backstop ended the run without saying so")
+        except ExceptionGroup as group:
+            if len(group.exceptions) != 1:
+                raise
+            raise group.exceptions[0] from None
+    finally:
+        for name in gates:
+            g.leaf.releases[name].set()
+
+
+# --------------------------------------------------------------------------------------------------
 # the properties
 # --------------------------------------------------------------------------------------------------
 
 
 async def run_case(harness: Harness, case: Case) -> tuple[dict[str, StepRecord], bool]:
-    """Write the generated project, run the root graph, return its records and whether it stopped."""
+    """Write the generated project, run the root graph, return its records and whether it stopped.
+
+    The graph runs :func:`under_the_keeper`, which is what makes a ``block:`` body safe to
+    generate: every gate is opened once the graph has nothing else to do, and again —
+    unconditionally, on every way out — when the run is over.
+    """
     for name, text in case.includes().items():
         harness.workflow(name, text)
     harness.workflow("t", case.workflow_yaml())
     options = RunOptions(fail_fast=case.mode == "fail_fast")
     g = make_graph_harness(harness, harness.load("t"), options=options)
-    raised = False
-    with anyio.fail_after(30):
+
+    async def run() -> bool:
         try:
             await run_graph(g.graph, g.scope, g.ctx)
         except RunStopped:
-            raised = True
+            return True
+        return False
+
+    raised = await under_the_keeper(harness, g, gates_of(case.steps), run)
     started = list(g.leaf.started)
     records = harness.record(g.run.run_id).steps
     for step in walk(case.steps):
@@ -624,13 +841,24 @@ async def test_teardown_discipline(harness: Harness, mode: str) -> None:
             seen[f"depth:{path.count('/')}"] += 1
 
     await aforall(
-        f"teardown-{mode}", case_for(mode), prop, cases=CASES, shrink=shrink_case, show=str
+        f"teardown-{mode}",
+        case_for(mode),
+        prop,
+        cases=CASES,
+        shrink=shrink_case,
+        show=str,
+        examples=torn_down_cases(mode),
     )
     assert seen["depth:2"] > 0, f"nothing two levels down was ever recorded: {seen}"
     if mode == "stop":
         assert seen["stopped"] > 0, "no generated stop: step ever fired"
     if mode in {"stop", "fail_fast"}:
-        assert seen["interrupted"] > 0, "nothing was ever in flight when the teardown began"
+        assert seen["interrupted"] > 0, (
+            f"nothing was ever in flight when the teardown began: no block: step was still parked "
+            f"in its body when a stop: fired or a failure tore its list down ({seen}). "
+            f"torn_down_cases() is passed as an example so this cannot depend on the seed; "
+            f"if it fails, those cases stopped reaching the shape"
+        )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -726,9 +954,17 @@ async def test_a_gate_that_pauses_ends_the_wind_down(harness: Harness) -> None:
             harness.workflow(name, text)
         harness.workflow("t", case.workflow_yaml())
         g = make_graph_harness(harness, harness.load("t"), options=RunOptions(interactive=False))
-        with anyio.fail_after(30):
-            with raises(RunPaused) as info:
+
+        async def run() -> Raised[RunPaused]:
+            with raises(RunPaused) as caught:
                 await run_graph(g.graph, g.scope, g.ctx)
+            return caught
+
+        # the surroundings hold ``block:`` steps too, and the wind-down launches the ``join:
+        # always`` ones among them AFTER the stop tore the task group down — a gate reached there
+        # is one nothing else will ever open
+        gates = gates_of((*case.before, *case.tail))
+        info = await under_the_keeper(harness, g, gates, run)
         records = harness.record(g.run.run_id).steps
         assert info.value.token.startswith("gate"), info.value.token
         assert records["gate"].status is StepStatus.PAUSED, records["gate"]

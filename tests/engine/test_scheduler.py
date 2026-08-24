@@ -12,7 +12,7 @@ from rayspec.engine.scheduler import run_graph
 from rayspec.events.model import EventType
 from rayspec.schema import StepStatus
 
-from .conftest import Harness, make_graph_harness
+from .conftest import Harness, make_graph_harness, wait_for_slot_queue
 
 pytestmark = pytest.mark.anyio
 
@@ -46,28 +46,48 @@ async def test_linear_order(harness: Harness) -> None:
 
 
 async def test_diamond_runs_middle_in_parallel(harness: Harness) -> None:
+    """``b`` and ``c`` really are in flight together, not merely quick enough to look like it."""
     harness.workflow(
         "t",
         wf("""
   - {id: a, shell: ok}
-  - {id: b, needs: [a], shell: "sleep:0.05"}
-  - {id: c, needs: [a], shell: "sleep:0.05"}
+  - {id: b, needs: [a], shell: "block:b"}
+  - {id: c, needs: [a], shell: "block:c"}
   - {id: d, needs: [b, c], shell: ok}
 """),
     )
     g = make_graph_harness(harness, harness.load("t"))
-    await run_graph(g.graph, g.scope, g.ctx)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_graph, g.graph, g.scope, g.ctx)
+        # The wait IS the assertion. Both middles are held inside their bodies, so neither can
+        # finish and make room for the other: an engine that ran the diamond one branch at a
+        # time never gets the second one here, and the wait fails naming the step that is missing.
+        await g.leaf.wait_started("b", "c")
+        assert g.leaf.peak == 2
+        g.leaf.releases["b"].set()
+        g.leaf.releases["c"].set()
+    # ``a`` first and ``d`` last are the DAG's doing and hold whatever the machine is busy with;
+    # which of ``b``/``c`` the scheduler reaches first is nobody's business, hence the set.
     assert g.leaf.started[0] == "a" and g.leaf.started[-1] == "d"
     assert set(g.leaf.started[1:3]) == {"b", "c"}
     assert g.leaf.peak == 2
 
 
 async def test_max_parallel_limit_respected(harness: Harness) -> None:
-    steps = "\n".join(f'  - {{id: s{i}, shell: "sleep:0.03"}}' for i in range(6))
+    """Six ready steps under ``max_parallel: 2``: two run, the other four wait for a slot."""
+    steps = "\n".join(f'  - {{id: s{i}, shell: "block:hold"}}' for i in range(6))
     harness.workflow("t", wf(steps, max_parallel=2))
     g = make_graph_harness(harness, harness.load("t"))
-    await run_graph(g.graph, g.scope, g.ctx)
-    assert g.leaf.peak == 2
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_graph, g.graph, g.scope, g.ctx)
+        # Not "all six have started": that is true with no cap at all — only later — so a test
+        # that waits for arrivals and then reads ``peak`` passes with the limiter widened. Four
+        # leaves QUEUED on the limiter is the fact an upper bound needs: everything the engine
+        # is going to launch is launched, and the two holding slots are all it will run at once.
+        await wait_for_slot_queue(g.ctx, 4)
+        assert g.leaf.peak == 2
+        g.leaf.releases["hold"].set()
+    assert g.leaf.peak == 2  # …and it stayed the ceiling while the queue drained
     assert len(g.leaf.finished) == 6
 
 

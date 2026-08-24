@@ -11,6 +11,7 @@ import ast
 import inspect
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -225,6 +226,23 @@ class FakeQuery:
             self.finalised = True
             exc = sys.exc_info()[1]
             self.exit_exc = type(exc).__name__ if exc is not None else None
+
+
+class _FrozenMonotonic:
+    """Stands in for the adapter module's ``time``: ``monotonic()`` walks the given readings.
+
+    Only ``rayspec.providers.claude``'s view of ``time`` is replaced — the event loop keeps the
+    real clock — so the turn's measured duration is exactly ``readings[1] - readings[0]``.
+    """
+
+    def __init__(self, *readings: float) -> None:
+        self._readings = iter(readings)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+    def monotonic(self) -> float:
+        return next(self._readings)
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, fake: FakeQuery) -> FakeQuery:
@@ -630,7 +648,6 @@ async def test_happy_path_events_and_result(tmp_path: Path, monkeypatch):
     assert result.usage.output == 20
     assert result.model == "claude-sonnet-4-5"  # from init / assistant (no model_usage)
     assert result.error is None
-    assert result.duration_ms >= 0
     assert result.raw["subtype"] == "success"
     assert col.kinds() == ["session", "text_delta", "text_delta"]
     session = col.of("session")[0]
@@ -639,6 +656,17 @@ async def test_happy_path_events_and_result(tmp_path: Path, monkeypatch):
     assert session.data["tools"] == ["Read", "Glob", "Grep"]
     assert "".join(e.text for e in col.of("text_delta")) == "Hello"
     assert all(e.ts > 0 for e in col.events)
+
+
+async def test_duration_ms_is_the_adapter_s_own_measurement(tmp_path: Path, monkeypatch):
+    """``duration_ms`` is wall time around the turn — pinned exactly, with the clock injected.
+
+    A frozen clock is the whole point: ``>= 0`` is true of every implementation, including one
+    that stops measuring, so only a fixed number can catch a regression.
+    """
+    monkeypatch.setattr(claude_mod, "time", _FrozenMonotonic(100.0, 100.25))
+    result, _col, _fake = await _run(monkeypatch, _req(tmp_path), HAPPY)
+    assert result.duration_ms == 250
 
 
 async def test_text_block_emitted_when_no_deltas_streamed(tmp_path: Path, monkeypatch):
@@ -1067,14 +1095,26 @@ async def test_external_cancellation_propagates_and_closes_generator(tmp_path: P
     _install(monkeypatch, fake)
     provider = ClaudeProvider({})
     outcome: dict[str, Any] = {}
+    streaming = anyio.Event()
+
+    class Gate(Collector):
+        """Reports the state the test means: the generator is entered and yielding."""
+
+        async def __call__(self, event: AgentEvent) -> None:
+            await super().__call__(event)
+            if event.kind == "text_delta":
+                streaming.set()
 
     async def runner() -> None:
-        outcome["result"] = await provider.run(_req(tmp_path, timeout_s=None), Collector())
+        outcome["result"] = await provider.run(_req(tmp_path, timeout_s=None), Gate())
 
     with anyio.fail_after(5):
         async with anyio.create_task_group() as tg:
             tg.start_soon(runner)
-            await anyio.sleep(0.05)
+            # cancel on evidence, not on elapsed time: a cancel that lands before the generator
+            # body is entered never runs its ``finally``, and the assertions below would be
+            # measuring how fast this machine is rather than what the adapter does.
+            await streaming.wait()
             tg.cancel_scope.cancel()
     assert "result" not in outcome  # no AgentResult synthesised on engine cancellation
     assert fake.finalised

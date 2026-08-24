@@ -26,6 +26,7 @@ import pytest
 from rayspec.engine.graph import JoinDecision
 from rayspec.schema import StepStatus
 
+from .mutation import mutate as mutate_module
 from .mutation.mutate import (
     MUTANT_STRING,
     OPERATORS,
@@ -280,12 +281,42 @@ def test_a_run_that_measured_nothing_exits_non_zero() -> None:
     )
 
 
-def test_a_run_with_no_mutants_to_evaluate_exits_non_zero_and_leaves_nothing_behind() -> None:
+def test_a_run_with_no_mutants_to_evaluate_exits_non_zero_and_leaves_nothing_behind(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """End to end, because the exit code has to reach the process and not just the function.
 
-    ``--limit 0`` is the cheapest way to reach "no verdicts"; a skipped null mutant is the way
-    that happens in real life, and both take the same route out.
+    ``--limit 0`` is the cheapest way to reach "no verdicts". The null-mutant check is stubbed
+    passing so this stays a test of ``run_target``'s truncation rather than a nested pytest run
+    against a deadline: unstubbed it costs half a minute, and if that run overruns the target is
+    *skipped* instead — the same exit code by a route that never enters ``run_target`` at all.
+    The output assertions below name the route so that swap reddens rather than passes quietly.
     """
+    monkeypatch.setattr(mutate_module, "_check_null_mutant", lambda *a, **k: ("passed", ""))
     before = set(REPO.iterdir())
     assert main(["--target", "approval_classes", "--limit", "0", "--no-confirm"]) == 1
     assert set(REPO.iterdir()) == before, "the harness left something in the working tree"
+    out = capsys.readouterr().out
+    assert "== approval_classes: 0 mutant(s)" in out
+    assert "skipping it" not in out
+
+
+def test_a_target_whose_null_mutant_fails_is_skipped_and_still_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other way a target produces no verdict: its null mutant never came back clean.
+
+    Stubbed rather than provoked, because provoking it means waiting out a real timeout.
+    """
+
+    def triaged(*args: object, **kwargs: object) -> list[Result]:
+        raise AssertionError("a target whose null mutant failed must not be triaged")
+
+    monkeypatch.setattr(
+        mutate_module, "_check_null_mutant", lambda *a, **k: ("timeout", "no verdict within 1s")
+    )
+    monkeypatch.setattr(mutate_module, "run_target", triaged)
+    before = set(REPO.iterdir())
+    assert main(["--target", "approval_classes", "--no-confirm"]) == 1
+    assert set(REPO.iterdir()) == before, "the harness left something in the working tree"
+    assert "skipping it" in capsys.readouterr().out
