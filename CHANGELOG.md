@@ -5,6 +5,65 @@ All notable changes to rayspec are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-08-24
+
+Nothing runs differently after installing this. Four sentences in the documentation described a
+rayspec that does not exist, and three of them ship **inside the wheel**: the packaged skills are
+near-verbatim copies of `docs/`, so a wrong line there is not read by a person deciding what to
+write — it is read by the agent doing the writing. A docs-site fix reaches readers on the next
+deploy; only a release replaces the copy an installed skill hands to a coding agent.
+
+1.0.2 existed to correct a claim 1.0.1 made about itself. This is that job done on the claims the
+documentation makes loudest. Every fix that would have changed behaviour was held back, and each
+one is named under *Not in this release* below.
+
+### Fixed
+- **The shell-startup-file check named three files that cannot catch it.** After running an
+  unfamiliar workflow, the identity section offered `grep RAYSPEC_ACTOR ~/.zshrc ~/.bashrc
+  ~/.profile` as the quick check. A step that appends the export to `~/.zshenv` instead is missed
+  by all three — and `~/.zshenv` is not merely a fourth file, it is the strongest place to put it:
+  zsh reads it on *every* invocation, so the value is exported into a non-interactive `zsh -c` in
+  a script or a cron job, not only into your next interactive shell. `~/.zprofile` and
+  `~/.bash_profile` were missed too, and those are what a login shell reads — a new terminal
+  window on macOS. The check now names the files a shell actually reads, bash and fish included,
+  and says out loud that it is a spot check rather than a complete list: a startup file can source
+  another file, and a check trusted at the moment it is wrong is worse than no check. `rayspec
+  audit <run> --commands` is named alongside it as the check that does not depend on guessing the
+  list right. What surrounds it is unchanged and was already true — rayspec never reads any of
+  these files, and no running process is poisoned by one.
+- **`timeout` was documented as valid on every kind, and `defaults.timeout` as a cap on every
+  step.** Neither is true of `approve:` or `stop:`. Writing `timeout:` on either is refused when
+  the workflow loads — it has been since 1.0.0 — and a gate is not bounded by `defaults.timeout`.
+  Nor by `defaults.timeout_total`: that cap is measured when the scheduler decides what to do
+  next, and a blocking gate is not one of those moments. A gate waits for a person for as long as
+  that takes; `--no-interactive` is how you get "do not wait", and the run pauses there instead.
+  The `approve:` section now says so. The packaged authoring skill carried both false lines in its
+  reference while its own `SKILL.md` stated the rule correctly three screens away, so an agent
+  reading the reference was being taught to write YAML that hard-errors at load.
+- **`ts` in `--json` output is not always microseconds.** It is ISO-8601 UTC ending in `Z`, with
+  microseconds except when the microsecond component is exactly zero — a timestamp on the whole
+  second renders `2026-08-20T13:26:44Z`, with no fractional part. A consumer parsing with a fixed
+  `%Y-%m-%dT%H:%M:%S.%fZ` breaks on it, roughly one event in a million: often enough to happen to
+  somebody, rare enough that they will never reproduce it. Parse it with something that accepts
+  both, such as `datetime.fromisoformat`.
+- **`docs/policy.md` described wiring the workspace change guard as one call.** It is not.
+  Enforcing it means deciding what a run with `isolation: none` is measured against — it has no
+  base commit — and whether `shell:` and `python:` steps count towards a limit. Those are
+  questions to answer, not a line to add, and the sentence was a claim a reader plans against. The
+  warning that opens that section is unchanged and remains accurate: `workspace:` is a recorded
+  intention, and `rayspec validate` says so on every run that sets one.
+
+### Not in this release
+Four behaviour changes were considered for it and each would break a workflow that succeeds on
+1.0.2, or add a surface a patch release has no business adding. Making `defaults.timeout` bound a
+gate would end runs at the most expensive possible moment — after the upstream work is done and
+paid for, as a person reaches for the keyboard. Accepting `timeout:` on `approve:` would give that
+key a meaning it has nowhere else in the grammar. Enforcing the workspace guard would fail runs
+whose limits they already exceed, and the case of a workflow that installs dependencies inside its
+own worktree needs an escape hatch that does not exist yet. A `rayspec doctor` row for poisoned
+startup files would warn on every machine that legitimately exports `RAYSPEC_ACTOR`, which the
+documentation recommends.
+
 ## [1.0.2] — 2026-08-23
 
 One fix, and the correction of a claim 1.0.1 made about it.
@@ -651,7 +710,8 @@ The workflow language, the scheduler, the two provider adapters and the command 
   **Two jobs have still never run: the PyPI upload and the release signing.** They fire only on a
   version tag, so this release is the first time they execute.
 
-[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/rayspec-labs/rayspec-py/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.3
 [1.0.2]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.2
 [1.0.1]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.1
 [1.0.0]: https://github.com/rayspec-labs/rayspec-py/releases/tag/v1.0.0
