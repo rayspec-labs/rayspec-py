@@ -402,7 +402,11 @@ async def _wait_for_turns(world: FakeWorld, count: int) -> None:
     """
     with anyio.fail_after(5):
         while len(world.turns) < count:
-            await anyio.sleep(0)
+            # a real yield, not ``sleep(0)``: this loop runs immediately before the tests count
+            # threads, and a bare ``sleep(0)`` reschedules at once and holds the GIL for the
+            # whole wait, starving the very workers the count is about. Measured: with
+            # ``sleep(0)`` the leak assertion below failed four runs in twenty-five.
+            await anyio.sleep(0.001)
 
 
 class _FrozenPerfCounter:
@@ -1178,8 +1182,15 @@ async def test_transport_closed_mid_stream_is_transient_provider_error(world: Fa
 # -- shielded consumer: timeout / cancel ---------------------------------------------------------
 
 
-async def _settle(baseline: int, *, timeout: float = 5.0) -> None:
-    """Wait until the thread count is back at ``baseline`` (blocked workers have returned)."""
+async def _settle(baseline: int, *, timeout: float = 30.0) -> None:
+    """Wait until the thread count is back at ``baseline`` (blocked workers have returned).
+
+    The budget is deliberately far larger than the wait it covers: a blocked worker returns after
+    the adapter's ``drain_s``, which is ``2.0`` in these tests, so the old ``5.0`` was two and a
+    half times the thing it was waiting for -- close enough that a busy machine decided the
+    outcome. This only ever costs time when a thread really does leak, which is the case worth
+    waiting for.
+    """
     with anyio.move_on_after(timeout):
         while threading.active_count() > baseline:
             await anyio.sleep(0.02)
