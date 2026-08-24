@@ -432,6 +432,7 @@ def test_doctor_probe_timeout_and_hung_aclose_are_bounded(
 
     class _Hanging:
         closed_started = False
+        closed_returned = False
 
         async def healthcheck(self, *, probe: bool = False) -> ProviderHealth:
             await anyio.sleep(60)
@@ -440,6 +441,7 @@ def test_doctor_probe_timeout_and_hung_aclose_are_bounded(
         async def aclose(self) -> None:
             _Hanging.closed_started = True
             await anyio.sleep(60)
+            _Hanging.closed_returned = True  # only reached when nothing cut the aclose off
 
     monkeypatch.setattr(doctor_mod, "create_provider", lambda pid, settings=None: _Hanging())
     monkeypatch.setattr(doctor_mod, "PROBE_TIMEOUT_S", 0.05)
@@ -448,7 +450,10 @@ def test_doctor_probe_timeout_and_hung_aclose_are_bounded(
     assert code == 1
     probe = _check(report, "claude.probe")
     assert probe["status"] == "fail" and "timed out" in probe["detail"], probe
-    assert _Hanging.closed_started
+    # the sentinel on the far side of the sleep is what pins CLOSE_TIMEOUT_S: `closed_started`
+    # alone is set on entry and would still be True with no bound at all (the report would just
+    # arrive 60 s later). The scope cancels the coroutine, so nothing can set it afterwards.
+    assert _Hanging.closed_started and not _Hanging.closed_returned
 
 
 def test_doctor_unknown_provider_is_a_usage_error(sdks: FakeSdks, project: Path) -> None:

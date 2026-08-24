@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import re
-import time
 
+import anyio
 import jsonschema
 import pytest
 
 from rayspec.errors import RayspecError
+from rayspec.providers import stub as stub_mod
 from rayspec.providers.base import (
     AgentEvent,
     AgentRequest,
@@ -37,6 +38,26 @@ class Collector:
 
 def _req(step_path: str = "review", prompt: str = "Review the code please", **kw) -> AgentRequest:
     return AgentRequest(step_path=step_path, prompt=prompt, cwd="/tmp", **kw)
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the durations the stub sleeps for, and return from each sleep at once.
+
+    Only the stub module's view of ``anyio`` is replaced, so the event loop keeps the real one.
+    Recording beats timing: the simulated latency is then asserted exactly, with no wall clock
+    in the test at all.
+    """
+    slept: list[float] = []
+
+    class _RecordingAnyio:
+        def __getattr__(self, name: str):
+            return getattr(anyio, name)
+
+        async def sleep(self, seconds: float) -> None:
+            slept.append(seconds)
+
+    monkeypatch.setattr(stub_mod, "anyio", _RecordingAnyio())
+    return slept
 
 
 # -- protocol / lifecycle ---------------------------------------------------------------------
@@ -287,18 +308,23 @@ async def test_usage_scripted_per_step_or_from_defaults():
     assert (await provider_run(provider, _req("b"))).usage == Usage(input=100, output=50)
 
 
-async def test_latency_and_timeout_simulation():
+async def test_latency_and_timeout_simulation(monkeypatch: pytest.MonkeyPatch):
     provider = StubProvider(
         script={"steps": {"slow": {"text": "ok", "latency_ms": 5}}, "defaults": {"latency_ms": 1}}
     )
+    slept = _record_sleeps(monkeypatch)
     r = await provider_run(provider, _req("slow"))
-    assert r.status == "success" and r.duration_ms >= 0
+    assert r.status == "success"
+    assert slept == [0.005]  # the scripted latency is actually awaited, not just parsed
+    slept.clear()
     r2 = await provider_run(provider, _req("slow", timeout_s=0.001))
     assert r2.status == "timeout"
     assert r2.error is not None and r2.error.kind == "timeout"
     # default latency applies to unscripted steps too; a generous timeout passes
+    slept.clear()
     r3 = await provider_run(provider, _req("fast", timeout_s=5))
     assert r3.status == "success"
+    assert slept == [0.001]  # defaults.latency_ms, not the 5 ms scripted on "slow"
 
 
 async def test_scripted_status_override_and_model_passthrough():
@@ -498,13 +524,15 @@ async def test_healthcheck_reports_no_sdk_version():
     assert any("rayspec" in d for d in health.details)
 
 
-async def test_timeout_simulation_returns_before_the_engine_deadline():
+async def test_timeout_simulation_returns_before_the_engine_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """The scripted ``timeout`` result must be observable under ``anyio.fail_after(timeout_s)``."""
-    import anyio
-
     provider = StubProvider(script={"steps": {"slow": {"text": "ok", "latency_ms": 5000}}})
-    started = time.perf_counter()
-    with anyio.fail_after(0.2):
-        r = await provider_run(provider, _req("slow", timeout_s=0.2))
+    slept = _record_sleeps(monkeypatch)
+    r = await provider_run(provider, _req("slow", timeout_s=0.2))
     assert r.status == "timeout" and r.error is not None and r.error.kind == "timeout"
-    assert time.perf_counter() - started < 0.2
+    # "before the deadline" is the contract: the simulated provider-side delay must be strictly
+    # shorter than the engine's own fail_after(timeout_s), or the timeout status is unobservable.
+    assert slept == [0.1]
+    assert slept[0] < 0.2

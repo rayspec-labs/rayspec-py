@@ -145,15 +145,20 @@ def test_blocking_acquire_waits(home: Path) -> None:
     first = PathLock(home, "local/x-1", workdir, run_id="run-1")
     second = PathLock(home, "local/x-1", workdir, run_id="run-2")
     first.acquire()
-    done = threading.Event()
+    entering, done = threading.Event(), threading.Event()
 
     def waiter() -> None:
+        entering.set()
         second.acquire(blocking=True)
         done.set()
 
     t = threading.Thread(target=waiter, daemon=True)
     t.start()
-    time.sleep(0.1)
+    assert entering.wait(timeout=5), "the waiter thread never started"
+    # The handshake takes thread-start latency out of the budget, so the sleep below only has to
+    # cover the handful of instructions and two syscalls between `entering.set()` and the flock
+    # itself. `done` can be set inside it only if the blocking branch returned without the lock.
+    time.sleep(0.05)
     assert not done.is_set()
     first.release()
     assert done.wait(timeout=5)

@@ -7,7 +7,9 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -22,15 +24,43 @@ from .conftest import Seeded
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX process tables")
 
-#: A fake "rayspec run live" process that records a SIGINT by exiting 0 (a SIGINT that is NOT
-#: handled would end it with 130 / -2); ``sleep 60`` otherwise.
-SIGINT_RECORDER = [
-    sys.executable,
-    "-c",
-    "import signal, sys, time\n"
-    "signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n"
-    "time.sleep(60)  # rayspec run live",
-]
+
+def _sigint_recorder(marker: Path) -> list[str]:
+    """A fake "rayspec run live" process that records a SIGINT by exiting 0 (a SIGINT that is
+    NOT handled would end it with 130 / -2); ``sleep 60`` otherwise.
+
+    ``marker`` is created in the statement right after the handler is installed, so its
+    existence means "armed" — see :func:`_armed`. It is the trailing positional so the command
+    line still reads ``… # rayspec run live <marker>`` and ``cancel``'s heuristic still matches
+    both ``rayspec run`` and the ``live`` workflow token.
+    """
+    return [
+        sys.executable,
+        "-c",
+        "import signal, sys, time\n"
+        "signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n"
+        "open(sys.argv[1], 'w').close()\n"
+        "time.sleep(60)  # rayspec run live",
+        str(marker),
+    ]
+
+
+def _armed(proc: subprocess.Popen[bytes], marker: Path) -> None:
+    """Block until ``proc`` has installed its SIGINT handler.
+
+    Between ``Popen`` returning and ``signal.signal`` running (~25 ms: a CPython boot) a SIGINT
+    kills the child with the default disposition, so an unsynchronised test would assert an exit
+    code of -2 and blame the product. The handshake removes the clock from the test entirely;
+    the deadline below is only a guard against a child that never starts, and it fails naming
+    the handshake rather than an exit code.
+    """
+    deadline = time.monotonic() + 30.0
+    while not marker.exists():
+        if proc.poll() is not None:
+            raise AssertionError(f"the recorder exited ({proc.returncode}) before arming")
+        if time.monotonic() > deadline:
+            raise AssertionError(f"the recorder never armed its SIGINT handler (no {marker})")
+        time.sleep(0.001)
 
 
 def _running(seeded: Seeded, run_id: str, pid: int, *, started_at: str | None) -> RunRecord:
@@ -51,10 +81,12 @@ def _running(seeded: Seeded, run_id: str, pid: int, *, started_at: str | None) -
     return run
 
 
-def test_cancel_refuses_when_the_start_time_differs(cli: CliRunner, seeded: Seeded) -> None:
+def test_cancel_refuses_when_the_start_time_differs(
+    cli: CliRunner, seeded: Seeded, tmp_path: Path
+) -> None:
     """A pid reused by another run of the SAME workflow passes the command-line heuristic but
     not the exact check: refused, nothing signalled, the --mark hint is printed."""
-    proc = subprocess.Popen(SIGINT_RECORDER)
+    proc = subprocess.Popen(_sigint_recorder(tmp_path / "stale.armed"))
     try:
         live = process_start_time(proc.pid)
         assert live is not None
@@ -79,12 +111,16 @@ def test_cancel_refuses_when_the_start_time_differs(cli: CliRunner, seeded: Seed
             proc.kill()
 
 
-def test_cancel_signals_when_the_start_time_matches(cli: CliRunner, seeded: Seeded) -> None:
-    proc = subprocess.Popen(SIGINT_RECORDER)
+def test_cancel_signals_when_the_start_time_matches(
+    cli: CliRunner, seeded: Seeded, tmp_path: Path
+) -> None:
+    marker = tmp_path / "match.armed"
+    proc = subprocess.Popen(_sigint_recorder(marker))
     try:
         live = process_start_time(proc.pid)
         assert live is not None
         run = _running(seeded, "20260820-160100-mtch", proc.pid, started_at=live)
+        _armed(proc, marker)  # the exit code below is only about the handler, not about timing
         result = cli.invoke(app, ["cancel", run.run_id, "--yes", "--root", str(seeded.project)])
         assert result.exit_code == 0, result.output
         assert "SIGINT" in result.output and str(proc.pid) in result.output
@@ -95,11 +131,12 @@ def test_cancel_signals_when_the_start_time_matches(cli: CliRunner, seeded: Seed
 
 
 def test_cancel_with_a_faked_ps_start_time(
-    cli: CliRunner, seeded: Seeded, monkeypatch: pytest.MonkeyPatch
+    cli: CliRunner, seeded: Seeded, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The live start time comes from one probe (``pid_start_time``); a different answer is a
     refusal even though the command line names the workflow."""
-    proc = subprocess.Popen(SIGINT_RECORDER)
+    marker = tmp_path / "fake.armed"
+    proc = subprocess.Popen(_sigint_recorder(marker))
     try:
         run = _running(seeded, "20260820-160200-fake", proc.pid, started_at="recorded")
         monkeypatch.setattr(common, "pid_start_time", lambda pid: "other")
@@ -110,6 +147,7 @@ def test_cancel_with_a_faked_ps_start_time(
         refused = cli.invoke(app, ["cancel", run.run_id, "--yes", "--root", str(seeded.project)])
         assert refused.exit_code == 2 and proc.poll() is None
         monkeypatch.setattr(common, "pid_start_time", lambda pid: "recorded")
+        _armed(proc, marker)
         ok = cli.invoke(app, ["cancel", run.run_id, "--yes", "--root", str(seeded.project)])
         assert ok.exit_code == 0, ok.output
         assert proc.wait(timeout=10) == 0
@@ -119,9 +157,10 @@ def test_cancel_with_a_faked_ps_start_time(
 
 
 def test_records_without_pid_started_at_fall_back_to_the_heuristic(
-    cli: CliRunner, seeded: Seeded
+    cli: CliRunner, seeded: Seeded, tmp_path: Path
 ) -> None:
-    rayspec_like = subprocess.Popen(SIGINT_RECORDER)
+    marker = tmp_path / "old1.armed"
+    rayspec_like = subprocess.Popen(_sigint_recorder(marker))
     sleeper = subprocess.Popen(["sleep", "60"])
     try:
         ok_run = _running(seeded, "20260820-160300-old1", rayspec_like.pid, started_at=None)
@@ -131,6 +170,7 @@ def test_records_without_pid_started_at_fall_back_to_the_heuristic(
         )
         assert refused.exit_code == 2 and "not a rayspec run process" in refused.output
         assert sleeper.poll() is None
+        _armed(rayspec_like, marker)  # `sleeper` needs none: it is only ever asserted alive
         ok = cli.invoke(app, ["cancel", ok_run.run_id, "--yes", "--root", str(seeded.project)])
         assert ok.exit_code == 0, ok.output
         assert rayspec_like.wait(timeout=10) == 0

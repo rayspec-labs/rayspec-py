@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
@@ -390,6 +391,35 @@ class Collector:
 def _req(prompt: str = "Say hi", **kw: Any) -> AgentRequest:
     kw.setdefault("cwd", "/tmp/work")
     return AgentRequest(step_path="review", prompt=prompt, **kw)
+
+
+async def _wait_for_turns(world: FakeWorld, count: int) -> None:
+    """Block until ``count`` turns have been started.
+
+    The tests below act *while a turn is running*; that state has no awaitable to wait on, so it
+    is polled. Polling the state instead of sleeping a fixed amount removes the race entirely —
+    the ``fail_after`` is only here to turn a hang into a readable failure.
+    """
+    with anyio.fail_after(5):
+        while len(world.turns) < count:
+            await anyio.sleep(0)
+
+
+class _FrozenPerfCounter:
+    """Stands in for the adapter module's ``time``: ``perf_counter()`` walks the given readings.
+
+    Only ``rayspec.providers.codex``'s view of ``time`` is replaced — the event loop keeps the
+    real clock — so the turn's measured duration is exactly ``readings[1] - readings[0]``.
+    """
+
+    def __init__(self, *readings: float) -> None:
+        self._readings = iter(readings)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+    def perf_counter(self) -> float:
+        return next(self._readings)
 
 
 async def _open(settings: Mapping[str, Any] | None = None, **env: str) -> CodexProvider:
@@ -881,8 +911,21 @@ async def test_event_mapping_full_turn(world: FakeWorld):
     assert result.text == "Done."  # final_answer wins; commentary is not output
     assert result.usage == Usage(input=100, output=20)
     assert result.session_ref == "thr-1"
-    assert result.duration_ms >= 0
     assert result.raw["turn_id"] == "turn-1" and result.raw["turn_status"] == "completed"
+    await provider.aclose()
+
+
+async def test_duration_ms_is_the_adapter_s_own_measurement(world: FakeWorld, monkeypatch):
+    """``duration_ms`` is rayspec's wall time around the turn, not the SDK's reported figure.
+
+    Pinned exactly against an injected clock: ``>= 0`` holds for every implementation, including
+    one that stopped measuring, so only a fixed number can catch a regression. (The SDK's own
+    per-command figure is asserted separately, in the event-mapping test.)
+    """
+    monkeypatch.setattr(codex_mod, "time", _FrozenPerfCounter(100.0, 100.25))
+    provider = await _open()
+    result = await provider.run(_req(), Collector())
+    assert result.duration_ms == 250
     await provider.aclose()
 
 
@@ -1116,7 +1159,7 @@ async def test_transport_closed_mid_stream_is_transient_provider_error(world: Fa
     provider = await _open()
 
     async def kill_later() -> None:
-        await anyio.sleep(0.05)
+        await _wait_for_turns(world, 1)  # the stream exists: the failure really lands mid-stream
         world.turns[0].push(TransportClosedError("Codex process closed stdout"))
 
     errors: list[ProviderError] = []
@@ -1178,9 +1221,11 @@ async def test_external_cancellation_interrupts_and_reraises(world: FakeWorld):
     async def runner() -> None:
         results.append(await provider.run(_req(), Collector()))
 
-    with anyio.move_on_after(0.2) as scope:
+    with anyio.CancelScope() as scope:
         async with anyio.create_task_group() as tg:
             tg.start_soon(runner)
+            await _wait_for_turns(world, 2)  # the second turn is running: cancel mid-turn
+            scope.cancel()
     assert scope.cancelled_caught
     assert results == []  # cancellation propagated, no result was produced
     turn = world.turns[1]
@@ -1352,7 +1397,10 @@ async def test_thread_start_finishing_during_the_drain_interrupts_the_started_tu
 ):
     world.start_gate = queue.Queue()
     world.script_hang(prefix=lambda t, u: [turn_started(t, u)])
-    provider = await _open({"drain_s": 1.0})
+    # The gate is released 0.3 s in and the drain must still be open then. The drain closes at
+    # deadline + drain_s, so drain_s buys the slack directly; 5 s makes it ~17x the release,
+    # and it costs nothing, because the drain returns the moment the start lands.
+    provider = await _open({"drain_s": 5.0})
 
     async def release_later() -> None:
         await anyio.sleep(0.3)
@@ -1362,10 +1410,11 @@ async def test_thread_start_finishing_during_the_drain_interrupts_the_started_tu
     results: list[Any] = []
     async with anyio.create_task_group() as tg:
         tg.start_soon(release_later)
-        with anyio.fail_after(3):
+        with anyio.fail_after(30):  # a hang net, never a deadline the drain can reach
             results.append(await provider.run(_req(timeout_s=0.1), Collector()))
     result = results[0]
     assert result.status == "timeout"
+    assert world.turns, "the gate was released after the drain had already closed the client"
     turn = world.turns[0]
     assert turn.interrupt_calls == 1 and turn.closed_stream is True and turn.waiters == 0
     assert world.clients[0].closed is False

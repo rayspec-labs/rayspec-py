@@ -11,6 +11,7 @@ from __future__ import annotations
 import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,41 @@ from rayspec.loader import ResolvedWorkflow, load_workflow
 from rayspec.providers.base import Provider
 from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord
+
+#: The instant the ledger's own clock is stopped at for every test in this package.
+#:
+#: Deliberately NOT the ``WHEN`` those tests pass explicitly: if a ledger method reached for the
+#: clock where it should have honoured a passed-in ``when=``, a frozen clock set to the same
+#: instant would hide it, and every ``when=WHEN`` assertion would go on passing.
+LEDGER_NOW = datetime(2026, 3, 4, 5, 6, tzinfo=UTC)
+
+
+class _FrozenNow(datetime):
+    """A ``datetime`` whose ``now()`` is :data:`LEDGER_NOW`. Everything else is a real one."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+        return LEDGER_NOW if tz is None else LEDGER_NOW.astimezone(tz)
+
+
+@pytest.fixture(autouse=True)
+def frozen_ledger_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """Stop ``rayspec.limits.ledger``'s clock, for every test in this package.
+
+    ``commit`` and ``read`` each take their OWN ``datetime.now(UTC)`` when the caller passes no
+    ``when=``, and each turns its moment into one day/month bucket key. A test that commits and
+    then reads is therefore asking the clock twice for a day, and 00:00 UTC landing in between
+    puts the money in one bucket and the question in another. The gap is milliseconds wide, so
+    this is not something a run will hit often — but the failures it produces are the exact
+    symptoms these tests exist to detect: a ceiling that does not fire, a day total that reads
+    as zero, a pause message quoting the wrong dollar figure. One of those in CI sends somebody
+    hunting a product bug that is not there.
+
+    The name is resolved on the module at call time, so this reaches the in-process ``CliRunner``
+    commands and the engine's ``anyio.to_thread`` calls as well as direct use.
+    """
+    monkeypatch.setattr("rayspec.limits.ledger.datetime", _FrozenNow)
+    return LEDGER_NOW
 
 
 @dataclass

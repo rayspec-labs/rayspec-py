@@ -14,6 +14,8 @@ import pytest
 
 from rayspec.limits import SpendLedger, SpendState, ledger_path
 
+from .conftest import LEDGER_NOW
+
 WHEN = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
 
@@ -75,9 +77,19 @@ def test_a_run_entry_survives_while_it_is_still_being_committed(tmp_path: Path) 
 
 
 def test_read_and_commit_default_to_now(tmp_path: Path) -> None:
+    """No ``when=`` means the moment the ledger is asked — and that moment is *now*.
+
+    A commit and a read that merely agree with each other prove nothing: two defaults of the
+    same wrong constant would agree just as well. The package's clock is stopped at
+    ``LEDGER_NOW`` (see ``frozen_ledger_clock``), so what "now" means here is a value this test
+    can name, and the day either side of it has to be empty.
+    """
     ledger = SpendLedger(ledger_path(tmp_path))
     ledger.commit("run-a", 2.0)
     assert ledger.read().day_usd == pytest.approx(2.0)
+    assert ledger.read(when=LEDGER_NOW).day_usd == pytest.approx(2.0)
+    assert ledger.read(when=LEDGER_NOW + timedelta(days=1)).day_usd == 0.0
+    assert ledger.read(when=LEDGER_NOW - timedelta(days=1)).day_usd == 0.0
 
 
 def test_other_days_and_months_do_not_count(tmp_path: Path) -> None:
@@ -159,8 +171,26 @@ def test_concurrent_commits_from_many_threads_all_land(tmp_path: Path) -> None:
     assert SpendLedger(path).read(when=WHEN).day_usd == pytest.approx(12.0)
 
 
+#: Commits per child in the cross-process test, and what each one books.
+BURST, PER_COMMIT = 200, 0.05
+
+
 def test_two_processes_finishing_at_the_same_instant_both_land(tmp_path: Path) -> None:
-    """Two real OS processes commit simultaneously; the flock serialises them."""
+    """Two real OS processes commit simultaneously; the flock serialises them.
+
+    "Simultaneously" is a handshake, not a wall-clock instant. A child cannot reach a
+    ``time.time()`` deadline computed in the parent before ``import rayspec.limits`` has run,
+    and that import is seconds, not milliseconds — so a shared deadline is already in the past
+    when either child evaluates it, the two bursts start whenever they start, and the lock is
+    never contended. Here each child announces ``ready`` once its interpreter is warm and then
+    blocks on stdin; the parent releases both only after it has heard from both.
+
+    Overlapping is not enough on its own either: :data:`BURST` commits are over in tens of
+    milliseconds, which a scheduler hiccup can put entirely on one side of the other child's
+    burst. Each write is slowed to about a millisecond, so a burst is a fifth of a second wide
+    and the two genuinely interleave. Without the flock the read-modify-write cycles overwrite
+    each other and the day total comes up short.
+    """
     script = tmp_path / "commit.py"
     script.write_text(
         textwrap.dedent(
@@ -168,25 +198,56 @@ def test_two_processes_finishing_at_the_same_instant_both_land(tmp_path: Path) -
             import sys, time
             from datetime import UTC, datetime
             from rayspec.limits import SpendLedger
+
+            # a measurable critical section: a burst cannot be out-run by the other process
+            _write = SpendLedger._write
+            def slow_write(self, fd, data):
+                time.sleep(0.001)
+                _write(self, fd, data)
+            SpendLedger._write = slow_write
+
             ledger = SpendLedger(sys.argv[1])
             when = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
-            start = float(sys.argv[3])
-            while time.time() < start:   # both processes wake at the same instant
-                time.sleep(0.001)
-            for i in range(20):
-                ledger.commit(f"{sys.argv[2]}-{i}", 0.5, when=when)
+            print("ready", flush=True)     # the interpreter is warm; wait to be released
+            sys.stdin.readline()
+            for i in range(int(sys.argv[3])):
+                ledger.commit(f"{sys.argv[2]}-{i}", float(sys.argv[4]), when=when)
             """
         ),
         encoding="utf-8",
     )
-    start = f"{__import__('time').time() + 1.0}"
     procs = [
-        subprocess.Popen([sys.executable, str(script), str(ledger_path(tmp_path)), tag, start])
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(script),
+                str(ledger_path(tmp_path)),
+                tag,
+                str(BURST),
+                str(PER_COMMIT),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
         for tag in ("a", "b")
     ]
-    for proc in procs:
-        assert proc.wait(timeout=90) == 0
-    assert SpendLedger(ledger_path(tmp_path)).read(when=WHEN).day_usd == pytest.approx(20.0)
+    try:
+        for proc in procs:
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "ready"
+        for proc in procs:  # both are past the import: now they start together
+            assert proc.stdin is not None
+            proc.stdin.write("go\n")
+            proc.stdin.flush()
+        for proc in procs:
+            assert proc.wait(timeout=90) == 0
+    finally:
+        for proc in procs:
+            if proc.poll() is None:  # pragma: no cover - only after a failure above
+                proc.kill()
+    state = SpendLedger(ledger_path(tmp_path)).read(when=WHEN)
+    assert state.day_usd == pytest.approx(2 * BURST * PER_COMMIT)
 
 
 # -- a ledger is a plain JSON file: anything can be in it ----------------------------------------

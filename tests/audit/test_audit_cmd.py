@@ -944,13 +944,38 @@ steps:
 
 
 def _await_pid(mark: Path, *, timeout: float = 60.0) -> int:
-    """The pid the running shell step wrote, once the file holds a whole one."""
+    """The pid the running shell step wrote, once the file holds a WHOLE one.
+
+    ``echo $$ > "$AUDIT_MARK"`` truncates the file and then writes it, so a poll can land inside
+    that window and read a PREFIX of the pid. A prefix of a five-digit pid is itself a perfectly
+    valid pid, it goes straight to :func:`_kill_group`, and ``os.killpg`` would then SIGKILL an
+    unrelated process group — silently, because ``_kill_group`` swallows both
+    ``ProcessLookupError`` and ``PermissionError``. The newline ``echo`` appends is the marker
+    that the write finished; nothing short of it counts as a pid.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if mark.is_file() and mark.read_text().strip().isdigit():
-            return int(mark.read_text().strip())
+        text = mark.read_text() if mark.is_file() else ""
+        if text.endswith("\n") and text.strip().isdigit():
+            return int(text.strip())
         time.sleep(0.05)
     raise AssertionError("the `body` step never started")
+
+
+def test_a_half_written_pid_marker_is_never_read_as_a_pid(tmp_path: Path) -> None:
+    """What :func:`_await_pid` hands to ``os.killpg`` has to be the pid the step wrote, whole.
+
+    The prefix of a pid is a valid pid belonging to somebody else, so accepting one does not
+    redden a test — it kills an unrelated process group and says nothing. The 0.2s below is a
+    give-up bound, not a race: nothing will ever complete that marker, and a slow machine only
+    makes the wait longer, never the answer different.
+    """
+    mark = tmp_path / "body.pid"
+    mark.write_text("991")  # the first three bytes of pid 99123; `echo` has not finished
+    with pytest.raises(AssertionError, match="never started"):
+        _await_pid(mark, timeout=0.2)
+    mark.write_text("99123\n")  # the write completes
+    assert _await_pid(mark, timeout=5.0) == 99123
 
 
 def _kill_group(pid: int) -> None:

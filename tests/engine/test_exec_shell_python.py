@@ -28,6 +28,38 @@ def wf(steps: str, inputs: str = "") -> str:
     return f"rayspec: 1\nname: t\n{block}steps:\n{steps}"
 
 
+async def wait_for_pid(pidfile: Path) -> int:
+    """Return the pid a shell step wrote, once it has written it.
+
+    Waiting for the file is what turns "the step was running when we cancelled it" into a fact:
+    the shell cannot have written a pid before the engine recorded the attempt and spawned it.
+    ``fail_after`` is the hang detector — a shell that never gets there fails here, with a
+    reason, instead of raising ``FileNotFoundError`` from an ``int()`` several lines on.
+    """
+    with anyio.fail_after(15):
+        while True:
+            text = pidfile.read_text() if pidfile.exists() else ""
+            if text.strip():
+                return int(text)
+            await anyio.sleep(0.005)
+
+
+async def died(pid: int, *, within_s: float = 3.0) -> bool:
+    """Whether ``pid`` is gone within ``within_s``.
+
+    Not a performance budget: the signal has already been sent by the time this is called, so
+    this only waits for the process table to catch up and reports what it found.
+    """
+    deadline = time.monotonic() + within_s
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        await anyio.sleep(0.05)
+    return False
+
+
 async def run_wf(harness: Harness, text: str, inputs: dict | None = None, **opts):
     harness.workflow("t", text)
     g = make_graph_harness(
@@ -130,7 +162,7 @@ async def test_shell_timeout_kills_process_group(harness: Harness, tmp_path: Pat
         harness,
         wf(f"""
   - id: a
-    timeout: 0.3
+    timeout: 1
     shell: |
       sleep 30 &
       echo $! > {pidfile}
@@ -139,28 +171,31 @@ async def test_shell_timeout_kills_process_group(harness: Harness, tmp_path: Pat
     )
     rec = out["a"].record
     assert rec.status is StepStatus.FAILED and rec.error and rec.error.type == "timeout"
+    # The timeout is the one duration this test cannot do without, and it has to outlast a
+    # ``/bin/sh`` spawn plus a fork: measured at 5-10 ms idle and up to 50 ms under 40x CPU
+    # oversubscription, so 1s is the smallest cap with room to spare. When it loses anyway,
+    # say so — a missing pidfile is a beaten spawn, not a surviving child.
+    written = pidfile.read_text().strip() if pidfile.exists() else ""
+    assert written, "the shell never got to write its pid — the timeout beat the spawn"
     # the grand-child sleep was in the same process group and is dead within the deadline
-    pid = int(pidfile.read_text().strip())
-    deadline = time.monotonic() + 3
-    alive = True
-    while alive and time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            alive = False
-        else:
-            await anyio.sleep(0.05)
-    assert not alive, "child sleep survived killpg"
+    assert await died(int(written)), "child sleep survived killpg"
 
 
-async def test_shell_cancellation_kills_and_marks_interrupted(harness: Harness) -> None:
-    harness.workflow("t", wf("  - {id: a, shell: 'sleep 30'}"))
+async def test_shell_cancellation_kills_and_marks_interrupted(
+    harness: Harness, tmp_path: Path
+) -> None:
+    pidfile = tmp_path / "child.pid"
+    harness.workflow("t", wf(f"  - {{id: a, shell: 'echo $$ > {pidfile}; exec sleep 30'}}"))
     g = make_graph_harness(harness, harness.load("t"), fake_leaf=False)
-    started = time.monotonic()
-    with anyio.move_on_after(0.3):
-        await run_graph(g.graph, g.scope, g.ctx)
-    assert time.monotonic() - started < 5
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_graph, g.graph, g.scope, g.ctx)
+        # cancel on the state, not on a timer: the pid proves the attempt is recorded AND that
+        # there is a process to kill. A ``move_on_after`` that expired first left the run with
+        # no record for ``a`` and a ``KeyError`` in place of a verdict.
+        pid = await wait_for_pid(pidfile)
+        tg.cancel_scope.cancel()
     assert harness.statuses(g.run.run_id)["a"] == "interrupted"
+    assert await died(pid), "the shell survived the cancellation"
 
 
 async def test_shell_output_schema(harness: Harness) -> None:

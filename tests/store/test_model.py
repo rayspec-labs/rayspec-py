@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
+
+import pytest
 
 from rayspec.providers.base import Usage
 from rayspec.schema import RunStatus, StepStatus
@@ -17,12 +20,54 @@ from rayspec.store.model import (
 )
 
 
-def test_new_run_id_is_time_sortable_and_unique():
+class _FixedGmtime:
+    """Stands in for ``time`` inside ``rayspec.store.model``: ``gmtime()`` is one UTC instant.
+
+    A shim rather than a patch of ``time.gmtime`` itself, so nothing outside the module under
+    test sees a stopped clock.
+    """
+
+    def __init__(self, when: str) -> None:
+        self.when = time.strptime(when, "%Y-%m-%d %H:%M:%S")
+
+    def gmtime(self, _secs: float | None = None) -> time.struct_time:
+        return self.when
+
+    def strftime(self, fmt: str, t: time.struct_time | None = None) -> str:
+        return time.strftime(fmt, self.when if t is None else t)
+
+
+def test_new_run_id_is_time_sortable_and_unique(monkeypatch: pytest.MonkeyPatch):
+    """Sortable *as a string*, which is the only reason ``list_run_ids`` can call its output
+    "newest first" — it sorts the raw ids and nothing else establishes an order.
+
+    Shape checks cannot show this. ``%d%m%Y-%H%M%S`` has the same length, the same separators
+    and the same character classes as ``%Y%m%d-%H%M%S`` and is not sortable by time, so every
+    assertion this test used to make passes on it.
+    """
+    from rayspec.store import model as store_model
+
+    def clock_at(when: str) -> None:
+        monkeypatch.setattr(store_model, "time", _FixedGmtime(when))
+
+    clock_at("2026-08-09 01:02:03")
     a = new_run_id()
+    clock_at("2026-09-08 01:02:03")  # a month LATER, on an earlier day of the month
     b = new_run_id()
-    assert a != b
+    assert a < b
+    assert sorted([b, a], reverse=True) == [b, a]  # what `list_run_ids` relies on
+
     assert len(a.split("-")) == 3
     assert a[:8].isdigit() and a[9:15].isdigit()
+    assert a[8] == "-" and a[15] == "-"
+    assert len(a) == 20
+
+    # Inside one second the stamp is identical, so the only thing separating two ids is the
+    # 4-character base32 suffix: 32**4 draws. That is the store's real resolution limit —
+    # `list_run_ids` cannot put two same-second runs in the order they actually happened.
+    c = new_run_id()
+    assert c[:15] == b[:15] == "20260908-010203"
+    assert c != b
 
 
 def test_step_record_defaults():

@@ -4,7 +4,6 @@ block, escape neutralisation and the outside-a-project behaviour of `runs`."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,7 @@ from typer.testing import CliRunner
 
 from rayspec.cli import _runs_common as common
 from rayspec.cli.app import app
+from rayspec.cli.commands.run import project_slug_for
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.providers.base import Usage
 from rayspec.schema import RunStatus, StepStatus
@@ -423,5 +423,7 @@ def test_runs_inside_a_git_repo_without_rayspec_dir_is_a_project(
     (repo / ".git").mkdir(parents=True)
     result = cli.invoke(app, ["runs", "--root", str(repo)])
     assert result.exit_code == 0, result.output
-    assert "no runs for project" in result.output
-    assert datetime.now(UTC).year >= 2026
+    assert "not inside a rayspec project" not in result.output
+    # the empty listing names the project minted for the repo itself — a different slug from
+    # any directory above it, which is what "the git repo is the project" means here
+    assert f"no runs for project {project_slug_for(repo)}" in result.output, result.output

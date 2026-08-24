@@ -167,7 +167,12 @@ def test_json_mode_stream_shapes_match_cli_md(tmp_path: Path) -> None:
     for event in events:
         if event["type"] != "stream":
             assert set(event) == {"type", "run_id", "ts", "step_path", "data"}, event
-            assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", event["ts"]), event
+            # ISO-8601 UTC with a literal ``Z`` and no offset form. The fraction is optional
+            # because the serialiser drops it whole when a timestamp lands on an exact
+            # microsecond (``…T03:04:05Z``) — a shape every clock value must be allowed to take,
+            # and the same optional-fraction form the golden capture normaliser accepts.
+            ts = event["ts"]
+            assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", ts), event
     summary = stdout_lines[-1]
     assert "type" not in summary, "the summary object is the last stdout line"
     assert stdout_lines[-2]["type"] == "run.finished"

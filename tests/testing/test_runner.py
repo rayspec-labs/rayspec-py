@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
 
 from rayspec.engine.runner import fallback_project_slug
 from rayspec.store.file import FileRunStore
+from rayspec.testing.report import results_json
 from rayspec.testing.runner import run_case
 from rayspec.testing.spec import Expect, Suite, load_cases
 
@@ -408,10 +410,17 @@ def test_cases_do_not_share_a_run_store(project: Path, home: Path) -> None:
     assert first.run_id != second.run_id
 
 
-@pytest.mark.parametrize("field", ["duration_s"])
-def test_result_carries_timing(project: Path, home: Path, field: str) -> None:
+def test_result_carries_timing(project: Path, home: Path) -> None:
+    """`duration_s` measures the run, and reaches `--json` — a nested window pins both ends."""
+    before = time.monotonic()
     result = only(project, "checks:\n  - {id: c, workflow: demo, stubs: stubs.yaml}\n", home)
-    assert getattr(result, field) >= 0.0
+    after = time.monotonic()
+    # Both reads come off the same monotonic clock as the runner's, and the outer interval
+    # strictly contains the inner one, so the upper bound holds on every schedule; the lower
+    # bound is what catches a `duration_s` that was never written.
+    assert 0.0 < result.duration_s <= after - before
+    payload = results_json([result], elapsed_s=0.0)
+    assert payload["cases"][0]["duration_s"] == round(result.duration_s, 3)
 
 
 # -- the harness itself never explodes ---------------------------------------------------------

@@ -31,6 +31,26 @@ def wf(steps: str, **top: str) -> str:
     return f"rayspec: 1\nname: t\n{extra}steps:\n{steps}"
 
 
+async def wait_until_started(harness: Harness, run_id: str, path: str) -> None:
+    """Block until ``path`` has a record in ``run.json``, i.e. its attempt has begun.
+
+    The moment a run becomes interruptible is a state, not a duration: reaching it takes two
+    real subprocess spawns and several fsynced ``run.json`` writes, timed between 0.3s and
+    0.6s on an idle machine and further under load. ``fail_after`` is the hang detector — a run
+    that never gets there says so, instead of a signal being fired into a run that has not
+    started and a confusing ``KeyError`` several assertions later.
+    """
+    with anyio.fail_after(15):
+        while True:
+            try:
+                run = harness.store.load(run_id)
+            except Exception:  # run.json does not exist until the run has been created
+                run = None
+            if run is not None and run.steps.get(path) is not None:
+                return
+            await anyio.sleep(0.01)
+
+
 async def test_run_succeeds_with_outputs_and_events(harness: Harness) -> None:
     harness.sink = ValidatingSink(harness.sink)  # pin the published event/stream shapes
     harness.workflow(
@@ -224,8 +244,10 @@ async def test_resume_after_interrupt_reuses_finished_steps(
 """),
     )
     runner = harness.runner("t", run_id="20260820-000000-intr")
-    with anyio.move_on_after(1.0):
-        await runner.run()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(runner.run)
+        await wait_until_started(harness, "20260820-000000-intr", "b")
+        tg.cancel_scope.cancel()  # interrupt with ``b`` provably in flight
     run = harness.record("20260820-000000-intr")
     assert run.status is RunStatus.INTERRUPTED
     assert run.steps["a"].status is StepStatus.SUCCEEDED
@@ -368,14 +390,7 @@ async def test_sigint_interrupts_run_exit_130(harness: Harness) -> None:
 
     async def fire() -> None:
         # wait until b is running (recorded as running in run.json), then Ctrl-C ourselves
-        for _ in range(100):
-            await anyio.sleep(0.05)
-            try:
-                run = harness.record("20260820-000000-sig")
-            except Exception:
-                continue
-            if run.steps.get("b") is not None:
-                break
+        await wait_until_started(harness, "20260820-000000-sig", "b")
         os.kill(os.getpid(), signal.SIGINT)
 
     result: RunResult | None = None

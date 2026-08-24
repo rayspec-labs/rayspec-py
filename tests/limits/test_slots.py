@@ -167,13 +167,38 @@ def test_a_limit_of_zero_means_this_provider_may_not_run(tmp_path: Path) -> None
         pass  # pragma: no cover - the acquire raises
 
 
-def test_forever_is_the_only_indefinite_wait(tmp_path: Path) -> None:
-    """``wait_s=0`` is a deadline of zero seconds, not "wait for ever"."""
+class _NoSleep:
+    """``time`` for :mod:`rayspec.limits.slots`, with ``sleep`` fused.
+
+    A slot that is already held and a deadline of zero seconds must not reach the poll loop at
+    all, so ``sleep`` being called is the defect itself rather than something to time.
+    """
+
+    monotonic = staticmethod(time.monotonic)
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        raise AssertionError(f"acquire(wait_s=0) slept {seconds}s: a deadline of zero polls")
+
+
+def test_forever_is_the_only_indefinite_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``wait_s=0`` is a deadline of zero seconds, not "wait for ever".
+
+    Asserted on the mechanism rather than on elapsed time, because the regression this test is
+    named for does not make the acquire *slow*, it makes it never return: ``0`` read as "wait
+    for ever" blocks until the holder releases, and the holder is released in the ``finally``
+    below. A wall-clock bound would hang the job until CI killed it instead of failing. Fusing
+    ``sleep`` catches exactly the step that would hang, and proves the acquire is immediate at
+    the same time.
+    """
     held = RunSlot(tmp_path, "claude", 1, run_id="r1").acquire()
     try:
-        started = time.monotonic()
-        with pytest.raises(SlotBusyError):
+        monkeypatch.setattr("rayspec.limits.slots.time", _NoSleep)
+        with pytest.raises(SlotBusyError) as exc:
             RunSlot(tmp_path, "claude", 1, run_id="r2").acquire(wait_s=0, poll_s=0.02)
-        assert time.monotonic() - started < 1.0
+        # a DEADLINE that expired, not "do not wait at all" — that is what `wait_s=None` means
+        assert "after waiting 0s" in str(exc.value)
     finally:
         held.release()
