@@ -18,6 +18,7 @@ import pytest
 from rayspec.engine.context import (
     ON_STEP_FAILURE_ORDER,
     RunOptions,
+    StepOutcome,
     strictest_on_step_failure,
 )
 from rayspec.engine.scheduler import run_graph
@@ -130,10 +131,14 @@ steps:
             await anyio.sleep(0.005)
         g.leaf.release.set()
 
+    # bound inside the group below, and a task group is allowed to swallow what its body raised
+    # — so this stays None if the run never returned, and the assertion after it says so
+    outcomes: dict[str, StepOutcome] | None = None
     with anyio.fail_after(15):  # hang detector: every wait here is on observed state
         async with anyio.create_task_group() as tg:
             tg.start_soon(release_outer_once_the_root_has_decided)
             outcomes = await run_graph(g.graph, g.scope, g.ctx)
+    assert outcomes is not None, "the graph never returned its outcomes"
     statuses = harness.statuses(g.run.run_id)
     assert statuses["run_block/slow"] == "interrupted"
     # the including graph never entered fail-fast: its own sibling ran to completion. Note

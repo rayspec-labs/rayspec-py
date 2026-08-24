@@ -187,6 +187,9 @@ async def test_shell_cancellation_kills_and_marks_interrupted(
     pidfile = tmp_path / "child.pid"
     harness.workflow("t", wf(f"  - {{id: a, shell: 'echo $$ > {pidfile}; exec sleep 30'}}"))
     g = make_graph_harness(harness, harness.load("t"), fake_leaf=False)
+    # bound inside the group below, and a task group is allowed to swallow what its body raised
+    # — so this stays None if the body never got that far, and the assertion after it says so
+    pid: int | None = None
     async with anyio.create_task_group() as tg:
         tg.start_soon(run_graph, g.graph, g.scope, g.ctx)
         # cancel on the state, not on a timer: the pid proves the attempt is recorded AND that
@@ -194,6 +197,7 @@ async def test_shell_cancellation_kills_and_marks_interrupted(
         # no record for ``a`` and a ``KeyError`` in place of a verdict.
         pid = await wait_for_pid(pidfile)
         tg.cancel_scope.cancel()
+    assert pid is not None, "the group ended before the shell reported a pid — nothing was killed"
     assert harness.statuses(g.run.run_id)["a"] == "interrupted"
     assert await died(pid), "the shell survived the cancellation"
 
