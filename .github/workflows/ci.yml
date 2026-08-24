@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nothing here runs between pushes. A dependency release that breaks the build, or a runner
+    # image that drops something the suite needs, would otherwise surface on whatever unrelated
+    # pull request came next -- as a red cell on a change that did not cause it. Monday morning.
+    - cron: "17 6 * * 1"
 permissions:
   contents: read
 jobs:
@@ -57,6 +62,41 @@ jobs:
           PY
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest -m "not live"
+  unlocked:
+    name: Resolve like a user does
+    # Every other job installs from `uv.lock`. Nobody installing rayspec does: `pip install
+    # rayspec` reads the floors in `pyproject.toml` and resolves whatever is newest. On
+    # 2026-08-24 that was four packages ahead of the lock -- `rich` by two major versions, and
+    # `claude-agent-sdk` at a release published two days before 1.0.2 shipped. The gate was green
+    # against all of it, which is the point: nothing had told us either way, because no cell had
+    # ever run that resolution. This job is the one that does.
+    #
+    # It is deliberately NOT a cell of `test`. It can go red because somebody else published a
+    # release, which is a fact worth learning the day it happens and not a reason to block a pull
+    # request that did not cause it -- so it runs on `main` and on the weekly schedule, and never
+    # on a pull request, where the dependencies are the same ones as on `main` anyway.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+      UV_NO_SYNC: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Same reason as the test job: the suite resolves commit refs against real history.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.5"
+          # No cache: resolving fresh is the entire job.
+          enable-cache: false
+      - run: uv python install 3.12
+      - run: uv sync --all-groups --upgrade --python 3.12
+      # What it actually resolved, so a red run below can be read without re-running it.
+      - run: uv pip list
+      - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest -m "not live"
   examples:
