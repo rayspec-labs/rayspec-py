@@ -1,0 +1,23 @@
+# A novel description with two search terms: the fake `gh` answers both searches with the same two
+# issues (the union keeps each once), the judge is shown exactly those and says "new", the gate is
+# approved by the dry run and `gh issue create` really runs (against the fake). `wontfix` is not
+# whitelisted — only `bug` reaches the command line.
+defaults: { latency_ms: 0, usage: { input: 1500, output: 200 } }
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError in app.py; expected 0.\n\nRepro: python -c 'import app; app.total([])'"
+      labels: [bug, wontfix]
+      search_terms: ["empty input", "IndexError total"]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains: ["Labels may only come from: bug, enhancement, documentation, question"]
+  dedupe:
+    output: { duplicate: false, of: 0, reason: "#12 is about the CLI parser, not total()" }
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Existing issues found by searching the tracker (2):\n- #12 [open] Crash when input is empty\n- #3 [closed] Add CSV export\n"

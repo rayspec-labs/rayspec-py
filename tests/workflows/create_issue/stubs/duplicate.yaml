@@ -1,0 +1,12 @@
+# The judge recognises the candidate the search returned: the run is cancelled naming it.
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError."
+      labels: [bug]
+      search_terms: ["empty input"]
+  dedupe:
+    output: { duplicate: true, of: 12, reason: "same traceback as #12" }
+    expect:
+      prompt_contains: ["Existing issues found by searching the tracker (1):\n- #12 [open] Crash when input is empty\n"]
