@@ -1,0 +1,11 @@
+# A planner with one step, a refactorer that (being a stub) edits nothing, and a reviewer that
+# must never be asked — the tree does not change, so there is nothing to review.
+steps:
+  plan:
+    output: { changes: [{ what: "rename helper", files: [app.py] }], risks: [] }
+    expect: { access: read-only, prompt_contains: ["rename helper() to items()\n", "`python3 -B typecheck.py` and `python3 -B test_app.py`\npass right now"] }
+  "work[*]/edit":
+    text: "Nothing to do."
+    expect: { access: workspace-write, session: fresh, prompt_contains: ["The plan:\n1. rename helper (app.py)\n"] }
+  diff:
+    fail: { kind: api, message: "the reviewer must not be asked about an empty diff", transient: false }

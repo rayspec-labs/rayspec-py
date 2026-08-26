@@ -1,0 +1,61 @@
+# The bundled `refactor_safely` against a real tree: `exec_shell: true` cases that
+# tests/workflows/test_refactor_safely.py drives one fresh repository at a time through
+# `rayspec test --exec-shell --case <id>`. The fixture has app.py, a runner (test_app.py) that
+# prints a pytest-shaped FAILED line, and typecheck.py (a syntax check standing in for a
+# typechecker); the stub provider never edits a file, so what these cases show is everything the
+# workflow decides *without* an edit — a red baseline, an untouched tree, a held gate.
+checks:
+  - id: red_baseline               # the tests are already red: stop before the planner is even asked
+    workflow: refactor_safely
+    inputs: { goal: "rename helper() to items()", typecheck_command: "python3 -B typecheck.py", test_command: "python3 -B test_app.py" }
+    stubs: stubs/refactor.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "the baseline is already red"
+      steps:
+        baseline_typecheck: { status: succeeded, output_regex: "^typecheck ok$" }
+        baseline_tests: { status: failed, output_regex: "^FAILED test_app.py::test_total - AssertionError: 3$" }
+        red_baseline: succeeded
+        plan: { status: skipped, skip_reason: when_false }
+        gate: skipped
+        work: skipped
+        changes: skipped
+  - id: no_changes                 # green baseline, an agent that changes nothing: nothing to review (exit 4)
+    workflow: refactor_safely
+    inputs: { goal: "rename helper() to items()", typecheck_command: "python3 -B typecheck.py", test_command: "python3 -B test_app.py" }
+    stubs: stubs/refactor.yaml
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "the refactorer changed nothing"
+      steps:
+        baseline_typecheck: succeeded
+        baseline_tests: { status: succeeded, output_regex: "^1 passed$" }
+        red_baseline: { status: skipped, skip_reason: when_false }
+        plan: succeeded
+        gate: succeeded
+        work: succeeded
+        "work[1]/edit": succeeded
+        "work[1]/typecheck": { status: succeeded, output_regex: "^typecheck ok$" }
+        "work[1]/check": { status: succeeded, output_regex: "^1 passed$" }
+        "work[1]/give_up": { status: skipped, skip_reason: when_false }
+        changes: { status: succeeded, output_regex: "^NO-CHANGES$" }
+        nothing: succeeded
+        diff: { status: skipped, skip_reason: when_false }
+        commit: skipped
+  - id: risky_pauses               # the operator holds `risky` shut: the plan is shown, nothing is edited (exit 3)
+    workflow: refactor_safely
+    inputs: { goal: "rename helper() to items()", typecheck_command: "python3 -B typecheck.py", test_command: "python3 -B test_app.py" }
+    stubs: stubs/refactor.yaml
+    env: { RAYSPEC_POLICY: policy/risky.yaml }   # relative to the process cwd (the repository)
+    exec_shell: true
+    expect:
+      status: paused
+      exit_code: 3
+      reason_contains: "awaiting approval at gate"
+      steps:
+        plan: { status: succeeded, output_json: { changes: [{ what: "rename helper", files: [app.py] }], risks: [] } }
+        gate: paused
