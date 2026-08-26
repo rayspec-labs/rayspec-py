@@ -294,3 +294,16 @@ checks:
       status: failed
       exit_code: 1
       steps: { compare: succeeded, restore: succeeded, judge: failed }
+  - id: architect_empty            # a dry run simulates `areas` as [] → the nothing-to-survey path (exit 4)
+    workflow: architect
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "nothing to survey"
+      steps:
+        map: succeeded
+        areas: { status: succeeded, output_json: [] }
+        nothing: succeeded
+        survey: { status: skipped, skip_reason: when_false }
+        report: skipped
+        save: skipped
