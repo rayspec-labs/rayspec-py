@@ -1,0 +1,219 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: architect
+description: >
+  A read-only survey of the codebase: map the tree, pick the largest source directories, send
+  one read-only agent per area to look at it through a single focus (coupling, layering or dead
+  code), and let an architect fold the findings into one report. Produces a document in the run
+  directory, not a change — nothing is written to the repository.
+# The cost is bounded twice: `budget_usd` on every agent and `max_tokens` on the run — reaching
+# the ceiling fails the run instead of finishing the survey on credit — and `max_areas` keeps a
+# large repository from spending the budget on breadth.
+
+inputs:
+  focus: { type: string, enum: [coupling, layering, dead_code], default: coupling, description: "The one question every surveyor asks" }
+  max_areas: { type: integer, default: 6, description: "Survey at most this many of the largest source directories" }
+
+defaults:
+  timeout: 15m
+  max_parallel: 4                   # the run-wide leaf cap — the survey's own cap below cannot exceed it
+  max_tokens: "600k"                # the run-level ceiling: hard, not advisory
+
+isolation: none                     # a survey of the checkout you are on; nothing here writes to it
+
+agents:
+  surveyor:
+    provider: claude
+    model: medium
+    access: read-only
+    thinking: true
+    budget_usd: 1.00                # hard stop per area
+    instructions: >
+      You survey one area of a codebase from one angle. Read the code; report only what you can
+      point at (a file, a symbol, an import). Say where this area's dependencies go and where
+      they come from. An empty finding list is a fine answer.
+    tools: { deny: [web] }
+  architect:
+    provider: claude
+    model: large
+    access: read-only
+    thinking: true
+    budget_usd: 3.00                # the single most expensive step; bounded
+    instructions: >
+      You write architecture reports for engineers who will act on them: what the system is
+      shaped like, where the focus question found something, what to do first. Cite the
+      surveyors' evidence; add no finding you cannot trace to it.
+    tools: { deny: [web] }
+
+steps:
+  - id: map
+    description: The lay of the land — top-level entries, dependency manifests, the directory tree two levels deep.
+    shell: |
+      echo "=== TOP LEVEL ==="
+      ls -1
+      echo
+      echo "=== MANIFESTS ==="
+      for f in pyproject.toml setup.py package.json go.mod Cargo.toml pom.xml build.gradle Gemfile composer.json; do
+        if [ -f "$f" ]; then echo "--- $f"; head -n 40 "$f"; fi
+      done
+      echo
+      echo "=== DIRECTORIES (two levels) ==="
+      find . -maxdepth 2 -type d ! -path '*/.*' ! -path '*/node_modules*' ! -path '*/__pycache__*' | sort
+
+  - id: areas
+    needs: [map]
+    description: >
+      The largest source directories as a JSON list (`each:` needs a list): files counted by the
+      directory they sit in, lines counted, vendored and generated trees left out.
+    python: |
+      import json, os, subprocess
+
+      SOURCE = {".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".go", ".rs", ".java", ".kt",
+                ".rb", ".php", ".cs", ".c", ".cc", ".cpp", ".h", ".hpp", ".swift", ".scala", ".sh"}
+      SKIP = {".git", "node_modules", "vendor", "dist", "build", "target", "__pycache__",
+              ".venv", "venv", ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
+
+      listed = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                              capture_output=True, text=True, check=False)
+      if listed.returncode == 0:
+          files = [path for path in listed.stdout.split("\0") if path]
+      else:                                      # not a git checkout: walk the tree instead
+          files = []
+          for root, dirs, names in os.walk("."):
+              dirs[:] = sorted(d for d in dirs if d not in SKIP and not d.startswith("."))
+              files += [os.path.relpath(os.path.join(root, name)) for name in names]
+
+      areas = {}
+      for path in files:
+          parts = path.split("/")
+          if any(part in SKIP for part in parts[:-1]) or os.path.splitext(path)[1] not in SOURCE:
+              continue
+          try:
+              with open(path, "rb") as handle:
+                  lines = handle.read().count(b"\n")
+          except OSError:
+              continue
+          directory = os.path.dirname(path) or "."
+          area = areas.setdefault(directory, {"path": directory, "files": 0, "lines": 0})
+          area["files"] += 1
+          area["lines"] += lines
+
+      largest = sorted(areas.values(), key=lambda area: (-area["lines"], area["path"]))
+      print(json.dumps(largest[:{{ inputs.max_areas }}]))
+    output_schema:
+      type: array
+      items:
+        type: object
+        properties:
+          path: { type: string }
+          files: { type: integer }
+          lines: { type: integer }
+        required: [path, files, lines]
+
+  - id: nothing
+    needs: [areas]
+    when: (steps.areas.output | length) == 0
+    stop:
+      status: cancelled
+      reason: "no source files found under {{ run.workdir }} — nothing to survey"
+
+  - id: survey
+    needs: [areas]
+    when: (steps.areas.output | length) > 0
+    description: One read-only surveyor per area, four at a time; a lost surveyor leaves a null slot, not a failed run.
+    each: steps.areas.output
+    as: area
+    max_parallel: 4
+    on_failure: continue
+    steps:
+      - id: inspect
+        agent: surveyor
+        retry: { attempts: 2, delay: 2s }
+        prompt: |
+          Area {{ each.index + 1 }} of {{ each.total }}: `{{ area.path }}` ({{ area.files }} source files, {{ area.lines }} lines).
+          Focus: **{{ inputs.focus }}**.
+          {% if inputs.focus == 'coupling' %}
+          Which other areas does this one import or call, and which depend on it? Name the tightest
+          couplings — shared mutable state, reaching into another area's internals, circular
+          imports — with the files involved.
+          {% elif inputs.focus == 'layering' %}
+          Which layer is this area (entry point, domain, infrastructure, utility)? Name every place
+          it depends on something from a layer that should sit above it, with the files involved.
+          {% else %}
+          Which files, functions or classes here are referenced from nowhere else in the repository
+          (search for the names)? Name each with its file; leave out what is exported on purpose.
+          {% endif %}
+          {% if each.total > 1 %}
+          The other areas surveyed: {{ steps.areas.output | map(attribute='path') | reject('equalto', area.path) | join(', ') }}.
+          {% endif %}
+
+          The repository map:
+          {{ steps.map.output }}
+        output_schema:
+          type: object
+          properties:
+            summary: { type: string }
+            depends_on: { type: array, items: { type: string } }
+            findings:
+              type: array
+              items:
+                type: object
+                properties:
+                  severity: { type: string, enum: [high, medium, low] }
+                  file: { type: string }
+                  note: { type: string }
+                required: [severity, file, note]
+          required: [summary, depends_on, findings]
+
+  - id: no_surveys
+    needs: [survey]
+    when: (steps.survey.output | select | list | length) == 0
+    stop:
+      status: failed
+      reason: "every surveyor failed — nothing to report (see the survey[*]/inspect steps)"
+
+  - id: report
+    needs: [survey]
+    when: (steps.survey.output | select | list | length) > 0
+    agent: architect
+    prompt: |
+      {{ steps.areas.output | length }} areas of this repository were surveyed with the focus **{{ inputs.focus }}**.
+      {% for area in steps.areas.output %}
+      {% set r = steps.survey.output[loop.index0] %}
+
+      ## {{ area.path }} ({{ area.files }} files, {{ area.lines }} lines)
+      {% if r %}
+      {{ r.inspect.summary }}
+      depends on: {{ r.inspect.depends_on | join(', ') or '(nothing named)' }}
+      {% for f in r.inspect.findings %}
+      - [{{ f.severity }}] {{ f.file }}: {{ f.note }}
+      {% else %}
+      (no findings)
+      {% endfor %}
+      {% else %}
+      SURVEYOR FAILED — no input for this area.
+      {% endif %}
+      {% endfor %}
+
+      The repository map:
+      {{ steps.map.output }}
+
+      Write the architecture report as markdown: an overview of how the surveyed areas relate (a
+      dependency sketch), the {{ inputs.focus }} findings ranked by how much they matter with the
+      evidence the surveyors gave, and at most five concrete recommendations in the order you
+      would tackle them. Name any area that produced no input.
+
+  - id: save
+    needs: [report]
+    description: The report as a file in the run directory — the home for something meant to be read, not committed.
+    shell: |
+      mkdir -p "$RAYSPEC_ARTIFACTS_DIR"
+      printf '%s\n' "{{ steps.report.output }}" > "$RAYSPEC_ARTIFACTS_DIR/architecture.md"
+      echo "$RAYSPEC_ARTIFACTS_DIR/architecture.md"
+
+outputs:
+  report: "{{ steps.report.output }}"
+  report_path: "{{ steps.save.output }}"
+  areas: "{{ steps.areas.output | map(attribute='path') | list }}"
+  surveyed: "{{ steps.survey.output | select | list | length }}"
+  lost: "{{ steps.survey.output | reject | list | length }}"
