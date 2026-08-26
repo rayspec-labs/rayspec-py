@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: review_block
+description: >
+  Reusable review block: lint → two independent reviews (Claude + Codex, in parallel) → a judge
+  that merges them into a structured verdict. Include it with `include: review_block`.
+
+inputs:
+  target: { type: string, required: true, description: "Path to review (file or directory)" }
+  depth: { type: string, enum: [quick, deep], default: quick }
+
+isolation: none
+
+agents:                             # inline: the block needs no .rayspec/agents/ or config.yaml
+  reviewer:
+    provider: claude
+    model: medium                   # tier → sonnet (config.tiers, else the built-in defaults)
+    effort: medium
+    access: read-only               # Read/Glob/Grep only — it cannot edit or run commands
+    instructions_mode: append       # append to Claude Code's own system prompt (default)
+    instructions: |
+      You review changes in {{ project.name }} ({{ project.slug }}).
+      Point at concrete lines; prefer questions over rewrites.
+    thinking: true
+    budget_usd: 1.50                # hard stop per step
+    tools: { deny: [web] }
+  codex_reviewer:
+    provider: codex
+    model: medium                   # tier → gpt-5.4 (config.tiers, else the built-in defaults)
+    access: read-only
+    instructions_mode: replace      # Codex: base_instructions instead of developer_instructions
+    instructions: |
+      You are a strict reviewer. You only read; you never edit or run anything. Answer in terse
+      markdown. When asked for JSON, return JSON only — no prose, no code fence.
+    tools: { deny: [web] }          # the one tool group Codex governs (→ web_search: disabled)
+
+steps:
+  - id: lint
+    shell: ruff check "{{ inputs.target }}" --output-format concise || true
+    timeout: 5m
+
+  - id: claude_review
+    needs: [lint]
+    agent: reviewer
+    prompt: |
+      Review {{ inputs.target }} ({{ inputs.depth }} pass).
+
+      Lint said:
+      {{ steps.lint.output }}
+
+      List at most five findings as bullet points, most important first, with file:line references.
+
+  - id: codex_review
+    needs: [lint]
+    agent: codex_reviewer
+    prompt: |
+      Review {{ inputs.target }} ({{ inputs.depth }} pass). Lint said:
+      {{ steps.lint.output }}
+      Return your findings and a score from 1 (unacceptable) to 5 (ship it).
+    output_schema:                  # no minimum/maximum: OpenAI strict mode rejects them
+      type: object
+      properties:
+        findings: { type: array, items: { type: string } }
+        score: { type: integer }
+      required: [findings, score]
+
+  - id: judge
+    needs: [claude_review, codex_review]
+    agent: { extends: reviewer, model: large, budget_usd: 3.0 }   # override a named agent
+    prompt: |
+      Two independent reviews of {{ inputs.target }}.
+
+      Claude:
+      {{ steps.claude_review.output }}
+
+      Codex (score {{ steps.codex_review.output.score }}):
+      {% for f in steps.codex_review.output.findings %}- {{ f }}
+      {% endfor %}
+
+      Merge them into one verdict. Drop duplicates, keep the concrete ones.
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, request_changes] }
+        findings: { type: array, items: { type: string } }
+      required: [verdict, findings]
+
+outputs:                            # what the including workflow sees as steps.<include>.output
+  verdict: "{{ steps.judge.output.verdict }}"
+  findings: "{{ steps.judge.output.findings }}"
+  lint: "{{ steps.lint.output }}"

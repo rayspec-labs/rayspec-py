@@ -1,0 +1,125 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: fix_issue
+description: >
+  Triage a GitHub issue, fix it in a self-healing loop until the tests pass and the reviewer is
+  satisfied, ask a human, then open a PR. Runs in a git worktree (the default isolation).
+
+inputs:
+  issue: { type: integer, required: true, description: "GitHub issue number" }
+  base: { type: string, default: main, description: "PR base branch" }
+  mode: { type: string, enum: [fast, thorough], default: thorough }
+  test_command: { type: string, default: "pytest -q" }
+
+defaults:
+  agent: implementer                # prompt steps without `agent:` use this one
+  timeout: 30m                      # per-step default
+  max_parallel: 2
+
+isolation: worktree                 # explicit here; it is the default for git projects
+
+agents:
+  triage:
+    provider: claude
+    model: small
+    access: read-only
+    instructions: You classify issues and review diffs. Be decisive and terse.
+  implementer:
+    provider: codex
+    model: medium
+    effort: high
+    access: workspace-write
+    # a template like a prompt: inputs, project and run are available (was prompts/implementer.md)
+    instructions: |
+      You are the implementer for issue #{{ inputs.issue }} in {{ project.name }}.
+
+      Rules:
+      - Work inside {{ run.workdir }} only; commit every change (`git add -A && git commit`).
+      - Keep the diff minimal; a regression test is mandatory.
+      - Run `{{ inputs.test_command }}` before you answer and report the result.
+    tools: { deny: [web] }                        # the only tool group Codex governs
+
+steps:
+  - id: fetch
+    description: Pull the issue (number, title, body, comments) as JSON text.
+    shell: gh issue view "$RAYSPEC_INPUT_ISSUE" --json number,title,body,comments
+
+  - id: assess
+    needs: [fetch]
+    agent: triage
+    prompt: |
+      {{ steps.fetch.output }}
+
+      Is this a real, reproducible problem that is worth fixing now?
+    output_schema:                  # structured output → steps.assess.output is a dict
+      type: object
+      properties:
+        verdict: { type: string, enum: [fix, skip] }
+        reason: { type: string }
+      required: [verdict, reason]
+
+  - id: bail
+    needs: [assess]
+    when: steps.assess.output.verdict == 'skip'
+    stop: { status: cancelled, reason: "Not worth fixing — {{ steps.assess.output.reason }}" }
+
+  - id: build
+    needs: [assess]
+    when: steps.assess.output.verdict == 'fix'
+    loop:
+      max_iterations: 3
+      until: steps.check.ok and (steps.review.output | has_signal('BUILD-CLEAN'))
+      on_exhausted: fail            # loud by default; `continue` → converged=false
+      steps:
+        - id: implement
+          session: implement        # continue my own session from the previous iteration
+          prompt: |
+            {% if iteration.first %}
+            Fix issue #{{ inputs.issue }} with the smallest change that works, add a regression
+            test, then commit. Mode: {{ inputs.mode }}.
+            {{ steps.fetch.output }}
+            {% else %}
+            Iteration {{ iteration.n }}/{{ iteration.max }}. The previous attempt was rejected:
+            {{ iteration.prev.review.output }}
+            Tests said (exit {{ iteration.prev.check.exit_code }}):
+            {{ iteration.prev.check.output | default('') }}
+            Address every finding, re-run the tests, commit.
+            {% endif %}
+        - id: check
+          needs: [implement]
+          shell: eval "$RAYSPEC_INPUT_TEST_COMMAND"
+          allow_failure: true       # non-zero exit → failed + tolerated; ok/exit_code usable
+        - id: review
+          needs: [check]
+          agent: triage
+          prompt: |
+            Validation (authoritative, exit={{ steps.check.exit_code }}, ok={{ steps.check.ok }}):
+            {{ steps.check.output }}
+
+            Review the diff against {{ inputs.base }} (`git diff {{ inputs.base }}...HEAD`).
+            If the tests passed and you have no findings, reply with exactly one line BUILD-CLEAN.
+            Otherwise list what must change.
+
+  - id: confirm
+    needs: [build]
+    join: all                       # the default, spelled out: every dependency must succeed
+    approve:
+      message: "Open a PR for issue #{{ inputs.issue }} after {{ steps.build.iterations }} iteration(s)?"
+      class: chore                  # `rayspec run --approve-class chore` answers gates like this one
+      # One clean round means the reviewer agent asked for no changes — the case a human always
+      # waves through. Anything else still asks. `plan --risk` reports a self-approving gate, and
+      # an operator's `allow_yes: false` for this class overrides the condition entirely.
+      auto_if: steps.build.iterations == 1
+
+  - id: pr
+    needs: [confirm]
+    shell: |
+      git push -u origin HEAD
+      # Jinja expressions in shell bodies render as ${RAYSPEC_V<n>} env references (bash quoting applies).
+      gh pr create --base "{{ inputs.base }}" --title "fix: #{{ inputs.issue }}" \
+        --body "{{ steps.build.output.review }}"
+
+outputs:
+  verdict: "{{ steps.assess.output.verdict }}"
+  iterations: "{{ steps.build.iterations }}"
+  pr_url: "{{ steps.pr.output }}"
