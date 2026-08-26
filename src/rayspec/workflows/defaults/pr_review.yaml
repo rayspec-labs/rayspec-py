@@ -1,7 +1,12 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
 rayspec: 1
 name: pr_review
-description: Review a pull request with the reusable review_block and post the verdict.
+description: >
+  Review a pull request with the reusable review_block — one review of the whole change (Claude
+  and Codex in parallel, then a judge) — and, with `post: true`, comment a request-changes verdict
+  on the PR. Runs in place: `gh pr checkout` switches your working copy to the PR (no worktree).
+  For several named angles at once use `review_panel`; to measure whether the PR breaks the tests
+  use `validate_pr`.
 
 inputs:
   pr: { type: integer, required: true, description: "Pull request number" }

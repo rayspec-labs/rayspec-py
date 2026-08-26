@@ -209,6 +209,11 @@ Open a fresh Claude Code session afterwards — the skills load automatically. `
 tells you whether the installed copies are up to date; `rayspec skill install --force` refreshes
 them after upgrading rayspec.
 
+You need not name a workflow either: "fix issue 42" or "review PR 118 from a security angle" makes
+the agent list what is installed (`rayspec workflows --json`), pick one, fill its inputs and
+propose the `rayspec run` line — running a read-only workflow directly and asking before anything
+that writes ([docs/agent-skill.md](docs/agent-skill.md#selecting-a-workflow-from-a-request)).
+
 ## Documentation
 
 - [docs/concepts.md](docs/concepts.md) — the mental model (workflow/steps/run, DAG + bodies, scopes, outputs, runs, isolation)

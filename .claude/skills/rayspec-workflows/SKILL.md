@@ -1,13 +1,16 @@
 ---
 name: rayspec-workflows
-description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus the agents, prompts, includes and secret inputs you write by hand under .rayspec/, and scaffolding a project with rayspec init. Use when asked to create or edit a rayspec workflow, agent or prompt. This skill runs nothing itself — load the companion rayspec-cli skill to validate, plan, dry-run, run or debug what you wrote, and for the stub, test-case and policy files.
+description: Author and edit rayspec agent workflows — the YAML DSL on the Claude Agent SDK / OpenAI Codex SDK, covering every step kind, field and templating rule, plus the agents, prompts, includes and secret inputs you write by hand under .rayspec/, and scaffolding a project with rayspec init. Use when asked to create or edit a rayspec workflow, agent or prompt. Picking an existing workflow for a plain request ("fix issue 42", "review PR 118") and running it is the companion rayspec-cli skill's job — this skill runs nothing itself; load rayspec-cli to validate, plan, dry-run, run or debug what you wrote, and for the stub, test-case and policy files.
 ---
 
 # rayspec workflows — authoring the YAML DSL
 
 **Companion skill**: everything about *running* what you write — `rayspec validate`, `plan`,
 `run`, `resume`, `logs`, `explain`, `test`, every flag, `--json` shape and exit code — is in the
-**`rayspec-cli`** skill. Load it as soon as you leave the editor.
+**`rayspec-cli`** skill. Load it as soon as you leave the editor — and *before* the editor when
+the request names a job rather than a file ("fix issue 42", "review PR 118"): that skill picks
+an existing project or bundled workflow from `rayspec workflows --json` and runs it, so write a
+new one only when nothing listed there does the job.
 
 ## Mental model (read this first)
 

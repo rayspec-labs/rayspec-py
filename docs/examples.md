@@ -26,7 +26,8 @@ that run by name in any project without copying anything.
 These run by name in any project — `rayspec run <name>` with no `.rayspec/` at all — and
 `rayspec workflows eject <name>` copies one into `.rayspec/workflows/` when you want to change it.
 Every one of them is self-contained (inline agents, no prompt files) and covered offline by
-`tests/workflows/checks.yaml` in the repository.
+`tests/workflows/checks.yaml` in the repository. Each description also says what the workflow is
+*not* for — that is what the `rayspec-cli` skill routes a plain request by.
 
 | Workflow | Does | Inputs |
 |---|---|---|

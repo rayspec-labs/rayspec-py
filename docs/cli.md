@@ -538,6 +538,11 @@ header (else `null`), and `inputs` is `{name: {type, required, default, enum, de
 secret}}` from the file's `inputs:` (`{}` when it declares none or does not parse). The document
 is still an array, so `rayspec workflows --json | jq '.[]'` keeps working.
 
+The `rayspec-cli` skill reads this document to map a plain request onto a workflow
+([agent-skill.md](agent-skill.md#selecting-a-workflow-from-a-request)), together with
+`plan --json`'s `isolation` and `agents[].access` and `runs --json`'s `workflow`, so those keys
+are an interface: renaming one means updating the skill's selection section in the same change.
+
 `--json` and `--output` are options of the **listing**: before a subcommand
 (`rayspec workflows --json eject review`) they are a usage error (exit 2, `--json belongs to the
 rayspec workflows listing…`) rather than silently dropped; only `--root` is honoured there

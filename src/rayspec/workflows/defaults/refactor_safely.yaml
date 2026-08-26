@@ -7,7 +7,7 @@ description: >
   stops the run), again after every edit until both are green, and a fresh read-only agent then
   reads the diff and says whether it changed shape or behaviour. Ends at a local commit in the
   run's worktree; pushing is the caller's job. Unlike `fix_issue`, nothing here is allowed to
-  change what the code does.
+  change what the code does — a bug or a feature is `fix_issue`'s job, not this one's.
 # The plan gate names approval class `risky` (as `resolve_conflicts` does). Hold it shut in your
 # policy so that no --yes / --dry-run / --approve-class can start a refactor unattended:
 #   # .rayspec/policy.yaml

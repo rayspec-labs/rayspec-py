@@ -60,6 +60,7 @@ SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
             "## Mental model",
             "## CLI quick reference",
             "## Exit codes and the `--json` contract",
+            "## Selecting a workflow from a request",
             "## Operating loops",
             "## Safety",
             "## Governance and trust",
@@ -69,7 +70,7 @@ SHAPE: dict[str, tuple[tuple[str, ...], int, int]] = {
             "## References",
         ),
         300,
-        520,
+        560,
     ),
 }
 

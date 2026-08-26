@@ -6,6 +6,8 @@ description: >
   searching the tracker for an existing one. A duplicate cancels the run naming the issue it
   found; anything new is shown to a human before `gh issue create` runs. Without the duplicate
   check this would be a machine for issue-tracker sludge; with it, filing is safe to automate.
+  It files in the repository of the current checkout and changes no code — an issue that already
+  exists is `fix_issue`'s job.
 # Nothing is written to the checkout (`isolation: none`); the one side effect is the issue, and it
 # sits behind a gate of class `chore` — the class `fix_issue` uses for its PR. `--yes` and
 # `--approve-class chore` wave it through; hold the class shut in your policy for a repository

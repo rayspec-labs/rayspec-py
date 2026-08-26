@@ -3,7 +3,9 @@ rayspec: 1
 name: fix_issue
 description: >
   Triage a GitHub issue, fix it in a self-healing loop until the tests pass and the reviewer is
-  satisfied, ask a human, then open a PR. Runs in a git worktree (the default isolation).
+  satisfied, ask a human, then open a PR. Runs in a git worktree (the default isolation). Needs an
+  existing issue number — to file one use `create_issue`; to restructure code without changing
+  what it does use `refactor_safely`.
 
 inputs:
   issue: { type: integer, required: true, description: "GitHub issue number" }
