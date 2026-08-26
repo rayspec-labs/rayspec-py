@@ -62,6 +62,7 @@ def test_values_workflows_lists_the_project_workflows(
     assert res.exit_code == 0, res.output
     assert res.stdout.split() == [
         "example",
+        "create_issue",
         "fix_issue",
         "pr_review",
         "release_check",
