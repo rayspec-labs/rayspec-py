@@ -1,0 +1,106 @@
+# The bundled `architect` against a real tree: `exec_shell: true` cases that
+# tests/workflows/test_architect.py drives one fresh repository at a time through
+# `rayspec test --exec-shell --case <id>`. The fixture has five source directories of known size
+# (core 60 lines > api 30 > tests 20 > util 10 > scripts 5), a manifest, a docs file that is not
+# source, an ignored node_modules/ and a tracked build/ that the area scan must leave out. Nothing
+# in the repository may change; the report lands in the run directory.
+checks:
+  - id: survey_defaults            # every area surveyed, the architect hears each one, the report is saved
+    workflow: architect
+    stubs: stubs/survey.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        areas: [src/app/core, src/app/api, tests, src/app/util, scripts]
+        surveyed: 5
+        lost: 0
+      steps:
+        map: { status: succeeded, output_regex: "=== MANIFESTS ===\n--- pyproject.toml\n" }
+        areas: { status: succeeded, output_regex: '"path": "src/app/core",\n    "files": 3,\n    "lines": 60' }
+        nothing: { status: skipped, skip_reason: when_false }
+        survey: succeeded
+        "survey[0]/inspect": succeeded
+        "survey[4]/inspect": succeeded
+        no_surveys: { status: skipped, skip_reason: when_false }
+        report: succeeded
+        save: { status: succeeded, output_regex: "/artifacts/architecture\\.md$" }
+  - id: max_two                    # max_areas bounds the breadth: only the two largest are surveyed
+    workflow: architect
+    inputs: { max_areas: 2 }
+    stubs: stubs/survey_two.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      outputs: { areas: [src/app/core, src/app/api], surveyed: 2, lost: 0 }
+      steps: { "survey[0]/inspect": succeeded, "survey[1]/inspect": succeeded, report: succeeded }
+  - id: focus_dead_code            # the focus changes the question every surveyor is asked
+    workflow: architect
+    inputs: { focus: dead_code, max_areas: 2 }
+    stubs: stubs/focus_dead_code.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      outputs: { surveyed: 2 }
+  - id: focus_layering
+    workflow: architect
+    inputs: { focus: layering, max_areas: 2 }
+    stubs: stubs/focus_layering.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      outputs: { surveyed: 2 }
+  - id: one_lost                   # one surveyor lost: the architect is told which area produced no input
+    workflow: architect
+    stubs: stubs/one_lost.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { surveyed: 4, lost: 1 }
+      steps:
+        "survey[0]/inspect": succeeded
+        "survey[1]/inspect": failed
+        survey: succeeded
+        no_surveys: { status: skipped, skip_reason: when_false }
+        report: succeeded
+  - id: all_lost                   # every surveyor lost: nothing to report → failed, the architect never asked
+    workflow: architect
+    stubs: stubs/all_lost.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "every surveyor failed"
+      steps:
+        "survey[0]/inspect": failed
+        survey: succeeded
+        no_surveys: succeeded
+        report: { status: skipped, skip_reason: when_false }
+        save: skipped
+  - id: budget                     # the ceiling is hard: four surveyors spend it, the fifth and the architect never start
+    workflow: architect
+    stubs: stubs/budget.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "budget exceeded"
+      steps:
+        "survey[0]/inspect": succeeded
+        "survey[4]/inspect": { status: skipped, skip_reason: budget_exceeded }
+        report: { status: skipped, skip_reason: budget_exceeded }
+        save: skipped
+  - id: no_sources                 # a tree without source files: nothing to survey (exit 4)
+    workflow: architect
+    stubs: stubs/survey.yaml
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "nothing to survey"
+      steps:
+        areas: { status: succeeded, output_json: [] }
+        nothing: succeeded
+        survey: { status: skipped, skip_reason: when_false }

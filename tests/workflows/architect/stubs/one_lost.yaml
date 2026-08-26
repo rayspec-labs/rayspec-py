@@ -1,0 +1,18 @@
+# The api surveyor (item 1) fails outright — an outage, not a rate limit (`transient: false`, so
+# the step's retry does not apply). `on_failure: continue` leaves a null slot; the architect is
+# told which area produced no input and still writes the report.
+steps:
+  "survey[1]/inspect":
+    fail: { kind: api, message: "simulated provider outage", transient: false }
+  report:
+    text: "# Architecture\nfour of five areas surveyed"
+    expect:
+      prompt_contains:
+        - "## src/app/core (3 files, 60 lines)\ncore\n"
+        - "## src/app/api (2 files, 30 lines)\nSURVEYOR FAILED — no input for this area.\n"
+        - "## tests (1 files, 20 lines)\nfine\n"
+match:
+  - prompt_regex: "^Area 1 of 5: `src/app/core`"
+    output: { summary: "core", depends_on: [], findings: [] }
+  - prompt_regex: "^Area "
+    output: { summary: "fine", depends_on: [], findings: [] }

@@ -1,0 +1,11 @@
+# focus: layering — the layering question, and none of the others.
+steps:
+  report:
+    text: "# Architecture: layering"
+    expect: { prompt_contains: ["surveyed with the focus **layering**."] }
+match:
+  - prompt_regex: "^Area "
+    output: { summary: "domain layer", depends_on: [], findings: [] }
+    expect:
+      prompt_contains: ["Focus: **layering**.\nWhich layer is this area (entry point, domain, infrastructure, utility)?"]
+      not_contains: ["Which other areas does this one import", "referenced from nowhere else"]

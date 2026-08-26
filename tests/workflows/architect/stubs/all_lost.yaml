@@ -1,0 +1,6 @@
+# Every surveyor fails outright: nothing to report — the architect is never asked.
+steps:
+  "survey[*]/inspect":
+    fail: { kind: api, message: "simulated provider outage", transient: false }
+  report:
+    fail: { kind: api, message: "the architect must not be asked", transient: false }

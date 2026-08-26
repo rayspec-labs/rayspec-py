@@ -1,0 +1,34 @@
+# Five areas, answered by content (an `each:` runs its items concurrently, so a `sequence:` could
+# not tell them apart): core reports a cycle, the rest have nothing to say. The `expect:` blocks
+# pin what a surveyor is told (its area, its size, the focus, the other areas, the map) and the
+# per-area sections the architect is given.
+defaults: { latency_ms: 0, usage: { input: 3000, output: 300 } }
+steps:
+  report:
+    text: |
+      # Architecture: coupling
+      core is imported by api and tests; util is a leaf. One cycle: core/a.py → api/x.py.
+    expect:
+      access: read-only
+      prompt_contains:
+        - "5 areas of this repository were surveyed with the focus **coupling**.\n"
+        - "## src/app/core (3 files, 60 lines)\ncore holds the domain model.\ndepends on: src/app/util\n- [medium] src/app/core/a.py: imports api.x for a constant (cycle)\n"
+        - "## src/app/api (2 files, 30 lines)\nnothing notable\ndepends on: (nothing named)\n(no findings)\n"
+        - "## scripts (1 files, 5 lines)\n"
+        - "The repository map:\n=== TOP LEVEL ===\n"
+match:
+  - prompt_regex: "^Area 1 of 5: `src/app/core`"
+    output:
+      summary: "core holds the domain model."
+      depends_on: [src/app/util]
+      findings: [{ severity: medium, file: src/app/core/a.py, note: "imports api.x for a constant (cycle)" }]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Area 1 of 5: `src/app/core` (3 source files, 60 lines).\nFocus: **coupling**.\nWhich other areas does this one import or call"
+        - "The other areas surveyed: src/app/api, tests, src/app/util, scripts.\n"
+        - "=== MANIFESTS ===\n--- pyproject.toml\n"
+  - prompt_regex: "^Area "
+    output: { summary: "nothing notable", depends_on: [], findings: [] }
+    expect: { access: read-only, output_schema: true }
