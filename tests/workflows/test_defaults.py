@@ -47,7 +47,13 @@ def _copy_suite(root: Path) -> None:
 
 
 def test_the_library_is_the_v1_set() -> None:
-    assert BUNDLED == ["fix_issue", "pr_review", "release_check", "review_block"]
+    assert BUNDLED == [
+        "fix_issue",
+        "pr_review",
+        "release_check",
+        "resolve_conflicts",
+        "review_block",
+    ]
 
 
 def test_rayspec_test_passes_with_only_the_bundled_set(empty_root: Path) -> None:
