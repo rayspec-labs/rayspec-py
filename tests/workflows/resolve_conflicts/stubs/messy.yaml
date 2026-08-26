@@ -1,0 +1,17 @@
+# Three conflicts classified in parallel: `match:` answers each classify call by the file named in
+# its prompt (an `each:` runs its items concurrently, so a `sequence:` could not tell them apart).
+# The resolver's brief must then list every file with ITS verdict, in the order of the conflict
+# list — the alignment the workflow builds from `steps.analyze.output[loop.index0]`.
+steps:
+  "resolve[*]/fix":
+    text: "Resolved."
+    expect:
+      prompt_contains:
+        - "- `app.py` → combine (low risk): both sides bumped VALUE\n- `gone.py` → theirs (low risk): main still uses it\n- `my file.py` → ours (low risk): main only touched a comment\n"
+match:
+  - prompt_regex: "Conflict 1 of 3: `app.py`"
+    output: { strategy: combine, risk: low, reason: "both sides bumped VALUE" }
+  - prompt_regex: "Conflict 2 of 3: `gone.py`"
+    output: { strategy: theirs, risk: low, reason: "main still uses it" }
+  - prompt_regex: "Conflict 3 of 3: `my file.py`"
+    output: { strategy: ours, risk: low, reason: "main only touched a comment" }

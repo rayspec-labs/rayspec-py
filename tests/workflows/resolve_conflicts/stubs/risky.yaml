@@ -1,0 +1,5 @@
+# The analyst asks for a human: strategy manual, risk high → the `risky` gate.
+steps:
+  "analyze[*]/classify":
+    output: { strategy: manual, risk: high, reason: "both sides changed VALUE for different reasons" }
+  "resolve[*]/fix": { text: "Resolved app.py and staged it." }

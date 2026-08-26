@@ -57,6 +57,7 @@ def test_workflows_lists_and_json(tree: Tree):
         "fix_issue",
         "pr_review",
         "release_check",
+        "resolve_conflicts",
         "review_block",
     ]
 

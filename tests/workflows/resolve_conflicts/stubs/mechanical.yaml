@@ -1,0 +1,31 @@
+# The analyst calls app.py mechanical; the resolver answers but — being a stub — edits nothing,
+# so the marker check fails on every attempt. The `expect:` blocks pin what each agent was asked.
+steps:
+  "analyze[*]/classify":
+    output: { strategy: theirs, risk: low, reason: "main bumped VALUE; ours is the stale side" }
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Conflict 1 of 1: `app.py` (merging main)"
+        - "=== BASE (common ancestor) ===\nVALUE = 1\n"
+        - "=== OURS (HEAD) ===\nVALUE = 2\n"
+        - "=== THEIRS (main) ===\nVALUE = 3\n"
+  "resolve[*]/fix":
+    sequence:
+      - text: "Resolved app.py and staged it."
+        expect:
+          access: workspace-write
+          session: fresh
+          prompt_contains:
+            - "Resolve every conflict left by `git merge main`"
+            - "The analyst's verdict per file:\n- `app.py` → theirs (low risk): main bumped VALUE; ours is the stale side\n\nStage each file"
+            - "`python3 -B -c 'import app; assert app.VALUE == 3'` must pass afterwards"
+      - text: "Resolved it again."
+        expect:
+          session: resumed
+          prompt_contains:
+            - "Attempt 2 of 3"
+            - "(exit 1):\n\nconflict markers still unresolved in:\napp.py\n"
+      - text: "Resolved it once more."
+        expect: { session: resumed, prompt_contains: ["Attempt 3 of 3"] }

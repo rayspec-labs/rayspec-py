@@ -22,7 +22,7 @@ from rayspec.loader.bundled import (
 )
 from rayspec.loader.yaml import load_yaml
 
-V1_SET = ["fix_issue", "pr_review", "release_check", "review_block"]
+V1_SET = ["fix_issue", "pr_review", "release_check", "resolve_conflicts", "review_block"]
 
 
 def test_bundled_dir_holds_the_v1_set() -> None:

@@ -3581,6 +3581,12 @@ recorded — never the tool input.
 - `tests/workflows/` covers the bundled library offline: `checks.yaml` + `stubs/` are copied into a
   project root with no `.rayspec/` and run through `rayspec test`, so every case resolves its
   workflow from the package (incl. a stub-less `pr_review` dry run and an ejected copy).
+  `tests/workflows/resolve_conflicts/` is the second, real-git net for that workflow: `exec_shell:
+  true` cases (+ `stubs/`, `policy/`) that `test_resolve_conflicts.py` drives one fresh conflicted
+  repository at a time through `rayspec test --exec-shell --case <id>` (a merge mutates the
+  root, and `rayspec test` reads the operator policy once at start-up, so the driver exports a
+  case's `RAYSPEC_POLICY` itself), plus in-process runs with a `Provider` that edits the checkout
+  — the resolved paths, which the stub provider cannot reach.
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.
