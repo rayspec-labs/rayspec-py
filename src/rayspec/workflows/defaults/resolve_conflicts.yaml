@@ -14,7 +14,7 @@ description: >
 inputs:
   base: { type: string, default: main, description: "Branch or ref to merge into the checkout" }
   test_command: { type: string, default: "pytest -q", description: "Must pass once the conflicts are resolved" }
-  max_attempts: { type: integer, default: 3, description: "Resolve → verify rounds before the run gives up (1-10)" }
+  max_attempts: { type: integer, default: 3, description: "Resolve → verify rounds before the run gives up (at most 25)" }
 
 defaults:
   agent: resolver                   # prompt steps without `agent:` use this one
@@ -80,8 +80,8 @@ steps:
     stop:
       status: cancelled
       reason: >
-        git merge {{ inputs.base }} produced no conflicts — nothing to resolve (the merge is left
-        staged and uncommitted in {{ run.workdir }})
+        git merge {{ inputs.base }} produced no conflicts — nothing to resolve (whatever it merged
+        is staged, uncommitted, in {{ run.workdir }})
 
   - id: analyze
     needs: [conflicts]
@@ -89,7 +89,6 @@ steps:
     description: Read-only classification of every conflict, in parallel, before anything is modified.
     each: steps.conflicts.output
     as: file
-    max_parallel: 3
     steps:
       - id: sides
         shell: |
@@ -137,7 +136,7 @@ steps:
     needs: [gate, analyze]
     join: any                       # the gate is skipped when nothing is risky; when it ran it must have passed
     loop:
-      max_iterations: 10            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
+      max_iterations: 25            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
       until: steps.check.ok
       on_exhausted: fail
       steps:
@@ -170,10 +169,15 @@ steps:
             if [ -n "$unresolved" ]; then
               echo "conflict markers still unresolved in:"; echo "$unresolved"; exit 1
             fi
-            # `git add` on a file that still carries markers makes the index look merged — look again
-            touched="$(git diff --name-only -z HEAD | tr '\0' '\n')"
-            if [ -n "$touched" ] && printf '%s\n' "$touched" | xargs git grep -l -E '^(<{7}|>{7})( |$)' -- ; then
-              echo "conflict markers left in a staged file (listed above)"; exit 1
+            # `git add` on a file that still carries markers makes the index look merged, and the
+            # index is what gets committed while the working tree is what the tests see — so look
+            # for markers among the lines this merge ADDS, in both (no filenames are parsed)
+            added="$(git diff --cached -U0 --no-color HEAD; git diff -U0 --no-color HEAD)"
+            if printf '%s\n' "$added" | grep -qE '^\+(<{7}|>{7})( |$)'; then
+              echo "conflict markers left behind in:"
+              { git diff --cached --name-only -G '^(<{7}|>{7})( |$)' HEAD
+                git diff --name-only -G '^(<{7}|>{7})( |$)' HEAD; } | sort -u
+              exit 1
             fi
             eval "$RAYSPEC_INPUT_TEST_COMMAND" 2>&1   # one transcript: the next prompt and give_up show it
           allow_failure: true       # non-zero exit → failed + tolerated; the loop reads ok / exit_code / output

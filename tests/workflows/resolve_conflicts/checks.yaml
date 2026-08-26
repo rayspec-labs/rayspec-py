@@ -66,3 +66,20 @@ checks:
       status: failed
       exit_code: 1
       steps: { merge: failed, conflicts: failed, clean: skipped, analyze: skipped, commit: skipped }
+  - id: messy_leaves_markers      # three conflicts (a space in a name, a deletion) classified in parallel
+    workflow: resolve_conflicts
+    inputs: { base: main, max_attempts: 1 }
+    stubs: stubs/messy.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "conflict markers still unresolved in:\napp.py\ngone.py\nmy file.py"
+      steps:
+        conflicts: { status: succeeded, output_json: ["app.py", "gone.py", "my file.py"] }
+        "analyze[1]/sides": { status: succeeded, output_regex: "=== OURS \\(HEAD\\) ===\n\\(deleted on our side\\)" }
+        "analyze[1]/classify": { status: succeeded, output_json: { strategy: theirs, risk: low, reason: "main still uses it" } }
+        "analyze[2]/classify": { status: succeeded, output_json: { strategy: ours, risk: low, reason: "main only touched a comment" } }
+        gate: skipped
+        "resolve[1]/give_up": succeeded
+        commit: skipped
