@@ -1,6 +1,6 @@
 ---
 name: rayspec-cli
-description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, the stub, test-case and policy files, providers, cost, and the run records a .rayspec/ project leaves behind. Use when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow, to write a test case or a policy for one, or to install these skills. This skill does not explain the YAML — writing or editing it is the companion rayspec-workflows skill.
+description: Operate rayspec from the command line — run, inspect, resume, approve, debug, test, audit and govern agent workflows (Claude Agent SDK + OpenAI Codex SDK). Every command, flag, --json shape and exit code, plus dry runs, the stub, test-case and policy files, providers, cost, and the run records a .rayspec/ project leaves behind. Also how to turn a plain request that names no workflow — "fix issue 42", "review PR 118 from a security angle", "is this PR broken?" — into the right rayspec run line — discover with rayspec workflows --json, fill the inputs, ask when one is missing, dry-run before a first real run. Use when asked to validate, plan, run, resume, cancel, cost or troubleshoot a workflow, to get a review, fix, check or survey done with rayspec, to write a test case or a policy for one, or to install these skills. This skill does not explain the YAML — writing or editing it is the companion rayspec-workflows skill.
 ---
 
 # rayspec CLI — running, inspecting and governing
@@ -134,6 +134,46 @@ command that takes it is in exactly one of these three shapes.
   `projects add`/`remove`, `skill install`, `workflows eject`, and `runs stubs` — whose `-o/--output PATH` predates
   the flag and means "write the script to this file".
 
+## Selecting a workflow from a request
+
+Most requests name a job, not a workflow — "fix issue 42", "is PR 118 broken?". You are the
+router (rayspec has none), and you route from what is installed, never from memory:
+
+1. **Discover**: `rayspec workflows --json` (read-only). That array is the whole menu. A
+   `project` or `overridden` row beats a `bundled` one of the same name; `description` says what
+   a workflow is for *and not for*; `inputs` says what it needs (`required`, `default`, `enum`,
+   `type`). A workflow added yesterday is in the list; a list you remember is stale.
+2. **Discriminate** on what the request asks for, not on the words it uses: *measure* (run the
+   tests on both sides, classify the delta) vs *judge* (read the diff, give an opinion); a
+   *change* (edit, commit, open a PR or an issue) vs a *report* (a document, nothing written);
+   one review vs a *panel* of named angles (`lenses`). "From a security and performance angle"
+   is a panel, "was it already broken" is a measurement, "how is this code layered" is a report.
+3. **Fill the inputs** from the request and from facts you can check for free —
+   `git branch --show-current`, `gh pr status`, `gh pr view <n>` — never from a guess. Numbers
+   as given (`--input pr=118`), arrays as JSON (`--input lenses='["security","performance"]'`),
+   `enum` values verbatim; leave a defaulted input alone unless the request overrides it.
+4. **Ask instead of guessing** when a `required` input has no source in the request or the
+   checkout, when two workflows fit, or when the repository, PR or issue is ambiguous. Show the
+   command with the gap marked (`--input issue=<n>`); a `create_issue` filed in the wrong
+   repository is a public mistake.
+5. **Then `rayspec plan <wf> --input … --json`** — free, and it settles who presses enter:
+   - every `agents[].access` is `read-only` and neither the description nor any input
+     description names a side effect (post, push, create, commit) →
+     **state the command, then run it** (it still spends money — say so);
+   - anything else → **print the command and wait** for the human. A `post: true` comment, a
+     PR, an issue, a commit are all "anything else";
+   - `isolation` is `worktree`, an agent is `workspace-write` or `full`, and `rayspec runs --json`
+     lists no run with that `workflow` in this project → **propose `--dry-run` first**: free,
+     offline, and it shows the shape of the run before it costs anything.
+
+| Request | Command |
+|---|---|
+| review PR 118 from a security and performance angle | `rayspec run review_panel --input pr=118 --input lenses='["security","performance"]'` — read-only unless `post`: run it |
+| is PR 118 broken, or was it already broken? | `rayspec run validate_pr --input pr=118` — measures in a worktree, read-only judge: run it |
+| fix issue 42 | `rayspec run fix_issue --input issue=42` — writes and opens a PR: propose; first time here, `--dry-run` first |
+| how is this codebase layered? | `rayspec run architect --input focus=layering` — a report, nothing written: run it |
+| fix the failing issue | which issue? ask, showing `rayspec run fix_issue --input issue=<n>` |
+
 ## Operating loops
 
 **1 · Check before you spend.** Every step is free; do them in order and stop at the first failure.
@@ -240,13 +280,18 @@ is not short-circuited — `resume` re-evaluates the ceiling.
 
 ## Safety
 
-**Ask the human before the first real run of a workflow you have not run before**, and before
-anything that edits files outside a worktree, pushes, opens a PR, calls a webhook or spends money.
-To find out which of those it does, read the workflow and then run `rayspec plan <wf>` (the access
-level, provider and model of every agent) and `rayspec plan <wf> --risk` (what the run would be
-*allowed* to do, agent by agent and step by step). A **dry run proves the graph, not the blast
-radius** — it replaces every agent with the stub and skips every `shell:`/`python:` step, so a
-clean dry run says nothing about whether a real run writes, pushes or spends.
+**Ask the human before any run that writes** — edits files (in a worktree or not), commits,
+pushes, opens a PR or an issue, posts a comment, calls a webhook — and, for such a workflow, before
+its first real run in a project that has never run it (propose `--dry-run` first; the rule is in
+[Selecting a workflow](#selecting-a-workflow-from-a-request)). A workflow whose every agent is
+`read-only` and whose description names no side effect is the one thing you may run unasked — a
+survey, a review, a measurement — after stating the command, because it still spends money. To
+find out which kind you have, read the workflow and then run `rayspec plan <wf> --json` (the
+`isolation`, and the `access` level, provider and model of every agent) and `rayspec plan <wf>
+--risk` (what the run would be *allowed* to do, agent by agent and step by step). A **dry run
+proves the graph, not the blast radius** — it replaces every agent with the stub and skips every
+`shell:`/`python:` step, so a clean dry run says nothing about whether a real run writes, pushes
+or spends.
 
 Every command of this skill's table is in exactly one of these three classes.
 
