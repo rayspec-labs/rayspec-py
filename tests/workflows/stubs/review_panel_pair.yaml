@@ -1,0 +1,15 @@
+# Lens sets other than the default: two reviewers must each be told exactly the other one; a single
+# reviewer is told it is alone. One file serves both cases — `match:` entries that never fire are fine.
+steps:
+  synthesize:
+    output: { verdict: approve, summary: "Every lens approves.", findings: [], disagreements: [] }
+match:
+  - prompt_regex: "Your angle: \\*\\*security\\*\\*"
+    output: { verdict: approve, findings: [] }
+    expect: { prompt_contains: ["You are reviewer 1 of 2; the others are covering correctness."] }
+  - prompt_regex: "Your angle: \\*\\*correctness\\*\\*"
+    output: { verdict: approve, findings: [] }
+    expect: { prompt_contains: ["You are reviewer 2 of 2; the others are covering security."] }
+  - prompt_regex: "Your angle: \\*\\*tests\\*\\*"
+    output: { verdict: approve, findings: [] }
+    expect: { prompt_contains: ["You are reviewer 1 of 1; you are the only reviewer."] }

@@ -1,0 +1,29 @@
+# Two lenses contradict each other over the same line: performance wants the bounds check gone,
+# security wants it kept. The chair must name the disagreement rather than average it away.
+steps:
+  synthesize:
+    output:
+      verdict: request_changes
+      summary: "All five lenses reviewed; security and performance disagree about the bounds check."
+      findings:
+        - severity: blocker
+          file: app.py
+          note: "keep the bounds check: the index is attacker-controlled"
+          raised_by: [security]
+      disagreements:
+        - "security wants the bounds check in app.py kept; performance wants it removed for the 30% it costs"
+    expect:
+      prompt_contains:
+        - "## security\nverdict: request_changes\n- [blocker] app.py: keep the bounds check: the index is attacker-controlled\n"
+        - "## performance\nverdict: request_changes\n- [major] app.py: drop the bounds check in the hot loop; it costs 30%\n"
+match:
+  - prompt_regex: "Your angle: \\*\\*security\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: blocker, file: app.py, note: "keep the bounds check: the index is attacker-controlled" }]
+  - prompt_regex: "Your angle: \\*\\*performance\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: major, file: app.py, note: "drop the bounds check in the hot loop; it costs 30%" }]
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }
