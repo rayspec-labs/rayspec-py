@@ -1,0 +1,95 @@
+# The bundled `validate_pr` against real test runs: `exec_shell: true` cases that
+# tests/workflows/test_validate_pr.py drives one fresh repository at a time through
+# `rayspec test --exec-shell --case <id>`. Each case gets its own fixture (`main` and a checked-out
+# `feature` branch whose app.py breaks or fixes tests as the case needs); test_app.py is a tiny
+# runner that prints pytest-shaped `FAILED test_app.py::<name> - …` lines. A fake `gh` first on
+# PATH checks the "PR" out as a detached HEAD on `feature`, answers `pr diff`, and fails the
+# subcommand named by $GH_FAIL.
+checks:
+  - id: clean                      # green on both sides
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { status: clean, newly_failing: [], newly_passing: [], base_exit: 0, head_exit: 0 }
+      steps:
+        start: { status: succeeded, output_regex: "^feature$" }
+        checkout_base: { status: succeeded, output_regex: " init$" }
+        test_base: { status: succeeded, output_regex: "^0 failed, 3 passed$" }
+        checkout_head: { status: succeeded, output_regex: " feature$" }
+        test_head: { status: succeeded, output_regex: "^0 failed, 3 passed$" }
+        diff: { status: succeeded, output_regex: "\\+# feature" }
+        restore: succeeded
+        compare: succeeded
+        judge: succeeded
+  - id: regression                 # green base, red head: the newly failing test is named
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge_regression.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        status: regression
+        newly_failing: ["test_app.py::test_b"]
+        newly_passing: []
+        base_exit: 0
+        head_exit: 1
+        recommendation: fix_pr
+      steps:
+        test_base: succeeded
+        test_head: { status: failed, output_regex: "FAILED test_app.py::test_b - AssertionError: B == 0" }
+        restore: succeeded
+  - id: preexisting                # the same failure on both sides: data, not a regression
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { status: preexisting, newly_failing: [], newly_passing: [], base_exit: 1, head_exit: 1 }
+      steps: { test_base: failed, test_head: failed, restore: succeeded }
+  - id: fixed                      # red base, green head
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      outputs: { status: fixed, newly_failing: [], newly_passing: ["test_app.py::test_b"], base_exit: 1, head_exit: 0 }
+      steps: { test_base: failed, test_head: succeeded }
+  - id: mixed                      # red on both sides, but different tests: a regression with both lists filled
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      outputs:
+        status: regression
+        newly_failing: ["test_app.py::test_c"]
+        newly_passing: ["test_app.py::test_b"]
+        base_exit: 1
+        head_exit: 1
+  - id: checkout_fails             # gh cannot check the PR out: nothing is compared, the checkout is still restored
+    workflow: validate_pr
+    inputs: { pr: 7, test_command: "python3 -B test_app.py" }
+    stubs: stubs/judge.yaml
+    env: { GH_FAIL: checkout }
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      steps:
+        test_base: succeeded
+        checkout_head: failed
+        test_head: skipped
+        diff: skipped
+        compare: skipped
+        judge: skipped
+        restore: succeeded

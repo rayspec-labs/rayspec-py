@@ -1,0 +1,14 @@
+# A regression: the judge sees the classification, the newly failing test, the PR run's
+# transcript (the FAILED line) and the PR's diff (the line that broke it).
+steps:
+  judge:
+    output: { summary: "B was changed to 0 in the PR; test_b is a real regression.", recommendation: fix_pr }
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Pull request #7 against main; `python3 -B test_app.py` ran on both sides.\n"
+        - "\"status\": \"regression\",\n  \"newly_failing\": [\n    \"test_app.py::test_b\"\n  ],\n  \"newly_passing\": [],\n  \"base_exit\": 0,\n  \"head_exit\": 1"
+        - "Tail of the PR run (exit 1):\nFAILED test_app.py::test_b - AssertionError: B == 0\n1 failed, 2 passed\n"
+        - "The PR's diff (may be truncated):\n"
+        - "-B = 2\n+B = 0\n"

@@ -1,0 +1,9 @@
+# The judge only interprets; one scripted answer serves every classification. `expect:` pins that
+# the comparison it was handed is the authoritative one (the JSON `compare` printed).
+steps:
+  judge:
+    output: { summary: "interpreted", recommendation: investigate }
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains: ["Comparison (authoritative):\n{\n  \"status\": \""]
