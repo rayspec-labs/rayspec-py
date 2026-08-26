@@ -1,0 +1,206 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: review_panel
+description: >
+  Review a diff from several independent angles in parallel — one read-only agent per lens, none
+  of them seeing the others' findings — then let a chair merge everything into one deduplicated
+  verdict that names disagreements instead of averaging them away. Emits a verdict and the counts
+  behind it; enforcing it (blocking a merge) is the caller's or CI's job.
+# Runs in place: nothing is written unless you pass `pr`, which checks the pull request out in your
+# working copy exactly as `gh pr checkout` would (a clean tree is required). `post: true` comments
+# the merged verdict on that PR. The lens set is an input — drop `api_design` for a repository with
+# no public API, add `migrations` for a data project — no fork needed.
+
+inputs:
+  base: { type: string, default: main, description: "Ref the diff is taken against (base...HEAD)" }
+  pr: { type: integer, description: "Optional pull request to check out first (gh pr checkout)" }
+  lenses:
+    type: array
+    items: { type: string }
+    default: [security, correctness, performance, api_design, tests]
+    description: "One reviewer per entry; they run in parallel and independently of each other"
+  post: { type: boolean, default: false, description: "With `pr`: post the merged verdict as a PR comment" }
+
+defaults:
+  timeout: 15m
+  max_parallel: 5                   # the run-wide leaf cap — the panel's own cap below cannot exceed it
+
+isolation: none                     # read-only review of the checkout you are on
+
+agents:
+  panelist:
+    provider: claude
+    model: medium
+    access: read-only               # Read/Glob/Grep only — it cannot edit or run commands
+    thinking: true
+    budget_usd: 1.50                # hard stop per reviewer
+    instructions: >
+      You review code from exactly one angle, the one named in the prompt. Ignore everything
+      outside it — another reviewer is covering that. Report only findings you can point at a
+      concrete file (and line, where possible). An empty finding list is a valid and respectable
+      answer.
+    tools: { deny: [web] }
+  chair:
+    provider: claude
+    model: large
+    access: read-only
+    thinking: true
+    budget_usd: 3.00                # the single most expensive step; bounded
+    instructions: >
+      You chair a review panel. You merge independent reviews into one verdict: drop duplicates
+      (naming every lens that raised a finding in `raised_by`), keep the concrete ones, and resolve
+      disagreements by naming them rather than averaging them away.
+    tools: { deny: [web] }
+
+steps:
+  - id: checkout
+    when: inputs.pr is defined
+    shell: gh pr checkout "$RAYSPEC_INPUT_PR"
+
+  - id: diff
+    needs: [checkout]
+    join: always                    # `checkout` is skipped without `pr` — `any` would skip this step too
+    when: steps.checkout.status in ['succeeded', 'skipped']   # …but a failed checkout must not review the wrong tree
+    description: The whole diff, once, for every reviewer; a NO-CHANGES line when there is nothing to review.
+    shell: |
+      if git diff --quiet "$RAYSPEC_INPUT_BASE...HEAD"; then
+        echo "NO-CHANGES"
+        exit 0
+      fi
+      git diff --stat "$RAYSPEC_INPUT_BASE...HEAD"
+      echo "=== FULL DIFF ==="
+      git diff "$RAYSPEC_INPUT_BASE...HEAD"
+
+  - id: nothing
+    needs: [diff]
+    when: steps.diff.output | has_signal('NO-CHANGES')
+    stop:
+      status: cancelled
+      reason: "no changes between {{ inputs.base }} and HEAD — nothing to review"
+
+  - id: panel
+    needs: [diff]
+    when: not (steps.diff.output | has_signal('NO-CHANGES'))
+    description: One independent reviewer per lens, concurrently; a lost reviewer leaves a null slot, not a failed run.
+    each: inputs.lenses
+    as: lens
+    max_parallel: 5
+    on_failure: continue
+    steps:
+      - id: review
+        agent: panelist
+        retry: { attempts: 2, delay: 2s }
+        prompt: |
+          Your angle: **{{ lens }}**. You are reviewer {{ each.index + 1 }} of {{ each.total }}; {% if each.total > 1 %}the others are covering {{ inputs.lenses | reject('equalto', lens) | join(', ') }}.{% else %}you are the only reviewer.{% endif %}
+
+          Diff against {{ inputs.base }}:
+
+          {{ steps.diff.output }}
+
+          Review it from the {{ lens }} angle only. Request changes only for something you would
+          not merge as is.
+        output_schema:
+          type: object
+          properties:
+            verdict: { type: string, enum: [approve, request_changes] }
+            findings:
+              type: array
+              items:
+                type: object
+                properties:
+                  severity: { type: string, enum: [blocker, major, minor] }
+                  file: { type: string }
+                  note: { type: string }
+                required: [severity, file, note]
+          required: [verdict, findings]
+
+  - id: no_reviews
+    needs: [panel]
+    when: (steps.panel.output | select | list | length) == 0
+    stop:
+      status: failed
+      reason: "every reviewer failed — nothing to synthesise (see the panel[*]/review steps)"
+
+  - id: synthesize
+    needs: [panel]
+    when: (steps.panel.output | select | list | length) > 0
+    agent: chair
+    prompt: |
+      {{ inputs.lenses | length }} independent reviews of the same diff (against {{ inputs.base }}), one per lens.
+      {% for lens in inputs.lenses %}
+      {% set r = steps.panel.output[loop.index0] %}
+
+      ## {{ lens }}
+      {% if r %}
+      verdict: {{ r.review.verdict }}
+      {% for f in r.review.findings %}
+      - [{{ f.severity }}] {{ f.file }}: {{ f.note }}
+      {% else %}
+      (no findings)
+      {% endfor %}
+      {% else %}
+      REVIEWER FAILED — no input from this lens.
+      {% endif %}
+      {% endfor %}
+
+      Merge these into one verdict.
+      - Drop duplicates: when several lenses found the same thing, list it once and name every lens
+        in `raised_by` — several angles converging is a signal, not a reason to repeat it.
+      - Where two lenses contradict each other (one wants a change the other rejects), do not pick a
+        side silently: record it in `disagreements`, naming both lenses.
+      - Request changes when any blocker survives the merge; otherwise approve.
+      - The summary states which lenses reviewed and, if any, which produced no input.
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [approve, request_changes] }
+        summary: { type: string }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string, enum: [blocker, major, minor] }
+              file: { type: string }
+              note: { type: string }
+              raised_by: { type: array, items: { type: string } }
+            required: [severity, file, note, raised_by]
+        disagreements: { type: array, items: { type: string } }
+      required: [verdict, summary, findings, disagreements]
+
+  - id: comment
+    needs: [synthesize]
+    when: inputs.post and inputs.pr is defined
+    description: The merged verdict as a markdown comment on the PR — findings, disagreements, and which lenses answered.
+    python: |
+      import os, subprocess
+
+      verdict = {{ steps.synthesize.output }}
+      reviews = dict(zip({{ inputs.lenses }}, {{ steps.panel.output }}))   # None = that reviewer was lost
+      lines = [f"## review_panel: {verdict['verdict'].replace('_', ' ')}", ""]
+      if verdict["summary"].strip():
+          lines += [verdict["summary"].strip(), ""]
+      for f in verdict["findings"]:
+          by = ", ".join(f["raised_by"])
+          lines.append(f"- **{f['severity']}** `{f['file']}` — {f['note']}" + (f" _(raised by {by})_" if by else ""))
+      if not verdict["findings"]:
+          lines.append("- no findings survived the merge")
+      if verdict["disagreements"]:
+          lines += ["", "### Disagreements", *[f"- {d}" for d in verdict["disagreements"]]]
+      reviewed = [lens for lens, r in reviews.items() if r]
+      lost = [lens for lens, r in reviews.items() if not r]
+      lines += ["", f"_Lenses: {', '.join(reviewed)}" + (f"; no input from {', '.join(lost)}" if lost else "") + "_"]
+      body = "\n".join(lines) + "\n"
+      subprocess.run(["gh", "pr", "comment", os.environ["RAYSPEC_INPUT_PR"], "--body-file", "-"],
+                     input=body, text=True, check=True)
+      print(body)
+
+outputs:
+  verdict: "{{ steps.synthesize.output.verdict }}"
+  summary: "{{ steps.synthesize.output.summary }}"
+  findings: "{{ steps.synthesize.output.findings }}"
+  blockers: "{{ steps.synthesize.output.findings | selectattr('severity', 'equalto', 'blocker') | list | length }}"
+  disagreements: "{{ steps.synthesize.output.disagreements | length }}"
+  reviewed: "{{ steps.panel.output | select | list | length }}"
+  lost: "{{ steps.panel.output | reject | list | length }}"
+  commented: "{{ steps.comment.status == 'succeeded' }}"
