@@ -5,7 +5,8 @@ description: >
   A read-only survey of the codebase: map the tree, pick the largest source directories, send
   one read-only agent per area to look at it through a single focus (coupling, layering or dead
   code), and let an architect fold the findings into one report. Produces a document in the run
-  directory, not a change — nothing is written to the repository.
+  directory, not a change — nothing is written to the repository. Not a review of a change: for
+  a diff or a pull request use `pr_review`, `review_panel` or `validate_pr`.
 # The cost is bounded twice: `budget_usd` on every agent and `max_tokens` on the run — reaching
 # the ceiling fails the run instead of finishing the survey on credit — and `max_areas` keeps a
 # large repository from spending the budget on breadth.

@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 
 from rayspec import __version__
 from rayspec.cli.app import app
-from rayspec.loader import load_workflow, validate_workflow
+from rayspec.loader import discover_workflows, load_workflow, validate_workflow
 from rayspec.loader.bundled import (
     BUNDLED_LABEL_PREFIX,
     bundled_digest,
@@ -133,3 +133,42 @@ def test_an_ejected_copy_passes_the_same_cases(empty_root: Path) -> None:
     res = runner.invoke(app, ["test", "pr_review", "--root", str(empty_root)])
     assert res.exit_code == 0, res.output
     assert "pr_default_stubs" in res.output
+
+
+#: PRD-05 R3: a bundled workflow that is easy to confuse with another says so in its own
+#: description — the text `rayspec workflows --json` emits, which is what the operating skill
+#: routes a request by. Each key names every value as a whole backticked name.
+CONFUSABLE: dict[str, tuple[str, ...]] = {
+    "review_panel": ("validate_pr", "pr_review"),
+    "validate_pr": ("review_panel", "pr_review"),
+    "pr_review": ("review_panel", "validate_pr"),
+    "fix_issue": ("create_issue", "refactor_safely"),
+    "refactor_safely": ("fix_issue",),
+    "create_issue": ("fix_issue",),
+    "architect": ("pr_review", "review_panel", "validate_pr"),
+}
+
+
+def _description(name: str, root: Path, home: Path) -> str:
+    ref = next(r for r in discover_workflows(root, home=home) if r.name == name)
+    assert ref.scope == "bundled", ref
+    return ref.description
+
+
+@pytest.mark.parametrize("name", sorted(CONFUSABLE))
+def test_confusable_workflows_name_each_other(name: str, empty_root: Path, home: Path) -> None:
+    assert name in BUNDLED
+    text = _description(name, empty_root, home)
+    for other in CONFUSABLE[name]:
+        assert other in BUNDLED, other
+        assert f"`{other}`" in text, (name, other)
+
+
+@pytest.mark.parametrize("name", ["review_panel", "pr_review"])
+def test_pr_checkout_workflows_say_in_place_and_post(
+    name: str, empty_root: Path, home: Path
+) -> None:
+    """With `pr` both switch YOUR working copy (`isolation: none`); the description must say so
+    before an agent proposes them, and must say what `post: true` does."""
+    text = _description(name, empty_root, home)
+    assert "gh pr checkout" in text and "in place" in text and "`post: true`" in text

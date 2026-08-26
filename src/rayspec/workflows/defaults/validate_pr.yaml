@@ -5,7 +5,9 @@ description: >
   Run the test command on the base branch and on a pull request's head, in a worktree, and
   classify the difference deterministically — regression, preexisting, fixed or clean, with the
   newly failing and newly passing tests named — before an agent explains what the delta means.
-  CI runs the tests once; the value here is measuring both sides.
+  CI runs the tests once; the value here is measuring both sides. It measures, it does not judge:
+  nobody here reads the diff for quality — that is `review_panel` (several angles) or `pr_review`
+  (one review).
 # Runs in a git worktree by default: the checkout is switched twice (detached, so a branch that
 # is checked out in your clone is no obstacle) and put back where it was at the end, whatever
 # happened. `--no-worktree` makes it do all that in your working copy — pass it only on a clean

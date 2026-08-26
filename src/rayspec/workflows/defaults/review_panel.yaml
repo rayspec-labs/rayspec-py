@@ -5,7 +5,10 @@ description: >
   Review a diff from several independent angles in parallel — one read-only agent per lens, none
   of them seeing the others' findings — then let a chair merge everything into one deduplicated
   verdict that names disagreements instead of averaging them away. Emits a verdict and the counts
-  behind it; enforcing it (blocking a merge) is the caller's or CI's job.
+  behind it; enforcing it (blocking a merge) is the caller's or CI's job. It judges, it does not
+  measure: whether a PR breaks the tests, or was already broken, is `validate_pr`'s question, and
+  one ordinary review is `pr_review`. Runs in place: with `pr` it runs `gh pr checkout` in your
+  working copy (no worktree) and `post: true` comments the merged verdict on that PR.
 # Runs in place: nothing is written unless you pass `pr`, which checks the pull request out in your
 # working copy exactly as `gh pr checkout` would (a clean tree is required). `post: true` comments
 # the merged verdict on that PR. The lens set is an input — drop `api_design` for a repository with
