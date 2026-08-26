@@ -39,6 +39,7 @@ Every one of them is self-contained (inline agents, no prompt files) and covered
 | `review_block` | the includable Claude + Codex review with a judge; `include: review_block` | `target` (required), `depth` |
 | `release_check` | tests, release notes, a human gate (class `release`), tag and notify | `tag` (required), `min_coverage`, `push` |
 | `resolve_conflicts` | merge a base branch, classify every conflicted file with a read-only analyst, resolve in a loop until no marker is left and `test_command` passes, commit; a `risk: high` verdict pauses at a gate of class `risky` **before** any file is touched; a clean merge stops with `cancelled` (exit 4), giving up leaves the merge in progress for a human (exit 1, nothing committed) | `base`, `test_command`, `max_attempts` |
+| `review_panel` | review the diff against `base` (or a checked-out PR) from several independent angles at once — one read-only reviewer per lens, none seeing the others — then a chair merges them into one verdict with `raised_by` per finding and named `disagreements`; a lost reviewer is counted (`reviewed`, `lost`), never fatal; `post: true` comments the verdict on the PR | `base`, `pr`, `lenses`, `post` |
 
 `resolve_conflicts` always runs in a worktree, so neither the merge nor the agent's edits touch
 your checkout; the merge commit lands on the run's `rayspec/resolve_conflicts-<id>` branch and
@@ -51,6 +52,15 @@ approvals:
   classes:
     risky: { allow_yes: false }   # never approved by --yes, --dry-run or --approve-class; a human still can
 ```
+
+`review_panel` is Archon's five-reviewer pattern as an `each:` fan-out: the lenses are an input
+(`--input lenses=security --input lenses=migrations` — drop `api_design` for a repository with no
+public API, no fork needed), every reviewer is told its own angle and what the others cover, and
+none of them sees another's findings. A reviewer that fails leaves a `null` slot the chair is
+told about (`on_failure: continue`), so a verdict from three of five lenses says so in `reviewed`
+/ `lost` instead of looking like a full one; only when every reviewer is lost does the run fail
+(exit 1) — an empty diff stops it before anyone is asked (exit 4). Each agent carries a
+`budget_usd`; the verdict is advisory and enforcing it is the caller's or CI's job.
 
 ## Minimal workflow to copy
 

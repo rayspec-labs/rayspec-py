@@ -3586,7 +3586,11 @@ recorded — never the tool input.
   repository at a time through `rayspec test --exec-shell --case <id>` (a merge mutates the
   root, and `rayspec test` reads the operator policy once at start-up, so the driver exports a
   case's `RAYSPEC_POLICY` itself), plus in-process runs with a `Provider` that edits the checkout
-  — the resolved paths, which the stub provider cannot reach.
+  — the resolved paths, which the stub provider cannot reach. `tests/workflows/review_panel/` is
+  the same kind of net for `review_panel`: `exec_shell: true` cases on a throw-away repository
+  with a real diff and a fake `gh` first on `PATH` (the checkout, the comment body, a failing
+  checkout, an empty diff), plus in-process runs with a `Provider` that measures the panel's
+  concurrency and resumes a run whose chair failed.
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.
