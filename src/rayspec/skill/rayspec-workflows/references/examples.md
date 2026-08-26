@@ -45,6 +45,7 @@ Every one of them is self-contained (inline agents, no prompt files) and covered
 | `create_issue` | draft a GitHub issue from a description, search the tracker with the draft's own terms, let a read-only judge say whether it duplicates one of the real results (cancelled, exit 4, naming it), show the draft at a gate of class `chore`, then `gh issue create` with labels from a whitelist | `description` (required), `labels` |
 | `architect` | a read-only survey: map the tree, pick the `max_areas` largest source directories, one read-only surveyor per area with a single `focus` (`coupling`, `layering`, `dead_code`), an architect writes the report into the run's `artifacts/`; a lost surveyor is counted, and the ceiling (`budget_usd` per agent, `max_tokens` on the run) is hard | `focus`, `max_areas` |
 | `refactor_safely` | typecheck + tests before anything is touched (a red baseline stops the run, exit 1), a plan behind a gate of class `risky`, an edit → typecheck → test loop until both are green (at most `max_attempts`), then a fresh read-only reviewer reads the diff: shape only → a local commit, behaviour changed → exit 1 with the changes left staged | `goal` (required), `typecheck_command` (required), `test_command`, `max_attempts` |
+| `prd_to_pr` | a Markdown PRD in, a reviewed PR out: count the requirements (too many, or no acceptance criteria → exit 4), a green baseline (red → exit 1), a plan with its open questions at a gate of class `scope`, tests written first by one agent and proven red by code (green or nothing written → exit 1), an implement → typecheck → test loop (at most `max_attempts`; a modified acceptance test or a blocked implementer stops it), a fresh reviewer reporting covered / uncovered / unrequested, a gate of class `chore` (self-approving on a clean review), then push + `gh pr create` | `prd` (required), `typecheck_command` (required), `test_command`, `max_requirements`, `max_attempts`, `base` |
 
 `resolve_conflicts` always runs in a worktree, so neither the merge nor the agent's edits touch
 your checkout; the merge commit lands on the run's `rayspec/resolve_conflicts-<id>` branch and
@@ -105,6 +106,50 @@ at a gate of class `risky` (hold it shut as for `resolve_conflicts`), the loop g
 that made the change — reads the diff against the starting commit: shape only → a local commit
 in the worktree, behaviour changed → exit 1 with the changes left staged for a human. An agent
 that changed nothing ends the run with exit 4.
+
+`prd_to_pr` is the workflow between `fix_issue` and `review_panel` in ambition: a product
+requirements document goes in, one reviewed pull request comes out, and the loop that builds it
+ends on an exit code, never on an agent's opinion. The prose is converted into something
+executable *before* implementation starts: a planner turns the acceptance criteria into a test
+plan and names every question the document leaves open with the assumption it would act on; a
+human sees both at a gate of class `scope` — the cheapest moment to catch a misread PRD — and
+the approval comment (`rayspec approve <run> "GHCR, not Docker Hub"`) is handed to the test
+writer, the implementer and the reviewer as the answers. One agent then writes only the tests,
+in its own session, and code decides what happened: the suite must be red afterwards (green
+means vacuous tests, nothing written means no tests — both exit 1). A second agent implements
+against them (`session: implement` across attempts) until the typecheck and the tests are green
+— at most `max_attempts`, exit 1 when the bound is hit, with the branch and the worktree kept
+for inspection — and code checks after every attempt that the acceptance tests were not edited
+(exit 1 if they were: the tests are the contract). An implementer that hits an ambiguity the
+plan did not surface answers `blocked` instead of guessing, and the run is cancelled with the
+question (exit 4): amend the PRD and run again. A *fresh* reviewer reads the diff against the
+document and reports every requirement as covered or uncovered and every behaviour nobody asked
+for as `unrequested`; the PR opens either way, with the review, the coverage and the
+assumptions in its body — a `partial` verdict only asks at the PR gate (class `chore`), which
+approves itself on a clean review. Fully unattended is `--approve-class scope --approve-class
+chore`; that accepts the planner's assumptions unread — they are still in the run
+(`outputs.unresolved`) and in the PR body. The run stays on its `rayspec/prd_to_pr-<id>`
+worktree branch and pushes it as `prd/<prd file stem>-<id>`; under `--no-worktree` the two
+commits land on your current branch. Before any of that, `size_check` refuses a document with
+more than `max_requirements` requirements or without acceptance criteria (exit 4): one PRD, one
+pull request — a bigger document is several.
+
+### Writing a PRD for `prd_to_pr`
+
+The workflow reads any Markdown, and reads better when the document follows three conventions:
+requirements marked `**R1 —**` … (or `### R1` headings; failing those, the bullets under a
+`Requirements` heading are counted), one bullet per criterion under an `## Acceptance criteria`
+heading (mandatory — the tests are derived from them), and an `## Open questions` section for
+what is undecided (the planner surfaces every one as a stated assumption). A settings block wins
+over the workflow's inputs when present:
+
+```markdown
+<!-- rayspec
+test_command: pytest -q
+typecheck: mypy src
+max_requirements: 6
+-->
+```
 
 ## Minimal workflow to copy
 

@@ -519,6 +519,8 @@ approvals:
       require_tty: true     # and never by a decision recorded out of band
     risky:
       allow_yes: false      # what the bundled `resolve_conflicts` names for a conflict it wants a human to see
+    scope:
+      allow_yes: false      # what the bundled `prd_to_pr` names for its plan gate — the cheapest moment to catch a misread PRD
 ```
 
 A workflow names a class and cannot define one:

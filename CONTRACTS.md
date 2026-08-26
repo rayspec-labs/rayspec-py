@@ -2593,8 +2593,8 @@ aliased: 1.0.0 has never been published, so there is no installed base to keep w
   shapes — `workflows` rows (`name`, `source`, `description`, `inputs{type, required, default,
   enum}`), `plan` (`isolation`, `agents[].access`) and `runs` rows (`workflow`) — and of the bundled
   `description:` texts, where the confusable workflows name each other (`review_panel` ↔
-  `validate_pr` ↔ `pr_review`; `fix_issue` ↔ `create_issue` ↔ `refactor_safely`; `architect` ↔ the
-  three reviews) and the two PR-checkout workflows state that `pr` runs `gh pr checkout` in place
+  `validate_pr` ↔ `pr_review`; `fix_issue` ↔ `create_issue` ↔ `refactor_safely` ↔ `prd_to_pr`;
+  `architect` ↔ the three reviews) and the two PR-checkout workflows state that `pr` runs `gh pr checkout` in place
   and that `post: true` comments. None of those shapes changed for this; a change to any key or
   text updates the section, `tests/skill/test_skill_selection.py` and
   `tests/workflows/test_defaults.py::CONFUSABLE` in the same pull request. `rayspec-workflows`
@@ -3625,7 +3625,17 @@ recorded — never the tool input.
   directory through `rayspec.testing.runner.run_case`); `refactor_safely` on a tree with a runner
   and a syntax check standing in for a typechecker (red baseline, untouched tree, held `risky`
   class) plus in-process runs with a `Provider` that edits `app.py` — convergence, the two
-  failure briefs, a behaviour change flagged by the fresh reviewer, the give-up bound.
+  failure briefs, a behaviour change flagged by the fresh reviewer, the give-up bound. `tests/workflows/prd_to_pr/`
+  is the PRD-09 net (`test_prd_to_pr.py`): `exec_shell: true` cases on fixture repositories with
+  a bare `origin` and a fake `gh` (the PRD's settings block winning over an input, an oversized
+  document, missing acceptance criteria, a red baseline, a test writer that wrote nothing, a held
+  `scope` class — nothing written, pushed or opened in any of them) plus in-process runs with a
+  `Provider` that really writes `test_total.py` and edits `app.py`: red proven by code,
+  convergence on the first and on the third attempt with the two distinct briefs and a resumed
+  session, vacuous tests failing the run before any implementation, the give-up bound retaining
+  the work, the tamper guard, a question answered at the plan gate reaching the prompts and the
+  PR body, a partial review asking at the PR gate; `test_prd_to_pr_live.py` (`@pytest.mark.live`,
+  `RAYSPEC_LIVE=1`) drives the real CLI with real agents on the same fixture.
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.
