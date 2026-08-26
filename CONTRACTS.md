@@ -363,7 +363,8 @@ prints the table then `hint: no project workflows yet — <EMPTY_PROJECT_HINT>; 
 eject <name> copies a bundled one`. `--json` stays an array; rows are `{name, scope, source,
 description, path, error, overrides, ejected: {version, sha256, bundled_changed} | null, inputs:
 {name: {type, required, default, enum, description, secret}}}` (`inputs` normalised from the raw
-mapping, non-mapping specs skipped, `{}` on junk). A shadowing file whose eject header digest
+mapping, non-mapping specs skipped, `{}` on junk; consumed by the `rayspec-cli` skill's selection
+section — see *rayspec.skill*). A shadowing file whose eject header digest
 differs from `bundled_digest(ref.overrides)` gets `note: <name> was ejected from rayspec <v>; the
 bundled workflow has changed since` under the table. `workflows eject <name> [--force] [--root]`:
 `--root` is the project itself (never walked up from; without it `find_project_root(cwd)`), a
@@ -2512,7 +2513,8 @@ that width are folded or ellipsised by Rich.
 rayspec ships **two** Claude Code skills for coding agents as package data, because authoring a
 workflow and operating a run are different jobs: `rayspec-workflows` (the DSL — step kinds,
 fields, templating, agents, prompts, stubs) and `rayspec-cli` (every command, flag, `--json`
-shape and exit code, plus stubs, providers, cost and policy). Each lives in
+shape and exit code, plus stubs, providers, cost, policy, and selecting a workflow for a plain
+request). Each lives in
 `src/rayspec/skill/<name>/` and holds a hand-written `SKILL.md` (frontmatter `name: <name>`,
 `description:`) plus its own `references/*.md` — verbatim copies of `docs/<name>.md` with a
 three-line `<!-- Generated … -->` header and relative links rewritten (sibling reference when the
@@ -2581,13 +2583,33 @@ aliased: 1.0.0 has never been published, so there is no installed base to keep w
 - `cli/commands/_skill_common.py` (underscore ⇒ not auto-discovered): `print_install_result
   (results, target, *, label)` and `session_hint(directory, *, global_install)` — used by both
   `skill install` and `init` so the two command modules stay independent plug-ins.
+- Selection (PRD-05): `rayspec-cli/SKILL.md` carries `## Selecting a workflow from a request`
+  between the `--json` contract and the operating loops (SHAPE window 300–560 lines): discover
+  with `rayspec workflows --json`, never from an embedded list; ask when a `required` input has no
+  source or two workflows fit; `plan --json` decides who runs it (every `agents[].access`
+  `read-only` and no side effect named ⇒ state and run; anything else ⇒ propose and wait;
+  `isolation: worktree` + a `workspace-write`/`full` agent + no row with that `workflow` in
+  `runs --json` ⇒ propose `--dry-run` first). The skill is therefore a CONSUMER of three `--json`
+  shapes — `workflows` rows (`name`, `source`, `description`, `inputs{type, required, default,
+  enum}`), `plan` (`isolation`, `agents[].access`) and `runs` rows (`workflow`) — and of the bundled
+  `description:` texts, where the confusable workflows name each other (`review_panel` ↔
+  `validate_pr` ↔ `pr_review`; `fix_issue` ↔ `create_issue` ↔ `refactor_safely`; `architect` ↔ the
+  three reviews) and the two PR-checkout workflows state that `pr` runs `gh pr checkout` in place
+  and that `post: true` comments. None of those shapes changed for this; a change to any key or
+  text updates the section, `tests/skill/test_skill_selection.py` and
+  `tests/workflows/test_defaults.py::CONFUSABLE` in the same pull request. `rayspec-workflows`
+  only routes there (its description and its companion paragraph); rayspec itself does no routing.
 - Tests: `tests/skill/test_skill_content.py` checks both `SKILL.md` files against the real
   loader/CLI (every ```yaml fence parses with PyYAML and the strict loader and every `- id:` step
   under `steps:` via `parse_step`; both cheat-sheet workflows validate without warnings and
   dry-run; every command/flag a CLI table names exists on every command named in its row; each
   skill names the other one); `tests/skill/test_skill_totality.py` holds the converse total
   rules; `tests/skill/test_skill_secret_seam.py` verifies the authoring skill's `secret: true`
-  paragraph against the implementation.
+  paragraph against the implementation; `tests/skill/test_skill_selection.py` pins the selection section (rules,
+  examples table ⊆ bundled, each complete example dry-runs in an empty root) and
+  `tests/skill/test_skill_selection_live.py` (`@pytest.mark.live`) drives headless `claude -p`
+  with both skills installed in a scratch project (`--setting-sources project`, `--json-schema`)
+  through the PRD-05 acceptance requests.
 
 ### secrets + redact
 Two new packages and one new loader module; nothing else moved.

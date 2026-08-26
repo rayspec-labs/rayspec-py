@@ -13,12 +13,27 @@ different vocabularies, and an agent doing one of them should not have to page i
 | Skill | What it teaches | Load it when |
 |---|---|---|
 | `rayspec-workflows` | the YAML DSL: every step kind and field, templating and scoping, agents, prompts, includes, secrets, the `.rayspec/` files you write by hand | writing or editing a workflow, agent or prompt |
-| `rayspec-cli` | the CLI: every command, flag, `--json` shape and exit code, plus the stub file, providers and capabilities, cost, policy and runs | validating, planning, running, resuming, auditing or debugging |
+| `rayspec-cli` | the CLI: every command, flag, `--json` shape and exit code, plus the stub file, providers and capabilities, cost, policy and runs | validating, planning, running, resuming, auditing or debugging — or turning a plain request ("fix issue 42") into the right `rayspec run` |
 
 Each names the other one in its `description:` and in its text, so an agent that loaded one is
 told the other exists: `rayspec-workflows` ends its authoring loop with *now validate, plan and
 dry-run — load the `rayspec-cli` skill*, and `rayspec-cli` sends every question about a YAML
 field back to `rayspec-workflows`.
+
+## Selecting a workflow from a request
+
+You do not have to name a workflow. "Fix issue 42", "review PR 118 from a security and
+performance angle" or "is PR 118 broken, or was it already broken?" is enough: the `rayspec-cli`
+skill tells the agent to discover what this project and rayspec ship with
+`rayspec workflows --json` — never from a list in the skill, so a workflow you add today is
+selectable today — to read each `description` (the bundled ones say what they are *not* for:
+`validate_pr` measures, `review_panel` judges), to fill the declared `inputs` from the request
+and from `git`/`gh`, and to ask rather than guess when a required input has no source or two
+workflows fit. A workflow whose agents are all `read-only` is run once the command has been
+stated; anything that writes — a PR, an issue, a comment, a commit — is proposed and waits for
+you, and a writing workflow's first run in a project is proposed as `--dry-run` first. The
+selection happens in your session, which is the point: a misrouted request is a proposal you can
+correct, not a wrong run that already started. rayspec itself does no routing.
 
 ## What they contain
 
@@ -41,7 +56,8 @@ field back to `rayspec-workflows`.
   SKILL.md                    hand-written core: frontmatter `name: rayspec-cli` +
                               `description:`, then the run/isolation/lock mental model, a CLI
                               table covering every command with its key flags and exit codes, the
-                              exit codes and `--json` contract, the operating loops (check before
+                              exit codes and `--json` contract, how to select a workflow and its
+                              inputs from a plain request, the operating loops (check before
                               you spend, offline tests, record-and-replay, debugging), a safety
                               class for every command, governance and trust, the stub file format,
                               providers/capabilities/cost, and the operational pitfalls
@@ -63,8 +79,9 @@ for the person installing the skills), `extending.md` (writing rayspec plugins) 
 
 Both `SKILL.md` files are deliberately short: they state the rules that are easy to get wrong
 (quote `{{ }}` in shell bodies, `when:` is a bare expression, `steps.review` is not visible
-outside its loop, never pass a secret as a plain input, dry-run before a real run, ask before a
-run that edits or spends) and send the agent to `references/` for every field and flag.
+outside its loop, never pass a secret as a plain input, pick a workflow from
+`rayspec workflows --json`, never from memory, dry-run before a real run, ask before a run that
+edits or spends) and send the agent to `references/` for every field and flag.
 
 Everything the skills state is taken from the docs, and `tests/skill/` holds both directions of
 the agreement:
