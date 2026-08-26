@@ -1,0 +1,28 @@
+# The planner leaves a question open with a stated assumption: the tester, the implementer and
+# the reviewer all see it (the gate's comment is '' under a dry run, so no answers appear).
+defaults: { latency_ms: 0 }
+steps:
+  plan:
+    output:
+      summary: "publish the image"
+      test_plan:
+        - { requirement: "R3 — the image is published", tests: [test_image_published] }
+      unresolved:
+        - { question: "GHCR or Docker Hub?", assumption: GHCR, affects: [R3] }
+  tests_first:
+    text: "Wrote tests/test_publish.py."
+    expect:
+      prompt_contains:
+        - "Open questions the planner could not resolve, with the assumption it will act on:"
+        - "- GHCR or Docker Hub? → assumption: GHCR (affects R3)"
+      not_contains: ["Answers given at the plan gate"]
+  "build[*]/implement":
+    output: { status: done, question: "", notes: "pushed to GHCR" }
+    expect:
+      prompt_contains:
+        - "Open questions the planner could not resolve, with the assumption it will act on:"
+        - "- GHCR or Docker Hub? → assumption: GHCR (affects R3)"
+  review:
+    output: { covered: [R3], uncovered: [], unrequested: [], verdict: complete, summary: "published to GHCR" }
+    expect:
+      prompt_contains: ["Assumptions the planner stated:", "- GHCR or Docker Hub? → GHCR"]

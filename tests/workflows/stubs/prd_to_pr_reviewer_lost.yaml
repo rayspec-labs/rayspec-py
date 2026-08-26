@@ -1,0 +1,5 @@
+# The reviewer fails outright (no retry: `transient: false`): without a review no PR is opened.
+defaults: { latency_ms: 0 }
+steps:
+  review:
+    fail: { kind: api, message: "simulated provider outage", transient: false }

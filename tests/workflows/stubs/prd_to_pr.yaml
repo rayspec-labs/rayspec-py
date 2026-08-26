@@ -1,0 +1,47 @@
+# A dry run simulates every shell/python step green: the PRD reads as '' (`cat` is skipped), the
+# size check says ok, `red` says red, the loop converges on its first pass and `pr` prints ''.
+# The `expect:` blocks pin what each of the four agents was asked — the planner (fresh,
+# read-only), the tester (fresh, write access, no schema), the implementer's first brief (fresh,
+# write access, structured) and the reviewer (fresh, read-only, structured).
+defaults: { latency_ms: 0, usage: { input: 2500, output: 300 } }
+steps:
+  plan:
+    output:
+      summary: "add app.total"
+      test_plan:
+        - { requirement: "R1 — total(xs) returns the sum", tests: [test_total_sums, test_total_empty] }
+      unresolved: []
+    expect:
+      session: fresh
+      access: read-only
+      output_schema: true
+      prompt_contains: ["Read this PRD and the code in ", "Return: a short summary"]
+  tests_first:
+    text: "Wrote test_total.py; it fails with AttributeError."
+    expect:
+      session: fresh
+      access: workspace-write
+      output_schema: false
+      prompt_contains:
+        - "Write the acceptance tests for this PRD — only tests, no implementation."
+        - "- R1 — total(xs) returns the sum: test_total_sums; test_total_empty"
+      not_contains: ["Answers given at the plan gate", "Open questions the planner could not resolve"]
+  "build[*]/implement":
+    output: { status: done, question: "", notes: "added total()" }
+    expect:
+      session: fresh
+      access: workspace-write
+      output_schema: true
+      prompt_contains: ["Implement this PRD so that the acceptance tests pass", "fail right now"]
+  review:
+    output:
+      covered: [R1]
+      uncovered: []
+      unrequested: []
+      verdict: complete
+      summary: "total() implemented as specified"
+    expect:
+      session: fresh
+      access: read-only
+      output_schema: true
+      prompt_contains: ["For every requirement in the PRD say whether the diff covers it"]
