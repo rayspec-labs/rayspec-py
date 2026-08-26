@@ -178,7 +178,10 @@ def register(app: typer.Typer) -> None:
         store = TrustStore.load(ctx.project_root)
         named = list(workflows or [])
         known = {ref.name for ref in ctx.workflow_refs()}
-        targets = named or sorted(known)
+        # with no names the check covers what the project wrote — an upgrade that ships new
+        # bundled workflows must not turn a scheduled check red; a bundled name still checks
+        own = sorted(ref.name for ref in ctx.workflow_refs() if ref.scope != "bundled")
+        targets = named or own
         for target in named:  # a name given on the command line has to exist
             if target not in known and not Path(target).is_file():
                 _resolve(target, ctx)

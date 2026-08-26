@@ -46,6 +46,7 @@ from rayspec.config import (
 )
 from rayspec.errors import RayspecError
 from rayspec.loader import WorkflowRef, discover_workflows, find_project_root
+from rayspec.loader.bundled import bundled_label
 from rayspec.loader.discovery import YAML_SUFFIXES
 from rayspec.loader.loader import import_optional
 from rayspec.loader.validate import CapabilitiesFor, TemplateChecker
@@ -131,7 +132,11 @@ class Context:
 
 
 def short_path(path: Path, ctx: Context) -> str:
-    """Render ``path`` relative to the project root (or as ``~/.rayspec/...``) when possible."""
+    """Render ``path`` relative to the project root (or as ``~/.rayspec/...``) when possible;
+    a file of the bundled library is ``<bundled>/<name>.yaml`` (the loader's label)."""
+    bundled = bundled_label(path)
+    if bundled is not None:
+        return bundled
     try:
         return path.relative_to(ctx.project_root).as_posix()
     except ValueError:
@@ -319,6 +324,15 @@ def invoked_command() -> str | None:
             break
         ctx = parent
     return None
+
+
+def group_root(ctx: typer.Context, root: Path | None) -> Path | None:
+    """A subcommand's ``--root``, falling back to the one given before the subcommand name
+    (``rayspec runs --root X diff a b``) — the group callback stashes it in ``ctx.obj``."""
+    if root is not None:
+        return root
+    parent_root = getattr(ctx, "obj", None)
+    return parent_root if isinstance(parent_root, Path) else None
 
 
 def checked_root(root: Path | None) -> Path | None:
@@ -794,6 +808,7 @@ __all__ = [
     "error_problems",
     "fail",
     "filesystem_failure",
+    "group_root",
     "invoked_command",
     "json_line",
     "json_text",

@@ -35,6 +35,7 @@ from rayspec.cli.commands._loader_common import (
     console,
     err_console,
     fail,
+    group_root,
     new_table,
     print_json,
     resolve_output,
@@ -207,15 +208,6 @@ def workflow_drift_warning(ctx: common.RunsContext, run: RunRecord) -> str | Non
         f"(hash {run.workflow_hash[:12]} → {resolved.hash[:12]}); recorded step keys may no "
         f"longer match"
     )
-
-
-def group_root(ctx: typer.Context, root: Path | None) -> Path | None:
-    """A subcommand's ``--root``, falling back to the one given before the subcommand name
-    (``rayspec runs --root X diff a b``) — the group callback stashes it in ``ctx.obj``."""
-    if root is not None:
-        return root
-    parent_root = getattr(ctx, "obj", None)
-    return parent_root if isinstance(parent_root, Path) else None
 
 
 def register(app: typer.Typer) -> None:

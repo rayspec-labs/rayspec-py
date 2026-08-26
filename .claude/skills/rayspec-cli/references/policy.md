@@ -496,6 +496,13 @@ Without that key the trust list is still useful on its own: `rayspec trust check
 The file belongs in the repository next to `policy.yaml`. It carries a path and a digest and
 nothing else — never workflow content, never an input, never a secret.
 
+A bundled workflow is trusted the same way — `rayspec trust add <name>` records it under its label
+`<bundled>/<name>.yaml` — and its hash changes when a rayspec upgrade ships a new definition, so
+`trust check` in front of a scheduled run catches that too. `rayspec workflows eject <name>` writes
+a *different* file (`.rayspec/workflows/<name>.yaml`, with a header), so the copy starts untrusted:
+review it, then `rayspec trust add <name>` again. With no names, `trust check` covers the project's
+own workflows, not the library — an upgrade must not turn a scheduled check red.
+
 ## Approval classes
 
 `approvals.classes` is the one block of this document that governs a *person's* decision rather

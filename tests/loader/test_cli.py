@@ -51,14 +51,21 @@ def test_workflows_lists_and_json(tree: Tree):
     assert "broken" in res.output and "error" in res.output
     res = _run(tree, "workflows", "--json")
     data = json.loads(res.output)
-    assert [d["name"] for d in data] == ["broken", "review", "user_wf"]
-    assert data[1]["scope"] == "project"
+    assert [d["name"] for d in data if d["scope"] != "bundled"] == ["broken", "review", "user_wf"]
+    assert {d["name"]: d for d in data}["review"]["scope"] == "project"
+    assert [d["name"] for d in data if d["scope"] == "bundled"] == [
+        "fix_issue",
+        "pr_review",
+        "release_check",
+        "review_block",
+    ]
 
 
 def test_workflows_empty(tree: Tree):
     res = _run(tree, "workflows")
     assert res.exit_code == 0
-    assert "no workflows found" in res.output
+    assert "no project workflows yet" in res.output
+    assert "pr_review" in res.output and "bundled" in res.output
 
 
 def test_agents_lists(tree: Tree):
@@ -275,3 +282,33 @@ def test_default_known_providers_propagates_registry_bugs(monkeypatch: pytest.Mo
     monkeypatch.setitem(sys.modules, "rayspec.providers.registry", broken)
     with pytest.raises(RuntimeError, match="registry bug"):
         default_known_providers(Config())
+
+
+def test_validate_without_names_skips_bundled_but_a_bundled_name_validates(
+    tree: Tree, fake_registry
+):
+    """The shipped library is not the project's to validate on every `rayspec validate`, but it
+    is there when named — and its `path` is the install-independent label."""
+    tree.workflow("good", "rayspec: 1\nname: good\nsteps:\n  - id: a\n    shell: echo\n")
+    res = _run(tree, "validate")
+    assert res.exit_code == 0, res.output
+    assert "1 workflow(s) validated, no errors" in res.output
+    assert "pr_review" not in res.output
+    res = _run(tree, "validate", "pr_review", "--json")
+    assert res.exit_code == 0, res.output
+    (row,) = json.loads(res.output)
+    assert row["name"] == "pr_review" and row["ok"] is True
+    assert row["path"] == "<bundled>/pr_review.yaml"
+
+
+def test_short_path_and_workflow_label_name_bundled_files(tree: Tree):
+    from rayspec.config import Config
+    from rayspec.loader.bundled import bundled_dir
+
+    checkout = bundled_dir().parents[2]  # <site>/rayspec/workflows/defaults -> <site>
+    ctx = _loader_common.Context(project_root=checkout, home=tree.home, config=Config())
+    assert (
+        _loader_common.short_path(bundled_dir() / "pr_review.yaml", ctx)
+        == "<bundled>/pr_review.yaml"
+    )
+    assert _loader_common.workflow_label("pr_review", ctx) == "<bundled>/pr_review.yaml"

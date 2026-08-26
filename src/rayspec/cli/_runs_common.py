@@ -34,6 +34,7 @@ from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.fmt import format_duration
 from rayspec.loader import ResolvedWorkflow
+from rayspec.loader.bundled import BUNDLED_LABEL_PREFIX, bundled_dir
 from rayspec.providers.base import Usage, usage_dict
 from rayspec.providers.pricing import format_cost, format_tokens
 from rayspec.schema import RunStatus, StepStatus
@@ -791,7 +792,9 @@ def load_resolved_for(ctx: RunsContext, run: RunRecord) -> ResolvedWorkflow:
     candidates: list[str | Path] = []
     label = run.workflow_path
     if label:
-        if label.startswith("~/.rayspec/"):
+        if label.startswith(BUNDLED_LABEL_PREFIX):  # the file recorded, not the name's pick
+            candidates.append(bundled_dir() / label[len(BUNDLED_LABEL_PREFIX) :])
+        elif label.startswith("~/.rayspec/"):
             candidates.append(ctx.home / label[len("~/.rayspec/") :])
         elif Path(label).is_absolute():
             candidates.append(Path(label))

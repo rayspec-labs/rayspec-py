@@ -60,7 +60,13 @@ def test_values_workflows_lists_the_project_workflows(
     monkeypatch.chdir(project)
     res = CliRunner().invoke(app, ["completion", "--values", "workflows"])
     assert res.exit_code == 0, res.output
-    assert res.stdout.split() == ["example"]
+    assert res.stdout.split() == [
+        "example",
+        "fix_issue",
+        "pr_review",
+        "release_check",
+        "review_block",
+    ]
 
 
 def test_values_runs_lists_run_ids_newest_first(

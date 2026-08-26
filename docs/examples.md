@@ -5,6 +5,9 @@ tree with its own README, a `stubs.yaml` and a `checks.yaml`, so it runs with `-
 and no login; `scripts/check_examples.py` drives every `checks.yaml`). The rayspec repository also
 dogfoods itself through its own `.rayspec/workflows/`. The table below is the coverage matrix
 (`examples/README.md` holds the full one) — every capability is exercised by at least one example.
+The examples are projects to copy from; the workflows *bundled with rayspec* (`rayspec workflows`
+lists them, `rayspec workflows eject <name>` copies one into `.rayspec/workflows/`) are the ones
+that run by name in any project without copying anything.
 
 | Example | Shows | Try |
 |---|---|---|

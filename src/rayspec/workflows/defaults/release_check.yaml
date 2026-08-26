@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: release_check
+description: >
+  Pre-release gate that runs in place (no worktree): tests with retry/timeout, release notes from
+  the commit log, a human gate, and a cleanup step that always runs.
+
+inputs:
+  tag: { type: string, required: true, description: "Version tag to cut, e.g. v0.4.0" }
+  min_coverage: { type: number, default: 85.0 }
+  push: { type: boolean, default: false, description: "Push the tag when approved" }
+
+isolation: none                     # release checks run against the checkout you are on
+defaults:
+  timeout: 15m
+  on_step_failure: drain            # running siblings finish, nothing new starts (default)
+
+agents:
+  notes_writer:
+    provider: claude
+    model: medium
+    access: read-only               # no shell: `history` computes the material, the agent judges
+    instructions: |
+      You write crisp, user-facing release notes. Group by Added/Changed/Fixed.
+      You cannot run commands — the workflow hands you the commit log; you may read files.
+      Your `notes` field must hold the complete release notes in Markdown, nothing else.
+
+steps:
+  - id: last_tag
+    interpreter: sh
+    # `{% raw %}` keeps Go-template braces (gh/docker/kubectl/helm) away from Jinja.
+    shell: gh release list --limit 1 --json tagName --template '{% raw %}{{range .}}{{.tagName}}{{end}}{% endraw %}'
+    allow_failure: true             # no release yet → empty
+
+  - id: tests
+    shell: |
+      # RAYSPEC_CONTEXT is a JSON dump of this step's template context — jq is the escape hatch.
+      jq -r '.inputs.tag + " (min coverage " + (.inputs.min_coverage|tostring) + ")"' "$RAYSPEC_CONTEXT"
+      # No test suite in this checkout? Say so and pass.
+      if [ ! -d tests ]; then echo "no tests/ directory — nothing to run"; exit 0; fi
+      # The HTML report is kept as a run artifact (RAYSPEC_ARTIFACTS_DIR = <run dir>/artifacts).
+      uv run pytest -q --cov --cov-fail-under="$MIN_COVERAGE" \
+        --cov-report=term --cov-report="html:$RAYSPEC_ARTIFACTS_DIR/htmlcov-$RAYSPEC_RUN_ID"
+    env: { MIN_COVERAGE: "{{ inputs.min_coverage }}", PYTHONDONTWRITEBYTECODE: "1" }
+    timeout: 20m
+    retry: { attempts: 2, delay: 5s, on_error: all }   # flaky suites: one retry, timeouts included
+
+  - id: meta
+    needs: [last_tag]
+    shell: |
+      # `env:` values are templates; never name your own variables RAYSPEC_* (engine namespace).
+      # Commits since the previous tag — or every commit when there is none (fresh repos too).
+      if [ -n "$PREV_TAG" ]; then range="$PREV_TAG..HEAD"; else range="HEAD"; fi
+      commits="$(git rev-list --count "$range" 2>/dev/null || echo 0)"
+      printf '{"previous": "%s", "commits": %s}\n' "$PREV_TAG" "${commits:-0}"
+    env: { PREV_TAG: "{{ steps.last_tag.output if steps.last_tag.ok else '' }}" }
+    output_schema:                  # stdout must be JSON matching this schema
+      type: object
+      properties: { previous: { type: string }, commits: { type: integer } }
+      required: [previous, commits]
+
+  - id: history
+    needs: [meta]
+    # Code computes, agents judge: the material for the notes is prepared here — a read-only
+    # agent has no shell, so never ask it to run git/gh itself.
+    shell: |
+      git log --oneline {{ steps.meta.output.previous ~ '..HEAD' if steps.meta.output.previous else '-n 20' }} || true
+      echo
+      echo "## Merged pull requests"
+      gh pr list --state merged --limit 40 --json number,title \
+        --jq '.[] | "- #\(.number) \(.title)"' 2>/dev/null || echo "(gh unavailable — no PR list)"
+
+  - id: notes
+    needs: [tests, meta, history]
+    join: all                       # the default, spelled out: every dependency must succeed
+    agent: notes_writer
+    env: { RELEASE_TAG: "{{ inputs.tag }}" }   # prompt-step env → capability env_injection
+    prompt: |
+      Write release notes for {{ inputs.tag }} of {{ project.name }}
+      ({{ steps.meta.output.commits }} commits since {{ steps.meta.output.previous or 'the beginning' }}).
+      Repository root: {{ run.workdir }} (read CHANGELOG.md there when it exists).
+
+      Commit log and merged PRs, prepared by the workflow (you cannot run commands):
+
+      {{ steps.history.output }}
+
+      Return `title` (one line) and `notes`: the COMPLETE notes in Markdown — the field must
+      contain the release notes themselves, not a description of what you did.
+    output_schema:
+      type: object
+      properties:
+        title: { type: string }
+        notes: { type: string }
+      required: [title, notes]
+
+  - id: gate
+    needs: [notes]
+    approve:
+      message: "Tag {{ inputs.tag }} — '{{ steps.notes.output.title }}'?"
+      on_reject: continue           # a `no` does not cancel the run; steps.gate.approved is false
+      class: release                # the operator's rules for this kind of gate, named not defined
+
+  - id: publish
+    needs: [gate]
+    when: steps.gate.approved and inputs.push
+    shell: |
+      git tag -a "{{ inputs.tag }}" -m "{{ steps.notes.output.title }}"
+      git push origin "{{ inputs.tag }}"
+
+  - id: notify
+    needs: [publish]
+    when: env.SLACK_WEBHOOK is defined
+    shell: curl -fsS -X POST -d "{{ steps.notes.output.notes }}" "$SLACK_WEBHOOK"
+    timeout: 30s
+
+  - id: cleanup
+    needs: [tests, notes, publish, notify]
+    join: always                    # runs whatever happened upstream (finally semantics)
+    always_run: true                # never replayed from the resume cache
+    shell: rm -f "$RAYSPEC_WORKDIR/.coverage"   # what `tests` leaves in the checkout (explicit workdir)
+
+outputs:
+  title: "{{ steps.notes.output.title }}"
+  notes: "{{ steps.notes.output.notes }}"
+  published: "{{ steps.publish.status == 'succeeded' }}"
+  approved: "{{ steps.gate.approved }}"

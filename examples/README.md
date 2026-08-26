@@ -230,6 +230,9 @@ named example must back at least one token of its row (comment-only YAML lines d
 - `rayspec init` and `rayspec doctor` — both ship (see the README quickstart and
   [docs/cli.md](../docs/cli.md)); they scaffold/inspect a project rather than run a workflow, so no
   example needs them.
+- `rayspec workflows eject <name>` — copies one of the workflows bundled with rayspec into
+  `.rayspec/workflows/`; the examples are projects of their own and never eject, so
+  [docs/cli.md](../docs/cli.md#rayspec-workflows-eject) is where it is shown.
 - The Rich live step tree is what `rayspec run` shows on a terminal; the expected-output blocks
   in the example READMEs are the one-line-per-step console you get when stdout is not a TTY
   (pipes, CI, `scripts/check_examples.py`).

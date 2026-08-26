@@ -662,11 +662,20 @@ def choose_workflow(
     printed rather than becoming an exception here.
     """
     try:
-        refs = [ref for ref in discover_workflows(project_root, home=state.home) if not ref.error]
+        refs = [
+            ref
+            for ref in discover_workflows(project_root, home=state.home)
+            if not ref.error and ref.scope != "bundled"  # the library is not this project's
+        ]
     except RayspecError as exc:
         return None, None, f"{exc} — see `rayspec validate`"
     if not refs:
-        return None, None, "no workflow in `.rayspec/workflows/` yet"
+        return (
+            None,
+            None,
+            "no workflow in `.rayspec/workflows/` yet (the bundled library still runs: "
+            "rayspec run pr_review --input pr=<n> --dry-run)",
+        )
     ref = next((r for r in refs if r.name == "example"), refs[0])
     try:
         resolved = load_workflow(

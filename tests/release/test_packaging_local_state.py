@@ -167,6 +167,8 @@ def test_no_published_artefact_carries_local_state(tmp_path: Path, gitignore: bo
     # nothing — and `rayspec init --from` has something to copy.
     assert "rayspec/cli/commands/init.py" in wheel
     assert f"rayspec/examples/{EXAMPLE}/.rayspec/workflows/{EXAMPLE}.yaml" in wheel
+    # and the bundled library, which a project with no .rayspec/ runs by name
+    assert f"rayspec/workflows/defaults/{EXAMPLE}.yaml" in wheel
     # Derived from the registry, not spelled out: a skill added or renamed later changes this
     # assertion with it. Naming the directory here is how this went stale the first time.
     missing_mirrors = [

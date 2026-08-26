@@ -159,6 +159,25 @@ def test_load_resolved_for_record(seeded: Seeded, project: Path) -> None:
     assert common.load_resolved_for(ctx, run).workflow.name == "gate"
 
 
+def test_load_resolved_for_a_bundled_label_reloads_the_bundled_file(
+    seeded: Seeded, project: Path
+) -> None:
+    """A run of a bundled workflow records `<bundled>/<name>.yaml`; re-loading it must reach
+    that file even when the project has since ejected (shadowed) the name."""
+    from rayspec.loader.bundled import bundled_dir
+
+    (project / ".rayspec" / "workflows" / "pr_review.yaml").write_text(
+        "rayspec: 1\nname: pr_review\nsteps:\n  - {id: a, shell: echo a}\n", encoding="utf-8"
+    )
+    ctx = common.make_runs_context(seeded.project)
+    run = seeded.store.load(PAUSED_ID)
+    run.workflow_name = "pr_review"
+    run.workflow_path = "<bundled>/pr_review.yaml"
+    resolved = common.load_resolved_for(ctx, run)
+    assert resolved.path == bundled_dir() / "pr_review.yaml"
+    assert resolved.label == "<bundled>/pr_review.yaml"
+
+
 def test_iter_project_stores_ignores_worktree_checkouts_and_bare_sources(seeded: Seeded) -> None:
     projects = seeded.home / "projects"
     # a `runs` directory inside a worktree checkout (e.g. the project's own src/runs/) is not a

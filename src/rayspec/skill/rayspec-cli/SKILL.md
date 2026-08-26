@@ -64,7 +64,8 @@ flags is every flag**, not a selection — `--help` aside, a flag missing from a
 | `rayspec version` | print the rayspec version (same as the root `-V`) | — | 0 |
 | `rayspec doctor` | environment: python, home, config, project, git/uv, SDKs, bundled CLIs, auth, pricing rows | `--probe` (one real turn per provider), `--provider ID`, `--json`, `--output`, `--root` | 0 / 1 / 2 |
 | `rayspec providers` · `plugins` | registered providers + the declared capability matrix · installed plugins (commands, providers, stores, sinks, approvals) and the registered ids | `--json`, `--output` | 0 / 2 |
-| `rayspec workflows` · `agents` | discovered workflows (an unparseable one is still listed, with a parse-error note, exit 0) · named agent files with the provider/model/effort they resolve to | `--json`, `--output`, `--root` | 0 / 2 |
+| `rayspec workflows` · `agents` | discovered workflows — project, user and the bundled library, `source: overridden` when a file of yours shadows a bundled one (an unparseable one is still listed, with a parse-error note, exit 0) · named agent files with the provider/model/effort they resolve to | `--json`, `--output`, `--root` | 0 / 2 |
+| `rayspec workflows eject <name>` | copy a bundled workflow to `.rayspec/workflows/<name>.yaml` (under a version+digest header) so this project can edit it; the copy then takes precedence | `--force`, `--root` | 0 / 2 |
 | `rayspec completion <shell>` | print a shell-completion script to source; shell is `bash\|zsh\|fish` | `--values workflows\|runs`, `--root` | 0 / 2 |
 | `rayspec validate [names…]` | schema, graph, references, templates, provider capabilities, policy, trust | `--allow-unsupported`, `--locked`/`--no-locked`, `--json`, `--output`, `--root` | 0 / 2 |
 | `rayspec plan <wf>` | three views, one at a time: the plan (inputs, resolved agents, step order, capability report), `--render` (the rendered prompt/script bodies), `--risk` (what the run would be *allowed* to do) | `--input k=v`, `--inputs-file`, `--render`, `--step PATH`, `--stubs FILE`, `--risk`, `--allow-unsupported`, `--locked`, `--json`, `--output`, `--root` | 0 / 2 |
@@ -130,7 +131,7 @@ command that takes it is in exactly one of these three shapes.
 - **`--json` does not imply `--no-interactive`.** On a TTY a gate still prompts. In a script pass
   `--no-interactive` (pause at gates, exit 3) or `--yes` explicitly.
 - No `--json` at all on `version`, `completion`, `schema`, `skill path`, `trust add`/`remove`,
-  `projects add`/`remove`, `skill install`, and `runs stubs` — whose `-o/--output PATH` predates
+  `projects add`/`remove`, `skill install`, `workflows eject`, and `runs stubs` — whose `-o/--output PATH` predates
   the flag and means "write the script to this file".
 
 ## Operating loops
@@ -252,7 +253,7 @@ Every command of this skill's table is in exactly one of these three classes.
 | Class | Commands | What it costs you |
 |---|---|---|
 | **read-only** | `version` · `doctor` · `providers` · `plugins` · `workflows` · `agents` · `completion` · `validate` · `plan` · `runs` · `runs diff` · `show` · `logs` · `explain` · `eval` · `audit` · `costs` · `trust list` · `trust check` · `worktrees list` · `projects list` · `skill show` · `skill path` | nothing: no credentials, no network, no writes. Safe unattended. The one exception is `doctor --probe`, which runs a real one-turn healthcheck per provider and therefore needs a login and costs a little |
-| **writes locally** | `quickstart` · `lock` · `trust add` · `trust remove` · `projects add` · `projects remove` · `skill install` · `worktrees clean` · `runs stubs` · `test` · `cancel` | files and records, never money. `worktrees clean` is destructive (`git worktree remove` + `git branch -D`); `runs stubs` writes only where `-o` points; `test` creates run records under `RAYSPEC_HOME` (kept only for a failing case); `quickstart` scaffolds files that do not exist yet, may run git init after you say so, may hand the terminal to a provider's own login command, and ends in a dry run — no credentials are read or written, and nothing is overwritten; `cancel` rewrites a run record and, on a **live** run, signals the process — both `--yes` and `--json` waive the confirmation that guards that |
+| **writes locally** | `quickstart` · `lock` · `trust add` · `trust remove` · `projects add` · `projects remove` · `skill install` · `worktrees clean` · `runs stubs` · `test` · `cancel` · `workflows eject` | files and records, never money. `workflows eject` writes one file under `.rayspec/workflows/` and refuses an existing one without `--force`; `worktrees clean` is destructive (`git worktree remove` + `git branch -D`); `runs stubs` writes only where `-o` points; `test` creates run records under `RAYSPEC_HOME` (kept only for a failing case); `quickstart` scaffolds files that do not exist yet, may run git init after you say so, may hand the terminal to a provider's own login command, and ends in a dry run — no credentials are read or written, and nothing is overwritten; `cancel` rewrites a run record and, on a **live** run, signals the process — both `--yes` and `--json` waive the confirmation that guards that |
 | **executes agents** | `run` · `resume` · `approve` · `reject` | money, credentials and your checkout. `approve`/`reject` are not bookkeeping — they resume the run **in this process**, and a gate with `on_reject: continue` keeps spending after a rejection. Only `run --dry-run` is exempt |
 
 - **`--dry-run` is free**: every provider is replaced by the stub, gates are auto-approved
@@ -423,8 +424,9 @@ otherwise exit 2. The absolute path is recorded in `run.json` (`stubs_path`), so
   plain-text error **even under `--json`** — so a caller that only parses stdout sees nothing.
   `new workflow` / `new agent` in a directory without
   `.rayspec/` is exit 2 — they grow a project, they never create one.
-- A listing flag placed **before** a `runs` subcommand is exit 2 (`--limit belongs to the rayspec
-  runs listing`); only `--root` may go there.
+- A listing flag placed **before** a `runs` or `workflows` subcommand is exit 2 (`--limit belongs to
+  the rayspec runs listing`); only `--root` may go there. A project file that shares a name with a
+  bundled workflow shadows it silently — `rayspec workflows` shows `overridden`.
 - `run --resume <id>` only resumes a run of *this* workflow in *this* project. For anything else
   use `rayspec resume <id>`, which finds the run in any project and re-scopes itself to that
   project's workflow, config, lockfile, policy and pricing. `--repo` cannot be combined with

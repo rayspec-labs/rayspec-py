@@ -22,6 +22,7 @@ from rayspec.config.model import TIER_NAMES, Config
 from rayspec.config.paths import rayspec_home
 from rayspec.config.settings import load_config
 from rayspec.errors import LoaderError
+from rayspec.loader.bundled import BUNDLED_LABEL_PREFIX, bundled_dir, bundled_label
 from rayspec.loader.discovery import (
     YAML_SUFFIXES,
     WorkflowRef,
@@ -319,6 +320,11 @@ class _Loader:
     # -- labels & files -----------------------------------------------------------------------
 
     def label(self, path: Path) -> str:
+        # the library first: in a checkout of rayspec itself a bundled file is also
+        # project-relative, and the label must not depend on where the package sits
+        bundled = bundled_label(path)
+        if bundled is not None:
+            return bundled
         try:
             return path.relative_to(self.project_root).as_posix()
         except ValueError:
@@ -363,6 +369,11 @@ class _Loader:
             return target.path
         if isinstance(target, Path):
             return target.expanduser().resolve()
+        if target.startswith(BUNDLED_LABEL_PREFIX):  # a label, as trust/run records keep it
+            candidate = bundled_dir() / target[len(BUNDLED_LABEL_PREFIX) :]
+            if candidate.is_file():
+                return candidate
+            raise LoaderError(f"workflow file not found: {target}")
         if _looks_like_path(target):
             candidate = Path(target).expanduser()
             if not candidate.is_absolute():

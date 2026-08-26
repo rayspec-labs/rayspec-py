@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from rayspec.config import Config
 from rayspec.errors import LoaderError
 from rayspec.loader import load_workflow
+from rayspec.loader.bundled import bundled_dir
 from rayspec.schema import IncludeStep, PromptStep, SchemaError
 
 from .conftest import Tree
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SIMPLE = """
 rayspec: 1
@@ -539,3 +544,24 @@ steps:
     assert rw.agent_for("b").provider == "claude"
     assert rw.agent_for("inc/inner_bar").provider == "stub"
     assert len({rw.step_agents[p] for p in ("a", "b", "inc/inner", "inc/inner_bar")}) == 4
+
+
+def test_bundled_label_is_install_independent(tree: Tree):
+    """A bundled workflow is labelled `<bundled>/<name>.yaml` wherever the package sits — the
+    label is mixed into the hash and keyed in trusted.yaml, so it must not be a machine path.
+    The checkout is the sharp case: there the bundled file IS project-relative."""
+    rw = load_workflow("pr_review", project_root=tree.root, home=tree.home)
+    assert rw.label == "<bundled>/pr_review.yaml"
+    assert all(p.is_relative_to(bundled_dir()) for p in rw.source_files), rw.source_files
+    assert rw.includes["review"].path == bundled_dir() / "review_block.yaml"
+    from_checkout = load_workflow("pr_review", project_root=REPO_ROOT, home=tree.home)
+    assert from_checkout.label == "<bundled>/pr_review.yaml"
+    assert from_checkout.hash == rw.hash
+
+
+def test_a_bundled_label_resolves_back_to_the_file(tree: Tree):
+    """`trust list` re-loads a trusted workflow by the label it recorded."""
+    rw = load_workflow("<bundled>/pr_review.yaml", project_root=tree.root, home=tree.home)
+    assert rw.path == bundled_dir() / "pr_review.yaml"
+    with pytest.raises(LoaderError, match=r"workflow file not found: <bundled>/nope\.yaml"):
+        load_workflow("<bundled>/nope.yaml", project_root=tree.root, home=tree.home)

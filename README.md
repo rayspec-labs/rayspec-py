@@ -122,7 +122,7 @@ rayspec doctor                      # Python, RAYSPEC_HOME, git/uv, SDKs, bundle
 #   --kind content for a non-code project; rayspec init --force to overwrite
 
 # check it
-rayspec workflows                   # discovered workflows
+rayspec workflows                   # discovered workflows: yours, then the bundled library
 rayspec validate                    # schema, graph, references, provider capabilities
 rayspec test                        # the scaffolded case — a scripted dry run, no login needed
 rayspec plan example                # inputs, resolved agents/models, step order, capability report

@@ -7,8 +7,11 @@ from pathlib import Path
 import rayspec
 import rayspec.workspace
 from rayspec.loader import discover_agents, discover_workflows, find_project_root
+from rayspec.loader.bundled import bundled_dir
 
 WF = "rayspec: 1\nname: {name}\ndescription: {desc}\nsteps:\n  - id: a\n    shell: echo\n"
+#: What the package ships, in listing order — every discovery ends with these.
+BUNDLED = ["fix_issue", "pr_review", "release_check", "review_block"]
 
 
 def _tree(tmp_path: Path) -> tuple[Path, Path]:
@@ -31,8 +34,10 @@ def test_discover_workflows_project_overrides_user(tmp_path: Path):
     (home / "workflows/deploy.yml").write_text(WF.format(name="deploy", desc="ship"))
     refs = discover_workflows(root, home=home)
     by_name = {r.name: r for r in refs}
-    assert [r.name for r in refs] == ["build", "deploy", "review"]
+    assert [r.name for r in refs] == sorted(["build", "deploy", "review", *BUNDLED])
     assert by_name["review"].scope == "project"
+    assert by_name["review"].overrides is None
+    assert by_name["fix_issue"].scope == "bundled"
     assert by_name["review"].description == "proj review"
     assert by_name["review"].path == root / ".rayspec/workflows/review.yaml"
     assert by_name["deploy"].scope == "user"
@@ -42,15 +47,50 @@ def test_discover_workflows_project_overrides_user(tmp_path: Path):
 def test_discover_workflows_unparseable_file_is_listed_with_error(tmp_path: Path):
     root, home = _tree(tmp_path)
     (root / ".rayspec/workflows/bad.yaml").write_text("a: [oops\n")
-    refs = discover_workflows(root, home=home)
-    assert len(refs) == 1
-    assert refs[0].name == "bad"
-    assert refs[0].description == ""
-    assert refs[0].error is not None
+    own = [r for r in discover_workflows(root, home=home) if r.scope != "bundled"]
+    assert len(own) == 1
+    assert own[0].name == "bad"
+    assert own[0].description == ""
+    assert own[0].error is not None
 
 
-def test_discover_workflows_missing_dirs(tmp_path: Path):
-    assert discover_workflows(tmp_path / "nope", home=tmp_path / "nohome") == []
+def test_discover_workflows_missing_dirs_still_lists_the_bundled_library(tmp_path: Path):
+    """No project, no home: a fresh install still has something to run."""
+    refs = discover_workflows(tmp_path / "nope", home=tmp_path / "nohome")
+    assert [r.name for r in refs] == BUNDLED
+    assert all(r.scope == "bundled" and r.overrides is None for r in refs)
+    assert all(r.path.parent == bundled_dir() and r.path.name == f"{r.name}.yaml" for r in refs)
+
+
+def test_a_project_or_user_file_shadows_the_bundled_one_and_records_it(tmp_path: Path):
+    root, home = _tree(tmp_path)
+    (root / ".rayspec/workflows/pr_review.yaml").write_text(
+        WF.format(name="pr_review", desc="mine")
+    )
+    (home / "workflows/fix_issue.yaml").write_text(WF.format(name="fix_issue", desc="theirs"))
+    by_name = {r.name: r for r in discover_workflows(root, home=home)}
+    assert by_name["pr_review"].scope == "project"
+    assert by_name["pr_review"].path == root / ".rayspec/workflows/pr_review.yaml"
+    assert by_name["pr_review"].overrides == bundled_dir() / "pr_review.yaml"
+    assert by_name["fix_issue"].scope == "user"
+    assert by_name["fix_issue"].overrides == bundled_dir() / "fix_issue.yaml"
+    assert by_name["review_block"].scope == "bundled"
+    assert by_name["review_block"].overrides is None
+    assert sum(r.name == "pr_review" for r in by_name.values()) == 1
+
+
+def test_a_ref_exposes_its_raw_inputs(tmp_path: Path):
+    root, home = _tree(tmp_path)
+    (root / ".rayspec/workflows/typed.yaml").write_text(
+        "rayspec: 1\nname: typed\ninputs:\n  issue: {type: integer, required: true}\n"
+        "  junk: 3\nsteps:\n  - id: a\n    shell: echo\n"
+    )
+    (root / ".rayspec/workflows/plain.yaml").write_text(WF.format(name="plain", desc="d"))
+    (root / ".rayspec/workflows/bad.yaml").write_text("a: [oops\n")
+    by_name = {r.name: r for r in discover_workflows(root, home=home)}
+    assert by_name["typed"].inputs == {"issue": {"type": "integer", "required": True}, "junk": 3}
+    assert by_name["plain"].inputs == {}
+    assert by_name["bad"].inputs == {} and by_name["bad"].error is not None
 
 
 def test_discover_agents_project_overrides_user(tmp_path: Path):
@@ -131,7 +171,7 @@ def test_discovery_opens_no_workflow_file(tmp_path: Path, monkeypatch) -> None:
         (root / f".rayspec/workflows/w{i}.yaml").write_text(WF.format(name=f"w{i}", desc=f"d{i}"))
     reads = _count_reads(monkeypatch)
     refs = discover_workflows(root, home=home)
-    assert [r.name for r in refs] == [f"w{i}" for i in range(5)]
+    assert [r.name for r in refs if r.scope != "bundled"] == [f"w{i}" for i in range(5)]
     assert reads == {}, reads
 
 
@@ -143,8 +183,10 @@ def test_a_ref_reads_its_file_once_when_asked_for_the_description(
     (root / ".rayspec/workflows/w.yaml").write_text(WF.format(name="w", desc="the description"))
     (root / ".rayspec/workflows/bad.yaml").write_text("a: [oops\n")
     reads = _count_reads(monkeypatch)
-    good, bad = sorted(discover_workflows(root, home=home), key=lambda r: r.name)[::-1]
+    by_name = {r.name: r for r in discover_workflows(root, home=home)}
+    good, bad = by_name["w"], by_name["bad"]
     assert good.description == "the description" and good.error is None
     assert bad.description == "" and bad.error is not None
     assert good.description == "the description"  # asked twice, read once
+    assert good.inputs == {}  # the third field of the same read
     assert reads == {"w.yaml": 1, "bad.yaml": 1}, reads

@@ -1,0 +1,4 @@
+# The reviewer never says BUILD-CLEAN: the loop exhausts → on_exhausted: fail → run failed (exit 1).
+steps:
+  assess: { output: { verdict: fix, reason: "real" } }
+  "build[*]/review": { text: "- Still broken." }

@@ -191,3 +191,23 @@ def test_the_trust_file_is_readable_by_everyone_in_the_checkout(project: Tree) -
     finally:
         assert os.umask(before) == 0o077, "saving the trust list changed the process umask"
     assert stat.S_IMODE(trusted_path(project.root).stat().st_mode) == 0o644
+
+
+def test_check_without_a_name_ignores_the_bundled_library(project: Tree) -> None:
+    """A scheduled `trust check` must not go red because an upgrade shipped new workflows."""
+    run("trust", "add", "wf", "--root", str(project.root))
+    res = run("trust", "check", "--root", str(project.root))
+    assert res.exit_code == 0, res.output
+    assert "pr_review" not in res.output
+
+
+def test_a_bundled_workflow_is_trusted_by_its_stable_label(project: Tree) -> None:
+    res = run("trust", "add", "pr_review", "--root", str(project.root))
+    assert res.exit_code == 0, res.output
+    text = trusted_path(project.root).read_text(encoding="utf-8")
+    assert "workflow: <bundled>/pr_review.yaml" in text
+    res = run("trust", "check", "pr_review", "--root", str(project.root))
+    assert res.exit_code == 0, res.output
+    res = run("trust", "list", "--json", "--root", str(project.root))
+    (row,) = json.loads(res.stdout)
+    assert row["workflow"] == "<bundled>/pr_review.yaml" and row["status"] == "current"

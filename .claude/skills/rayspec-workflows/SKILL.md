@@ -11,9 +11,12 @@ description: Author and edit rayspec agent workflows — the YAML DSL on the Cla
 
 ## Mental model (read this first)
 
-- A **workflow** is one YAML file: `.rayspec/workflows/<name>.yaml` (project) or
-  `~/.rayspec/workflows/` (user; the project wins). `.yml` works too. The name you pass to
-  `rayspec run <name>` is the **file stem**, not the `name:` field — keep them equal.
+- A **workflow** is one YAML file: `.rayspec/workflows/<name>.yaml` (project),
+  `~/.rayspec/workflows/` (user) or one bundled with rayspec; a name resolves project → user →
+  bundled, so your file shadows the bundled one (`rayspec workflows eject <name>` copies a
+  bundled one into the project to edit — the `rayspec-cli` skill has the command). `.yml` works
+  too. The name you pass to `rayspec run <name>` is the **file stem**, not the `name:` field —
+  keep them equal.
 - **YAML coordinates. Code computes. Agents judge.** The file says what runs, in what order,
   under which gates, with which agent. Computation belongs in `shell:`/`python:` steps
   (their verdicts are authoritative); judgement in `prompt:` steps. Do not put logic into
