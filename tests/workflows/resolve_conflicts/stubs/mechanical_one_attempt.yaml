@@ -1,0 +1,7 @@
+# As mechanical.yaml, for a run with max_attempts=1: the resolver is asked exactly once.
+steps:
+  "analyze[*]/classify":
+    output: { strategy: theirs, risk: low, reason: "main bumped VALUE; ours is the stale side" }
+  "resolve[*]/fix":
+    text: "Resolved app.py and staged it."
+    expect: { prompt_contains: ["Resolve every conflict left by `git merge main`"], not_contains: ["Attempt"] }

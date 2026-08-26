@@ -1,0 +1,5 @@
+# The policy the workflow's header recommends: a gate of class `risky` is never approved
+# automatically — not by --yes, --dry-run, --approve-class or auto_if. A human still can.
+approvals:
+  classes:
+    risky: { allow_yes: false }

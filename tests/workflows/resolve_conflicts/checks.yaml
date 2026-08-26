@@ -1,0 +1,68 @@
+# Real-git cases for the bundled resolve_conflicts workflow. Every case is `exec_shell: true`:
+# the merge, the conflict listing, the three-stage dump, the marker check and the commit all run
+# for real, and only the agents are stubbed — which is exactly why this file is NOT part of
+# tests/workflows/checks.yaml: it needs `rayspec test --exec-shell` and a project root that IS a
+# conflicted repository, one per case, because a merge mutates it.
+# tests/workflows/test_resolve_conflicts.py builds that repository and drives each case.
+checks:
+  - id: leaves_markers             # a resolver that never touches the tree: give up after max_attempts, commit nothing
+    workflow: resolve_conflicts
+    inputs: { base: main, test_command: "python3 -B -c 'import app; assert app.VALUE == 3'" }
+    stubs: stubs/mechanical.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "not resolved after 3 attempt(s)"
+      steps:
+        merge: failed              # tolerated (allow_failure) — conflicts are the normal path
+        conflicts: { status: succeeded, output_json: ["app.py"] }
+        clean: skipped
+        "analyze[0]/classify":
+          status: succeeded
+          output_json: { strategy: theirs, risk: low, reason: "main bumped VALUE; ours is the stale side" }
+        gate: skipped              # nothing was risk: high
+        "resolve[1]/check": failed
+        "resolve[2]/check": failed
+        "resolve[3]/check": failed
+        "resolve[3]/give_up": succeeded
+        commit: skipped
+  - id: fewer_attempts             # R6: the bound is an input
+    workflow: resolve_conflicts
+    inputs: { base: main, max_attempts: 1 }
+    stubs: stubs/mechanical_one_attempt.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "not resolved after 1 attempt(s)"
+      steps: { "resolve[1]/give_up": succeeded, commit: skipped }
+  - id: risky_pauses               # R4: a risk: high verdict stops at the gate before any file is modified
+    workflow: resolve_conflicts
+    inputs: { base: main }
+    stubs: stubs/risky.yaml
+    env: { RAYSPEC_POLICY: policy/risky.yaml }   # relative to the process cwd (the repository)
+    exec_shell: true
+    expect:
+      status: paused
+      exit_code: 3
+      reason_contains: "awaiting approval at gate"
+      steps:
+        "analyze[0]/classify": { status: succeeded, output_json: { strategy: manual, risk: high, reason: "both sides changed VALUE for different reasons" } }
+        gate: paused
+  - id: risky_waived_without_policy   # no policy holds `risky`: a dry run's blanket approval applies (and says so)
+    workflow: resolve_conflicts
+    inputs: { base: main }
+    stubs: stubs/risky.yaml
+    exec_shell: true
+    expect:
+      status: failed               # the stub resolver leaves the markers behind
+      steps: { gate: succeeded, "resolve[1]/fix": succeeded, "resolve[3]/give_up": succeeded }
+  - id: bad_base                   # a merge that never started is a failure, never "nothing to resolve"
+    workflow: resolve_conflicts
+    inputs: { base: no-such-branch }
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { merge: failed, conflicts: failed, clean: skipped, analyze: skipped, commit: skipped }
