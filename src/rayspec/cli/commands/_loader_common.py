@@ -326,6 +326,15 @@ def invoked_command() -> str | None:
     return None
 
 
+def group_root(ctx: typer.Context, root: Path | None) -> Path | None:
+    """A subcommand's ``--root``, falling back to the one given before the subcommand name
+    (``rayspec runs --root X diff a b``) — the group callback stashes it in ``ctx.obj``."""
+    if root is not None:
+        return root
+    parent_root = getattr(ctx, "obj", None)
+    return parent_root if isinstance(parent_root, Path) else None
+
+
 def checked_root(root: Path | None) -> Path | None:
     """Apply the one ``--root`` rule and hand the option back unchanged.
 
@@ -799,6 +808,7 @@ __all__ = [
     "error_problems",
     "fail",
     "filesystem_failure",
+    "group_root",
     "invoked_command",
     "json_line",
     "json_text",

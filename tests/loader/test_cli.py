@@ -64,7 +64,8 @@ def test_workflows_lists_and_json(tree: Tree):
 def test_workflows_empty(tree: Tree):
     res = _run(tree, "workflows")
     assert res.exit_code == 0
-    assert "no workflows found" in res.output
+    assert "no project workflows yet" in res.output
+    assert "pr_review" in res.output and "bundled" in res.output
 
 
 def test_agents_lists(tree: Tree):

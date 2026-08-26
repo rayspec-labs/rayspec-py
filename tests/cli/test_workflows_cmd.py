@@ -33,7 +33,8 @@ def test_docs_url_builds_a_full_github_url() -> None:
 def test_workflows_empty_project_hint_names_init_and_a_url(empty_project: Path) -> None:
     res = runner.invoke(app, ["workflows", "--root", str(empty_project)])
     assert res.exit_code == 0, res.output
-    assert "no workflows found" in res.output
+    assert "no project workflows yet" in res.output
+    assert "bundled" in res.output and "workflows eject" in res.output
     assert "rayspec init" in res.output
     assert docs_url("docs/examples.md") in res.output
     # repo-relative paths a tool-installed user does not have must not appear bare
