@@ -1,0 +1,8 @@
+# Every reviewer fails: the panel step still succeeds (per-item failures are tolerated), but there
+# is nothing to synthesise — `no_reviews` stops the run as failed before the chair is asked.
+steps:
+  "panel[*]/review":
+    fail: { kind: api, message: "simulated provider outage", transient: false }
+  synthesize:
+    text: "the chair must never be asked"
+    expect: { not_contains: ["independent review"] }   # fails loudly if it is

@@ -1,0 +1,38 @@
+# One blocker from the security lens, the other four approve; the chair keeps it and requests
+# changes. `match:` answers the concurrent reviewers by the lens named in their prompt (an `each:`
+# runs its items concurrently, so a `sequence:` could not tell them apart); the chair is a plain
+# step path. The `expect:` blocks pin the division of labour every reviewer is told about and the
+# per-lens sections the chair is given.
+defaults: { latency_ms: 0, usage: { input: 3000, output: 200 } }
+steps:
+  synthesize:
+    output:
+      verdict: request_changes
+      summary: "All five lenses reviewed; security found a blocker in app.py."
+      findings:
+        - { severity: blocker, file: app.py, note: "user input reaches eval()", raised_by: [security] }
+      disagreements: []
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "5 independent reviews of the same diff (against main), one per lens."
+        - "## security\nverdict: request_changes\n- [blocker] app.py: user input reaches eval()\n"
+        - "## correctness\nverdict: approve\n(no findings)\n"
+        - "## tests\nverdict: approve\n(no findings)\n"
+match:
+  - prompt_regex: "Your angle: \\*\\*security\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: blocker, file: app.py, note: "user input reaches eval()" }]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains: ["You are reviewer 1 of 5; the others are covering correctness, performance, api_design, tests."]
+  - prompt_regex: "Your angle: \\*\\*tests\\*\\*"
+    output: { verdict: approve, findings: [] }
+    expect:
+      prompt_contains: ["You are reviewer 5 of 5; the others are covering security, correctness, performance, api_design."]
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }
+    expect: { access: read-only, output_schema: true }

@@ -110,3 +110,105 @@ checks:
         gate: skipped
         resolve: skipped
         commit: skipped
+  - id: panel_approve              # the acceptance run: no stubs, schema-shaped answers, five lenses
+    workflow: review_panel
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: approve, blockers: 0, disagreements: 0, reviewed: 5, lost: 0, commented: false }
+      steps:
+        checkout: { status: skipped, skip_reason: when_false }
+        diff: succeeded
+        nothing: { status: skipped, skip_reason: when_false }
+        panel: succeeded
+        "panel[0]/review": succeeded
+        "panel[4]/review": succeeded
+        no_reviews: { status: skipped, skip_reason: when_false }
+        synthesize: succeeded
+        comment: { status: skipped, skip_reason: when_false }
+  - id: panel_blocker
+    workflow: review_panel
+    stubs: stubs/review_panel.yaml
+    expect:
+      status: succeeded
+      outputs:
+        verdict: request_changes
+        blockers: 1
+        findings:
+          - { severity: blocker, file: app.py, note: "user input reaches eval()", raised_by: [security] }
+      steps: { panel: succeeded, synthesize: succeeded }
+  - id: panel_contradiction
+    workflow: review_panel
+    stubs: stubs/review_panel_contradiction.yaml
+    expect:
+      status: succeeded
+      outputs: { verdict: request_changes, blockers: 1, disagreements: 1 }
+  - id: panel_lost                 # one reviewer lost: the chair still runs, the counts say so
+    workflow: review_panel
+    stubs: stubs/review_panel_lost.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: approve, reviewed: 4, lost: 1 }
+      steps:
+        "panel[1]/review": succeeded
+        "panel[2]/review": failed
+        panel: succeeded
+        no_reviews: { status: skipped, skip_reason: when_false }
+        synthesize: succeeded
+  - id: panel_all_lost             # every reviewer lost: nothing to synthesise → failed, chair never asked
+    workflow: review_panel
+    stubs: stubs/review_panel_all_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "every reviewer failed"
+      steps:
+        "panel[0]/review": failed
+        "panel[4]/review": failed
+        panel: succeeded
+        no_reviews: succeeded
+        synthesize: { status: skipped, skip_reason: when_false }
+        comment: skipped
+  - id: panel_raised_by            # three lenses, one finding: listed once, attributed to all three
+    workflow: review_panel
+    stubs: stubs/review_panel_raised_by.yaml
+    expect:
+      status: succeeded
+      outputs:
+        blockers: 0
+        findings:
+          - severity: major
+            file: app.py
+            note: "off-by-one in the slice: the last element is dropped, and leaks under a crafted length"
+            raised_by: [security, correctness, tests]
+  - id: panel_pair                 # two lenses: each reviewer is told exactly the other one
+    workflow: review_panel
+    inputs: { lenses: [security, correctness] }
+    stubs: stubs/review_panel_pair.yaml
+    expect:
+      status: succeeded
+      outputs: { reviewed: 2, lost: 0 }
+      steps: { "panel[0]/review": succeeded, "panel[1]/review": succeeded }
+  - id: panel_solo                 # one lens: the reviewer is told it is alone
+    workflow: review_panel
+    inputs: { lenses: [tests] }
+    stubs: stubs/review_panel_pair.yaml
+    expect:
+      status: succeeded
+      outputs: { reviewed: 1 }
+      steps: { "panel[0]/review": succeeded }
+  - id: panel_pr_post              # with a PR and post: checkout and the comment run (simulated in a dry run)
+    workflow: review_panel
+    inputs: { pr: 12, post: true }
+    expect:
+      status: succeeded
+      outputs: { commented: true }
+      steps: { checkout: succeeded, diff: succeeded, comment: succeeded }
+  - id: panel_pr_no_post
+    workflow: review_panel
+    inputs: { pr: 12 }
+    expect:
+      status: succeeded
+      outputs: { commented: false }
+      steps: { checkout: succeeded, comment: { status: skipped, skip_reason: when_false } }

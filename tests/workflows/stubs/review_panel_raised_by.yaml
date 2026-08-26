@@ -1,0 +1,33 @@
+# Three lenses find the same off-by-one from three angles. The chair lists it once and names all
+# three in `raised_by` — the merged output carries the attribution, the prompt carried all three.
+steps:
+  synthesize:
+    output:
+      verdict: request_changes
+      summary: "All five lenses reviewed; three of them converge on one off-by-one in app.py."
+      findings:
+        - severity: major
+          file: app.py
+          note: "off-by-one in the slice: the last element is dropped, and leaks under a crafted length"
+          raised_by: [security, correctness, tests]
+      disagreements: []
+    expect:
+      prompt_contains:
+        - "## security\nverdict: request_changes\n- [major] app.py: off-by-one in the slice lets the last byte leak\n"
+        - "## correctness\nverdict: request_changes\n- [major] app.py: off-by-one in the slice drops the last element\n"
+        - "## tests\nverdict: request_changes\n- [minor] app.py: no test covers the last element of the slice\n"
+match:
+  - prompt_regex: "Your angle: \\*\\*security\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: major, file: app.py, note: "off-by-one in the slice lets the last byte leak" }]
+  - prompt_regex: "Your angle: \\*\\*correctness\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: major, file: app.py, note: "off-by-one in the slice drops the last element" }]
+  - prompt_regex: "Your angle: \\*\\*tests\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: minor, file: app.py, note: "no test covers the last element of the slice" }]
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }

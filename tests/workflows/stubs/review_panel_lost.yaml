@@ -1,0 +1,20 @@
+# The performance reviewer (item 2 of the default lens list) fails outright — an outage, not a
+# rate limit (`transient: false`, so the step's retry does not apply). `on_failure: continue`
+# leaves a null slot; the chair is told which lens produced no input and still runs.
+steps:
+  "panel[2]/review":
+    fail: { kind: api, message: "simulated provider outage", transient: false }   # every call
+  synthesize:
+    output:
+      verdict: approve
+      summary: "Four of five lenses reviewed; performance produced no input."
+      findings: []
+      disagreements: []
+    expect:
+      prompt_contains:
+        - "## correctness\nverdict: approve\n(no findings)\n"
+        - "## performance\nREVIEWER FAILED — no input from this lens.\n"
+        - "## api_design\nverdict: approve\n(no findings)\n"
+match:
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }
