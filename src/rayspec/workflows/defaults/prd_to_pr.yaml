@@ -1,0 +1,577 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: prd_to_pr
+description: >
+  Turn a product requirements document (a Markdown file) into one reviewed pull request, test
+  first: a planner derives a test plan and names the questions the document leaves open, a human
+  sees both before a token is spent implementing, one agent writes only the tests, code proves
+  they fail, a second agent implements in a loop that ends only when the typecheck and the tests
+  are green, a fresh reviewer reports what the diff covers, misses and adds unasked, then the
+  branch is pushed and `gh pr create` runs. Needs a written PRD — for a GitHub issue use
+  `fix_issue`.
+# Two gates, two classes: `scope` (the plan and its assumptions — the cheapest moment to catch a
+# misread PRD; answer the questions in the approval comment, `rayspec approve <run> "…"`) and
+# `chore` (the pull request; self-approving when the review is clean). Fully unattended is
+# `--approve-class scope --approve-class chore` — the stated assumptions are then accepted unread,
+# and recorded in the run and the PR body. Hold a class shut in your policy to always ask:
+#   # .rayspec/policy.yaml
+#   approvals: { classes: { scope: { allow_yes: false } } }
+# The PRD may carry a block the workflow reads (it wins over the inputs):
+#   <!-- rayspec
+#   test_command: pytest -q
+#   typecheck: mypy src
+#   max_requirements: 6
+#   -->
+
+inputs:
+  prd: { type: string, required: true, description: "Path to the PRD (Markdown): committed in the repository, or absolute" }
+  typecheck_command: { type: string, required: true, description: "The project's typecheck (mypy ., tsc --noEmit, …); no default on purpose — the PRD's rayspec block may override it" }
+  test_command: { type: string, default: "pytest -q", description: "Runs the whole suite, the new tests included; the PRD's rayspec block may override it" }
+  max_requirements: { type: integer, default: 6, description: "Refuse a PRD with more requirements than this (exit 4): one PRD, one pull request" }
+  max_attempts: { type: integer, default: 4, description: "Implement → typecheck → test rounds before the run gives up (at most 10)" }
+  base: { type: string, default: main, description: "PR base branch" }
+
+defaults:
+  timeout: 30m
+  max_parallel: 2
+
+isolation: worktree                 # the agents' edits and the commits stay out of your checkout
+
+agents:
+  planner:
+    provider: claude
+    model: medium
+    access: read-only
+    thinking: true
+    budget_usd: 2.00
+    instructions: >
+      You turn a product requirements document into a test plan. Read the code first. Every test
+      you plan is derived from an acceptance criterion and says what it asserts; a criterion no
+      test can express is an open question, not a test. Say what the document leaves undecided
+      instead of deciding it silently — state the assumption you would act on.
+    tools: { deny: [web] }
+  tester:
+    provider: claude
+    model: medium
+    access: workspace-write
+    budget_usd: 4.00
+    instructions: |
+      You write tests inside {{ run.workdir }} and nothing else: no implementation, no stub of the
+      code under test, no commit. Each test must fail against the current code for the right
+      reason — a missing name or a wrong result, never a syntax or collection error. A test that
+      passes without any implementation is worthless; the workflow fails the run if the suite is
+      green after you. Follow the project's test layout so the test command picks your files up.
+    tools: { deny: [web] }
+  implementer:
+    provider: claude
+    model: medium
+    access: workspace-write
+    budget_usd: 10.00
+    instructions: |
+      You implement a specification inside {{ run.workdir }} so that acceptance tests written by
+      someone else pass. The tests are the contract: never edit, delete, skip or weaken them. If
+      a test contradicts the specification or cannot be satisfied, or the specification is
+      ambiguous in a way the stated assumptions do not settle, stop and answer `blocked` with the
+      question. Build what the document asks for and nothing more. Do not commit — the workflow
+      commits.
+    tools: { deny: [web] }
+  reviewer:
+    provider: claude
+    model: large
+    access: read-only
+    thinking: true
+    budget_usd: 3.00
+    instructions: >
+      You review a diff against the document it was meant to implement, requirement by
+      requirement. Point at hunks; add nothing you cannot trace to the diff or the document.
+      Behaviour nobody asked for is a finding, as much as a requirement nobody implemented.
+    tools: { deny: [web] }
+
+steps:
+  - id: read_prd
+    description: The document — inside the worktree (committed) or an absolute path; a missing file fails here.
+    shell: cat "$RAYSPEC_INPUT_PRD"
+
+  - id: size_check
+    needs: [read_prd]
+    description: >
+      Code computes: the settings block, the title, the counts of requirements and acceptance
+      criteria, the remote branch name, and whether this PRD is one pull request's worth.
+    python: |
+      import json, os, re
+
+      text = {{ steps.read_prd.output }}
+      prd_path = {{ inputs.prd }}
+      settings = {"test_command": {{ inputs.test_command }},
+                  "typecheck": {{ inputs.typecheck_command }},
+                  "max_requirements": {{ inputs.max_requirements }}}
+      block = re.search(r"<!--\s*rayspec\s*\n(.*?)-->", text, re.S)
+      if block:
+          for line in block.group(1).splitlines():
+              key, sep, value = line.partition(":")
+              if sep and key.strip() in settings and value.strip():
+                  settings[key.strip()] = value.strip()
+
+      lines = text.splitlines()
+      stem = os.path.splitext(os.path.basename(prd_path))[0]
+      title = next((line[2:].strip() for line in lines if line.startswith("# ")), "") or stem
+
+      def section(pattern):
+          """Lines under the first heading matching `pattern`, up to the next heading of the same or a higher level."""
+          found, level = [], None
+          for line in lines:
+              heading = re.match(r"^(#{1,6})\s+(.*)", line)
+              if heading:
+                  if level is not None and len(heading.group(1)) <= level:
+                      break
+                  if level is None and re.search(pattern, heading.group(2), re.I):
+                      level = len(heading.group(1))
+                  continue
+              if level is not None:
+                  found.append(line)
+          return found
+
+      bullet = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
+      explicit = re.findall(r"^(?:\*\*|#{2,6}\s+)R\d+[a-z]?\b", text, re.M)
+      requirements = len(explicit) or sum(1 for line in section(r"requirement") if bullet.match(line))
+      criteria = sum(1 for line in section(r"acceptance") if bullet.match(line))
+      max_requirements = int(settings["max_requirements"])
+      short_id = {{ run.id }}.rsplit("-", 1)[-1]
+      branch = "prd/" + (re.sub(r"[^a-z0-9._-]+", "-", stem.lower()).strip("-") or "prd") + "-" + short_id
+
+      if requirements > max_requirements:
+          verdict = "oversized"
+          note = (f"{requirements} requirements ({criteria} acceptance criteria) exceed "
+                  f"max_requirements={max_requirements} — split the PRD, one pull request each")
+      elif criteria == 0:
+          verdict = "no_criteria"
+          note = ("no acceptance criteria found — add an '## Acceptance criteria' section with one "
+                  "bullet per criterion; the tests are derived from it")
+      else:
+          verdict = "ok"
+          note = f"{requirements} requirements, {criteria} acceptance criteria"
+      print(json.dumps({"title": title, "requirements": requirements, "criteria": criteria,
+                        "max_requirements": max_requirements, "test_command": settings["test_command"],
+                        "typecheck_command": settings["typecheck"], "branch": branch,
+                        "verdict": verdict, "note": note}))
+    output_schema:
+      type: object
+      properties:
+        title: { type: string }
+        requirements: { type: integer }
+        criteria: { type: integer }
+        max_requirements: { type: integer }
+        test_command: { type: string }
+        typecheck_command: { type: string }
+        branch: { type: string }
+        verdict: { type: string, enum: [ok, oversized, no_criteria] }
+        note: { type: string }
+      required: [title, requirements, criteria, max_requirements, test_command, typecheck_command, branch, verdict, note]
+
+  - id: refuse
+    needs: [size_check]
+    when: steps.size_check.output.verdict != 'ok'
+    stop:
+      status: cancelled
+      reason: "{{ steps.size_check.output.note }}"
+
+  - id: start
+    needs: [size_check]
+    when: steps.size_check.output.verdict == 'ok'
+    description: The commit the work starts from — the tests are counted and the diff is taken against it.
+    shell: git rev-parse HEAD
+
+  - id: baseline
+    needs: [start]
+    description: Typecheck and tests before anything is touched — a red tree afterwards would carry no information.
+    shell: |
+      eval "{{ steps.size_check.output.typecheck_command }}" 2>&1
+      eval "{{ steps.size_check.output.test_command }}" 2>&1
+    allow_failure: true
+
+  - id: red_baseline
+    needs: [baseline]
+    when: not steps.baseline.ok
+    stop:
+      status: failed
+      reason: |
+        the baseline is already red (exit {{ steps.baseline.exit_code }}) — fix it first; nothing was touched:
+        {{ steps.baseline.output }}
+
+  - id: plan
+    needs: [baseline]
+    when: steps.baseline.ok
+    agent: planner
+    prompt: |
+      Read this PRD and the code in {{ run.workdir }}, then plan how to implement it test-first.
+
+      {{ steps.read_prd.output }}
+
+      ({{ steps.size_check.output.note }}.) The tests run with `{{ steps.size_check.output.test_command }}`,
+      the typecheck with `{{ steps.size_check.output.typecheck_command }}`.
+
+      Return: a short summary of what will be built; the test plan — for every requirement, the
+      tests that will prove it, derived from the acceptance criteria, each able to fail against
+      the current code; and every question the document leaves open, with the assumption you
+      would act on if nobody answers (an empty list is a fine answer).
+    output_schema:
+      type: object
+      properties:
+        summary: { type: string }
+        test_plan:
+          type: array
+          items:
+            type: object
+            properties:
+              requirement: { type: string }
+              tests: { type: array, items: { type: string } }
+            required: [requirement, tests]
+        unresolved:
+          type: array
+          items:
+            type: object
+            properties:
+              question: { type: string }
+              assumption: { type: string }
+              affects: { type: array, items: { type: string } }
+            required: [question, assumption, affects]
+      required: [summary, test_plan, unresolved]
+
+  - id: gate_plan
+    needs: [plan]
+    description: A human reads the plan and the assumptions before any token is spent implementing; the comment answers the questions.
+    approve:
+      message: |
+        Implement "{{ steps.size_check.output.title }}" ({{ steps.size_check.output.note }})?
+
+        {{ steps.plan.output.summary }}
+
+        Test plan:
+        {% for item in steps.plan.output.test_plan %}
+        - {{ item.requirement }}: {{ item.tests | join('; ') }}
+        {% endfor %}
+        {% if steps.plan.output.unresolved | length > 0 %}
+
+        Open questions — the planner will act on these assumptions unless your comment answers them
+        (the comment is handed to the test writer and the implementer):
+        {% for q in steps.plan.output.unresolved %}
+        - {{ q.question }} → assumption: {{ q.assumption }}{{ (' (affects ' ~ (q.affects | join(', ')) ~ ')') if q.affects | length > 0 else '' }}
+        {% endfor %}
+        {% endif %}
+      class: scope                  # the operator's rules for this kind of gate, named not defined
+
+  - id: tests_first
+    needs: [gate_plan]
+    agent: tester                   # fresh session, and no continuation into the implementer's
+    prompt: |
+      Write the acceptance tests for this PRD — only tests, no implementation.
+
+      {{ steps.read_prd.output }}
+
+      Test plan (from the planner):
+      {% for item in steps.plan.output.test_plan %}
+      - {{ item.requirement }}: {{ item.tests | join('; ') }}
+      {% endfor %}
+      {% if steps.plan.output.unresolved | length > 0 %}
+      Open questions the planner could not resolve, with the assumption it will act on:
+      {% for q in steps.plan.output.unresolved %}
+      - {{ q.question }} → assumption: {{ q.assumption }}{{ (' (affects ' ~ (q.affects | join(', ')) ~ ')') if q.affects | length > 0 else '' }}
+      {% endfor %}
+      {% endif %}
+      {% if steps.gate_plan.output %}
+      Answers given at the plan gate (they override the assumptions):
+      {{ steps.gate_plan.output }}
+      {% endif %}
+
+      `{{ steps.size_check.output.test_command }}` must pick your files up and must FAIL after you —
+      every new test for the right reason. Do not touch anything but tests; do not commit.
+
+  - id: red
+    needs: [tests_first]
+    description: >
+      Code decides: what the test writer changed (counted against `start`), and whether the suite
+      is red — `vacuous` (green without any implementation) and `empty` (nothing written) fail the run.
+    python: |
+      import json, subprocess
+
+      subprocess.run(["git", "add", "-A"], check=True)
+      listed = subprocess.run(["git", "diff", "--cached", "--name-only", {{ steps.start.output }}],
+                              capture_output=True, text=True, check=True)
+      files = sorted(set(listed.stdout.split()))
+      run = subprocess.run({{ steps.size_check.output.test_command }}, shell=True,
+                           capture_output=True, text=True, check=False)
+      output = (run.stdout + run.stderr)[-6000:]
+      verdict = "empty" if not files else ("vacuous" if run.returncode == 0 else "red")
+      print(json.dumps({"verdict": verdict, "files": files, "exit_code": run.returncode, "output": output}))
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [red, vacuous, empty] }
+        files: { type: array, items: { type: string } }
+        exit_code: { type: integer }
+        output: { type: string }
+      required: [verdict, files, exit_code, output]
+
+  - id: vacuous
+    needs: [red]
+    when: steps.red.output.verdict != 'red'
+    stop:
+      status: failed
+      reason: |
+        {% if steps.red.output.verdict == 'empty' %}
+        the test writer wrote no tests — nothing to implement against
+        {% else %}
+        the new tests pass without any implementation — vacuous tests: {{ steps.red.output.files | join(', ') }} (`{{ steps.size_check.output.test_command }}` exited 0)
+        {% endif %}
+
+  - id: commit_tests
+    needs: [red]
+    when: steps.red.output.verdict == 'red'
+    description: The tests as their own commit — the contract the implementer is held to; prints its sha.
+    shell: |
+      git add -A
+      if ! git diff --cached --quiet; then
+        git commit -q -m "test: acceptance tests for {{ steps.size_check.output.title }}"
+      fi
+      git rev-parse HEAD
+
+  - id: build
+    needs: [commit_tests]
+    loop:
+      max_iterations: 10            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
+      until: (steps.typecheck.ok | default(false)) and (steps.tests.ok | default(false))
+      on_exhausted: fail
+      steps:
+        - id: implement
+          agent: implementer
+          session: implement        # continue my own session from the previous attempt
+          prompt: |
+            {% if iteration.first %}
+            Implement this PRD so that the acceptance tests pass:
+
+            {{ steps.read_prd.output }}
+            {% if steps.plan.output.unresolved | length > 0 %}
+
+            Open questions the planner could not resolve, with the assumption it will act on:
+            {% for q in steps.plan.output.unresolved %}
+            - {{ q.question }} → assumption: {{ q.assumption }}{{ (' (affects ' ~ (q.affects | join(', ')) ~ ')') if q.affects | length > 0 else '' }}
+            {% endfor %}
+            {% endif %}
+            {% if steps.gate_plan.output %}
+
+            Answers given at the plan gate (they override the assumptions):
+            {{ steps.gate_plan.output }}
+            {% endif %}
+
+            The acceptance tests ({{ steps.red.output.files | join(', ') }}) fail right now
+            (`{{ steps.size_check.output.test_command }}` exited {{ steps.red.output.exit_code }}):
+            {{ steps.red.output.output }}
+
+            Make them pass; `{{ steps.size_check.output.typecheck_command }}` must pass too. Do not
+            modify the acceptance tests — answer `blocked` with the question instead. Do not commit.
+            {% else %}
+            Attempt {{ iteration.n }} of {{ inputs.max_attempts }}.
+            {% if not iteration.prev.typecheck.ok %}
+            The tree does not typecheck after your last edit (`{{ steps.size_check.output.typecheck_command }}` exited {{ iteration.prev.typecheck.exit_code }}):
+            {{ iteration.prev.typecheck.output | default('') }}
+            {% endif %}
+            {% if not iteration.prev.tests.ok %}
+            {% if iteration.prev.typecheck.ok %}The tree typechecks, but the tests fail{% else %}The tests fail too{% endif %} (`{{ steps.size_check.output.test_command }}` exited {{ iteration.prev.tests.exit_code }}):
+            {{ iteration.prev.tests.output | default('') }}
+            {% endif %}
+
+            Fix it. Do not modify the acceptance tests — answer `blocked` with the question instead.
+            Do not commit.
+            {% endif %}
+          output_schema:
+            type: object
+            properties:
+              status: { type: string, enum: [done, blocked] }
+              question: { type: string }
+              notes: { type: string }
+            required: [status, question, notes]
+
+        - id: blocked
+          needs: [implement]
+          when: steps.implement.output.status == 'blocked'
+          stop:
+            status: cancelled
+            reason: "blocked: {{ steps.implement.output.question }} — amend the PRD and run again (attempt {{ iteration.n }}; the worktree {{ run.workdir }} is retained)"
+
+        - id: guard
+          needs: [implement]
+          when: steps.implement.output.status == 'done'
+          description: Code decides whether the implementer touched the acceptance tests (against the tests commit; everything staged first).
+          python: |
+            import json, subprocess
+
+            files = {{ steps.red.output.files }}
+            subprocess.run(["git", "add", "-A"], check=True)
+            changed = []
+            if files:
+                diff = subprocess.run(["git", "diff", "--cached", "--name-only", {{ steps.commit_tests.output }}, "--", *files],
+                                      capture_output=True, text=True, check=True)
+                changed = sorted(set(diff.stdout.split()))
+            print(json.dumps(changed))
+          output_schema:
+            type: array
+            items: { type: string }
+
+        - id: tampered
+          needs: [guard]
+          when: (steps.guard.output | length) > 0
+          stop:
+            status: failed
+            reason: "the implementer modified the acceptance tests: {{ steps.guard.output | join(', ') }} — the tests are the contract; nothing committed, the changes are staged in {{ run.workdir }}"
+
+        - id: typecheck
+          needs: [guard]
+          when: (steps.guard.output | length) == 0
+          shell: eval "{{ steps.size_check.output.typecheck_command }}" 2>&1
+          allow_failure: true       # "does not compile" — kept apart from "compiles but broke something"
+
+        - id: tests
+          needs: [typecheck]
+          shell: eval "{{ steps.size_check.output.test_command }}" 2>&1
+          allow_failure: true       # the loop reads ok / exit_code / output
+
+        - id: give_up
+          needs: [tests]
+          when: (not (steps.typecheck.ok and steps.tests.ok)) and iteration.n >= inputs.max_attempts
+          stop:
+            status: failed
+            reason: |
+              not green after {{ iteration.n }} attempt(s) — typecheck exited {{ steps.typecheck.exit_code }}, tests exited {{ steps.tests.exit_code }}; the branch and the worktree ({{ run.workdir }}) are retained:
+              {{ steps.typecheck.output }}
+              {{ steps.tests.output }}
+
+  - id: commit_impl
+    needs: [build]
+    description: The implementation as one commit on top of the tests; tolerates an agent that committed already.
+    shell: |
+      git add -A
+      if ! git diff --cached --quiet; then
+        git commit -q -m "feat: {{ steps.size_check.output.title }}"
+      fi
+      git log --oneline "{{ steps.start.output }}..HEAD"
+
+  - id: diff
+    needs: [commit_impl]
+    description: Everything this run changed, for the reviewer.
+    shell: |
+      git diff --stat "{{ steps.start.output }}" HEAD
+      echo "=== FULL DIFF ==="
+      git diff "{{ steps.start.output }}" HEAD
+
+  - id: review
+    needs: [diff]
+    agent: reviewer                 # fresh — no session: the agents that wrote it are the worst judges of it
+    prompt: |
+      A change was implemented from this PRD by two separate agents (tests first, then code);
+      `{{ steps.size_check.output.typecheck_command }}` and `{{ steps.size_check.output.test_command }}`
+      pass after {{ steps.build.iterations }} attempt(s).
+
+      {{ steps.read_prd.output }}
+      {% if steps.plan.output.unresolved | length > 0 %}
+
+      Assumptions the planner stated:
+      {% for q in steps.plan.output.unresolved %}
+      - {{ q.question }} → {{ q.assumption }}
+      {% endfor %}
+      {% endif %}
+      {% if steps.gate_plan.output %}
+
+      Answers given at the plan gate:
+      {{ steps.gate_plan.output }}
+      {% endif %}
+
+      The diff (acceptance tests: {{ steps.red.output.files | join(', ') }}):
+      {{ steps.diff.output[:60000] }}
+
+      For every requirement in the PRD say whether the diff covers it (`covered`) or not
+      (`uncovered`), and list under `unrequested` every behaviour the diff adds that the PRD did
+      not ask for. `complete` only when nothing is uncovered.
+    output_schema:
+      type: object
+      properties:
+        covered: { type: array, items: { type: string } }
+        uncovered: { type: array, items: { type: string } }
+        unrequested: { type: array, items: { type: string } }
+        verdict: { type: string, enum: [complete, partial] }
+        summary: { type: string }
+      required: [covered, uncovered, unrequested, verdict, summary]
+
+  - id: gate_pr
+    needs: [review]
+    approve:
+      message: |
+        Open the pull request for "{{ steps.size_check.output.title }}" (branch {{ steps.size_check.output.branch }}, {{ steps.build.iterations }} attempt(s))? Reviewer's verdict: {{ steps.review.output.verdict }}.
+        covered: {{ steps.review.output.covered | join(', ') or '(none)' }}
+        uncovered: {{ steps.review.output.uncovered | join(', ') or '(none)' }}
+        unrequested: {{ steps.review.output.unrequested | join(', ') or '(none)' }}
+      class: chore                  # `rayspec run --approve-class chore` answers gates like this one
+      # A complete review with nothing unasked-for is the case a human always waves through;
+      # anything else still asks. `plan --risk` reports a self-approving gate, and an operator's
+      # `allow_yes: false` for this class overrides the condition entirely.
+      auto_if: steps.review.output.verdict == 'complete' and (steps.review.output.unrequested | length) == 0
+
+  - id: pr
+    needs: [gate_pr]
+    description: Push the branch under its PRD-derived name and open the PR with the review, the coverage and the assumptions in its body; prints the URL.
+    python: |
+      import subprocess, sys
+
+      settings = {{ steps.size_check.output }}
+      plan = {{ steps.plan.output }}
+      review = {{ steps.review.output }}
+      answers = {{ steps.gate_plan.output }}
+      tests = {{ steps.red.output.files }}
+      prd_path = {{ inputs.prd }}
+      run_id = {{ run.id }}
+      attempts = {{ steps.build.iterations }}
+      base = {{ inputs.base }}
+
+      def bullets(items, empty="- (none)"):
+          return "\n".join(f"- {item}" for item in items) or empty
+
+      assumptions = [
+          f"{q['question']} → {q['assumption']}" + (f" (affects {', '.join(q['affects'])})" if q["affects"] else "")
+          for q in plan["unresolved"]
+      ]
+      body = [
+          "## Summary", "", review["summary"], "",
+          f"Implemented from `{prd_path}` by rayspec `prd_to_pr` (run {run_id}) in {attempts} attempt(s); "
+          f"acceptance tests: {', '.join(tests)}.", "",
+          f"## Coverage (reviewer's verdict: {review['verdict']})", "",
+          "covered:", bullets(review["covered"]), "",
+          "uncovered:", bullets(review["uncovered"]), "",
+          "unrequested:", bullets(review["unrequested"]), "",
+          "## Assumptions", "",
+          bullets(assumptions), "",
+          f"Answers given at the plan gate: {answers}" if answers
+          else "The plan gate was approved automatically — the assumptions above were not reviewed by a human.",
+      ]
+      push = subprocess.run(["git", "push", "-u", "origin", f"HEAD:refs/heads/{settings['branch']}"],
+                            capture_output=True, text=True, check=False)
+      if push.returncode != 0:
+          sys.stderr.write(push.stderr)
+          sys.exit(push.returncode)
+      created = subprocess.run(["gh", "pr", "create", "--base", base, "--head", settings["branch"],
+                                "--title", settings["title"], "--body-file", "-"],
+                               input="\n".join(body), capture_output=True, text=True, check=False)
+      if created.returncode != 0:
+          sys.stderr.write(created.stderr)
+          sys.exit(created.returncode)
+      print(created.stdout.strip())
+
+outputs:
+  pr_url: "{{ steps.pr.output }}"
+  branch: "{{ steps.size_check.output.branch }}"
+  verdict: "{{ steps.review.output.verdict }}"
+  covered: "{{ steps.review.output.covered }}"
+  uncovered: "{{ steps.review.output.uncovered }}"
+  unrequested: "{{ steps.review.output.unrequested }}"
+  summary: "{{ steps.review.output.summary }}"
+  attempts: "{{ steps.build.iterations }}"
+  tests: "{{ steps.red.output.files }}"
+  unresolved: "{{ steps.plan.output.unresolved }}"
