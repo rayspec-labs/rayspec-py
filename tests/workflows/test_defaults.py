@@ -48,6 +48,7 @@ def _copy_suite(root: Path) -> None:
 
 def test_the_library_is_the_v1_set() -> None:
     assert BUNDLED == [
+        "architect",
         "create_issue",
         "fix_issue",
         "pr_review",

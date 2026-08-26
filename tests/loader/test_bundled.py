@@ -23,6 +23,7 @@ from rayspec.loader.bundled import (
 from rayspec.loader.yaml import load_yaml
 
 V1_SET = [
+    "architect",
     "create_issue",
     "fix_issue",
     "pr_review",
