@@ -1,0 +1,81 @@
+# prd_to_pr against a real tree: `rayspec test --exec-shell` with stub agents that write nothing,
+# on a fixture repository the pytest driver builds per case (`tests/workflows/test_prd_to_pr.py`
+# chooses it by case id). What the dry run in tests/workflows/checks.yaml can only simulate is
+# decided by code here: the PRD's own settings block wins over an input, the requirement count
+# and the missing acceptance criteria refuse the run, a red baseline stops it, a test writer that
+# wrote nothing is caught by `red`, and a held `scope` class pauses at the plan gate.
+checks:
+  - id: empty                      # the stub tester writes nothing: `red` says empty, exit 1
+    workflow: prd_to_pr
+    inputs: { prd: docs/prd.md, typecheck_command: "false" }   # the PRD's block must win, or the baseline is red
+    stubs: stubs/agents.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "the test writer wrote no tests"
+      steps:
+        size_check: { status: succeeded, output_regex: '"typecheck_command": "python3 -B typecheck.py"' }
+        baseline: succeeded
+        plan: succeeded
+        gate_plan: succeeded
+        tests_first: succeeded
+        red: { status: succeeded, output_regex: '"verdict": "empty"' }
+        vacuous: succeeded
+        commit_tests: { status: skipped, skip_reason: when_false }
+        build: skipped
+        pr: skipped
+  - id: oversized                  # twenty requirements: refused before any agent runs
+    workflow: prd_to_pr
+    inputs: { prd: docs/prd.md, typecheck_command: "false" }
+    stubs: stubs/agents.yaml
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "20 requirements (2 acceptance criteria) exceed max_requirements=6"
+      steps:
+        size_check: { status: succeeded, output_regex: '"verdict": "oversized"' }
+        refuse: succeeded
+        start: { status: skipped, skip_reason: when_false }
+        plan: skipped
+        pr: skipped
+  - id: no_criteria                # nothing to derive tests from: refused
+    workflow: prd_to_pr
+    inputs: { prd: docs/prd.md, typecheck_command: "false" }
+    stubs: stubs/agents.yaml
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "no acceptance criteria found"
+      steps:
+        refuse: succeeded
+        plan: skipped
+  - id: red_baseline               # a failing test before anything is touched: stop, not a finding
+    workflow: prd_to_pr
+    inputs: { prd: docs/prd.md, typecheck_command: "false" }
+    stubs: stubs/agents.yaml
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "the baseline is already red (exit 1)"
+      steps:
+        baseline: { status: failed, output_regex: "FAILED test_app.py::test_helper - AssertionError" }
+        red_baseline: succeeded
+        plan: { status: skipped, skip_reason: when_false }
+        gate_plan: skipped
+  - id: held_scope                 # the operator holds `scope`: the dry run may not approve the plan
+    workflow: prd_to_pr
+    inputs: { prd: docs/prd.md, typecheck_command: "false" }
+    stubs: stubs/agents.yaml
+    exec_shell: true
+    env: { RAYSPEC_POLICY: policy/scope.yaml }   # relative to the process cwd (the repository)
+    expect:
+      status: paused
+      exit_code: 3
+      reason_contains: "awaiting approval at gate_plan"
+      steps:
+        plan: succeeded
+        gate_plan: paused

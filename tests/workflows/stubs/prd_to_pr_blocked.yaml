@@ -1,0 +1,6 @@
+# The implementer hits an ambiguity the plan did not surface and declines to guess (R7b): the
+# run is cancelled with the question in the reason, nothing is committed or reviewed.
+defaults: { latency_ms: 0 }
+steps:
+  "build[*]/implement":
+    output: { status: blocked, question: "Should total([]) raise or return 0?", notes: "" }

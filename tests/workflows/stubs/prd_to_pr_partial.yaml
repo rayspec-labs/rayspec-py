@@ -1,0 +1,11 @@
+# The reviewer finds a requirement uncovered and behaviour nobody asked for: both are reported,
+# the PR gate no longer approves itself, and (approved by the dry run) the PR still opens.
+defaults: { latency_ms: 0 }
+steps:
+  review:
+    output:
+      covered: [R1]
+      uncovered: [R2]
+      unrequested: ["a --verbose flag"]
+      verdict: partial
+      summary: "R2 missing; an unasked flag added"

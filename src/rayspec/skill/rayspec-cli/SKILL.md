@@ -172,6 +172,7 @@ router (rayspec has none), and you route from what is installed, never from memo
 | is PR 118 broken, or was it already broken? | `rayspec run validate_pr --input pr=118` — measures in a worktree, read-only judge: run it |
 | fix issue 42 | `rayspec run fix_issue --input issue=42` — writes and opens a PR: propose; first time here, `--dry-run` first |
 | how is this codebase layered? | `rayspec run architect --input focus=layering` — a report, nothing written: run it |
+| implement docs/prd-09.md as a pull request | `rayspec run prd_to_pr --input prd=docs/prd-09.md --input typecheck_command='mypy src'` — writes tests and code, pushes, opens a PR: propose; first time here, `--dry-run` first |
 | fix the failing issue | which issue? ask, showing `rayspec run fix_issue --input issue=<n>` |
 
 ## Operating loops

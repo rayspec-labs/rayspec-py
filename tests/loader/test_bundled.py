@@ -27,6 +27,7 @@ V1_SET = [
     "create_issue",
     "fix_issue",
     "pr_review",
+    "prd_to_pr",
     "refactor_safely",
     "release_check",
     "resolve_conflicts",

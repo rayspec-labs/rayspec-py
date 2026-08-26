@@ -1,0 +1,14 @@
+# Stub agents that write nothing: the planner plans, the tester claims it wrote tests (it did not
+# — `red` decides), the implementer says done, the reviewer says complete.
+defaults: { latency_ms: 0 }
+steps:
+  plan:
+    output:
+      summary: "add app.total"
+      test_plan:
+        - { requirement: "R1 — app.total(xs) returns the sum", tests: [test_total_sums] }
+      unresolved:
+        - { question: "Floats too?", assumption: "integers only", affects: [R1] }
+  tests_first: { text: "wrote test_total.py" }
+  "build[*]/implement": { output: { status: done, question: "", notes: "" } }
+  review: { output: { covered: [R1], uncovered: [], unrequested: [], verdict: complete, summary: "ok" } }

@@ -1,0 +1,5 @@
+# The policy the workflow's header recommends: a gate of class `scope` is never approved
+# automatically — not by --yes, --dry-run, --approve-class or auto_if. A human still can.
+approvals:
+  classes:
+    scope: { allow_yes: false }
