@@ -1,0 +1,30 @@
+# The PR case: api_design (item 3) is lost, security and correctness converge on one blocker,
+# performance disagrees with it — everything the comment has to show.
+steps:
+  "panel[3]/review":
+    fail: { kind: api, message: "simulated provider outage", transient: false }
+  synthesize:
+    output:
+      verdict: request_changes
+      summary: "Four of five lenses reviewed (api_design produced no input); one blocker stands."
+      findings:
+        - severity: blocker
+          file: app.py
+          note: "helper() returns the mutable module value"
+          raised_by: [security, correctness]
+      disagreements:
+        - "performance wants helper() inlined; security wants it kept as the single access path"
+    expect:
+      prompt_contains:
+        - "## api_design\nREVIEWER FAILED — no input from this lens.\n"
+match:
+  - prompt_regex: "Your angle: \\*\\*(security|correctness)\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: blocker, file: app.py, note: "helper() returns the mutable module value" }]
+  - prompt_regex: "Your angle: \\*\\*performance\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: minor, file: app.py, note: "inline helper(); the call is the hot path" }]
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }

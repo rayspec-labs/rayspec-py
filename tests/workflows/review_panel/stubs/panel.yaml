@@ -1,0 +1,30 @@
+# Five scripted reviewers, each pinned to have seen the real diff (`--exec-shell`), and a chair
+# pinned to have been handed every lens's section. Security raises the one blocker.
+steps:
+  synthesize:
+    output:
+      verdict: request_changes
+      summary: "All five lenses reviewed; security found a blocker in app.py."
+      findings:
+        - { severity: blocker, file: app.py, note: "helper() returns the mutable module value", raised_by: [security] }
+      disagreements: []
+    expect:
+      output_schema: true
+      prompt_contains:
+        - "5 independent reviews of the same diff (against main), one per lens."
+        - "## security\nverdict: request_changes\n- [blocker] app.py: helper() returns the mutable module value\n"
+        - "## tests\nverdict: approve\n(no findings)\n"
+match:
+  - prompt_regex: "Your angle: \\*\\*security\\*\\*"
+    output:
+      verdict: request_changes
+      findings: [{ severity: blocker, file: app.py, note: "helper() returns the mutable module value" }]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains: ["Diff against main:", "=== FULL DIFF ===", "+VALUE = 2\n", "+def helper():\n"]
+  - prompt_regex: "Your angle: "
+    output: { verdict: approve, findings: [] }
+    expect:
+      access: read-only
+      prompt_contains: ["=== FULL DIFF ===", "+VALUE = 2\n", "+def helper():\n"]

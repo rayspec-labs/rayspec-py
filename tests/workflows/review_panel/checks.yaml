@@ -1,0 +1,70 @@
+# The bundled `review_panel` against a real repository: `exec_shell: true` cases that
+# tests/workflows/test_review_panel.py drives one fresh checkout at a time through
+# `rayspec test --exec-shell --case <id>`. The repository has `main` and a checked-out `feature`
+# branch that bumps VALUE and adds a function; a fake `gh` first on PATH records what the PR
+# steps would have done (and fails on request via GH_FAIL).
+checks:
+  - id: real_diff                  # every reviewer sees the real diff; the chair sees every reviewer
+    workflow: review_panel
+    stubs: stubs/panel.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes, blockers: 1, reviewed: 5, lost: 0, commented: false }
+      steps:
+        checkout: { status: skipped, skip_reason: when_false }
+        diff: { status: succeeded, output_regex: "=== FULL DIFF ===\n[\\s\\S]*\\+VALUE = 2\n" }
+        nothing: { status: skipped, skip_reason: when_false }
+        panel: succeeded
+        "panel[0]/review": succeeded
+        "panel[4]/review": succeeded
+        no_reviews: { status: skipped, skip_reason: when_false }
+        synthesize: succeeded
+        comment: { status: skipped, skip_reason: when_false }
+  - id: no_changes                 # base == HEAD: stop before any reviewer is asked (exit 4)
+    workflow: review_panel
+    inputs: { base: feature }
+    stubs: stubs/panel.yaml
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "no changes between feature and HEAD — nothing to review"
+      steps:
+        diff: { status: succeeded, output_regex: "^NO-CHANGES$" }
+        nothing: succeeded
+        panel: { status: skipped, skip_reason: when_false }
+        synthesize: skipped
+        comment: skipped
+  - id: pr_posted                  # pr + post: gh checks the PR out first and gets the merged verdict as a comment
+    workflow: review_panel
+    inputs: { pr: 7, post: true }
+    stubs: stubs/panel_posted.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes, reviewed: 4, lost: 1, disagreements: 1, commented: true }
+      steps:
+        checkout: succeeded
+        "panel[3]/review": failed
+        panel: succeeded
+        synthesize: succeeded
+        comment: { status: succeeded, output_regex: "^## review_panel: request changes\n" }
+  - id: checkout_fails             # a failed checkout must not review whatever tree is there
+    workflow: review_panel
+    inputs: { pr: 7 }
+    stubs: stubs/panel.yaml
+    exec_shell: true
+    env: { GH_FAIL: checkout }
+    expect:
+      status: failed
+      exit_code: 1
+      steps:
+        checkout: failed
+        diff: { status: skipped, skip_reason: when_false }
+        nothing: skipped
+        panel: skipped
+        synthesize: skipped
+        comment: skipped
