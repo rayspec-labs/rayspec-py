@@ -30,6 +30,7 @@ V1_SET = [
     "resolve_conflicts",
     "review_block",
     "review_panel",
+    "validate_pr",
 ]
 
 

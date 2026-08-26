@@ -69,6 +69,7 @@ def test_values_workflows_lists_the_project_workflows(
         "resolve_conflicts",
         "review_block",
         "review_panel",
+    "validate_pr",
     ]
 
 

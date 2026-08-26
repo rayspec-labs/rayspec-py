@@ -19,6 +19,7 @@ BUNDLED = [
     "resolve_conflicts",
     "review_block",
     "review_panel",
+    "validate_pr",
 ]
 
 

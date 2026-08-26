@@ -61,6 +61,7 @@ def test_workflows_lists_and_json(tree: Tree):
         "resolve_conflicts",
         "review_block",
         "review_panel",
+    "validate_pr",
     ]
 
 
