@@ -262,3 +262,35 @@ checks:
       status: failed
       exit_code: 1
       steps: { dedupe: failed, bail: skipped, gate: skipped, create: skipped }
+  - id: validate_defaults          # no stubs: both sides simulated green → clean; the checkout is restored
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { status: clean, newly_failing: [], newly_passing: [], base_exit: 0, head_exit: 0, recommendation: merge }
+      steps:
+        start: succeeded
+        checkout_base: succeeded
+        test_base: succeeded
+        checkout_head: succeeded
+        test_head: succeeded
+        diff: succeeded
+        restore: succeeded
+        compare: { status: succeeded, output_json: { status: clean, newly_failing: [], newly_passing: [], base_exit: 0, head_exit: 0 } }
+        judge: succeeded
+  - id: validate_judge             # the judge is given the comparison and both transcripts
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    stubs: stubs/validate_pr.yaml
+    expect:
+      status: succeeded
+      outputs: { status: clean, summary: "Both sides green; the PR introduces no test regression.", recommendation: merge }
+  - id: validate_judge_lost        # no judge, no run — but the checkout was restored first
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    stubs: stubs/validate_pr_judge_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { compare: succeeded, restore: succeeded, judge: failed }
