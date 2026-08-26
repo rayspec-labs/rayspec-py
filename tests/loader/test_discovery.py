@@ -11,7 +11,14 @@ from rayspec.loader.bundled import bundled_dir
 
 WF = "rayspec: 1\nname: {name}\ndescription: {desc}\nsteps:\n  - id: a\n    shell: echo\n"
 #: What the package ships, in listing order — every discovery ends with these.
-BUNDLED = ["fix_issue", "pr_review", "release_check", "resolve_conflicts", "review_block"]
+BUNDLED = [
+    "fix_issue",
+    "pr_review",
+    "release_check",
+    "resolve_conflicts",
+    "review_block",
+    "review_panel",
+]
 
 
 def _tree(tmp_path: Path) -> tuple[Path, Path]:

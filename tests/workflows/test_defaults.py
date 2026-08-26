@@ -53,6 +53,7 @@ def test_the_library_is_the_v1_set() -> None:
         "release_check",
         "resolve_conflicts",
         "review_block",
+        "review_panel",
     ]
 
 
