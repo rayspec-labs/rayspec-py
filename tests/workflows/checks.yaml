@@ -1,0 +1,98 @@
+# Offline coverage of the workflow library bundled with rayspec (src/rayspec/workflows/defaults/).
+# tests/workflows/test_defaults.py copies this file and stubs/ into a project root that has NO
+# .rayspec/ and runs `rayspec test` there, so every case resolves its workflow from the bundled
+# copy — the way a fresh `pip install rayspec` user meets it.
+checks:
+  - id: block
+    workflow: review_block
+    inputs: { target: src/, depth: deep }
+    stubs: stubs/pr_review.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes }
+      steps: { claude_review: succeeded, codex_review: succeeded, judge: succeeded }
+  - id: pr
+    workflow: pr_review
+    inputs: { pr: 17, post: true }
+    stubs: stubs/pr_review.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: request_changes, commented: true }
+      steps: { "review/judge": succeeded, review: succeeded, comment: succeeded }
+  - id: pr_no_post
+    workflow: pr_review
+    inputs: { pr: 17 }
+    stubs: stubs/pr_review.yaml
+    expect:
+      status: succeeded
+      outputs: { commented: false }
+      steps: { comment: skipped }
+  - id: pr_default_stubs           # the acceptance run: no stubs file at all, schema-shaped answers
+    workflow: pr_review
+    inputs: { pr: 1 }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: approve, commented: false }
+      steps: { "review/codex_review": succeeded, "review/judge": succeeded, comment: skipped }
+  - id: fix_happy
+    workflow: fix_issue
+    inputs: { issue: 42 }
+    stubs: stubs/fix_issue.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { verdict: fix, iterations: 2 }
+      steps:
+        bail: skipped
+        "build[1]/review": succeeded
+        "build[2]/review": succeeded
+        build: succeeded
+        confirm: succeeded
+        pr: succeeded
+  - id: fix_skip
+    workflow: fix_issue
+    inputs: { issue: 7, mode: fast }
+    stubs: stubs/fix_issue_skip.yaml
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "duplicate of #41"
+      steps: { bail: succeeded, build: skipped }
+  - id: fix_exhausted
+    workflow: fix_issue
+    inputs: { issue: 9 }
+    stubs: stubs/fix_issue_exhausted.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { build: failed, confirm: skipped }
+  - id: release_dry
+    workflow: release_check
+    inputs: { tag: v0.4.0 }
+    stubs: stubs/release_check.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { title: "v0.4.0 — worktrees by default", approved: true, published: false }
+      steps: { tests: succeeded, history: succeeded, gate: succeeded, publish: skipped, notify: skipped, cleanup: succeeded }
+  - id: release_push
+    workflow: release_check
+    inputs: { tag: v0.4.0, push: true, min_coverage: 90 }
+    stubs: stubs/release_check.yaml
+    env: { SLACK_WEBHOOK: null }    # `notify` is gated on `env.SLACK_WEBHOOK is defined` → unset it
+    expect:
+      status: succeeded
+      outputs: { published: true }
+      steps: { publish: succeeded, notify: skipped, cleanup: succeeded }
+  - id: release_push_notify
+    workflow: release_check
+    inputs: { tag: v0.4.0, push: true }
+    stubs: stubs/release_check.yaml
+    env: { SLACK_WEBHOOK: "https://hooks.example.invalid/T000/B000" }
+    expect:
+      status: succeeded
+      outputs: { published: true }
+      steps: { publish: succeeded, notify: succeeded, cleanup: succeeded }

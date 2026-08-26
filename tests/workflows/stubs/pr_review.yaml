@@ -1,0 +1,15 @@
+# Step paths inside an include are prefixed with the include step id: review/<step>. The `*`
+# prefix matches the bare block (`judge`, case `block`) and the included one (`review/judge`).
+defaults: { usage: { input: 2000, output: 250 } }
+steps:
+  "*claude_review":
+    text: |
+      - src/app.py:12 — `parse()` swallows ValueError; surface it.
+      - src/app.py:40 — missing test for the empty path.
+  "*codex_review":                  # structured (the step has an output_schema), not JSON text
+    output: { findings: ["parse() swallows ValueError", "no docstring on run()"], score: 3 }
+    usage: { input: 1800, output: 90 }
+  "*judge":
+    output:
+      verdict: request_changes
+      findings: ["parse() swallows ValueError (src/app.py:12)", "missing empty-path test"]

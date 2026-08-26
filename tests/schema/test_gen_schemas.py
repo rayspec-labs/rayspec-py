@@ -43,6 +43,7 @@ def _workflow_files() -> Iterator[Path]:
     yield from sorted((REPO_ROOT / "src/rayspec/cli/templates").glob("*/workflows/*.yaml"))
     yield from sorted((REPO_ROOT / "examples").glob("*/.rayspec/workflows/*.yaml"))
     yield from sorted((REPO_ROOT / ".rayspec" / "workflows").glob("*.yaml"))
+    yield from sorted((REPO_ROOT / "src/rayspec/workflows/defaults").glob("*.yaml"))
 
 
 def test_check_is_a_no_op_on_a_clean_tree() -> None:
