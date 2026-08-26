@@ -307,3 +307,58 @@ checks:
         survey: { status: skipped, skip_reason: when_false }
         report: skipped
         save: skipped
+  - id: refactor_defaults          # no stubs: green baseline (simulated), one pass, shape only → committed (simulated)
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { attempts: 1, verdict: shape_only }
+      steps:
+        start: succeeded
+        baseline_typecheck: succeeded
+        baseline_tests: succeeded
+        red_baseline: { status: skipped, skip_reason: when_false }
+        plan: succeeded
+        gate: succeeded
+        work: succeeded
+        "work[1]/edit": succeeded
+        "work[1]/typecheck": succeeded
+        "work[1]/check": succeeded
+        "work[1]/give_up": { status: skipped, skip_reason: when_false }
+        changes: succeeded
+        nothing: { status: skipped, skip_reason: when_false }
+        diff: succeeded
+        behaviour: { status: skipped, skip_reason: when_false }
+        commit: succeeded
+  - id: refactor_clean             # every agent is told what the PRD says it must be told
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        attempts: 1
+        verdict: shape_only
+        reasoning: "every hunk moves or renames; no condition, default or assertion changed"
+  - id: refactor_behaviour         # the fresh reviewer flags a behaviour change: failed, not committed
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely_behaviour.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "behaviour changed — nothing committed"
+      steps:
+        diff: succeeded
+        behaviour: succeeded
+        commit: { status: skipped, skip_reason: when_false }
+  - id: refactor_reviewer_lost     # no verdict, no commit
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely_reviewer_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { work: succeeded, diff: failed, behaviour: skipped, commit: skipped }

@@ -1,0 +1,7 @@
+# The reviewer fails outright (no retry: `transient: false`): without a verdict nothing is
+# committed — a missing "shape only" is not a "shape only".
+steps:
+  plan: { output: { changes: [{ what: "move the parsers", files: [app.py] }], risks: [] } }
+  "work[*]/edit": { text: "done" }
+  diff:
+    fail: { kind: api, message: "simulated provider outage", transient: false }
