@@ -1006,6 +1006,8 @@ def test_a_project_with_no_workflow_is_not_a_finished_quickstart(
     assert "you are set up." not in res.output
     assert "workflow asks for a worktree" not in res.output
     assert "there is no workflow to read an `isolation:` line from" in res.output
+    # the bundled library is not this project's workflow, but it is the way to see a run
+    assert "rayspec run pr_review" in res.output
 
 
 def test_no_init_no_run_no_skill(sdks: FakeSdks, git_repo: Path, plain_dir: Path) -> None:

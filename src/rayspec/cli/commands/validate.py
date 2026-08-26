@@ -131,7 +131,9 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         targets = list(names or [])
         if not targets:
-            targets = [r.name for r in ctx.workflow_refs()]
+            # the bundled library is not this project's to validate on every call; a bundled
+            # name given explicitly is
+            targets = [r.name for r in ctx.workflow_refs() if r.scope != "bundled"]
             if not targets:
                 if json_:
                     console().print("[]", markup=False, highlight=False)

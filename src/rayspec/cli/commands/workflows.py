@@ -49,7 +49,7 @@ def register(app: typer.Typer) -> None:
             )
             return
         out = console()
-        if not refs:
+        if all(r.scope == "bundled" for r in refs):  # nothing of the project's own yet
             out.print(
                 f"no workflows found under {ctx.project_root / '.rayspec' / 'workflows'} "
                 f"or {ctx.home / 'workflows'}"

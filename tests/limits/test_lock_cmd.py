@@ -332,3 +332,10 @@ def test_no_gated_command_warns_when_the_lockfile_is_there(
     result = invoke(*argv, "--root", str(root))
     assert result.exit_code == 0, result.output
     assert "nothing is pinned" not in result.output
+
+
+def test_lock_without_names_pins_only_the_project_workflows(root: Path) -> None:
+    """`rayspec lock` pins what the project wrote; the bundled library is locked when named."""
+    assert invoke("lock", "--root", str(root)).exit_code == 0
+    payload = json.loads(invoke("lock", "--json", "--root", str(root)).stdout)
+    assert set(payload["workflows"]) == {"t"}

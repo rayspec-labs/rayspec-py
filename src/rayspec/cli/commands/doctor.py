@@ -275,8 +275,9 @@ def _project_check(start: Path, project_root: Path, home: Path) -> Check:
         refs = discover_workflows(project_root, home=home)
     except RayspecError as exc:
         return Check("project", "project", "warn", f"{project_root} · {exc}")
-    broken = [r.name for r in refs if r.error]
-    detail = f"{project_root} · {len(refs)} workflow(s)"
+    own = [r for r in refs if r.scope != "bundled"]
+    broken = [r.name for r in own if r.error]
+    detail = f"{project_root} · {len(own)} workflow(s) (+{len(refs) - len(own)} bundled)"
     if broken:
         detail += f" ({len(broken)} not loadable: {', '.join(broken)})"
         return Check("project", "project", "warn", detail, hint="see `rayspec validate`")

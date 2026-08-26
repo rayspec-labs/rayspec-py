@@ -861,3 +861,12 @@ def test_doctor_keeps_reporting_a_readable_env_as_info(sdks: FakeSdks, project: 
     row = _check(report, "project.env")
     assert row["status"] == "info" and row["required"] is False
     assert "2 vars" in row["detail"]
+
+
+def test_doctor_counts_the_bundled_library_separately(sdks: FakeSdks, project: Path) -> None:
+    from rayspec.loader.bundled import bundled_dir
+
+    bundled = len(list(bundled_dir().glob("*.yaml")))
+    _code, report = _doctor_json("--root", str(project))
+    detail = _check(report, "project")["detail"]
+    assert "1 workflow(s)" in detail and f"(+{bundled} bundled)" in detail

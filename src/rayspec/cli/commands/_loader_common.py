@@ -46,6 +46,7 @@ from rayspec.config import (
 )
 from rayspec.errors import RayspecError
 from rayspec.loader import WorkflowRef, discover_workflows, find_project_root
+from rayspec.loader.bundled import bundled_label
 from rayspec.loader.discovery import YAML_SUFFIXES
 from rayspec.loader.loader import import_optional
 from rayspec.loader.validate import CapabilitiesFor, TemplateChecker
@@ -131,7 +132,11 @@ class Context:
 
 
 def short_path(path: Path, ctx: Context) -> str:
-    """Render ``path`` relative to the project root (or as ``~/.rayspec/...``) when possible."""
+    """Render ``path`` relative to the project root (or as ``~/.rayspec/...``) when possible;
+    a file of the bundled library is ``<bundled>/<name>.yaml`` (the loader's label)."""
+    bundled = bundled_label(path)
+    if bundled is not None:
+        return bundled
     try:
         return path.relative_to(ctx.project_root).as_posix()
     except ValueError:

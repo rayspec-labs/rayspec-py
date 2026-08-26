@@ -194,7 +194,8 @@ def register(app: typer.Typer) -> None:
         ctx = make_context(root)
         targets = list(names or [])
         if not targets:
-            targets = [r.name for r in ctx.workflow_refs()]
+            # pins what the project wrote; a bundled workflow is locked when it is named
+            targets = [r.name for r in ctx.workflow_refs() if r.scope != "bundled"]
             if not targets:
                 fail(
                     "no workflows found (nothing to lock)",
