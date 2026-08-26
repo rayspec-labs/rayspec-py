@@ -61,8 +61,8 @@ def test_values_workflows_lists_the_project_workflows(
     res = CliRunner().invoke(app, ["completion", "--values", "workflows"])
     assert res.exit_code == 0, res.output
     assert res.stdout.split() == [
-        "example",
         "create_issue",
+        "example",
         "fix_issue",
         "pr_review",
         "release_check",
