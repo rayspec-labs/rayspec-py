@@ -1,0 +1,10 @@
+# The reviewer finds a behaviour change the green tests did not catch: the run fails, nothing is
+# committed, and the reason names the hunk.
+steps:
+  plan: { output: { changes: [{ what: "move the parsers", files: [app.py] }], risks: [] } }
+  "work[*]/edit": { text: "done" }
+  diff:
+    output:
+      verdict: behaviour_changed
+      reasoning: "the empty-list branch now raises instead of returning 0"
+      concerns: [{ file: app/core.py, note: "total([]) raised IndexError; it returned 0 before" }]

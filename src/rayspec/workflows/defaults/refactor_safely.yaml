@@ -1,0 +1,265 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: refactor_safely
+description: >
+  Restructure code under one constraint — behaviour must not change — and verify that
+  deterministically: the typecheck and the tests run before anything is touched (a red baseline
+  stops the run), again after every edit until both are green, and a fresh read-only agent then
+  reads the diff and says whether it changed shape or behaviour. Ends at a local commit in the
+  run's worktree; pushing is the caller's job. Unlike `fix_issue`, nothing here is allowed to
+  change what the code does.
+# The plan gate names approval class `risky` (as `resolve_conflicts` does). Hold it shut in your
+# policy so that no --yes / --dry-run / --approve-class can start a refactor unattended:
+#   # .rayspec/policy.yaml
+#   approvals: { classes: { risky: { allow_yes: false } } }
+
+inputs:
+  goal: { type: string, required: true, description: "What to restructure and why — the shape you want, not new behaviour" }
+  typecheck_command: { type: string, required: true, description: "The project's typecheck (mypy ., tsc --noEmit, …); no default on purpose" }
+  test_command: { type: string, default: "pytest -q", description: "Must pass before and after every attempt" }
+  max_attempts: { type: integer, default: 3, description: "Edit → typecheck → test rounds before the run gives up (at most 25)" }
+
+defaults:
+  agent: refactorer                 # prompt steps without `agent:` use this one
+  timeout: 30m
+  max_parallel: 2
+
+isolation: worktree                 # the agent's edits stay out of your checkout
+
+agents:
+  planner:
+    provider: claude
+    model: medium
+    access: read-only
+    thinking: true
+    budget_usd: 1.50
+    instructions: >
+      You plan refactors. Read the code first. Every planned change names the files it touches
+      and keeps behaviour identical; order them so the tree typechecks and the tests pass after
+      each one. Name what could go wrong.
+    tools: { deny: [web] }
+  refactorer:
+    provider: claude
+    model: medium
+    access: workspace-write
+    budget_usd: 5.00
+    instructions: |
+      You refactor code inside {{ run.workdir }}: the structure changes, the behaviour does not.
+      - Do not change what any test asserts, and do not delete or skip a test; a test that only
+        needs a new import path or name may be updated.
+      - Do not commit: the workflow verifies and commits.
+      - Run `{{ inputs.typecheck_command }}` and `{{ inputs.test_command }}` before you answer.
+    tools: { deny: [web] }
+  reviewer:
+    provider: claude
+    model: large
+    access: read-only
+    thinking: true
+    budget_usd: 3.00
+    instructions: >
+      You review a refactor's diff for one question: did behaviour change? Renames, moves,
+      extracted functions, reordered declarations and equivalent expressions are shape. A changed
+      condition, default, error path or order of side effects — or a test that now asserts
+      something different — is behaviour. When in doubt, say behaviour changed and point at the
+      hunk.
+    tools: { deny: [web] }
+
+steps:
+  - id: start
+    description: The commit the refactor starts from — every later diff is taken against it.
+    shell: git rev-parse HEAD
+
+  - id: baseline_typecheck
+    needs: [start]
+    shell: eval "$RAYSPEC_INPUT_TYPECHECK_COMMAND" 2>&1
+    allow_failure: true             # red before anything is touched → stop, not a finding
+
+  - id: baseline_tests
+    needs: [baseline_typecheck]
+    shell: eval "$RAYSPEC_INPUT_TEST_COMMAND" 2>&1
+    allow_failure: true
+
+  - id: red_baseline
+    needs: [baseline_tests]
+    when: not (steps.baseline_typecheck.ok and steps.baseline_tests.ok)
+    stop:
+      status: failed
+      reason: |
+        the baseline is already red — a red tree afterwards would carry no information, so nothing was touched.
+        {% if not steps.baseline_typecheck.ok %}
+        `{{ inputs.typecheck_command }}` exited {{ steps.baseline_typecheck.exit_code }}:
+        {{ steps.baseline_typecheck.output }}
+        {% endif %}
+        {% if not steps.baseline_tests.ok %}
+        `{{ inputs.test_command }}` exited {{ steps.baseline_tests.exit_code }}:
+        {{ steps.baseline_tests.output }}
+        {% endif %}
+
+  - id: plan
+    needs: [baseline_tests]
+    when: steps.baseline_typecheck.ok and steps.baseline_tests.ok
+    agent: planner
+    prompt: |
+      Plan this refactor of the code in {{ run.workdir }}:
+
+      {{ inputs.goal }}
+
+      Behaviour must not change. `{{ inputs.typecheck_command }}` and `{{ inputs.test_command }}`
+      pass right now and must pass after every step. Read the code before you plan.
+    output_schema:
+      type: object
+      properties:
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              what: { type: string }
+              files: { type: array, items: { type: string } }
+            required: [what, files]
+        risks: { type: array, items: { type: string } }
+      required: [changes, risks]
+
+  - id: gate
+    needs: [plan]
+    description: A human reads the plan before any file is modified.
+    approve:
+      message: |
+        Refactor: {{ inputs.goal }}
+        {% for change in steps.plan.output.changes %}
+        {{ loop.index }}. {{ change.what }} ({{ change.files | join(', ') }})
+        {% endfor %}
+        {% if steps.plan.output.risks | length > 0 %}
+        Risks: {{ steps.plan.output.risks | join('; ') }}
+        {% endif %}
+        Let the refactorer start?
+      class: risky                  # the operator's rules for this kind of gate, named not defined
+
+  - id: work
+    needs: [gate]
+    loop:
+      max_iterations: 25            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
+      until: steps.typecheck.ok and steps.check.ok
+      on_exhausted: fail
+      steps:
+        - id: edit
+          session: edit             # continue my own session from the previous attempt
+          prompt: |
+            {% if iteration.first %}
+            Carry out this refactor in {{ run.workdir }}:
+
+            {{ inputs.goal }}
+
+            The plan:
+            {% for change in steps.plan.output.changes %}
+            {{ loop.index }}. {{ change.what }} ({{ change.files | join(', ') }})
+            {% endfor %}
+
+            Behaviour must not change. Run `{{ inputs.typecheck_command }}` and
+            `{{ inputs.test_command }}` before you answer; do not commit.
+            {% else %}
+            Attempt {{ iteration.n }} of {{ inputs.max_attempts }}.
+            {% if not iteration.prev.typecheck.ok %}
+            The tree does not typecheck after your last edit (`{{ inputs.typecheck_command }}` exited {{ iteration.prev.typecheck.exit_code }}):
+            {{ iteration.prev.typecheck.output | default('') }}
+            {% endif %}
+            {% if not iteration.prev.check.ok %}
+            {% if iteration.prev.typecheck.ok %}The tree typechecks, but the tests fail{% else %}The tests fail too{% endif %} (`{{ inputs.test_command }}` exited {{ iteration.prev.check.exit_code }}):
+            {{ iteration.prev.check.output | default('') }}
+            {% endif %}
+
+            Fix it without changing behaviour; do not commit.
+            {% endif %}
+        - id: typecheck
+          needs: [edit]
+          shell: eval "$RAYSPEC_INPUT_TYPECHECK_COMMAND" 2>&1
+          allow_failure: true       # "does not compile" — kept apart from "compiles but broke something"
+        - id: check
+          needs: [typecheck]
+          shell: eval "$RAYSPEC_INPUT_TEST_COMMAND" 2>&1
+          allow_failure: true       # the loop reads ok / exit_code / output
+        - id: give_up
+          needs: [check]
+          when: (not (steps.typecheck.ok and steps.check.ok)) and iteration.n >= inputs.max_attempts
+          stop:
+            status: failed
+            reason: |
+              not green after {{ iteration.n }} attempt(s) — typecheck exited {{ steps.typecheck.exit_code }}, tests exited {{ steps.check.exit_code }}:
+              {{ steps.typecheck.output }}
+              {{ steps.check.output }}
+
+  - id: changes
+    needs: [work]
+    description: Everything the refactor changed since `start`, staged (new files included); a NO-CHANGES line when nothing did.
+    shell: |
+      git add -A
+      if git diff --cached --quiet "{{ steps.start.output }}"; then
+        echo "NO-CHANGES"
+        exit 0
+      fi
+      git diff --cached --stat "{{ steps.start.output }}"
+      echo "=== FULL DIFF ==="
+      git diff --cached "{{ steps.start.output }}"
+
+  - id: nothing
+    needs: [changes]
+    when: steps.changes.output | has_signal('NO-CHANGES')
+    stop:
+      status: cancelled
+      reason: "the refactorer changed nothing — nothing to review or commit"
+
+  - id: diff
+    needs: [changes]
+    when: not (steps.changes.output | has_signal('NO-CHANGES'))
+    agent: reviewer                 # fresh — no session: the agent that made the change is the worst judge of it
+    prompt: |
+      A refactor was asked for:
+
+      {{ inputs.goal }}
+
+      `{{ inputs.typecheck_command }}` and `{{ inputs.test_command }}` pass before and after it.
+      The diff against the starting commit:
+
+      {{ steps.changes.output }}
+
+      Is this a change of shape only, or did behaviour change anywhere — including in what a
+      test asserts? Point at the hunks that decide it.
+    output_schema:
+      type: object
+      properties:
+        verdict: { type: string, enum: [shape_only, behaviour_changed] }
+        reasoning: { type: string }
+        concerns:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              note: { type: string }
+            required: [file, note]
+      required: [verdict, reasoning, concerns]
+
+  - id: behaviour
+    needs: [diff]
+    when: steps.diff.output.verdict == 'behaviour_changed'
+    stop:
+      status: failed
+      reason: |
+        the reviewer says behaviour changed — nothing committed; the changes are staged in {{ run.workdir }}:
+        {{ steps.diff.output.reasoning }}
+        {% for concern in steps.diff.output.concerns %}
+        - {{ concern.file }}: {{ concern.note }}
+        {% endfor %}
+
+  - id: commit
+    needs: [diff]
+    when: steps.diff.output.verdict == 'shape_only'
+    shell: |
+      git commit -q -m "refactor: {{ inputs.goal }}"
+      git log -1 --oneline
+
+outputs:
+  attempts: "{{ steps.work.iterations }}"
+  verdict: "{{ steps.diff.output.verdict }}"
+  reasoning: "{{ steps.diff.output.reasoning }}"
+  commit: "{{ steps.commit.output }}"

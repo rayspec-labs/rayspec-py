@@ -1,0 +1,76 @@
+# The bundled `create_issue` against a fake `gh`: `exec_shell: true` cases that
+# tests/workflows/test_create_issue.py drives one fresh root at a time through
+# `rayspec test --exec-shell --case <id>`. The `gh` first on PATH answers `issue list` with the
+# JSON in $GH_ISSUES (default: none), records `issue create` (arguments and body) in $GH_LOG and
+# prints a made-up issue URL — or fails the subcommand named by $GH_FAIL.
+checks:
+  - id: filed                      # two candidates found, judged distinct: gate, then one issue with the whitelisted label
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/filed.yaml
+    env:
+      GH_ISSUES: '[{"number": 12, "title": "Crash when input is empty", "state": "open", "url": "https://github.com/example/repo/issues/12"}, {"number": 3, "title": "Add CSV export", "state": "closed", "url": "https://github.com/example/repo/issues/3"}]'
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        url: "https://github.com/example/repo/issues/99"
+        title: "Crash when the input list is empty"
+        labels: [bug]
+        candidates: 2
+      steps:
+        search: { status: succeeded, output_regex: '"number": 12' }
+        dedupe: succeeded
+        bail: { status: skipped, skip_reason: when_false }
+        gate: succeeded
+        create: { status: succeeded, output_regex: "^https://github.com/example/repo/issues/99$" }
+  - id: duplicate                  # the judge recognises #12: cancelled (exit 4), `gh issue create` never runs
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/duplicate.yaml
+    env:
+      GH_ISSUES: '[{"number": 12, "title": "Crash when input is empty", "state": "open", "url": "https://github.com/example/repo/issues/12"}]'
+    exec_shell: true
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "duplicate of #12 — same traceback as #12; no issue created"
+      steps:
+        search: succeeded
+        bail: succeeded
+        gate: { status: skipped, skip_reason: when_false }
+        create: skipped
+  - id: unlabelled                 # an empty whitelist: filed without --label, whatever the writer proposed
+    workflow: create_issue
+    inputs: { description: "Crash on empty input", labels: [] }
+    stubs: stubs/unlabelled.yaml
+    exec_shell: true
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { labels: [], candidates: 0 }
+      steps: { search: { status: succeeded, output_json: [] }, create: succeeded }
+  - id: held                       # the operator holds `chore` shut: the run pauses at the gate (exit 3), nothing is filed
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/filed.yaml
+    env:
+      RAYSPEC_POLICY: policy/chore.yaml   # relative to the process cwd (the root)
+      GH_ISSUES: '[{"number": 12, "title": "Crash when input is empty", "state": "open", "url": "https://github.com/example/repo/issues/12"}, {"number": 3, "title": "Add CSV export", "state": "closed", "url": "https://github.com/example/repo/issues/3"}]'
+    exec_shell: true
+    expect:
+      status: paused
+      exit_code: 3
+      reason_contains: "awaiting approval at gate"
+      steps: { dedupe: succeeded, gate: paused }
+  - id: search_fails               # `gh issue list` fails: no verdict is possible, so nothing is filed (exit 1)
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/filed.yaml
+    env: { GH_FAIL: list }
+    exec_shell: true
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { draft: succeeded, search: failed, dedupe: skipped, gate: skipped, create: skipped }

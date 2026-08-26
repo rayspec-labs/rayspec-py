@@ -1,0 +1,17 @@
+# A dry run simulates both test runs as green and `compare` as its schema-minimal instance
+# (`clean`, empty lists, exit 0 on both sides); the judge is the only agent. The `expect:` pins
+# what it was told: the PR and base, the authoritative comparison, both transcripts' tails.
+defaults: { latency_ms: 0, usage: { input: 2000, output: 150 } }
+steps:
+  judge:
+    output:
+      summary: "Both sides green; the PR introduces no test regression."
+      recommendation: merge
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Pull request #7 against main; `pytest -q` ran on both sides.\n"
+        - "Comparison (authoritative):\n{\n  \"status\": \"clean\","
+        - "Tail of the base run (exit 0):\n"
+        - "Tail of the PR run (exit 0):\n"

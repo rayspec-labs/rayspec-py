@@ -1,0 +1,6 @@
+# The policy the workflow's header recommends for a repository that must never receive an
+# unattended issue: a gate of class `chore` is never approved automatically — not by --yes,
+# --dry-run or --approve-class. A human still can.
+approvals:
+  classes:
+    chore: { allow_yes: false }

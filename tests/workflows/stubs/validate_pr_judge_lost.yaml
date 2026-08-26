@@ -1,0 +1,5 @@
+# The judge fails outright (no retry: `transient: false`): the run fails, but `restore` has put
+# the checkout back regardless (`join: always`).
+steps:
+  judge:
+    fail: { kind: api, message: "simulated provider outage", transient: false }

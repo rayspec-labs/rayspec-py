@@ -212,3 +212,153 @@ checks:
       status: succeeded
       outputs: { commented: false }
       steps: { checkout: succeeded, comment: { status: skipped, skip_reason: when_false } }
+  - id: issue_defaults             # no stubs: schema-shaped answers, no candidates, the dry run approves the gate
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { candidates: 0, labels: [] }
+      steps:
+        draft: succeeded
+        search: { status: succeeded, output_json: [] }
+        dedupe: succeeded
+        bail: { status: skipped, skip_reason: when_false }
+        gate: succeeded
+        create: succeeded
+  - id: issue_draft                # the writer is told the whitelist, the judge sees the draft; wontfix is filtered out
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/create_issue.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { title: "Crash when the input list is empty", labels: [bug], candidates: 0 }
+      steps: { gate: succeeded, create: succeeded }
+  - id: issue_unlabelled           # an empty whitelist: the writer is told so, nothing is applied
+    workflow: create_issue
+    inputs: { description: "Crash on empty input", labels: [] }
+    stubs: stubs/create_issue_unlabelled.yaml
+    expect:
+      status: succeeded
+      outputs: { labels: [] }
+  - id: issue_duplicate            # the judge names an existing issue: cancelled, nothing filed
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/create_issue_duplicate.yaml
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "duplicate of #12"
+      steps:
+        bail: succeeded
+        gate: { status: skipped, skip_reason: when_false }
+        create: skipped
+  - id: issue_judge_lost           # the judge fails outright: no verdict, no gate, no issue
+    workflow: create_issue
+    inputs: { description: "Crash on empty input" }
+    stubs: stubs/create_issue_judge_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { dedupe: failed, bail: skipped, gate: skipped, create: skipped }
+  - id: validate_defaults          # no stubs: both sides simulated green → clean; the checkout is restored
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { status: clean, newly_failing: [], newly_passing: [], base_exit: 0, head_exit: 0, recommendation: merge }
+      steps:
+        start: succeeded
+        checkout_base: succeeded
+        test_base: succeeded
+        checkout_head: succeeded
+        test_head: succeeded
+        diff: succeeded
+        restore: succeeded
+        compare: { status: succeeded, output_json: { status: clean, newly_failing: [], newly_passing: [], base_exit: 0, head_exit: 0 } }
+        judge: succeeded
+  - id: validate_judge             # the judge is given the comparison and both transcripts
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    stubs: stubs/validate_pr.yaml
+    expect:
+      status: succeeded
+      outputs: { status: clean, summary: "Both sides green; the PR introduces no test regression.", recommendation: merge }
+  - id: validate_judge_lost        # no judge, no run — but the checkout was restored first
+    workflow: validate_pr
+    inputs: { pr: 7 }
+    stubs: stubs/validate_pr_judge_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { compare: succeeded, restore: succeeded, judge: failed }
+  - id: architect_empty            # a dry run simulates `areas` as [] → the nothing-to-survey path (exit 4)
+    workflow: architect
+    expect:
+      status: cancelled
+      exit_code: 4
+      reason_contains: "nothing to survey"
+      steps:
+        map: succeeded
+        areas: { status: succeeded, output_json: [] }
+        nothing: succeeded
+        survey: { status: skipped, skip_reason: when_false }
+        report: skipped
+        save: skipped
+  - id: refactor_defaults          # no stubs: green baseline (simulated), one pass, shape only → committed (simulated)
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs: { attempts: 1, verdict: shape_only }
+      steps:
+        start: succeeded
+        baseline_typecheck: succeeded
+        baseline_tests: succeeded
+        red_baseline: { status: skipped, skip_reason: when_false }
+        plan: succeeded
+        gate: succeeded
+        work: succeeded
+        "work[1]/edit": succeeded
+        "work[1]/typecheck": succeeded
+        "work[1]/check": succeeded
+        "work[1]/give_up": { status: skipped, skip_reason: when_false }
+        changes: succeeded
+        nothing: { status: skipped, skip_reason: when_false }
+        diff: succeeded
+        behaviour: { status: skipped, skip_reason: when_false }
+        commit: succeeded
+  - id: refactor_clean             # every agent is told what the PRD says it must be told
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely.yaml
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        attempts: 1
+        verdict: shape_only
+        reasoning: "every hunk moves or renames; no condition, default or assertion changed"
+  - id: refactor_behaviour         # the fresh reviewer flags a behaviour change: failed, not committed
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely_behaviour.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      reason_contains: "behaviour changed — nothing committed"
+      steps:
+        diff: succeeded
+        behaviour: succeeded
+        commit: { status: skipped, skip_reason: when_false }
+  - id: refactor_reviewer_lost     # no verdict, no commit
+    workflow: refactor_safely
+    inputs: { goal: "split app.py into app/core.py and app/io.py", typecheck_command: "mypy ." }
+    stubs: stubs/refactor_safely_reviewer_lost.yaml
+    expect:
+      status: failed
+      exit_code: 1
+      steps: { work: succeeded, diff: failed, behaviour: skipped, commit: skipped }

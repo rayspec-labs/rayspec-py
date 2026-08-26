@@ -12,12 +12,16 @@ from rayspec.loader.bundled import bundled_dir
 WF = "rayspec: 1\nname: {name}\ndescription: {desc}\nsteps:\n  - id: a\n    shell: echo\n"
 #: What the package ships, in listing order — every discovery ends with these.
 BUNDLED = [
+    "architect",
+    "create_issue",
     "fix_issue",
     "pr_review",
+    "refactor_safely",
     "release_check",
     "resolve_conflicts",
     "review_block",
     "review_panel",
+    "validate_pr",
 ]
 
 

@@ -1,0 +1,10 @@
+# max_areas: 2 — each surveyor is told there are two and names exactly the other one.
+steps:
+  report: { text: "# Architecture\ntwo areas" }
+match:
+  - prompt_regex: "^Area 1 of 2: `src/app/core`"
+    output: { summary: "core", depends_on: [], findings: [] }
+    expect: { prompt_contains: ["The other areas surveyed: src/app/api.\n"] }
+  - prompt_regex: "^Area 2 of 2: `src/app/api`"
+    output: { summary: "api", depends_on: [src/app/core], findings: [] }
+    expect: { prompt_contains: ["The other areas surveyed: src/app/core.\n"] }

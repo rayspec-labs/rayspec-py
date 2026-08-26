@@ -1,0 +1,11 @@
+# focus: dead_code — the surveyors are asked the dead-code question and none of the others.
+steps:
+  report:
+    text: "# Architecture: dead code"
+    expect: { prompt_contains: ["surveyed with the focus **dead_code**."] }
+match:
+  - prompt_regex: "^Area "
+    output: { summary: "nothing unreferenced", depends_on: [], findings: [] }
+    expect:
+      prompt_contains: ["Focus: **dead_code**.\nWhich files, functions or classes here are referenced from nowhere else"]
+      not_contains: ["Which other areas does this one import", "Which layer is this area"]

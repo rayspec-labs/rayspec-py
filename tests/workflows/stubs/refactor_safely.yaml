@@ -1,0 +1,38 @@
+# A dry run simulates every shell step green: the baseline passes, the loop converges on its
+# first pass, `changes` is '' (no NO-CHANGES signal) so the reviewer runs and says shape only,
+# and the commit is simulated. The `expect:` blocks pin the planner's brief, the refactorer's
+# first prompt (a fresh session, write access) and the reviewer's (fresh, read-only).
+defaults: { latency_ms: 0, usage: { input: 2500, output: 300 } }
+steps:
+  plan:
+    output:
+      changes:
+        - { what: "move the parsers", files: [app.py, app/io.py] }
+        - { what: "leave app.py as a facade", files: [app.py] }
+      risks: ["import cycles between app.py and app/io.py"]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Plan this refactor of the code in "
+        - "split app.py into app/core.py and app/io.py\n"
+        - "`mypy .` and `pytest -q`\npass right now and must pass after every step."
+  "work[*]/edit":
+    text: "Moved the parsers into app/io.py; mypy and pytest pass."
+    expect:
+      session: fresh
+      access: workspace-write
+      prompt_contains:
+        - "Carry out this refactor in "
+        - "The plan:\n1. move the parsers (app.py, app/io.py)\n2. leave app.py as a facade (app.py)\n"
+        - "Behaviour must not change. Run `mypy .` and\n`pytest -q` before you answer; do not commit."
+  diff:
+    output:
+      verdict: shape_only
+      reasoning: "every hunk moves or renames; no condition, default or assertion changed"
+      concerns: []
+    expect:
+      session: fresh
+      access: read-only
+      output_schema: true
+      prompt_contains: ["A refactor was asked for:\n\nsplit app.py into app/core.py and app/io.py\n"]

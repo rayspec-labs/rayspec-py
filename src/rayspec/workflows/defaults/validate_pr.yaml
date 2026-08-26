@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: validate_pr
+description: >
+  Run the test command on the base branch and on a pull request's head, in a worktree, and
+  classify the difference deterministically — regression, preexisting, fixed or clean, with the
+  newly failing and newly passing tests named — before an agent explains what the delta means.
+  CI runs the tests once; the value here is measuring both sides.
+# Runs in a git worktree by default: the checkout is switched twice (detached, so a branch that
+# is checked out in your clone is no obstacle) and put back where it was at the end, whatever
+# happened. `--no-worktree` makes it do all that in your working copy — pass it only on a clean
+# tree you are not using.
+
+inputs:
+  pr: { type: integer, required: true, description: "Pull request number (gh pr checkout)" }
+  base: { type: string, default: main, description: "Ref the PR is measured against (origin/main for the remote tip)" }
+  test_command: { type: string, default: "pytest -q", description: "Run on both sides; a red base is data, not an error" }
+  failure_pattern:
+    type: string
+    default: '^(?:FAILED|ERROR) (\S+)'
+    description: "Multiline regex whose first group names one failed test per line; pytest's short summary by default"
+
+defaults:
+  timeout: 30m
+  max_parallel: 1                   # both sides share one checkout — nothing here may overlap
+
+isolation: worktree                 # the checkout is switched twice; keep that out of your working copy
+
+agents:
+  judge:
+    provider: claude
+    model: medium
+    access: read-only
+    thinking: true
+    budget_usd: 1.50
+    instructions: >
+      You interpret a test comparison somebody else computed. The classification and the test
+      lists are authoritative — do not recount or second-guess them; say what the difference
+      means for the pull request and what to do next. Concrete and brief.
+    tools: { deny: [web] }
+
+steps:
+  - id: start
+    description: Where the checkout was — `restore` puts it back there.
+    shell: git symbolic-ref -q --short HEAD || git rev-parse HEAD
+
+  - id: checkout_base
+    needs: [start]
+    shell: |
+      git checkout -q --detach "$RAYSPEC_INPUT_BASE"   # detached: a branch checked out elsewhere is no obstacle
+      git log -1 --oneline
+
+  - id: test_base
+    needs: [checkout_base]
+    shell: eval "$RAYSPEC_INPUT_TEST_COMMAND" 2>&1     # one transcript: `compare` parses it, the judge reads its tail
+    allow_failure: true             # a red base is data: ok / exit_code / output are what `compare` reads
+
+  - id: checkout_head
+    needs: [test_base]
+    shell: |
+      gh pr checkout "$RAYSPEC_INPUT_PR" --detach
+      git log -1 --oneline
+
+  - id: test_head
+    needs: [checkout_head]
+    shell: eval "$RAYSPEC_INPUT_TEST_COMMAND" 2>&1
+    allow_failure: true
+
+  - id: diff
+    needs: [checkout_head]
+    description: The PR's diff, for the judge; not having it is no reason to stop.
+    shell: gh pr diff "$RAYSPEC_INPUT_PR"
+    allow_failure: true
+
+  - id: restore
+    needs: [test_head, diff]
+    join: always                    # whatever happened above, the checkout goes back
+    always_run: true
+    shell: git checkout -q "{{ steps.start.output }}"
+
+  - id: compare
+    needs: [test_base, test_head]
+    description: >
+      Code computes: the two exit codes and failure sets become one classification. The judge
+      interprets it; it does not recount.
+    python: |
+      import json, re
+
+      pattern = re.compile({{ inputs.failure_pattern }}, re.MULTILINE)
+
+      def failures(transcript):
+          names = []
+          for match in pattern.finditer(transcript):
+              name = match.group(1) if match.groups() else match.group(0)
+              if name not in names:
+                  names.append(name)
+          return names
+
+      base_exit, head_exit = {{ steps.test_base.exit_code }}, {{ steps.test_head.exit_code }}
+      base, head = failures({{ steps.test_base.output }}), failures({{ steps.test_head.output }})
+      newly_failing = [name for name in head if name not in base]
+      newly_passing = [name for name in base if name not in head]
+      if head_exit == 0:
+          status = "clean" if base_exit == 0 else "fixed"
+      elif base_exit == 0 or newly_failing or (base and not head):
+          status = "regression"       # the last case: the head fails in a way no test name explains
+      else:
+          status = "preexisting"
+      print(json.dumps({"status": status, "newly_failing": newly_failing, "newly_passing": newly_passing,
+                        "base_exit": base_exit, "head_exit": head_exit,
+                        "base_failures": len(base), "head_failures": len(head)}))
+    output_schema:
+      type: object
+      properties:
+        status: { type: string, enum: [clean, regression, preexisting, fixed] }
+        newly_failing: { type: array, items: { type: string } }
+        newly_passing: { type: array, items: { type: string } }
+        base_exit: { type: integer }
+        head_exit: { type: integer }
+      required: [status, newly_failing, newly_passing, base_exit, head_exit]
+
+  - id: judge
+    needs: [compare, diff]          # a tolerated `diff` failure still satisfies the join; its output is what gh printed
+    agent: judge
+    prompt: |
+      Pull request #{{ inputs.pr }} against {{ inputs.base }}; `{{ inputs.test_command }}` ran on both sides.
+
+      Comparison (authoritative):
+      {{ steps.compare.output }}
+
+      Tail of the base run (exit {{ steps.test_base.exit_code }}):
+      {{ steps.test_base.output[-3000:] }}
+
+      Tail of the PR run (exit {{ steps.test_head.exit_code }}):
+      {{ steps.test_head.output[-3000:] }}
+
+      The PR's diff (may be truncated):
+      {{ steps.diff.output[:20000] }}
+
+      What does the difference mean for this pull request? Name the likely cause where the diff
+      shows it, and recommend one next step.
+    output_schema:
+      type: object
+      properties:
+        summary: { type: string }
+        recommendation: { type: string, enum: [merge, fix_pr, fix_base, investigate] }
+      required: [summary, recommendation]
+
+outputs:
+  status: "{{ steps.compare.output.status }}"
+  newly_failing: "{{ steps.compare.output.newly_failing }}"
+  newly_passing: "{{ steps.compare.output.newly_passing }}"
+  base_exit: "{{ steps.compare.output.base_exit }}"
+  head_exit: "{{ steps.compare.output.head_exit }}"
+  summary: "{{ steps.judge.output.summary }}"
+  recommendation: "{{ steps.judge.output.recommendation }}"

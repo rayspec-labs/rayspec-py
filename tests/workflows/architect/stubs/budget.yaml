@@ -1,0 +1,10 @@
+# Every surveyor reports 201k tokens against the workflow's max_tokens of 600k: the four that
+# start together spend 804k, so the fifth surveyor and the architect are skipped (budget_exceeded)
+# and the run fails — the ceiling is hard, not advisory.
+defaults: { latency_ms: 0, usage: { input: 200000, output: 1000 } }
+steps:
+  report:
+    fail: { kind: api, message: "the architect must not be asked", transient: false }
+match:
+  - prompt_regex: "^Area "
+    output: { summary: "expensive", depends_on: [], findings: [] }

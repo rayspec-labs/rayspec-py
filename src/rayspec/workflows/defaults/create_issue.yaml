@@ -1,0 +1,176 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: create_issue
+description: >
+  Turn a description into a well-formed GitHub issue — title, body and whitelisted labels — after
+  searching the tracker for an existing one. A duplicate cancels the run naming the issue it
+  found; anything new is shown to a human before `gh issue create` runs. Without the duplicate
+  check this would be a machine for issue-tracker sludge; with it, filing is safe to automate.
+# Nothing is written to the checkout (`isolation: none`); the one side effect is the issue, and it
+# sits behind a gate of class `chore` — the class `fix_issue` uses for its PR. `--yes` and
+# `--approve-class chore` wave it through; hold the class shut in your policy for a repository
+# that must never receive an unattended issue (a human can still approve each one):
+#   # .rayspec/policy.yaml
+#   approvals: { classes: { chore: { allow_yes: false } } }
+
+inputs:
+  description: { type: string, required: true, description: "What is wrong or wanted, in your own words" }
+  labels:
+    type: array
+    items: { type: string }
+    default: [bug, enhancement, documentation, question]
+    description: "The only labels the issue may carry — a whitelist, not a request; [] files it unlabelled"
+
+defaults:
+  timeout: 10m
+  max_parallel: 2
+
+isolation: none                     # reads the tracker and the code; writes nothing but the issue
+
+agents:
+  writer:
+    provider: claude
+    model: medium
+    access: read-only
+    budget_usd: 1.00
+    instructions: >
+      You write GitHub issues a maintainer can act on: a specific title; a body with what
+      happens, what was expected, and how to reproduce or where to look (read the code when it
+      helps); nothing invented. You choose labels only from the list you are given.
+    tools: { deny: [web] }
+  judge:
+    provider: claude
+    model: small
+    access: read-only
+    budget_usd: 0.50
+    instructions: >
+      You decide whether a draft issue duplicates one that already exists. Only the candidates
+      you are shown count — never assume an issue exists that is not listed. The same underlying
+      problem or request is a duplicate even when the wording differs; a related but distinct
+      problem is not.
+
+steps:
+  - id: draft
+    agent: writer
+    prompt: |
+      Draft a GitHub issue for this repository from the description below.
+      {% if inputs.labels | length > 0 %}
+      Labels may only come from: {{ inputs.labels | join(', ') }} — pick the ones that apply, or none.
+      {% else %}
+      This issue carries no labels.
+      {% endif %}
+      Also give 2–4 short search queries a maintainer would type to find an existing issue about
+      the same thing: distinctive words, error messages, function names — not sentences.
+
+      Description:
+      {{ inputs.description }}
+    output_schema:                  # structured draft; the search, the judge, the gate and `create` read it
+      type: object
+      properties:
+        title: { type: string }
+        body: { type: string }
+        labels: { type: array, items: { type: string } }
+        search_terms: { type: array, items: { type: string } }
+      required: [title, body, labels, search_terms]
+
+  - id: search
+    needs: [draft]
+    description: Existing issues, open and closed, matching the draft's search terms — the real list the judge sees.
+    python: |
+      import json, subprocess, sys
+
+      seen, found = set(), []
+      for term in {{ steps.draft.output.search_terms }}[:4]:
+          listed = subprocess.run(
+              ["gh", "issue", "list", "--search", term, "--state", "all", "--limit", "20",
+               "--json", "number,title,state,url"],
+              capture_output=True, text=True, check=False)
+          if listed.returncode != 0:
+              sys.stderr.write(listed.stderr)
+              sys.exit(listed.returncode)
+          for issue in json.loads(listed.stdout or "[]"):
+              if issue["number"] not in seen:
+                  seen.add(issue["number"])
+                  found.append(issue)
+      print(json.dumps(found))
+    output_schema:
+      type: array
+      items:
+        type: object
+        properties:
+          number: { type: integer }
+          title: { type: string }
+          state: { type: string }
+          url: { type: string }
+        required: [number, title, state, url]
+
+  - id: dedupe
+    needs: [search]
+    agent: judge
+    prompt: |
+      Draft issue:
+      # {{ steps.draft.output.title }}
+      {{ steps.draft.output.body }}
+
+      {% if steps.search.output | length > 0 %}
+      Existing issues found by searching the tracker ({{ steps.search.output | length }}):
+      {% for issue in steps.search.output %}
+      - #{{ issue.number }} [{{ issue.state }}] {{ issue.title }}
+      {% endfor %}
+      {% else %}
+      The search found no existing issue.
+      {% endif %}
+
+      Is the draft a duplicate of one of the listed issues? If so, name its number in `of`
+      (0 when it is new).
+    output_schema:
+      type: object
+      properties:
+        duplicate: { type: boolean }
+        of: { type: integer }
+        reason: { type: string }
+      required: [duplicate, of, reason]
+
+  - id: bail
+    needs: [dedupe]
+    when: steps.dedupe.output.duplicate
+    stop:
+      status: cancelled
+      reason: "duplicate of #{{ steps.dedupe.output.of }} — {{ steps.dedupe.output.reason }}; no issue created"
+
+  - id: gate
+    needs: [dedupe]
+    when: not steps.dedupe.output.duplicate
+    description: A human reads the issue before it is filed; the labels shown are the ones that will be applied.
+    approve:
+      message: |
+        File this issue? {% if steps.search.output | length > 0 %}({{ steps.search.output | length }} existing issue(s) checked — {{ steps.dedupe.output.reason }}){% endif %}
+
+        # {{ steps.draft.output.title }}
+        labels: {{ steps.draft.output.labels | select('in', inputs.labels) | list | join(', ') or '(none)' }}
+
+        {{ steps.draft.output.body }}
+      class: chore                  # the operator's rules for this kind of gate, named not defined
+
+  - id: create
+    needs: [gate]
+    description: "`gh issue create` with the draft and the whitelisted labels; prints the issue URL."
+    python: |
+      import subprocess, sys
+
+      draft = {{ steps.draft.output }}
+      labels = [label for label in draft["labels"] if label in {{ inputs.labels }}]
+      command = ["gh", "issue", "create", "--title", draft["title"], "--body-file", "-"]
+      for label in labels:
+          command += ["--label", label]
+      created = subprocess.run(command, input=draft["body"], capture_output=True, text=True, check=False)
+      if created.returncode != 0:
+          sys.stderr.write(created.stderr)
+          sys.exit(created.returncode)
+      print(created.stdout.strip())
+
+outputs:
+  url: "{{ steps.create.output }}"
+  title: "{{ steps.draft.output.title }}"
+  labels: "{{ steps.draft.output.labels | select('in', inputs.labels) | list }}"
+  candidates: "{{ steps.search.output | length }}"

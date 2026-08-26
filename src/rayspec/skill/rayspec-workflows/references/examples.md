@@ -40,6 +40,10 @@ Every one of them is self-contained (inline agents, no prompt files) and covered
 | `release_check` | tests, release notes, a human gate (class `release`), tag and notify | `tag` (required), `min_coverage`, `push` |
 | `resolve_conflicts` | merge a base branch, classify every conflicted file with a read-only analyst, resolve in a loop until no marker is left and `test_command` passes, commit; a `risk: high` verdict pauses at a gate of class `risky` **before** any file is touched; a clean merge stops with `cancelled` (exit 4), giving up leaves the merge in progress for a human (exit 1, nothing committed) | `base`, `test_command`, `max_attempts` |
 | `review_panel` | review the diff against `base` (or a checked-out PR) from several independent angles at once — one read-only reviewer per lens, none seeing the others — then a chair merges them into one verdict with `raised_by` per finding and named `disagreements`; a lost reviewer is counted (`reviewed`, `lost`), never fatal; `post: true` comments the verdict on the PR | `base`, `pr`, `lenses`, `post` |
+| `validate_pr` | run `test_command` on `base` and on the PR's head in a worktree (detached checkouts, put back afterwards) and classify the difference deterministically — `clean`, `regression`, `preexisting`, `fixed` — with `newly_failing` / `newly_passing` named, before a read-only judge explains what the delta means; always exit 0, the verdict is `status` | `pr` (required), `base`, `test_command`, `failure_pattern` |
+| `create_issue` | draft a GitHub issue from a description, search the tracker with the draft's own terms, let a read-only judge say whether it duplicates one of the real results (cancelled, exit 4, naming it), show the draft at a gate of class `chore`, then `gh issue create` with labels from a whitelist | `description` (required), `labels` |
+| `architect` | a read-only survey: map the tree, pick the `max_areas` largest source directories, one read-only surveyor per area with a single `focus` (`coupling`, `layering`, `dead_code`), an architect writes the report into the run's `artifacts/`; a lost surveyor is counted, and the ceiling (`budget_usd` per agent, `max_tokens` on the run) is hard | `focus`, `max_areas` |
+| `refactor_safely` | typecheck + tests before anything is touched (a red baseline stops the run, exit 1), a plan behind a gate of class `risky`, an edit → typecheck → test loop until both are green (at most `max_attempts`), then a fresh read-only reviewer reads the diff: shape only → a local commit, behaviour changed → exit 1 with the changes left staged | `goal` (required), `typecheck_command` (required), `test_command`, `max_attempts` |
 
 `resolve_conflicts` always runs in a worktree, so neither the merge nor the agent's edits touch
 your checkout; the merge commit lands on the run's `rayspec/resolve_conflicts-<id>` branch and
@@ -61,6 +65,45 @@ told about (`on_failure: continue`), so a verdict from three of five lenses says
 / `lost` instead of looking like a full one; only when every reviewer is lost does the run fail
 (exit 1) — an empty diff stops it before anyone is asked (exit 4). Each agent carries a
 `budget_usd`; the verdict is advisory and enforcing it is the caller's or CI's job.
+
+`validate_pr` measures both sides — CI runs the tests once, on the head, and cannot tell a
+failure the PR introduced from one `main` already had. `compare` is a `python:` step and is
+authoritative: it parses each transcript with `failure_pattern` (pytest's `FAILED <id> - …` short
+summary by default; set it for another runner) and classifies the pair of exit codes and failure
+sets; the judge only interprets that result, with the PR's diff at hand. Both checkouts are
+detached, because the run's worktree sits on its own branch and git refuses to check out a branch
+that is checked out elsewhere, and a `join: always` step puts the checkout back whatever happened.
+A run that completes exits 0 — `status` is the verdict; read it from `--json`. Pass
+`--no-worktree` only on a clean tree you are not using: the workflow switches branches in it.
+
+`create_issue` is the filing counterpart of `fix_issue`, and the duplicate check is what makes it
+safe to run: the draft supplies the search terms, `gh issue list --search` (open and closed)
+supplies the candidates, and the judge decides only against that real list. A duplicate ends the
+run `cancelled` (exit 4) naming the issue; anything new waits at a gate of class `chore` — `--yes`
+or `--approve-class chore` wave it through, and a policy with `chore: { allow_yes: false }` holds
+it for a repository that must never receive an unattended issue. Labels come from the `labels`
+input only (a whitelist; `[]` files it unlabelled): the agent proposes, the workflow constrains.
+
+`architect` produces a document, not a change: `isolation: none` and every agent read-only, so
+nothing is written to the repository; the report is `outputs.report` and a file in the run's
+`artifacts/` directory (`outputs.report_path`). The areas are computed (the largest source
+directories, vendored and generated trees left out), the surveyors run four at a time with
+`on_failure: continue` (a lost area is named to the architect and counted in `lost`; only when
+every surveyor is lost does the run fail), and the cost has a hard ceiling — `budget_usd` on each
+agent and `defaults.max_tokens` on the run — reaching which ends the run `failed` (exit 1) rather
+than finishing on credit. A tree with no source files stops with exit 4. A dry run simulates the
+area scan as an empty list; `--exec-shell` shows the survey fan out.
+
+`refactor_safely` is `fix_issue` with the opposite contract: nothing may change what the code
+does. The typecheck and the tests run *before* anything is touched — if either is red the run
+stops (exit 1), because a red tree afterwards would carry no information — and again after every
+edit, as two separate steps, so the refactorer is told "does not typecheck" apart from
+"typechecks, but the tests fail" (`typecheck_command` has no default on purpose). The plan waits
+at a gate of class `risky` (hold it shut as for `resolve_conflicts`), the loop gives up after
+`max_attempts` (exit 1, nothing committed), and a *fresh* read-only reviewer — never the agent
+that made the change — reads the diff against the starting commit: shape only → a local commit
+in the worktree, behaviour changed → exit 1 with the changes left staged for a human. An agent
+that changed nothing ends the run with exit 4.
 
 ## Minimal workflow to copy
 

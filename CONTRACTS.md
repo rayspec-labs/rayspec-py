@@ -3590,7 +3590,20 @@ recorded — never the tool input.
   the same kind of net for `review_panel`: `exec_shell: true` cases on a throw-away repository
   with a real diff and a fake `gh` first on `PATH` (the checkout, the comment body, a failing
   checkout, an empty diff), plus in-process runs with a `Provider` that measures the panel's
-  concurrency and resumes a run whose chair failed.
+  concurrency and resumes a run whose chair failed. `tests/workflows/create_issue/`,
+  `validate_pr/`, `architect/` and `refactor_safely/` are the PRD-04 nets, one per bundled
+  workflow, each driven by its `test_<name>.py`: `create_issue` against a fake `gh` that answers
+  `issue list` from `$GH_ISSUES` and records `issue create` (the whitelisted labels, a duplicate
+  that files nothing, a held `chore` class); `validate_pr` on one fixture repository per
+  classification (clean, regression, preexisting, fixed, mixed — the tests really run on both
+  refs, the fake `gh` detaches onto the PR branch, the checkout must be back on `feature`
+  afterwards) plus an in-process run with real pytest as the test command; `architect` on a tree
+  of known shape (area ranking, the focus question, lost surveyors, the `max_tokens` ceiling
+  really stopping the run, `git status` empty afterwards; the report is read from a kept run
+  directory through `rayspec.testing.runner.run_case`); `refactor_safely` on a tree with a runner
+  and a syntax check standing in for a typechecker (red baseline, untouched tree, held `risky`
+  class) plus in-process runs with a `Provider` that edits `app.py` — convergence, the two
+  failure briefs, a behaviour change flagged by the fresh reviewer, the give-up bound.
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.

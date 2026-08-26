@@ -1,0 +1,12 @@
+# An empty whitelist: the writer is told so; the label it proposes anyway is filtered out.
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError."
+      labels: [bug]
+      search_terms: ["empty input"]
+    expect: { prompt_contains: ["This issue carries no labels.\n"] }
+  dedupe:
+    output: { duplicate: false, of: 0, reason: "nothing found" }
+    expect: { prompt_contains: ["The search found no existing issue.\n"] }
