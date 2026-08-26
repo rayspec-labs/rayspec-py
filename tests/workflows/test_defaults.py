@@ -52,11 +52,12 @@ def test_the_library_is_the_v1_set() -> None:
         "create_issue",
         "fix_issue",
         "pr_review",
+        "refactor_safely",
         "release_check",
         "resolve_conflicts",
         "review_block",
         "review_panel",
-    "validate_pr",
+        "validate_pr",
     ]
 
 

@@ -58,11 +58,12 @@ def test_workflows_lists_and_json(tree: Tree):
         "create_issue",
         "fix_issue",
         "pr_review",
+        "refactor_safely",
         "release_check",
         "resolve_conflicts",
         "review_block",
         "review_panel",
-    "validate_pr",
+        "validate_pr",
     ]
 
 

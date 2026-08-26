@@ -16,6 +16,7 @@ BUNDLED = [
     "create_issue",
     "fix_issue",
     "pr_review",
+    "refactor_safely",
     "release_check",
     "resolve_conflicts",
     "review_block",

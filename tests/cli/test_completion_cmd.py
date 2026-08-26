@@ -66,11 +66,12 @@ def test_values_workflows_lists_the_project_workflows(
         "example",
         "fix_issue",
         "pr_review",
+        "refactor_safely",
         "release_check",
         "resolve_conflicts",
         "review_block",
         "review_panel",
-    "validate_pr",
+        "validate_pr",
     ]
 
 
