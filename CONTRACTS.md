@@ -15,7 +15,10 @@ src/rayspec/
   store/model.py, store/base.py (frozen)  RunRecord/StepRecord + RunStore protocol
   events/model.py, events/base.py (frozen)  RunEvent/StreamRecord + EventSink protocol
 
-  loader/      YAML → Workflow, includes, agent resolution, validation, capability check
+  loader/      YAML → Workflow, includes, agent resolution, validation, capability check;
+               loader/bundled.py — the bundled library (dir, `<bundled>/` labels, eject header)
+  workflows/defaults/  data: the workflow library shipped in the package (`rayspec workflows`
+               lists it, a name resolves project → user → bundled, `workflows eject` copies one)
   config/      RAYSPEC_HOME, Config model, config.yaml merge, .env loading
   templating/  Jinja environments, Scope/context, filters, expressions
   providers/capabilities.py, registry.py, stub.py, pricing.py, _tools.py + cli/commands/providers.py
@@ -168,6 +171,9 @@ does not emit `secret` (a rayspec marker, not JSON Schema).
 ```python
 from rayspec.loader import (
     discover_workflows,  # (project_root: Path, *, home: Path | None = None) -> list[WorkflowRef]
+    #   project → user → the bundled library (scope "bundled"); a project/user file with the same
+    #   stem shadows the bundled one and carries overrides=<bundled path>; a directory listing,
+    #   no file is opened; never [] on an installed package
     discover_agents,  # (project_root, *, home=None) -> list[AgentFileRef(name, path, scope)]
     find_project_root,  # (start: Path | None = None) -> Path  # nearest dir with .rayspec/ (then .git,
     #  then `start` itself, resolved: no project, nothing created) — the only project-root discovery
@@ -179,7 +185,8 @@ from rayspec.loader import (
     topological_order,  # (steps) -> list[StepModel]  stable Kahn order of one sibling list
     load_yaml,  # (text, *, source) -> Any   # strict SafeLoader variant (raises LoaderError)
     load_yaml_with_lines,  # (text, *, source) -> (data, LineMap)  LineMap: tuple[key|index, ...] -> 1-based line
-    WorkflowRef,  # (name = file stem, path, scope: "project"|"user", description, error: str|None)
+    WorkflowRef,  # (name = file stem, path, scope: "project"|"user"|"bundled", overrides: Path|None,
+    #   description, error: str|None, inputs: dict — the last three from one lazy read)
     ResolvedWorkflow,
     ResolvedAgent,
     IncludedBody,
@@ -190,8 +197,11 @@ from rayspec.loader import (
     TemplateChecker,
 )
 # ResolvedWorkflow: .workflow (Workflow; include steps stay IncludeStep, bodies live in .includes),
-#   .path, .label (".rayspec/workflows/x.yaml"), .base_dir (the .rayspec dir), .hash (sha256 over
-#   every contributing file: workflow + includes + agent files + prompt/instructions files),
+#   .path, .label (".rayspec/workflows/x.yaml" | "~/.rayspec/workflows/x.yaml" | "<bundled>/x.yaml" —
+#   the library form is checked first and is install-independent, and a label resolves back to
+#   its file), .base_dir (the .rayspec dir; the defaults/ directory itself for a bundled document,
+#   which is self-contained and never uses it), .hash (sha256 over every contributing file — and
+#   their labels: workflow + includes + agent files + prompt/instructions files),
 #   .agents: dict[key, ResolvedAgent] (keys are opaque and origin-scoped: "<include path>agents.<name>",
 #   "file:<label>", "provider:<id>", "inline:<step path>", "override:<step path>" — a main-document
 #   agents.foo never collides with an included document's or an agent file's foo),
@@ -323,7 +333,7 @@ problems) and `InputError(errors: Sequence[str] | str, *, hint=None, partial=Non
 both deriving from `RayspecError`. `UnsupportedFeatureError` gained an optional `field=` kwarg (+ `.field`): the
 name shown in line 2 (`does not support \`<field>\``), defaulting to the last path segment.
 
-### CLI — `workflows [--json]`, `agents [--json]`, `validate [names...] [--allow-unsupported] [--json]`
+### CLI — `workflows [--json]` / `workflows eject <name> [--force]`, `agents [--json]`, `validate [names...] [--allow-unsupported] [--json]`
 (exit 2 on errors; an unknown name is `error: unknown workflow`), `plan <workflow> [--input k=v]*
 [--inputs-file f] [--allow-unsupported] [--json]` (input/validation errors as `error:` lines on
 stderr, one JSON error object with `--json`; additive: the `--json` object carries
@@ -342,8 +352,31 @@ escapes every item (`rich.markup.escape`) so user text is never parsed as markup
 `agents --json` rows gain `resolved: {provider, model, effort, via, provider_from ∈
 agent|alias|default, problem}` from `agents.resolve_fields(AgentDef, Config)` — the loader's
 alias/tier rules (alias pins the provider; tiers resolve per provider) applied to one file; the
-table shows `codex (via @fast)` / `claude (default)` and `gpt-5.4 (@fast)`. `workflows` and
-`validate` print `EMPTY_PROJECT_HINT` (names `rayspec init` + the examples URL) on an empty project.
+table shows `codex (via @fast)` / `claude (default)` and `gpt-5.4 (@fast)`. `validate` prints
+`EMPTY_PROJECT_HINT` (names `rayspec init` + the examples URL) on an empty project.
+`workflows` is an invokable group (`rayspec workflows` lists; `--json`/`--output` before a
+subcommand are exit 2, only `--root` is forwarded via `ctx.obj` — `_loader_common.group_root`,
+shared with `runs`). The listing covers project, user and bundled refs (`discover_workflows`):
+table columns `name | source | description | path`, `source` = `overridden` when
+`WorkflowRef.overrides` is set, `path` empty for bundled rows; a project with only bundled refs
+prints the table then `hint: no project workflows yet — <EMPTY_PROJECT_HINT>; rayspec workflows
+eject <name> copies a bundled one`. `--json` stays an array; rows are `{name, scope, source,
+description, path, error, overrides, ejected: {version, sha256, bundled_changed} | null, inputs:
+{name: {type, required, default, enum, description, secret}}}` (`inputs` normalised from the raw
+mapping, non-mapping specs skipped, `{}` on junk). A shadowing file whose eject header digest
+differs from `bundled_digest(ref.overrides)` gets `note: <name> was ejected from rayspec <v>; the
+bundled workflow has changed since` under the table. `workflows eject <name> [--force] [--root]`:
+`--root` is the project itself (never walked up from; without it `find_project_root(cwd)`), a
+missing `.rayspec/workflows/` is created; writes `render_ejected(...)` of the bundled bytes to
+`.rayspec/workflows/<name>.yaml`; refuses an existing file without `--force` (`error: <rel>
+already exists` + `hint: pass --force to overwrite it`), a symlink or directory always; unknown
+name → `unknown workflow 'x'[; did you mean 'y'?]`, a non-bundled name → `'x' is not a bundled
+workflow (it is a <scope> workflow at <label>)`, all exit 2; prints `ejected|overwrote <name> →
+<rel> (rayspec <v>); this copy now takes precedence over the bundled workflow` and one dim
+`note:` per bundled `include:` (`ResolvedWorkflow.includes[*].path` that `is_bundled`).
+`validate`, `lock` and `trust check` given no names cover the project's own (project + user)
+workflows, never the bundled library; a bundled name given explicitly works everywhere.
+`doctor`'s project check reads `<root> · N workflow(s) (+K bundled)`.
 Every hint that cites documentation goes through `rayspec.cli._docs.docs_url(rel)`
 (`DOCS_BASE = "https://github.com/rayspec-labs/rayspec-py/blob/main/"`) or says `rayspec <cmd>
 --help` — never a bare repo-relative path; `_pricing_common.PRICING_DOCS` is that URL.
@@ -1153,7 +1186,9 @@ document was loaded from, which is what the policy layers are discovered against
 hand-built `ResolvedWorkflow`; the validator then falls back to `base_dir` and `$RAYSPEC_HOME`).
 
 `.rayspec/trusted.yaml` is `{workflows: [{workflow: <label>, hash: "sha256:<hex>", added: <ts>}]}`,
-committed to the repository, holding a path and a digest and nothing else. The digest is
+committed to the repository, holding a path and a digest and nothing else (a bundled workflow's
+label is `<bundled>/<name>.yaml`, the same on every machine; an ejected copy is a different file
+with its own label and hash, so it starts untrusted). The digest is
 `ResolvedWorkflow.hash`, which covers **every contributing file** — the document, every `include:`d
 body, every agent file, every `prompt_file`/`instructions_file` — so editing an included body
 revokes trust exactly the way editing the entry document does. `rayspec trust add|list|remove|check`
@@ -2311,8 +2346,9 @@ the **builtin** `run` command invoked with a real argv.
   applied. Under `--json` stdout is captured (`redirect_stdout`) and the summary object — the
   documented last stdout line, validated against `run.SUMMARY_KEYS` — is parsed back; a parse
   failure degrades to `run_id: null`, never an exception.
-- **Which workflow**: `example` when the project has one, else the first `discover_workflows`
-  entry with no load error. The run is skipped with a named reason (and the `-i NAME=...` command
+- **Which workflow**: `example` when the project has one, else the first non-bundled
+  `discover_workflows` entry with no load error (the library is never presented as the project's;
+  the no-workflow reason names `rayspec run pr_review … --dry-run` instead). The run is skipped with a named reason (and the `-i NAME=...` command
   printed) when git is missing, when there is no workflow, when `load_workflow` raises, or when
   any input is `required: true`.
 - **Isolation** (`isolation_of(declared, git, where, workflow) -> Isolation`) reads the workflow
@@ -2403,7 +2439,8 @@ in every `--help`).
   exit 2 `error: which shell? one of: bash, zsh, fish`; an unsupported shell ⇒ Typer's enum error,
   exit 2.
 - `rayspec completion --values workflows|runs [--root DIR]` prints one candidate per line — what
-  the emitted script calls back for. `workflow_values(root)` = `discover_workflows`,
+  the emitted script calls back for. `workflow_values(root)` = `discover_workflows` (bundled
+  names included — they run),
   `run_values(root, *, limit=RUN_LIMIT=50)` = the project store's newest run ids. **Both return
   `[]` and print nothing on any failure**, with stderr redirected, because a completion callback's
   stdout is the shell's candidate list: no project, an unreadable `config.yaml` or a broken
@@ -3541,6 +3578,9 @@ recorded — never the tool input.
   `tests/examples/test_examples.py` parses — every required capability row must name an existing
   example, and every backticked token of a row must occur in the named examples' trees/READMEs
   (`unbacked_claims`).
+- `tests/workflows/` covers the bundled library offline: `checks.yaml` + `stubs/` are copied into a
+  project root with no `.rayspec/` and run through `rayspec test`, so every case resolves its
+  workflow from the package (incl. a stub-less `pr_review` dry run and an ejected copy).
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.

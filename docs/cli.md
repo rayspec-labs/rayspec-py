@@ -10,7 +10,8 @@ never scaffolded into. The one exception is `rayspec completion`, whose `--root`
 feeds the candidate list a shell asks for and which is silent by contract (an error line there
 would be offered as a completion candidate) — the whole command, not only `--values`. `RAYSPEC_HOME`
 (default `~/.rayspec`) holds user-level workflows/agents, `config.yaml`, `.env` and every
-project's runs and worktrees. The commands that read a project (`run`, `validate`, `plan`,
+project's runs and worktrees; a workflow name resolves project → user → the library bundled
+with rayspec (see [`rayspec workflows`](#rayspec-workflows)). The commands that read a project (`run`, `validate`, `plan`,
 `workflows`, `agents`, `doctor`, `quickstart`) and the run-management commands (`runs`, `costs`, `show`, `logs`,
 `resume`, `approve`, `reject`, `cancel`) first load `~/.rayspec/.env` into the environment
 (existing variables are never overridden) and merge `~/.rayspec/config.yaml` +
@@ -516,12 +517,56 @@ case).
 rayspec workflows [--root DIR] [--json | --output FORMAT]
 ```
 
-List workflows from `.rayspec/workflows/` and `~/.rayspec/workflows/` (project wins on a name
-clash): name, scope, description, path. A file that does not parse shows `(parse error — see
-rayspec validate)` in the table and one short `error:` line below it; an empty project prints
-`no workflows found …` and the hint to run `rayspec init` (or create
-`.rayspec/workflows/<name>.yaml`; the examples are linked by URL). `--json`: `[{name, scope,
-description, path, error}]` (`error` set when the file does not parse).
+List every workflow a name resolves to, in precedence order: `.rayspec/workflows/` (project),
+`~/.rayspec/workflows/` (user) and the library rayspec ships inside the package (bundled). A
+project or user file with the same stem shadows the bundled one, and the listing says so: the
+`source` column is `project`, `user`, `bundled`, or `overridden` for a file of yours that shadows
+a bundled workflow; the `path` column is empty for bundled rows (they live in the installed
+package, not in a checkout). A file that does not parse shows `(parse error — see rayspec
+validate)` in the table and one short `error:` line below it. A project with no workflow of its
+own still lists the bundled ones, followed by `hint: no project workflows yet — run rayspec
+init …; rayspec workflows eject <name> copies a bundled one`. A copy written by
+[`workflows eject`](#rayspec-workflows-eject) records the version and digest of the bundled bytes
+it was taken from; when the bundled workflow has changed since, the listing adds `note: <name>
+was ejected from rayspec <version>; the bundled workflow has changed since` (re-eject with
+`--force` to take the new definition, or keep yours). `--json`: `[{name, scope, source,
+description, path, error, overrides, ejected, inputs}]` — `scope` is `project` | `user` |
+`bundled`, `source` adds `overridden`, `path` is absolute (inside the package for a bundled row),
+`error` is set when the file does not parse, `overrides` is the absolute path of the bundled file
+this one shadows (else `null`), `ejected` is `{version, sha256, bundled_changed}` from the eject
+header (else `null`), and `inputs` is `{name: {type, required, default, enum, description,
+secret}}` from the file's `inputs:` (`{}` when it declares none or does not parse). The document
+is still an array, so `rayspec workflows --json | jq '.[]'` keeps working.
+
+`--json` and `--output` are options of the **listing**: before a subcommand
+(`rayspec workflows --json eject review`) they are a usage error (exit 2, `--json belongs to the
+rayspec workflows listing…`) rather than silently dropped; only `--root` is honoured there
+(`rayspec workflows --root X eject review`).
+
+### `rayspec workflows eject`
+
+```
+rayspec workflows eject <name> [--force] [--root DIR]
+```
+
+Copy a bundled workflow into the project — `.rayspec/workflows/<name>.yaml`, the bundled bytes
+under a short header naming the rayspec version and their sha256 — so it can be edited like any
+workflow of yours. From then on that copy is what `rayspec run <name>` (and every other command)
+resolves, and the command says so: `ejected <name> → .rayspec/workflows/<name>.yaml (rayspec
+<version>); this copy now takes precedence over the bundled workflow`. `rayspec workflows` lists
+it as `overridden` and notes when a later rayspec ships a changed definition. An existing file is
+never touched: `error: .rayspec/workflows/<name>.yaml already exists` + `hint: pass --force to
+overwrite it`, exit 2; `--force` replaces it (`overwrote …`), which is also how to re-eject after
+an upgrade. A symbolic link or a directory at that path is refused even with `--force`. A `<name>`
+that is not bundled is exit 2: `unknown workflow 'x'` (with `did you mean …?` when a bundled name
+is close) or `'mine' is not a bundled workflow (it is a project workflow at
+.rayspec/workflows/mine.yaml)`. When the bundled workflow `include:`s other bundled workflows the
+command names them — `note: it includes bundled review_block; rayspec workflows eject
+review_block to customise that too` — because the copy keeps including the bundled body until
+that one is ejected as well. `--root` names the project itself and is not walked up from (a typo
+must not land the file in an enclosing project); without it the project is the usual walk-up
+from the cwd. A repository with no `.rayspec/` yet is fine — `.rayspec/workflows/` is created —
+which is how a fresh checkout starts customising a bundled workflow. The command runs nothing.
 
 ### `rayspec agents`
 

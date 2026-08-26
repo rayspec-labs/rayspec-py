@@ -19,7 +19,7 @@ governs a run without understanding the content of prompts or scripts
 
 | Word | Meaning |
 |---|---|
-| **workflow** | A YAML file in `.rayspec/workflows/<name>.yaml` (project) or `~/.rayspec/workflows/` (user). Its `name` is the file stem you pass to `rayspec run <name>`. |
+| **workflow** | A YAML file in `.rayspec/workflows/<name>.yaml` (project), `~/.rayspec/workflows/` (user), or one of the workflows bundled with rayspec (`rayspec workflows` lists all three; `rayspec workflows eject <name>` copies a bundled one into the project). A name resolves project → user → bundled, so a file of yours shadows the bundled one. Its `name` is the file stem you pass to `rayspec run <name>`. |
 | **step** | One entry of `steps:`. Exactly one *kind key* decides what it does: `prompt:`/`prompt_file:` (an agent), `shell:`, `python:`, `loop:`, `each:`, `approve:`, `include:`, `stop:`. |
 | **agent** | A reusable bundle of provider + model + access + tools + instructions (`agents:` in the workflow, `.rayspec/agents/<name>.yaml`, or `~/.rayspec/agents/<name>.yaml`). Only `prompt:` steps use agents. |
 | **run** | One execution of a workflow. It has an id (`YYYYMMDD-HHMMSS-xxxx`), fixed inputs, a working directory and a run directory under `~/.rayspec/projects/<slug>/runs/<run-id>/` that holds every checkpoint ([runs-and-resume.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md)). |
