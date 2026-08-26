@@ -21,6 +21,34 @@ that run by name in any project without copying anything.
 | `notify_webhook` | a `secret: true` input: the webhook URL reaches the `shell:` step as `RAYSPEC_INPUT_WEBHOOK_URL` only, is never persisted (`<secret>` in `run.json`/`plan`/`show`) and is supplied again on resume | `rayspec run notify_webhook -i message="hi" --dry-run --stubs stubs.yaml` |
 | `secret_via_tool` | a `secrets:` block in `config.yaml` (`env`/`file`/`cmd` source): the credential reaches a `shell:` **tool** that exposes a capability, and the agent consumes the tool's result — never the key | `rayspec run secret_via_tool --dry-run --stubs stubs.yaml` |
 
+## Bundled workflows
+
+These run by name in any project — `rayspec run <name>` with no `.rayspec/` at all — and
+`rayspec workflows eject <name>` copies one into `.rayspec/workflows/` when you want to change it.
+Every one of them is self-contained (inline agents, no prompt files) and covered offline by
+`tests/workflows/checks.yaml` in the repository.
+
+| Workflow | Does | Inputs |
+|---|---|---|
+| `fix_issue` | triage a GitHub issue, fix it in a self-healing loop, gate a PR (class `chore`) | `issue` (required), `base`, `mode`, `test_command` |
+| `pr_review` | check out a PR, run `review_block` on it, optionally post the verdict | `pr` (required), `depth`, `post` |
+| `review_block` | the includable Claude + Codex review with a judge; `include: review_block` | `target` (required), `depth` |
+| `release_check` | tests, release notes, a human gate (class `release`), tag and notify | `tag` (required), `min_coverage`, `push` |
+| `resolve_conflicts` | merge a base branch, classify every conflicted file with a read-only analyst, resolve in a loop until no marker is left and `test_command` passes, commit; a `risk: high` verdict pauses at a gate of class `risky` **before** any file is touched; a clean merge stops with `cancelled` (exit 4), giving up leaves the merge in progress for a human (exit 1, nothing committed) | `base`, `test_command`, `max_attempts` |
+
+`resolve_conflicts` always runs in a worktree, so neither the merge nor the agent's edits touch
+your checkout; the merge commit lands on the run's `rayspec/resolve_conflicts-<id>` branch and
+pushing or opening a PR is the caller's job. Hold its gate shut in your policy — a class a
+workflow names is only as strict as the operator's policy makes it ([policy.md](policy.md#approval-classes)):
+
+<!-- rayspec:skip a policy document, not a workflow -->
+```yaml
+# .rayspec/policy.yaml
+approvals:
+  classes:
+    risky: { allow_yes: false }   # never approved by --yes, --dry-run or --approve-class; a human still can
+```
+
 ## Minimal workflow to copy
 
 <!-- rayspec:run -->

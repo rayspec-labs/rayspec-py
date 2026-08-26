@@ -517,6 +517,8 @@ approvals:
       allow_yes: false      # never approved automatically — by anything
     chore:
       require_tty: true     # and never by a decision recorded out of band
+    risky:
+      allow_yes: false      # what the bundled `resolve_conflicts` names for a conflict it wants a human to see
 ```
 
 A workflow names a class and cannot define one:
