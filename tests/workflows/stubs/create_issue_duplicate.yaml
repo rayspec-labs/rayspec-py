@@ -1,0 +1,11 @@
+# The judge recognises an existing issue: the run is cancelled (exit 4) naming it, the gate and
+# `gh issue create` never run. A cancelled run is the success case here.
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError."
+      labels: [bug]
+      search_terms: ["empty input"]
+  dedupe:
+    output: { duplicate: true, of: 12, reason: "same traceback as #12" }

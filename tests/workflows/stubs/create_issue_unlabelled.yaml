@@ -1,0 +1,14 @@
+# An empty whitelist: the writer is told the issue carries no labels; whatever it proposes is
+# filtered out before the gate and before `gh issue create`.
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError."
+      labels: [bug]
+      search_terms: ["empty input"]
+    expect:
+      prompt_contains: ["This issue carries no labels.\n"]
+      not_contains: ["Labels may only come from"]
+  dedupe:
+    output: { duplicate: false, of: 0, reason: "new" }

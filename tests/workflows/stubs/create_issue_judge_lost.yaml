@@ -1,0 +1,11 @@
+# The judge fails outright (an outage, not a rate limit: `transient: false`, so no retry): without
+# a duplicate verdict nothing is filed — a missing "no" is not a "yes".
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError."
+      labels: [bug]
+      search_terms: ["empty input"]
+  dedupe:
+    fail: { kind: api, message: "simulated provider outage", transient: false }

@@ -1,0 +1,26 @@
+# A novel description: the writer drafts it (told the label whitelist), the dry run simulates the
+# search as [] so the judge is told the search found nothing and answers "new", the gate is
+# approved by the dry run and `create` is simulated. `wontfix` is not in the whitelist — the
+# outputs show only `bug`. The `expect:` blocks pin what each agent was told.
+defaults: { latency_ms: 0, usage: { input: 1500, output: 200 } }
+steps:
+  draft:
+    output:
+      title: "Crash when the input list is empty"
+      body: "Calling total([]) raises IndexError in app.py; expected 0."
+      labels: [bug, wontfix]
+      search_terms: ["empty input", "IndexError total"]
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Labels may only come from: bug, enhancement, documentation, question — pick the ones that apply, or none."
+        - "Description:\nCrash on empty input\n"
+  dedupe:
+    output: { duplicate: false, of: 0, reason: "nothing in the tracker matches" }
+    expect:
+      access: read-only
+      output_schema: true
+      prompt_contains:
+        - "Draft issue:\n# Crash when the input list is empty\nCalling total([]) raises IndexError"
+        - "The search found no existing issue.\n"
