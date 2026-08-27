@@ -22,6 +22,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 RELEASE = REPO_ROOT / ".github" / "workflows" / "release.yml"
+CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 README = REPO_ROOT / "README.md"
 
 #: The exact gate `publish` and `announce` already use in `release.yml` — a `docker` job that
@@ -308,4 +309,31 @@ def test_docker_job_still_builds_on_a_rehearsal_dispatch() -> None:
     assert PUBLISH_GATE not in job_if, (
         "the whole docker job is gated on a pushed tag, so a workflow_dispatch rehearsal "
         "never even builds the image to validate it"
+    )
+
+
+# ------------------------------------------------------- acceptance criteria run in CI (the gap)
+
+
+def test_ci_builds_the_image_and_runs_the_docker_acceptance_suite() -> None:
+    """The `docker`-marked suite is R1-R6 as executable acceptance tests, but it skips everywhere
+    for want of a built image (`RAYSPEC_DOCKER_IMAGE`). One CI job must build the image with
+    `load: true` and run `pytest -m docker` against it — otherwise the criteria are never verified
+    and the image is green by skipping. This is the pull-request-time counterpart to the release
+    job's own multi-arch build (which pushes but cannot load a multi-arch image to smoke-test it).
+    """
+    jobs = yaml.safe_load(CI.read_text(encoding="utf-8")).get("jobs", {})
+    for _name, spec in jobs.items():
+        builds_loaded = any(
+            "build-push-action" in str(step.get("uses", ""))
+            and str((step.get("with") or {}).get("load")).lower() == "true"
+            for step in spec.get("steps", [])
+        )
+        job_text = yaml.safe_dump(spec)
+        runs_suite = "pytest -m docker" in job_text and "RAYSPEC_DOCKER_IMAGE" in job_text
+        if builds_loaded and runs_suite:
+            return
+    raise AssertionError(
+        "no CI job builds the image with `load: true` and runs `pytest -m docker` with "
+        "RAYSPEC_DOCKER_IMAGE set — the docker acceptance suite skips on every runner"
     )
