@@ -50,6 +50,7 @@ def test_the_library_is_the_v1_set() -> None:
     assert BUNDLED == [
         "architect",
         "create_issue",
+        "explore_block",
         "fix_issue",
         "pr_review",
         "prd_to_pr",

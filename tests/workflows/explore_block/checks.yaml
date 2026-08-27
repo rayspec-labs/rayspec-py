@@ -1,0 +1,33 @@
+# The bundled `explore_block` run standalone (it is normally `include:`d): exec_shell cases so the
+# `collect` python really reshapes the fan-out. Questions are passed as an inputs list.
+checks:
+  - id: both_answered
+    workflow: explore_block
+    stubs: stubs/two.yaml
+    exec_shell: true
+    inputs: { questions: ["where does X live?", "what to reuse?"] }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        answered: [answered, answered]
+        lost: []
+      steps:
+        "scan[0]/inspect": succeeded
+        "scan[1]/inspect": succeeded
+        collect: succeeded
+  - id: one_lost
+    workflow: explore_block
+    stubs: stubs/one_lost.yaml
+    exec_shell: true
+    inputs: { questions: ["kept question", "lost question"] }
+    expect:
+      status: succeeded
+      exit_code: 0
+      outputs:
+        answered: [kept]
+        lost: ["lost question"]
+      steps:
+        "scan[0]/inspect": succeeded
+        "scan[1]/inspect": { status: failed }
+        collect: succeeded

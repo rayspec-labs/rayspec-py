@@ -25,6 +25,7 @@ from rayspec.loader.yaml import load_yaml
 V1_SET = [
     "architect",
     "create_issue",
+    "explore_block",
     "fix_issue",
     "pr_review",
     "prd_to_pr",
