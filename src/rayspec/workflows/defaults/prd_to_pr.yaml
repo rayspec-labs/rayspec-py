@@ -306,30 +306,54 @@ steps:
       (No report for: {{ steps.explore.output.lost | join('; ') }} — plan around the gap.)
       {% endif %}
 
-      Return: a short summary of what will be built; the test plan — for every requirement, the
-      black-box tests that will prove it against the public surface the reports named, each able to
-      fail against the current code; and every question the document leaves open, with the
-      assumption you would act on if nobody answers (an empty list is a fine answer).
+      Return three fields. `summary`: a short (1-3 sentence) description of what will be built —
+      keep it short and do NOT put the tests here. `test_plan`: one entry per requirement, each
+      listing the black-box tests that prove it against the public surface the reports named, every
+      test able to fail against the current code — this is where the tests go, never in `summary`.
+      `unresolved`: every question the document leaves open, with the assumption you would act on if
+      nobody answers (an empty list is a fine answer).
     output_schema:
       type: object
       properties:
-        summary: { type: string }
+        summary:
+          type: string
+          description: >-
+            A short (1-3 sentence) summary of what will be built. Keep it short; do NOT put the test
+            plan here — the per-requirement tests belong in test_plan, not in this field.
         test_plan:
           type: array
+          description: >-
+            One entry per PRD requirement, each listing the black-box tests that prove it. This is
+            where the tests go — never write them into summary.
           items:
             type: object
             properties:
-              requirement: { type: string }
-              tests: { type: array, items: { type: string } }
+              requirement:
+                type: string
+                description: The requirement id or label from the PRD (e.g. "R1").
+              tests:
+                type: array
+                items: { type: string }
+                description: >-
+                  The black-box tests for this requirement — each a sentence, each able to fail
+                  against the current code.
             required: [requirement, tests]
         unresolved:
           type: array
+          description: >-
+            Every question the PRD leaves open, each with the assumption you would act on if nobody
+            answers. An empty list is fine.
           items:
             type: object
             properties:
-              question: { type: string }
-              assumption: { type: string }
-              affects: { type: array, items: { type: string } }
+              question: { type: string, description: The open question. }
+              assumption:
+                type: string
+                description: The assumption you will act on if nobody answers the question.
+              affects:
+                type: array
+                items: { type: string }
+                description: Which requirements or areas this question affects (may be empty).
             required: [question, assumption, affects]
       required: [summary, test_plan, unresolved]
 
