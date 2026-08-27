@@ -34,7 +34,8 @@ runs/<run-id>/
   cancel.json                   present only while a `rayspec cancel` is in flight (see "Cancelling a run")
   events.jsonl                  lifecycle events, one JSON object per line (capped at 16 MiB, see below)
   audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1 (see below)
-  detach-launch.log             `rayspec run --detach` only: the child's stdout/stderr before it has a run.json
+  detach-launch.log             `rayspec run --detach` only: the background child's stdout/stderr at boot
+  detach-handshake.json         `rayspec run --detach` only, transient: the child's proof-of-life to the launcher
   steps/<path>/                 one directory per executed step (build[2]/implement → steps/build[2]/implement/)
     output.txt | output.json    the step's output (written BEFORE the record that points at it)
     prompt.txt                  prompt steps: the rendered prompt: body, written BEFORE the provider call (StepRecord.prompt_ref; `rayspec explain --full`; a write that fails is a warning, never a failed step)
@@ -488,12 +489,16 @@ rayspec run <workflow> --detach [...the usual flags]
 ```
 
 `--detach` forks the run into the background and hands control back almost immediately: rayspec
-re-execs itself (`python -m rayspec.cli.app`, the same command line minus `--detach`) as a
-`setsid` child with stdin closed and stdout/stderr redirected into `<run dir>/detach-launch.log`,
-waits for that child's `run.json` to appear (up to 8s), then prints the bare run id — nothing
-else — to stdout and exits 0. **The exit code is the launch succeeding, not the workflow's
-eventual outcome** — a workflow that goes on to fail still reports `0` here, because at that point
-it has barely started; check on it the same way you would any other run:
+rebuilds the child's command line from the options you passed (minus `--detach`, plus `--quiet
+--no-interactive`), pre-creates the run directory, and launches a `setsid` child with stdin
+closed and stdout/stderr redirected into `<run dir>/detach-launch.log`. The child hands back a
+small handshake file just before it takes a host slot, and the launcher waits for that — with no
+fixed deadline while the child is alive, so a `--wait-slot` queue or a slow `--repo` clone does
+not make it give up — then prints the bare run id (or a `--json` object) and exits 0. A child
+that dies before it starts is exit 2, with the tail of `detach-launch.log` — its own error — as
+the hint. **The exit code is the launch succeeding, not the workflow's eventual outcome** — a
+workflow that goes on to fail still reports `0` here, because at that point it has barely started;
+check on it the same way you would any other run:
 
 ```
 rayspec run build --detach                    # prints just the run id, e.g. 20260827-101500-h2nx
@@ -521,19 +526,27 @@ once it gets there.
 ## Cancelling a run
 
 ```
-rayspec cancel <run-id or prefix> [--yes] [--mark] [--force]
+rayspec cancel <run-id or prefix> [--yes] [--now] [--mark] [--force]
 ```
 
-Cancelling a **live** run is cooperative — rayspec does not signal the process. `rayspec cancel`
-writes a small marker, `cancel.json` (`{reason, actor, requested_at}`), next to `run.json` in the
-run directory (after confirming, unless `--yes`/`--json`); the run's own process notices it at its
-next step boundary — the same points that check the run-level budget cap, never in the middle of
-an attempt — lets any step already running finish, still runs `join: always` cleanup steps, and
-then finalizes itself `cancelled` (exit 4, same as before). Nothing outside the run's own process
-ever touches its steps or its workdir, so there is no window in which a signal can land mid-write.
-This needs no terminal on the run's side and works identically for a foreground run or one started
-with `--detach` — `rayspec logs <id> --follow` shows it happening either way. A run deep inside one
-long provider call keeps running until that call returns; cancel does not preempt it.
+Cancelling a **live** run is cooperative by default — rayspec does not signal the process.
+`rayspec cancel` writes a small marker, `cancel.json` (`{reason, actor, requested_at}`), next to
+`run.json` in the run directory (after confirming, unless `--yes`/`--json`); the run's own process
+notices it at its next step boundary — the same points that check the run-level budget cap, never
+in the middle of an attempt — lets any step already running finish, still runs `join: always`
+cleanup steps, and then finalizes itself `cancelled` (exit 4). The flag is cleared when the run
+finalizes or is resumed, so a cancelled run can be resumed later without the stale flag cancelling
+it again. Nothing outside the run's own process ever touches its steps or its workdir, so there is
+no window in which a signal can land mid-write. This needs no terminal on the run's side and works
+identically for a foreground run or one started with `--detach` — `rayspec logs <id> --follow`
+shows it happening either way.
+
+A run deep inside one long provider call keeps running until that call returns; the cooperative
+flag does not preempt it. When you need it to stop *now* — a wedged step, a single long sleep —
+`rayspec cancel <id> --now` sends the run's process group a `SIGINT` (the same escape hatch a
+foreground Ctrl-C gives you), which unwinds it through anyio at once. `--now` still verifies the
+recorded pid really is this run's rayspec process first, so it never signals a pid a crash left
+behind that something else has since reused.
 
 Before writing the flag, `rayspec cancel` verifies the recorded `pid` really is *this run's*
 rayspec process — the same check as before (its `pid_started_at`, then its command line — see

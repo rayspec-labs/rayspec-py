@@ -1847,27 +1847,42 @@ safe to persist for whoever continues the run, and the flag must not be accepted
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
 
-`--detach` (PRD-07 R1/R6/R7, `run.py::launch_detached`): POSIX only — `os.name != "posix"` is a
-usage error (exit 2, names `sys.platform`) before anything else runs. A re-exec, not `os.fork`:
-when the workdir is already known without preparing a workspace (`--no-worktree` /
-`defaults.isolation: none`) the launcher first takes and releases `rayspec.workspace.PathLock`
-synchronously (`run.py::_precheck_path_lock`) — a held lock is exit 2 naming the holder run id,
-before anything is backgrounded; a worktree's path does not exist yet, so its contention is left
-to the child's own `Runner._acquire_lock`, same as a foreground run. It then `subprocess.Popen`s
-`[sys.executable, "-m", "rayspec.cli.app", *argv without --detach]` with `stdin=DEVNULL`,
-`stdout=stderr=<run_dir>/detach-launch.log` (opened via `store.open_private`) and
-`start_new_session=True` (`setsid`) — a completely ordinary `rayspec run` child, detached from
-the controlling terminal. The launcher polls for the child's `run.json` to appear (`
-run.py::DETACH_LAUNCH_TIMEOUT_S = 8.0`, `DETACH_POLL_INTERVAL_S = 0.02`); once it does, stdout
-gets exactly one line (the bare run id, never through Rich) and the launcher exits 0 — the exit
-code reflects the *launch*, not the workflow's eventual outcome. Not appearing within the timeout
-is exit 2, hinting at `detach-launch.log`. The child has no controlling terminal, so
-`_runs_common.stdin_is_tty()` reads `False` exactly as over a closed pipe — a gate the child
-reaches pauses (exit 3) precisely as `--no-interactive`/a non-TTY invocation would; no
-detach-specific code path. `rayspec logs <id> --follow`, `rayspec runs`, `rayspec show` and
-`rayspec cancel <id>` all work against a detached run exactly as against a foreground one — they
-are purely file-based (see `reconcile_run` below for how a crashed detached child's stale
-`running` record is corrected).
+`--detach` (PRD-07 R1/R6/R7, `run.py::_launch_detached_run` → `cli/_detach.py::launch_detached`):
+POSIX only — `os.name != "posix"` is a usage error (exit 2, names `sys.platform`) before anything
+else runs; `--detach` with `--resume` or `--stubs-init` is refused the same way (a resume is
+answered, not launched; `--stubs-init` writes a scaffold and exits). Not `os.fork`: the launcher
+computes the run's slug WITHOUT materialising a workspace (`workspace.repos.source_slug_for` for
+`--repo`, else `project_slug_for`), mints the run id and pre-creates its directory, and when the
+run is in-place (`--no-worktree`, or the workflow's `isolation: none`, and not a pure dry run)
+takes and releases `rayspec.workspace.PathLock` synchronously (`run.py::_precheck_path_lock`) — a
+held lock is exit 2 naming the holder, before anything is backgrounded; a worktree's path does not
+exist yet, so its contention is left to the child's own `Runner._acquire_lock`. It then
+`subprocess.Popen`s `[sys.executable, "-m", "rayspec.cli.app", *child_run_argv(...)]` — the child
+argv REBUILT from the run command's parsed parameters (`_detach.py::child_run_argv`, a test pins
+that every `run` option is threaded or explicitly launcher-owned), with `--detach`/`--json`/
+`--output`/`--verbose` dropped, `--resume`/`--stubs-init`/`--force` never present, and `--quiet
+--no-interactive --detached-child <run dir>` (a hidden option) added — with `stdin=DEVNULL`,
+`stdout=stderr=<run_dir>/detach-launch.log` (opened via `store.open_private`, so a boot crash is
+captured; the child runs `--quiet`, so it stays small), `start_new_session=True` (`setsid`) and
+`env` hardened with `GIT_TERMINAL_PROMPT=0`/`PYTHONUNBUFFERED=1`. The child writes
+`<run_dir>/detach-handshake.json` (`{run_id, pid, run_dir, queued}`) just before it acquires its
+host slot — after every synchronous usage check — and the launcher waits for handshake-or-exit
+with NO fixed deadline while the child is alive (so a `--wait-slot` queue or a slow `--repo` clone
+does not flip a legitimate slow start to "did not start", the failure mode the old 8 s poll had).
+On the handshake, stdout gets exactly one line — the bare run id (never through Rich), or one
+compact `{"run_id","pid","run_dir","launch_log","started"}` object with `--json` — and the
+launcher exits 0: the exit code reflects the *launch*, not the workflow's outcome. A child that
+exits before handshaking is a launch failure (exit 2, the launch log's tail as the hint — the
+child's own error, byte-identical); a run directory that never got a `run.json` is removed, one
+that did is left for inspection. Ctrl-C while waiting prints the id and exits 130 (the child runs
+on). The child has no controlling terminal, so `_runs_common.stdin_is_tty()` reads `False` exactly
+as over a closed pipe — a gate it reaches pauses (exit 3) precisely as `--no-interactive` would;
+no detach-specific code path (the launcher warns on stderr up front when the workflow has a gate
+and neither `--yes` nor `--approve-class` was given). `rayspec logs <id> --follow [--exit-code]`,
+`rayspec runs`, `rayspec show` and `rayspec cancel <id>` all work against a detached run exactly
+as against a foreground one — purely file-based (see `reconcile_run` below for how a crashed
+detached child's stale `running` record is corrected). `detach-handshake.json` is transient
+plumbing; `detach-launch.log` persists inside the run directory.
 
 ### CLI run management
 Thin commands over the store and engine; shared glue in `rayspec.cli._runs_common` (store
