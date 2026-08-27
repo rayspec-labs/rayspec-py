@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git jq ca-certi
 # their agent CLI binary inside the wheel, so installing the package IS the pre-warm step — there
 # is nothing left to fetch at container run time.
 COPY dist/ /tmp/dist/
-RUN uv pip install --system --no-cache-dir /tmp/dist/*.whl claude-agent-sdk openai-codex \
+RUN uv pip install --system --no-cache /tmp/dist/*.whl claude-agent-sdk openai-codex \
     && rm -rf /tmp/dist
 
 # Fixed UID 1000: a bind-mounted host directory (e.g. -v $HOME/.rayspec:/home/rayspec/.rayspec)
