@@ -283,7 +283,13 @@ as a whole (a `Ref` with `name=None`: `inputs | tojson`, `inputs.get(..)`, `inpu
 declares a secret. `coerce_input` / the jsonschema message print `<secret>` instead of the
 rejected value of a `secret: true` input (never echoed, not even in `plan` rows). Expression
 references (`when`/`until`/`each`) are collected with `references(text, kind="expr")` (they were
-parsed as text before and yielded nothing).
+parsed as text before and yielded nothing). Loader lints (warnings): `timeout` on an `approve:`/
+`stop:` step is an **error** (`_check_no_timeout` — it would be ignored); a `loop:` whose
+whole-step timeout (`step.timeout` or the inherited `defaults.timeout`, applied by `fail_after`
+around the whole loop) is not larger than a body step's per-attempt timeout **warns**
+(`_check_loop_timeout`, PRD-09 F14) — it cannot cover even one iteration; the message names the
+loop, the timeout source, the offending body step, and suggests `~max_iterations x` the slowest
+body step. `each:`/`include:` bodies are not linted (their cost is data-/graph-dependent).
 Strict YAML (`load_yaml`): booleans only `true/false` spellings, no sexagesimal, no leading-zero
 octal (`0123` stays a string, `0o17` is octal), no timestamps (dates stay strings), duplicate keys
 are errors.

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from rayspec.errors import RayspecError, UnsupportedFeatureError
+from rayspec.fmt import format_duration
 from rayspec.loader.loader import GraphView, IncludedBody, ResolvedAgent, ResolvedWorkflow
 from rayspec.loader.secrets import (
     check_secret_reference,
@@ -441,6 +442,7 @@ class _Validator:
                     "loop body must contain at least one step",
                     location=self.rw.location_of(path, "loop"),
                 )
+            self._check_loop_timeout(step, path)
             if step.loop.until is not None:
                 body = _Scope(
                     graph=GraphView("loop", f"{path}/", tuple(step.loop.steps), path, step),
@@ -494,6 +496,50 @@ class _Validator:
                 )
         elif isinstance(step, IncludeStep):
             self._check_include(step, path, scope, allowed)
+
+    def _check_loop_timeout(self, step: LoopStep, path: str) -> None:
+        """Warn when a loop's whole-step timeout cannot cover even one iteration of its body.
+
+        A loop's ``timeout`` (or, when it has none, the inherited ``defaults.timeout``) bounds the
+        WHOLE step — every iteration together, applied by ``anyio.fail_after`` around the loop
+        executor. A body leaf's own per-attempt timeout is ``leaf.timeout`` or the same
+        ``defaults.timeout``. If the loop's whole-step budget is not larger than a single body
+        step's per-attempt budget, the loop cannot finish even one iteration before its own
+        timeout fires — the run dies mid-attempt with no useful diagnosis. This is the trap F14
+        recorded: every shipped loop inherited ``defaults.timeout`` whole-step, so a step timeout
+        that comfortably covered one attempt silently bounded all of them.
+
+        Only ``loop:`` is linted. An ``each:``/``include:`` body's cost is data- or graph-
+        dependent (how many items, what they contain), so no fixed "iterations x body" bound
+        exists to compare against; a nested composite in the body counts as its own whole-step
+        timeout, like any other step. An unbounded loop (no timeout in force) is not flagged —
+        this lint is about a bound that is too small, not a missing one.
+        """
+        defaults_to = self.rw.workflow.defaults.timeout  # float seconds | None
+        loop_to = step.timeout if step.timeout is not None else defaults_to
+        if loop_to is None:
+            return
+        worst: float | None = None
+        worst_id = ""
+        for body in step.loop.steps:
+            body_to = body.timeout if body.timeout is not None else defaults_to
+            if body_to is None:
+                continue  # an unbounded body step — nothing to compare a finite loop bound to
+            if worst is None or body_to > worst:
+                worst, worst_id = body_to, body.id
+        if worst is None or loop_to > worst:
+            return
+        source = "its own `timeout`" if step.timeout is not None else "`defaults.timeout`"
+        suggested = format_duration(worst * step.loop.max_iterations * 1000)
+        self.report.warn(
+            f"steps.{path}.timeout",
+            f"the loop's whole-step timeout ({format_duration(loop_to * 1000)}, from {source}) is "
+            f"not larger than the per-attempt timeout of body step '{worst_id}' "
+            f"({format_duration(worst * 1000)}), so it cannot cover even one iteration of "
+            f"max_iterations={step.loop.max_iterations}; set an explicit `timeout:` on the loop "
+            f"of at least ~{suggested} (max_iterations x the body's slowest step)",
+            location=self.rw.location_of(path, "loop"),
+        )
 
     def _check_no_timeout(self, step: ApproveStep | StopStep, path: str) -> None:
         """``timeout:`` is a leaf/composite knob; a gate or ``stop:`` would ignore it silently."""

@@ -137,6 +137,7 @@ steps:
 
   - id: work
     needs: [gate]
+    timeout: 12h30m                   # whole-step over all iterations: max_iterations(25) x defaults.timeout(30m)
     loop:
       max_iterations: 25            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
       until: steps.typecheck.ok and steps.check.ok

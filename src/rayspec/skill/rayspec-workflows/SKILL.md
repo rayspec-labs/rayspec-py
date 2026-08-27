@@ -108,6 +108,7 @@ steps:
   - id: build
     needs: [assess]
     when: steps.assess.output.verdict == 'fix'
+    timeout: 1h                        # whole-step: covers all iterations (max_iterations x defaults.timeout)
     loop:
       max_iterations: 3                 # required, a plain int (not templated); exhausting it = failed
       until: steps.review.output | has_signal('BUILD-CLEAN')   # checked over the body after each pass
@@ -495,6 +496,7 @@ steps:
     allow_failure: true                 # a red baseline is the input to the task, not an error
   - id: build
     needs: [baseline]
+    timeout: 45m                        # whole-step: covers all iterations (max_iterations x defaults.timeout)
     loop:
       max_iterations: 3
       until: steps.review.output | has_signal('SHIP-IT')

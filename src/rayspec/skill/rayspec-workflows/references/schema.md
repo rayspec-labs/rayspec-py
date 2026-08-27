@@ -416,6 +416,7 @@ Same output contract as `shell:`; `{{ expr }}` renders as a Python literal
 ```yaml
 - id: build
   needs: [assess]
+  timeout: 90m                 # whole-step: bounds ALL iterations together (see the note below)
   loop:
     max_iterations: 3          # required, >= 1
     until: steps.review.output | has_signal('BUILD-CLEAN')   # expression over the body; optional
@@ -427,6 +428,13 @@ Do-while: the body runs, then `until` is evaluated over that iteration's step vi
 `max_iterations` with `until` still false is `failed` (`error.type: exhausted`) unless
 `on_exhausted: continue` (→ succeeded with `converged: false`). Without `until` the body runs
 exactly `max_iterations` times and `converged` is `true`. A failed body step fails the loop.
+
+A loop's `timeout` (or, when it has none, the inherited `defaults.timeout`) bounds the **whole
+step** — every iteration together — while a body leaf's `timeout` bounds one attempt of that
+leaf. So set the loop's own `timeout:` to roughly `max_iterations x` the body's slowest step; if
+you leave it to `defaults.timeout` (a per-attempt figure) the loop gets that same budget for all
+its iterations, and the load-time check **warns** when the whole-step budget cannot cover even
+one iteration. `each:` bodies are not warned about — their cost depends on the data.
 Inside the body: `iteration.n` (1-based), `iteration.max`, `iteration.first`,
 `iteration.prev.<body id>` (the previous iteration's step view; undefined on iteration 1).
 Output: `{<body id>: output}` of the last executed iteration; attributes `iterations`, `converged`.

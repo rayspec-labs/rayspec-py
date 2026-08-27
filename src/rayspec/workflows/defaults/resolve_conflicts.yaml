@@ -135,6 +135,7 @@ steps:
   - id: resolve
     needs: [gate, analyze]
     join: any                       # the gate is skipped when nothing is risky; when it ran it must have passed
+    timeout: 8h20m                    # whole-step over all iterations: max_iterations(25) x defaults.timeout(20m)
     loop:
       max_iterations: 25            # hard ceiling; the bound you set is inputs.max_attempts (`give_up` below)
       until: steps.check.ok

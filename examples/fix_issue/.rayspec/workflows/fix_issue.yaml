@@ -59,6 +59,7 @@ steps:
   - id: build
     needs: [assess]
     when: steps.assess.output.verdict == 'fix'
+    timeout: 90m                      # whole-step over all iterations: max_iterations(3) x defaults.timeout(30m)
     loop:
       max_iterations: 3
       until: steps.check.ok and (steps.review.output | has_signal('BUILD-CLEAN'))
