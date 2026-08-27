@@ -986,6 +986,7 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--verbose": ExternalControl(False, "print more"),
     "--yes": ExternalControl(False, "auto-approve gates — a widening"),
     "--mark": ExternalControl(False, "the status a cancelled run is recorded with"),
+    "--now": ExternalControl(False, "cancel by signalling the process instead of the flag"),
     "--detach": ExternalControl(
         False, "background the run behind a forked child; what it may do is unchanged"
     ),

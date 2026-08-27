@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""`rayspec cancel <run> [--yes] [--force] [--mark] [--json]` — stop a live run or cancel a
-paused one.
+"""`rayspec cancel <run> [--now] [--yes] [--force] [--mark] [--json]` — stop a live run or
+cancel a paused one.
 
 Live run (status ``running`` with a live pid on this host): the pid is first verified to be
 *this run's* rayspec process (its command line names ``rayspec`` and the run id / workflow;
@@ -9,8 +9,9 @@ after confirmation, a cooperative flag (``cancel.json``, next to ``run.json``) i
 R5. Cancel does not signal the process: the runner checks the flag at step boundaries, lets a
 step already in flight finish, runs ``join: always`` cleanup, and finalizes the record itself as
 ``cancelled`` (exit 4) in that process. This needs no terminal (``--yes``/``--json`` waive the
-confirmation exactly as before) and works the same for a foreground or a detached run — the
-``rayspec run --detach``/Ctrl-C SIGINT path is unrelated and untouched. Paused run, a ``running``
+confirmation exactly as before) and works the same for a foreground or a detached run. ``--now``
+is the escape hatch: it SIGINTs the process instead of flagging it (the run ends ``interrupted``,
+exit 130) — for a step wedged mid-provider-call with no boundary to reach. Paused run, a ``running``
 record whose process is gone, or ``--mark``: the record is marked ``cancelled`` here (``pid``
 cleared, ``run.finished`` appended to ``events.jsonl``) and the workdir lock is released best
 effort — nothing is signalled or flagged. A ``running`` record that belongs to another host
@@ -44,6 +45,15 @@ from rayspec.store.file import FileRunStore
 from rayspec.store.model import RunRecord, utcnow
 
 
+def _confirm(prompt: str) -> bool:
+    """Ask ``prompt`` (default no); a closed stdin (no terminal) is a usage error, not a yes."""
+    try:
+        return bool(typer.confirm(prompt, default=False))
+    except typer.Abort:
+        fail("cannot confirm without a terminal", hint="pass --yes to skip the prompt")
+        return False
+
+
 def mark_cancelled(store: FileRunStore, run: RunRecord, *, reason: str) -> None:
     """Finalize ``run`` as cancelled in the store (record + ``run.finished`` event)."""
     run.status = RunStatus.CANCELLED
@@ -73,7 +83,7 @@ def register(app: typer.Typer) -> None:
     def cancel(  # noqa: PLR0917 - Typer options are positional by construction
         run: Annotated[str, typer.Argument(help="Run id or unique prefix.")],
         yes: Annotated[
-            bool, typer.Option("--yes", "-y", help="Do not ask before interrupting a live run.")
+            bool, typer.Option("--yes", "-y", help="Do not ask before cancelling a live run.")
         ] = False,
         force: Annotated[
             bool,
@@ -90,29 +100,25 @@ def register(app: typer.Typer) -> None:
                 "pid reused by another program); no confirmation prompt.",
             ),
         ] = False,
+        now: Annotated[
+            bool,
+            typer.Option(
+                "--now",
+                help="SIGINT the process now instead of flagging it — the run ends interrupted "
+                "(exit 130); for a step wedged with no boundary to reach.",
+            ),
+        ] = False,
         json_: JsonOption = False,
         output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
-        """Interrupt a live run (SIGINT) or mark a paused run cancelled."""
+        """Cancel a run — a cooperative flag by default, `--now` to signal, `--mark` to record."""
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
-        record = common.reconcile_run(store, record)
-        out = console()
-        payload: dict[str, Any]
-        if (
-            record.status is RunStatus.RUNNING
-            and common.on_other_host(record)
-            and not force
-            and not mark
-        ):
-            fail(
-                f"run {record.run_id} is recorded as running on host {record.host} "
-                f"(pid {record.pid or '?'}) — its process cannot be checked from here",
-                hint="cancel it on that host, or pass --force if you are sure it is dead",
-            )
-            return
+        # --mark records the run cancelled without probing or signalling, so it runs BEFORE the
+        # reconcile that would otherwise flip a stale record to `interrupted` and change the
+        # reported action from "marked" to "cancelled" (D12).
         if record.status in {RunStatus.RUNNING, RunStatus.PAUSED} and mark:
             pid = record.pid
             reason = (
@@ -131,13 +137,28 @@ def register(app: typer.Typer) -> None:
             if json_:
                 print_json(payload)
             else:
-                out.print(
+                console().print(
                     Text.assemble(
                         (f"run {record.run_id} marked cancelled", "yellow"), f" — {reason}"
                     )
                 )
             return
-        if record.status is RunStatus.RUNNING and common.pid_alive(record):
+        payload: dict[str, Any]
+        if record.status is RunStatus.RUNNING and common.on_other_host(record) and not force:
+            fail(
+                f"run {record.run_id} is recorded as running on host {record.host} "
+                f"(pid {record.pid or '?'}) — its process cannot be checked from here",
+                hint="cancel it on that host, or pass --force if you are sure it is dead",
+            )
+            return
+        # a live process to act on — verified BEFORE reconcile, which (via the start-time probe)
+        # would otherwise pre-empt the reused-pid refusal below. A stale-but-alive run is still
+        # ``running`` on disk here, so this branch reaches it too (N3).
+        if (
+            record.status is RunStatus.RUNNING
+            and record.pid is not None
+            and common.pid_alive(record)
+        ):
             assert record.pid is not None
             if not common.pid_is_rayspec_run(record):
                 fail(
@@ -145,6 +166,29 @@ def register(app: typer.Typer) -> None:
                     "`rayspec cancel --mark` to mark the run cancelled without signalling",
                     hint=f"rayspec cancel {record.run_id} --mark",
                 )
+                return
+            if now:
+                if (
+                    not yes
+                    and not json_
+                    and not _confirm(f"SIGINT run {record.run_id} (pid {record.pid})?")
+                ):
+                    fail("aborted — the run keeps running", code=1)
+                    return
+                common.interrupt_pid(record.pid)
+                payload = {
+                    "run_id": record.run_id,
+                    "action": "signalled",
+                    "pid": record.pid,
+                    "status": record.status.value,
+                }
+                if json_:
+                    print_json(payload)
+                else:
+                    console().print(
+                        f"SIGINT sent to run {record.run_id} (pid {record.pid}) — interrupts now",
+                        markup=False,
+                    )
                 return
             if not yes and not json_:
                 prompt = f"cancel run {record.run_id} (pid {record.pid} on {record.host})?"
@@ -175,12 +219,15 @@ def register(app: typer.Typer) -> None:
             if json_:
                 print_json(payload)
             else:
-                out.print(
+                console().print(
                     f"cancel requested for run {record.run_id} (pid {record.pid}) — it stops at "
                     f"the next step boundary (watch with `rayspec logs {record.run_id} --follow`)",
                     markup=False,
                 )
             return
+        # not a live running process to flag/signal: reconcile for an honest status, then decide.
+        was_running = record.status is RunStatus.RUNNING
+        record = common.reconcile_run(store, record)
         if record.status is RunStatus.PAUSED:
             reason = "cancelled by rayspec cancel while awaiting approval"
         elif record.status is RunStatus.RUNNING:
@@ -188,15 +235,17 @@ def register(app: typer.Typer) -> None:
                 "cancelled by rayspec cancel (recorded process "
                 f"{record.pid or '?'} on {record.host or '?'} is no longer running)"
             )
-        elif record.status is RunStatus.INTERRUPTED:
-            # reconcile_run (above) already turned "running with a dead pid or stale heartbeat"
-            # into `interrupted` and persisted why — that reason still names the pid, so it is
-            # folded in here rather than recomputed from a `record.pid` reconcile already cleared.
+        elif record.status is RunStatus.INTERRUPTED and was_running:
+            # reconcile just turned a running record with a DEAD or reused pid into `interrupted`
+            # (a stale-but-alive one is `reachable` above and never gets here); fold in its reason
             reason = f"cancelled by rayspec cancel ({record.reason or 'the run was interrupted'})"
         else:
+            # already interrupted/cancelled/finished on disk — nothing for a cancel to do (D13)
             fail(
                 f"run {record.run_id} is {record.status.value} — nothing to cancel",
-                hint="only running or paused runs can be cancelled",
+                hint=f"resume it with `rayspec resume {record.run_id}`"
+                if record.status is RunStatus.INTERRUPTED
+                else "only running or paused runs can be cancelled",
             )
             return
         mark_cancelled(store, record, reason=reason)
@@ -211,7 +260,9 @@ def register(app: typer.Typer) -> None:
         if json_:
             print_json(payload)
         else:
-            out.print(Text.assemble((f"run {record.run_id} cancelled", "yellow"), f" — {reason}"))
+            console().print(
+                Text.assemble((f"run {record.run_id} cancelled", "yellow"), f" — {reason}")
+            )
 
 
 __all__ = ["mark_cancelled", "register"]
