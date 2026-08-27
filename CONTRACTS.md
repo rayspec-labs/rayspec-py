@@ -3760,8 +3760,16 @@ recorded — never the tool input.
   convergence on the first and on the third attempt with the two distinct briefs and a resumed
   session, vacuous tests failing the run before any implementation, the give-up bound retaining
   the work, the tamper guard, a question answered at the plan gate reaching the prompts and the
-  PR body, a partial review asking at the PR gate; `test_prd_to_pr_live.py` (`@pytest.mark.live`,
-  `RAYSPEC_LIVE=1`) drives the real CLI with real agents on the same fixture.
+  PR body, the v2 blocked gate auto-approving into an amend-and-continue round, a partial review
+  asking at the PR gate; `test_prd_to_pr_live.py` (`@pytest.mark.live`, `RAYSPEC_LIVE=1`) drives
+  the real CLI with real agents on the same fixture. v2 (PRD-09 dogfood): a scout →
+  `explore_block` fan-out feeds the planner, `setup_command` bootstraps the worktree
+  (`baseline needs [start, setup]`, `join: any`), the agent budgets are `{{ inputs.* }}` (E1),
+  `red` reports `failing`/`already_green` per file, `implement` is `allow_failure` with a
+  `[done, blocked, unfinished]` status, and `blocked` is an in-loop `approve:` (class `blocked`)
+  + `amend` that moves the contract sha in `$RAYSPEC_STATE_DIR/prd_to_pr/contract`.
+  `test_explore_block.py` covers the bundled `explore_block` block standalone (both answered; one
+  lost explorer → an index-aligned null in `reports`).
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.
