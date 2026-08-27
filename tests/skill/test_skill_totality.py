@@ -184,6 +184,8 @@ def _option_spellings(command: Any) -> list[tuple[str, ...]]:
     """
     found: list[tuple[str, ...]] = []
     for param in command.params:
+        if getattr(param, "hidden", False):
+            continue  # a hidden internal option (e.g. --detached-child) is not user-facing
         spellings = tuple(
             opt
             for opt in [*param.opts, *getattr(param, "secondary_opts", [])]

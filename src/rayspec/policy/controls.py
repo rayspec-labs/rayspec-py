@@ -903,6 +903,11 @@ EXTERNAL_CONTROLS: Mapping[str, ExternalControl] = {
         "the PRD-07 cancellation marker `rayspec cancel` writes beside run.json; it asks the run "
         "to stop at the next step boundary, which withholds nothing a running step may already do",
     ),
+    "detach-handshake.json": ExternalControl(
+        False,
+        "the PRD-07 detach handshake the background child writes and the launcher reads once, "
+        "purely to learn the child started; transient plumbing, never a control an operator sets",
+    ),
     "events.jsonl": ExternalControl(False, "a run's event log; written after the fact"),
     "stream.jsonl": ExternalControl(False, "a run's raw provider stream; written after the fact"),
     "audit.jsonl": ExternalControl(False, "the audit log; it records what ran, it permits nothing"),
