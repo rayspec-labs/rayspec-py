@@ -77,6 +77,11 @@ expect:
       output_json: { verdict: ok }   # for a step with an output_schema
 ```
 
+Each case runs in an isolated environment: `rayspec test` strips the `RAYSPEC_INPUT_*` a surrounding
+shell exported (a case must resolve the same inputs on every machine) and `RAYSPEC_POLICY` (a policy
+a surrounding rayspec run exported must not silently apply to a suite that never chose it — a case
+that wants one sets it in its own `env:`), then applies the case's `env:`.
+
 Every key is optional except `workflow:` (and that one only in a `checks:` list). Everything under
 `expect:` that you leave out is not checked, so a case says exactly as much as you mean. An
 `expect:` block that can never be evaluated — next to `run: false` or `validate: error` — is

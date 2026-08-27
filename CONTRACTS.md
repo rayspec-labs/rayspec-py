@@ -3830,8 +3830,9 @@ store; nothing depends on it.
   `Workspace.in_place(suite.root)`, `handle_signals=False` and no `home=` (so no path lock). The
   store is `FileRunStore(home / "projects" / fallback_project_slug(suite.root))` — the project's
   ordinary store, so `rayspec logs <run_id>` explains a failure. `case_environment` clears
-  `RAYSPEC_INPUT_*`, sets `RAYSPEC_HOME`/`NO_COLOR` and applies the case's `env:` (`null` unsets),
-  restoring `os.environ` afterwards. With `keep_run_dir=False` a *passing* case deletes its run dir
+  `RAYSPEC_INPUT_*` **and `RAYSPEC_POLICY`** (a policy a surrounding run exported must not apply to
+  a suite that never chose it; a case sets its own via `env:`), sets `RAYSPEC_HOME`/`NO_COLOR` and
+  applies the case's `env:` (`null` unsets), restoring `os.environ` afterwards. With `keep_run_dir=False` a *passing* case deletes its run dir
   (what the CLI does); a failing one always keeps it.
 - **`report.py`** — `Failure(field, summary, detail, fix, location)` renders the house four-line
   block (`<field>: <claim>` / `  <detail>` / `  fix: …` / `  at <file>:<line>`). `CaseResult` has
