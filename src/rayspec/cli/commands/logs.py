@@ -120,6 +120,16 @@ class LogTailer:
                 shrunk = (file in self._inodes and st.st_ino != self._inodes[file]) or (
                     st.st_size < offset
                 )
+                # inode change and a smaller size are the cheap signals, but neither fires when
+                # the store's os.replace reused the freed inode (common on Linux) and the
+                # truncated file is still larger than our stale offset. Confirm the last line we
+                # yielded is still the one ending at `offset`; if not, the file was rewritten
+                # under us and the offset points into unrelated bytes — resume by anchor. (D7)
+                anchor = self._last_line.get(file)
+                if not shrunk and anchor is not None and offset >= len(anchor) + 1:
+                    fh.seek(offset - len(anchor) - 1)
+                    if fh.read(len(anchor) + 1) != anchor + b"\n":
+                        shrunk = True
                 if shrunk:
                     # PRD-07 D7: the store replaced this file with a middle-truncated, shorter one.
                     # Resume from just after the last line already shown, or — when that line was

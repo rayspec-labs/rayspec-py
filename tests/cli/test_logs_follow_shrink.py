@@ -78,3 +78,35 @@ def test_follow_delivers_the_marker_and_tail_when_the_last_shown_line_is_dropped
     assert out
     assert any(item.data.get("log_truncated") for _s, item in out)
     assert 399 in [item.data.get("n") for _s, item in out]
+
+
+def test_follow_survives_a_truncation_even_when_the_inode_is_reused(tmp_path: Path) -> None:
+    """PRD-07 D7, the CI-only failure: on Linux the store's os.replace can hand the truncated
+    file the SAME inode it just freed, and the shorter file is still larger than the follower's
+    stale offset — so neither the inode-change nor the size-shrink signal fires. The follower
+    must still notice (its last-yielded line is no longer at the offset) and resume at the
+    marker, rather than seeking a stale offset that lands past the head and skips the marker."""
+    import os
+
+    from rayspec.store.file import EVENTS_JSONL
+
+    store = _store(tmp_path)
+    run = _record("20260827-150200-reuse")
+    store.create(run)
+    tailer = LogTailer(store, run.run_id)
+    for n in range(5):
+        store.append_event(run.run_id, _event(n))
+    tailer.poll()  # caught up; last-yielded line = event 4, offset ~5 events in
+    for n in range(5, 400):
+        store.append_event(run.run_id, _event(n))  # floods past 2x cap → truncation(s)
+    for n in range(400, 410):
+        store.append_event(run.run_id, _event(n))
+    events = tailer.run_dir / EVENTS_JSONL
+    # simulate the reused inode: make the cheap inode-change signal a no-op so only the
+    # content check can catch the rewrite (size < offset is already false — file > stale offset)
+    tailer._inodes[events] = os.stat(events).st_ino
+    more = tailer.poll()
+    assert any(item.data.get("log_truncated") for _s, item in more), (
+        "the truncation marker must survive even when the inode was reused"
+    )
+    assert 409 in [item.data.get("n") for _s, item in more]
