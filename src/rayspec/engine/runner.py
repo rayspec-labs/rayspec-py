@@ -56,6 +56,7 @@ from rayspec.engine.runtime import (
 )
 from rayspec.engine.scheduler import STOPPED_REASON, run_graph
 from rayspec.engine.toolchain import capture_toolchain
+from rayspec.errors import LoaderError
 from rayspec.events.base import EventSink
 from rayspec.events.model import EventType
 from rayspec.limits.envelope import (
@@ -325,6 +326,15 @@ class Runner:
             # record already carries and needs no lookup at all
             actor = None if self.resume_run_id else await to_thread.run_sync(self._resolve_actor)
             run, cache, hash_mismatch, resumed = self._prepare_record(pid_started_at, actor)
+            # E1: fill each agent's `{{ inputs.<name> }}` budget_usd/max_turns from the run's
+            # now-fixed inputs (a resume uses the inputs the record already recorded), before the
+            # RunContext and any step fingerprint are built from `self.resolved`.
+            from rayspec.loader.agent_numbers import resolve_agent_numbers
+
+            try:
+                self.resolved = resolve_agent_numbers(self.resolved, run.inputs)
+            except LoaderError as exc:
+                raise EngineError(str(exc), hint=exc.hint) from exc
         except BaseException:
             self._release_lock()
             raise

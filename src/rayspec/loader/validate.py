@@ -250,6 +250,13 @@ def _cap_flag(name: str) -> _CapCheck:
     return _CapCheck(name, lambda c: bool(getattr(c, name)), lambda c: getattr(c, name))
 
 
+def _agent_number_shown(agent: ResolvedAgent, field_name: str) -> object:
+    """The literal number, or the ``{{ inputs.<name> }}`` reference, of an agent's E1 field — for
+    a capability message that names what the workflow actually wrote."""
+    ref = agent.input_refs.get(field_name)
+    return f"{{{{ inputs.{ref} }}}}" if ref else getattr(agent, field_name)
+
+
 def _cap_member(name: str, member: str) -> _CapCheck:
     return _CapCheck(
         name,
@@ -963,6 +970,7 @@ class _Validator:
             return
         if agent.key not in self._agent_checked:
             self._agent_checked.add(agent.key)
+            self._check_agent_input_refs(agent)
             self._check_agent_capabilities(agent, caps)
         # the agent may have been rewritten (effort alias) — re-fetch
         agent = self.rw.agents[agent.key]
@@ -1020,6 +1028,38 @@ class _Validator:
                     location=agent.location("tools"),
                 )
 
+    def _check_agent_input_refs(self, agent: ResolvedAgent) -> None:
+        """Validate an agent's `{{ inputs.<name> }}` numbers (E1) statically: the input exists, is
+        not secret, and is declared with a numeric type. The concrete value is checked at run time
+        by `resolve_agent_numbers`; here we catch what is knowable from the declaration alone."""
+        inputs = self.rw.workflow.inputs
+        for field_name, input_name in agent.input_refs.items():
+            if input_name not in inputs:
+                hint = suggest(input_name, set(inputs))
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r}, which the workflow does not "
+                    f"declare{f'; did you mean {hint!r}?' if hint else ''}",
+                    location=agent.location(field_name),
+                )
+                continue
+            spec = inputs[input_name]
+            if spec.secret:
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r}, which is declared "
+                    f"secret: true — a budget/turn limit may not come from a secret",
+                    location=agent.location(field_name),
+                )
+            allowed = {"integer"} if field_name == "max_turns" else {"integer", "number"}
+            if spec.type not in allowed:
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r} of type {spec.type!r}; it must "
+                    f"be {' or '.join(sorted(allowed))}",
+                    location=agent.location(field_name),
+                )
+
     def _check_agent_capabilities(self, agent: ResolvedAgent, caps: ProviderCapabilities) -> None:
         provider = agent.provider
 
@@ -1036,10 +1076,17 @@ class _Validator:
                 field=field,
             )
 
-        if agent.max_turns is not None and not caps.max_turns:
-            unsupported("max_turns", agent.max_turns, _cap_flag("max_turns"))
-        if agent.budget_usd is not None and not caps.budget_usd:
-            unsupported("budget_usd", agent.budget_usd, _cap_flag("budget_usd"))
+        # an input-backed number (E1) counts as "set" here — the provider still needs the
+        # capability, and its concrete value only arrives at run time
+        turns_set = agent.max_turns is not None or "max_turns" in agent.input_refs
+        budget_set = agent.budget_usd is not None or "budget_usd" in agent.input_refs
+        if turns_set and not caps.max_turns:
+            unsupported(
+                "max_turns", _agent_number_shown(agent, "max_turns"), _cap_flag("max_turns")
+            )
+        if budget_set and not caps.budget_usd:
+            shown = _agent_number_shown(agent, "budget_usd")
+            unsupported("budget_usd", shown, _cap_flag("budget_usd"))
         if agent.thinking is not None and not caps.thinking:
             unsupported("thinking", agent.thinking, _cap_flag("thinking"))
         if agent.on_denial == "fail" and not caps.denial_reporting:
