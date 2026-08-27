@@ -217,3 +217,24 @@ def test_pid_is_rayspec_run_helper_uses_both_checks(
     assert common.pid_is_rayspec_run(run) is False
     run.pid_started_at = "T1"
     assert common.pid_is_rayspec_run(run) is False
+
+
+def test_pid_is_rayspec_run_recognises_the_module_launch_shape(
+    seeded: Seeded, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRD-07 D3: a detached child runs as ``python -m rayspec.cli.app run <wf>`` — the token
+    ``rayspec`` is followed by ``.cli.app``, which the command matcher must accept, or
+    ``rayspec cancel`` refuses every detached run."""
+    run = _running(seeded, "20260820-160700-mod", 4242, started_at="T0")
+    monkeypatch.setattr(common, "pid_start_time", lambda pid: "T0")
+    for cmdline in (
+        "/usr/bin/python3 -m rayspec.cli.app run live --detached-child /x/runs/20260820-160700-mod",
+        "python -m rayspec.cli run live",
+        "python -m rayspec run live",
+        "/venv/bin/rayspec resume live",
+    ):
+        monkeypatch.setattr(common, "pid_command_line", lambda pid, c=cmdline: c)
+        assert common.pid_is_rayspec_run(run) is True, cmdline
+    # still rejects a look-alike that is not a rayspec execution command
+    monkeypatch.setattr(common, "pid_command_line", lambda pid: "python -m rayspecx.cli.app run live")
+    assert common.pid_is_rayspec_run(run) is False

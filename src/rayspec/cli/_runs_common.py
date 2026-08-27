@@ -1125,10 +1125,11 @@ def pid_command_line(pid: int, *, timeout_s: float = 5.0) -> str | None:
     return line or None
 
 
-#: ``rayspec`` (as a whole token: ``rayspec``, ``/…/bin/rayspec``, ``-m rayspec``, ``rayspec.exe``)
-#: followed by one of the commands that run an engine process.
+#: ``rayspec`` (as a whole token: ``rayspec``, ``/…/bin/rayspec``, ``rayspec.exe``, and the
+#: ``-m rayspec`` / ``-m rayspec.cli`` / ``-m rayspec.cli.app`` module forms a detached child
+#: launches under) followed by one of the commands that run an engine process.
 _RAYSPEC_COMMAND_RE = re.compile(
-    r"(?:^|[\s/])rayspec(?:\.exe)?\s+(?:run|resume|approve|reject)(?=\s|$)"
+    r"(?:^|[\s/])rayspec(?:\.cli(?:\.app)?|\.exe)?\s+(?:run|resume|approve|reject)(?=\s|$)"
 )
 
 
