@@ -116,6 +116,7 @@ testpaths = ["tests"]
 addopts = "-q -ra -p anyio"
 markers = [
   "live: hits a real provider (needs credentials); skipped by the conftest gate unless RAYSPEC_LIVE=1 (still collected — run `-m live` to select only these)",
+  "docker: runs a real container against a pre-built image; skips cleanly without the docker CLI, a daemon, or RAYSPEC_DOCKER_IMAGE set — the dedicated docker CI job supplies all three",
 ]
 # Dump every thread's traceback if a test runs longer than this, so a hung live/e2e test (a
 # provider call that never returns, an orphaned subprocess) is diagnosable instead of silent. No

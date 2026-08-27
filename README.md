@@ -191,6 +191,25 @@ and the run directory (`~/.rayspec/projects/<slug>/runs/<run-id>/`). Exit codes:
 continue an interrupted or paused run with `rayspec resume <run>` (or `rayspec run review
 --resume <run>`), decide a gate without a terminal with `rayspec approve|reject <run>`.
 
+## Docker image
+
+CI jobs and first-time evaluators can skip the ~200 MB install: `ghcr.io/rayspec-labs/rayspec`
+ships rayspec, both agent CLIs, and the host tools the bundled workflows expect (`git`, `gh`,
+`jq`), for `linux/amd64` and `linux/arm64`.
+
+```bash
+docker run --rm ghcr.io/rayspec-labs/rayspec:1.0.3 workflows          # bundled workflows
+docker run --rm -v "$PWD":/home/rayspec/work -w /home/rayspec/work \
+  -e ANTHROPIC_API_KEY ghcr.io/rayspec-labs/rayspec:1.0.3 run example --input target=src
+```
+
+Runs as an unprivileged, fixed **UID 1000** (no `root`), with a writable `~/.rayspec`; match that
+UID (`--user 1000:1000` or matching host ownership) when bind-mounting a directory it needs to
+write to. No API key, credential or telemetry is baked into the image — keys arrive as
+environment variables at `docker run` time. Tags are exact versions matching PyPI releases
+(`:1.0.3`) plus a moving `:latest` for the newest final release; no `:dev`/`:edge` tag is
+published.
+
 ## Use rayspec from a coding agent
 
 rayspec ships two [Claude Code skills](docs/agent-skill.md) — each a skill file plus compressed

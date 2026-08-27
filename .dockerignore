@@ -1,0 +1,13 @@
+# Only dist/ (the wheel `uv build` — and the release `build` job — produces) is copied into the
+# image. Keep the build context small and deterministic by excluding everything else heavy or
+# irrelevant, so `docker build .` does not ship the repo's history, virtualenv or caches.
+.git
+.venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+htmlcov
+site
+*.egg-info
