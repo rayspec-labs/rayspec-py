@@ -437,14 +437,23 @@ async def run_leaf(
             # Only once the permit is held does the attempt exist: a leaf cancelled while it
             # queues for a ``max_parallel`` slot / the launch gate keeps the totals its record
             # carries (earlier attempts, the previous run) and is not counted as an attempt.
-            if step.join != "always" and await ctx.check_budget(pending=record) is not None:
-                # The run-level cap may have tripped while this attempt waited for a slot. The
+            if step.join != "always" and (
+                await ctx.check_budget(pending=record) is not None
+                or await ctx.check_cancelled() is not None
+            ):
+                # The run-level cap may have tripped, or the run was cancelled, while this attempt
+                # waited for a slot. The
                 # ready-set gate cannot see a step that is already queued, and a queued step has
                 # not started — so the breaker is ASKED again here (not just read: the clock can
                 # run out with no step finishing), or a wall-clock cap would keep launching the
                 # backlog long after it ran out. A retry keeps the failure it already has; a
-                # first attempt is recorded like any other step the cap skipped.
-                return last if last is not None else _skipped(record, BUDGET_SKIP_REASON)
+                # first attempt is recorded like any other step the drain skipped.
+                if last is not None:
+                    return last
+                reason = (
+                    BUDGET_SKIP_REASON if ctx.budget_exceeded is not None else CANCEL_SKIP_REASON
+                )
+                return _skipped(record, reason)
             record.attempts += 1
             attempts_this_run += 1
             attempt = record.attempts
@@ -475,8 +484,11 @@ async def run_leaf(
         accumulate(outcome.record)
         last = outcome
         rec = outcome.record
-        if rec.status is StepStatus.FAILED and await ctx.check_budget(pending=rec) is not None:
-            return outcome  # a retry is a new start — not once the cap tripped
+        if rec.status is StepStatus.FAILED and (
+            await ctx.check_budget(pending=rec) is not None
+            or await ctx.check_cancelled() is not None
+        ):
+            return outcome  # a retry is a new start — not once the cap tripped or a cancel arrived
         if rec.status is StepStatus.FAILED and should_retry(policy, attempts_this_run, rec.error):
             assert policy is not None
             delay = delay_for(policy, attempts_this_run)

@@ -36,7 +36,13 @@ from anyio import to_thread
 from rayspec.actor import resolve_actor
 from rayspec.engine import liveness
 from rayspec.engine.approval import ApprovalPrompt
-from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
+from rayspec.engine.context import (
+    CANCEL_SKIP_REASON,
+    ExecScope,
+    RunContext,
+    RunOptions,
+    StepOutcome,
+)
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
 from rayspec.engine.graph import FAILED_LIKE, StepGraph
 from rayspec.engine.liveness import process_start_time, run_pid_alive
@@ -868,6 +874,12 @@ class Runner:
             # finally idiom) — and a capped run must never report success to its caller.
             status = RunStatus.FAILED
             reason = ctx.budget_exceeded
+        elif ctx.cancel_requested is not None and failed:
+            # a cancel that arrived while a step had already failed must not launder that failure
+            # into ``cancelled``/exit 4 — an untolerated failure is the run's verdict (like the
+            # ``stopped`` ladder above)
+            status = RunStatus.FAILED
+            reason = _failure_reason()
         elif ctx.cancel_requested is not None:
             # PRD-07 R5: cooperative cancel — drained exactly like a run-level cap, but this is
             # not a defect, so it finalizes ``cancelled`` (exit 4) rather than ``failed``
@@ -917,6 +929,11 @@ class Runner:
         run.ended_at = utcnow()
         if status is not RunStatus.PAUSED:
             run.pid = None
+            # the run has reached a terminal status: consume the cancel flag so a later resume
+            # does not read it and cancel again (a paused run keeps it — resume clears it there)
+            from rayspec.engine.cancel import clear_cancel_flag
+
+            clear_cancel_flag(self.store.run_dir(run.run_id))
         await to_thread.run_sync(self._refresh_head_sha)  # pause / run end
         run.workspace = self.workspace.info()
         await self._publish_branch(ctx)  # opt-in, best effort — never changes ``status``
@@ -1016,6 +1033,23 @@ def stop_collateral(record: StepRecord) -> bool:
     return record.status is StepStatus.INTERRUPTED and record.skip_reason == STOPPED_REASON
 
 
+def cancel_collateral(record: StepRecord) -> bool:
+    """Whether ``record`` was torn down by a cooperative cancel (PRD-07 R5) rather than failing
+    on its own — the cancel's own teardown, exactly as :func:`stop_collateral` is the ``stop:``'s.
+
+    A cancel drains the run: a step it refused to start is ``skipped`` (:data:`CANCEL_SKIP_REASON`),
+    and a composite (a ``loop:``) cut between iterations is recorded ``interrupted`` with the same
+    reason. Both are ``FAILED_LIKE`` for the ``interrupted`` case, so — like the stop's collateral
+    — they must not count as an independent failure that would turn a deliberate ``cancelled``
+    (exit 4) into ``failed``. A body step whose OWN failure the cancel buried is still counted, by
+    the same ``run_failures`` reading of the body's records that guards the stop path.
+    """
+    return record.skip_reason == CANCEL_SKIP_REASON and record.status in {
+        StepStatus.INTERRUPTED,
+        StepStatus.SKIPPED,
+    }
+
+
 def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
     """Whether an enclosing composite has already settled the verdict on ``record``.
 
@@ -1063,7 +1097,9 @@ def run_failures(run: RunRecord) -> list[StepRecord]:
     return [
         r
         for r in failed_steps(run)
-        if not stop_collateral(r) and not answered_by_a_composite(run, r)
+        if not stop_collateral(r)
+        and not cancel_collateral(r)
+        and not answered_by_a_composite(run, r)
     ]
 
 
@@ -1072,6 +1108,7 @@ __all__ = [
     "Runner",
     "Workspace",
     "answered_by_a_composite",
+    "cancel_collateral",
     "failed_steps",
     "fallback_project_slug",
     "process_start_time",
