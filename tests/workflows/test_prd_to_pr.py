@@ -603,8 +603,7 @@ async def test_vacuous_tests_fail_the_run_before_any_implementation(
     assert result.exit_code == 1
     assert result.reason is not None
     assert (
-        "no new test fails against the current code — vacuous tests: test_total.py"
-        in result.reason
+        "no new test fails against the current code — vacuous tests: test_total.py" in result.reason
     )
     assert result.steps["vacuous"].status == "succeeded"
     assert result.steps["commit_tests"].status == "skipped"

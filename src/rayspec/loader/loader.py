@@ -48,8 +48,8 @@ from rayspec.schema import (
     parse_agent_def,
     parse_workflow,
 )
-from rayspec.schema.common import input_ref_name
 from rayspec.schema.base import suggest
+from rayspec.schema.common import input_ref_name
 from rayspec.schema.errors import SchemaError, expand_schema_errors
 
 #: Maximum nesting of ``include:`` steps.
