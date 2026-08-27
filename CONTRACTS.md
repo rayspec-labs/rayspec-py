@@ -1508,6 +1508,9 @@ from rayspec.engine.runner import (
 )
 from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
+    #   rerun (tuple of step-path globs — `resume --rerun`; try_reuse refuses the replay for a
+    #     matching record and warns `re-running <path> (--rerun <glob>)`, so it re-runs; per-entry,
+    #     never persisted in run.json; a pending-gate short-circuit skips it),
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
     #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
     #   per graph, for the scope it is running — and NEVER options.fail_fast or a root-only

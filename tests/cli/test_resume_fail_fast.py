@@ -129,3 +129,25 @@ def test_the_recorded_policy_is_visible_without_reading_run_json(
     assert shown["fail_fast"] is True
     text = cli.invoke(app, ["show", run_id, "--root", str(project)]).output
     assert "fail-fast" in text, text
+
+
+def test_rerun_with_a_glob_that_matches_no_step_is_a_usage_error(
+    cli: CliRunner, home: Path, project: Path
+) -> None:
+    run_id = _start(cli, project)
+    result = cli.invoke(app, ["resume", run_id, "--rerun", "nope[*]/gone", "--root", str(project)])
+    assert result.exit_code == 2, result.output
+    assert "matches no recorded step" in result.output
+
+
+def test_rerun_a_recorded_step_reexecutes_it(cli: CliRunner, home: Path, project: Path) -> None:
+    """`--rerun a` re-runs the recorded prompt step: the stub is asked again (and fails again),
+    proving the step was not replayed from cache."""
+    run_id = _start(cli, project)
+    stubs = project / "stubs.yaml"
+    result = cli.invoke(
+        app,
+        ["resume", run_id, "--rerun", "a", "--root", str(project), "--stubs", str(stubs)],
+    )
+    # the re-run step fails again (the stub still fails) → exit 1, not a replay-only exit
+    assert result.exit_code == 1, result.output

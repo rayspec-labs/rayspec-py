@@ -504,6 +504,16 @@ async def run_leaf(
         return outcome
 
 
+def _rerun_glob_for(path: str, globs: tuple[str, ...]) -> str | None:
+    """The first ``resume --rerun`` glob that matches ``path`` (``StepPath.matches``), or None."""
+    if not globs:
+        return None
+    from rayspec.engine.paths import StepPath
+
+    parsed = StepPath.parse(path)
+    return next((g for g in globs if parsed.matches(g)), None)
+
+
 async def try_reuse(
     step: StepModel, scope: ExecScope, ctx: RunContext, record: StepRecord
 ) -> StepOutcome | None:
@@ -517,6 +527,12 @@ async def try_reuse(
         return None
     prev = ctx.cache.get(record.path)
     if prev is None or not prev.reusable:
+        return None
+    matched = _rerun_glob_for(record.path, ctx.options.rerun)
+    if matched is not None:
+        # resume --rerun: re-run this step instead of replaying its recorded result. The record
+        # stays in the cache (attempts/usage carry over); the old steps/<path>/ dir is appended to.
+        await ctx.warn(f"re-running {record.path} (--rerun {matched})", step_path=record.path)
         return None
     if scope.item_sha256 is not None and prev.item_sha256 != scope.item_sha256:
         await ctx.warn(

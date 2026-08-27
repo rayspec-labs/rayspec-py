@@ -247,6 +247,16 @@ def register(app: typer.Typer) -> None:
                 ),
             ),
         ] = False,
+        rerun: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--rerun",
+                metavar="GLOB",
+                help="Re-run recorded steps whose path matches GLOB instead of replaying them "
+                "(repeatable; `build[*]/implement`, `build[*]/*`). Per-invocation, not recorded.",
+                show_default=False,
+            ),
+        ] = None,
         locked: LockedOption = None,
         wait_slot: WaitSlotOption = None,
         root: RootOption = None,
@@ -348,6 +358,19 @@ def register(app: typer.Typer) -> None:
         stub_script, stubs_path = resume_stub_script(
             record, resolved, stubs=stubs, dry_run=record.dry_run
         )
+        rerun_globs = rerun or []
+        if rerun_globs:
+            from rayspec.engine.paths import StepPath
+
+            recorded = [StepPath.parse(path) for path in record.steps]
+            for glob in rerun_globs:
+                if not any(sp.matches(glob) for sp in recorded):
+                    fail(
+                        f"--rerun {glob!r} matches no recorded step of run {record.run_id}",
+                        hint="a glob spans indices (`build[*]/implement`); "
+                        "run `rayspec show <id>` to see the recorded step paths",
+                    )
+                    return
         code = common.resume_run(
             ctx,
             store,
@@ -366,6 +389,7 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             wait_slot=wait_slot,
             approve_classes=approve_class or (),
+            rerun=rerun_globs,
         )
         raise typer.Exit(code=code)
 
