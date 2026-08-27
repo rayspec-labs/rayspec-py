@@ -145,4 +145,3 @@ def test_a_real_run_turns_the_prd_into_a_pushed_branch_and_a_pr(
     # v2: the explore phase ran (the planner was handed reports) and the PR reports the run cost
     scout = json.loads((run_dir / "steps" / "scout" / "output.json").read_text(encoding="utf-8"))
     assert "questions" in scout
-

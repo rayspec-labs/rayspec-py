@@ -378,8 +378,8 @@ AGENT_NON_CONTROLS: Mapping[str, str] = {
     "source": "which file the agent was defined in",
     "yaml_path": "the YAML path of the agent, for error messages",
     "locations": "file:line of every field, for error messages",
-    "input_refs": "which max_turns/budget_usd came from {{ inputs.x }}; the resolved NUMBER is what "
-    "a policy caps, and it is classified above — this only records where it came from",
+    "input_refs": "which max_turns/budget_usd came from {{ inputs.x }}; the resolved NUMBER is "
+    "what a policy caps, and it is classified above — this only records where it came from",
 }
 
 #: ``tools:`` on an agent (``ToolsSpec``). Both lists are read by the agent's ``tools`` control.

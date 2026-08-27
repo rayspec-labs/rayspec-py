@@ -35,7 +35,7 @@ def parse_templated_turns(value: object) -> int | str:
         return value  # type: ignore[return-value]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(
-            f"invalid max_turns {value!r}: use a positive integer or exactly {{{{ inputs.<name> }}}}"
+            f"invalid max_turns {value!r}: use a positive integer or {{{{ inputs.<name> }}}}"
         )
     if value < 1:
         raise ValueError("must be >= 1")
