@@ -510,7 +510,7 @@ def register(app: typer.Typer) -> None:
             bool,
             typer.Option(
                 "--exit-code",
-                help="With --follow: exit with the run's final status code (0/1/3/4) instead "
+                help="With --follow: exit with the run's final status code (0/1/3/4, or 130 if interrupted) instead "
                 "of 0. The way to wait for a detached run and learn its outcome.",
             ),
         ] = False,

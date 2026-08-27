@@ -110,9 +110,8 @@ resolved agent (used by `--resume --force`). Unknown keys are ignored when loadi
 compatible).
 
 `heartbeat_at` is the last time the run's process proved it was still alive — moved by a periodic
-timer for the life of the run (every 5–60s, derived from `defaults.timeout`: `min(60s, max(5s,
-timeout / 10))`, 60s when the workflow states none) and, on top of that, right before and right
-after every provider call, so a single long-running step still moves it between its own
+timer for the life of the run (a fixed 10s interval, `HEARTBEAT_INTERVAL_S`, independent of any
+step's length), so a single long-running step still moves it between its own
 `step.started`/`step.finished`. `null` in records written before the field existed and in a record
 whose engine has not ticked yet; see "Is this run still alive?" below for what reads it.
 
@@ -141,9 +140,9 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 (see [cli.md](cli.md#rayspec-run)).
 
 `events.jsonl` and each step's `stream.jsonl` are capped at 16 MiB so a long-running or
-unattended (`--detach`ed) run nobody watches cannot fill the disk: once a file grows past three
-times the cap, it is truncated from the **middle**, keeping the first third and the most recent
-two thirds — never tearing a JSON line — so a run's start and its latest activity both survive
+unattended (`--detach`ed) run nobody watches cannot fill the disk: once a file grows past twice
+the cap, it is truncated from the **middle** back to the cap, keeping the first third and the most
+recent two thirds — never tearing a JSON line — so a run's start and its latest activity both survive
 and only the noisy middle is dropped. This only ever affects a file that would otherwise grow into
 the tens of megabytes; a normal run never notices it.
 
@@ -558,7 +557,7 @@ left to cooperate with).
 
 `rayspec runs`, `rayspec show`, `rayspec logs --follow` and `rayspec cancel` all correct a stored
 `running` record before they act on it: if the recorded `pid` is no longer alive on this host, or
-it is alive but `heartbeat_at` (see `run.json` above) has not moved in over three heartbeat
+it is alive but `heartbeat_at` (see `run.json` above) has not moved in over nine heartbeat
 intervals, the record is rewritten to `interrupted` right there — not just displayed that way.
 Before `heartbeat_at` existed, only a dead pid told a genuinely running process apart from a
 `run.json` a crash left behind; a pid that got reused by something else on a busy machine could

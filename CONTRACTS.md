@@ -645,8 +645,8 @@ tuple[str, ...] = ()` (names of the `secret: true` inputs; `RunRecord.inputs` ho
 `RunRecord.heartbeat_at: datetime | None = None` (additive, PRD-07 R2): last time this run's
 process proved it was alive — stamped by `RunContext.touch_heartbeat()` (`engine/context.py`) on
 a **fixed-interval** timer for the life of the run (`rayspec.engine.liveness.HEARTBEAT_INTERVAL_S`
-= 10 s; the timer is its own task, so a long shell/prompt step never stalls it) and right
-before/after every provider call (`executors/prompt.py`). `None` in records written before the
+= 10 s; the timer is its own task, so a long shell/prompt step never stalls it — the prompt
+executor adds no per-call heartbeat write of its own). `None` in records written before the
 field existed, and read that way by every consumer — liveness then rests on `pid` alone.
 `rayspec.engine.liveness` owns the one liveness rule: `heartbeat_is_stale(heartbeat_at)` compares
 against `HEARTBEAT_STALE_AFTER_S` = 90 s (a `None` heartbeat is never stale on its own) and
@@ -753,13 +753,16 @@ from rayspec.store.file import (
 #       only records of those kinds are yielded and only lines containing one of the kind names
 #       as a JSON string are parsed (cheap scan of multi-MB transcripts; FileRunStore only)
 # Log rotation (PRD-07 R8, additive, FileRunStore only): file.LOG_CAP_BYTES = 16 MiB per
-#   events.jsonl / per-step stream.jsonl; file.LOG_CAP_TRIGGER_MULTIPLIER = 3 — a file is left
-#   alone until it grows past 3x the cap (checking flush-with-the-cap would make the overshoot
-#   unobservable), then FileRunStore._cap_file truncates it back down to ~LOG_CAP_BYTES from the
-#   MIDDLE (whole lines only): the first cap_bytes//3 bytes are kept, the rest of the budget is
-#   the tail, so a run's start and its most recent activity survive and only the noisy middle is
-#   dropped. Bounded-seek reads (cost O(cap_bytes), not O(file size)); written flushed, not
-#   fsynced, matching every other JSONL append in this module.
+#   events.jsonl / per-step stream.jsonl / audit.jsonl / stdout.log / stderr.log;
+#   file.LOG_CAP_TRIGGER_MULTIPLIER = 2 — a file is left alone until it grows past 2x the cap
+#   (hysteresis: trimming exactly at the cap would rewrite a noisy file on every append), then
+#   FileRunStore._append_line (via the module-level truncate_path / truncate_open_file, which
+#   split_for_cap drives) truncates it back down to ~LOG_CAP_BYTES from the MIDDLE (whole lines
+#   only): the first cap_bytes//3 bytes are kept, the rest of the budget is the tail, and a
+#   synthesised marker is left at the cut, so a run's start and its most recent activity survive
+#   and only the noisy middle is dropped. The pump (executors/_process.py) caps stdout.log/
+#   stderr.log in place while it holds them. Bounded-seek reads (cost O(cap_bytes), not O(file
+#   size)); written flushed, not fsynced, matching every other JSONL append in this module.
 # Layout: <root>/runs/<run-id>/run.json, cancel.json (PRD-07 R5, only while a cancel is
 #   in flight — see the CLI run management section), events.jsonl, steps/<path>/{output.txt|
 #   output.json, prompt.txt, stream.jsonl, stdout.log, stderr.log}, artifacts/[<path>/<declared>],
@@ -1770,7 +1773,8 @@ Semantics fixed here (tests in `tests/engine/`):
   finishes. A first attempt is recorded `skipped`/`budget_exceeded` (`attempts` stays 0); a
   retry that loses the permit race keeps the failed outcome it already has.
 - Cooperative cancel (PRD-07 R5, `engine.cancel` + `RunContext.check_cancelled`/
-  `cancel_requested`): `rayspec cancel` on a live run does not signal the process — it writes
+  `cancel_requested`): `rayspec cancel` on a live run does not signal the process by default (the
+  `--now` flag SIGINTs it as an escape hatch — see the CLI run management section) — it writes
   `cancel.json` (`{reason, actor, requested_at}`) beside `run.json`. `RunContext.check_cancelled()`
   reads it (`engine.cancel.read_cancel_flag`) at step-boundary decision points only —
   `scheduler.run_graph.decide_and_launch` (every ready-set evaluation) and `executors/loop.py`
@@ -2002,7 +2006,7 @@ project B's.
   wording/hint, nothing recorded); only then write `pause.decision{approved, comment, by:
   "cli"}` and resume non-interactively — the gate consumes the decision when its token matches.
   Exit = how the run ends (approve typically 0; reject with the default `on_reject: cancel` ⇒ 4).
-- `rayspec cancel <run> [--yes] [--force] [--mark] [--json]`: live run (status `running`, pid
+- `rayspec cancel <run> [--yes] [--now] [--mark] [--force] [--json]`: live run (status `running`, pid
   alive on this host **and** `pid_is_rayspec_run` — else exit 2 "pid N is not a rayspec run
   process (stale record?) — use `rayspec cancel --mark` …"; when the record
   carries `pid_started_at` the live process's start time (`_runs_common.pid_start_time(pid)` =
@@ -2018,7 +2022,10 @@ project B's.
   (`RunContext.check_cancelled`, cached after the first sighting — see the engine section), lets
   any step already in flight finish, still runs `join: always` steps, then finalizes itself
   `cancelled` (exit 4) — nothing here signals or kills it, and this is identical for a foreground
-  or a `--detach`ed run. `--mark` ⇒ the running/paused record is finalized as cancelled
+  or a `--detach`ed run. `--now` ⇒ the escape hatch for a step wedged with no boundary to reach:
+  after the same pid verification it SIGINTs the verified process (`_runs_common.interrupt_pid`)
+  instead of writing a flag; the run unwinds through anyio and ends `interrupted` (exit 130), JSON
+  `{run_id, action: "signalled", pid, status}`. `--mark` ⇒ the running/paused record is finalized as cancelled
   without any signal or flag (JSON `action: "marked"`); a `running` record whose `host` is another
   machine (shared `RAYSPEC_HOME`) ⇒ exit 2 "recorded as running on host X" unless `--force`;
   paused run or a `running` record whose process is gone ⇒ the record is marked `cancelled`

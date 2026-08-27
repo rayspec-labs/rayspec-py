@@ -730,7 +730,7 @@ Outside a rayspec project (no `.rayspec/` directory and no git repository at or 
 Before a record is shown, `runs`/`show`/`cancel` and `logs --follow`'s liveness check all
 **reconcile** it: a run stored as `running` whose recorded pid is no longer alive on this host, or
 whose pid is alive but its process has stopped proving it (see `heartbeat_at` below — no
-heartbeat for over three heartbeat intervals), is corrected to `interrupted` and the correction is
+heartbeat for over nine heartbeat intervals — 90s), is corrected to `interrupted` and the correction is
 **written back** to `run.json`, not just displayed. A crashed run — or a machine that lost power
 under a live one — therefore stops reading `running` forever the next time anything looks at it;
 before this, only a live pid on the same host told the two apart, so a `running` row nobody looked
@@ -974,14 +974,14 @@ Options:
 rayspec logs [OPTIONS] {run}
 ```
 
-Print a run's lifecycle event log (`events.jsonl`). `--step PATH` prints that step's stream (`stream.jsonl`: agent text, tool calls, commands, usage) instead; `--stream` interleaves every step's stream into the log; `--follow` keeps tailing while the run is live. A followed run renders `run.finished` exactly as a plain `logs` does — no extra content — and reconciles a stale `running` record so a dead run's follow terminates. With `--follow --exit-code` the command exits with the run's final status code (`0`/`1`/`3`/`4`) instead of `0` — the way to wait for a detached run and learn its outcome (`rayspec show` has its outputs).
+Print a run's lifecycle event log (`events.jsonl`). `--step PATH` prints that step's stream (`stream.jsonl`: agent text, tool calls, commands, usage) instead; `--stream` interleaves every step's stream into the log; `--follow` keeps tailing while the run is live. A followed run renders `run.finished` exactly as a plain `logs` does — no extra content — and reconciles a stale `running` record so a dead run's follow terminates. With `--follow --exit-code` the command exits with the run's final status code (`0`/`1`/`3`/`4`, or `130` if it was interrupted) instead of `0` — the way to wait for a detached run and learn its outcome (`rayspec show` has its outputs).
 
 A step stream is rendered for reading: text deltas are joined until the completed text arrives, reasoning deltas are joined per block and printed as whole `thinking:` lines (one per line of thought, never cut mid-word), tool calls (`⚙ Read({"p": …})`) and results (`  → first line …`), commands, stdout/stderr, `warning:`/`error:` lines, the session id and usage. Internal SDK plumbing (`raw status`, `raw thinking_tokens`, other unknown record kinds) is hidden unless `--verbose` (or `--json`, which prints every record as stored). An invalid `--step` value is one line — `error: invalid step path '../x': bad segment '..'`; an absolute path says `absolute paths are not step paths`. All rendered text is untrusted: control characters and terminal escape sequences are removed before printing (`--json` output was always safe, being JSON-escaped); `--raw` prints the stored text unescaped for debugging — pipe it through `cat -v` rather than straight to a terminal.
 
 Options:
 
 - `--follow` / `-f` — tails a live run.
-- `--exit-code` — with `--follow`, exit with the run's final status code (`0`/`1`/`3`/`4`) instead of `0`; a usage error (exit 2) without `--follow`.
+- `--exit-code` — with `--follow`, exit with the run's final status code (`0`/`1`/`3`/`4`, or `130` if it was interrupted) instead of `0`; a usage error (exit 2) without `--follow`.
 - `--step` `<str>` — Show this step's stream (e.g. build[1]/implement).
 - `--stream` — Interleave every step's stream into the log.
 - `--verbose` — Also show internal/raw SDK records of a step stream.
