@@ -211,10 +211,39 @@ def guard_workflow_unchanged(
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
+    _note_ejected_override(ctx, record)
     refuse_policy_violations(resolved)
     refuse_changed_workflow(record, resolved, force=force)
     enforce_lockfile(ctx.loader_context, resolved, locked=locked, project_root=ctx.project_root)
     return resolved
+
+
+def _note_ejected_override(ctx: common.RunsContext, record: RunRecord) -> None:
+    """When a run recorded a BUNDLED workflow but a project/user copy of the same name now exists
+    (someone ejected it since), say plainly that a resume reloads the file the run RECORDED, not
+    the ejected copy — the surprise that made the dogfood's `resume --force` replay a stale answer.
+    """
+    from rayspec.cli.commands._loader_common import err_console
+    from rayspec.loader.bundled import BUNDLED_LABEL_PREFIX
+
+    label = record.workflow_path or ""
+    if not label.startswith(BUNDLED_LABEL_PREFIX):
+        return  # the run already recorded a project/user file; a resume loads exactly it
+    name = record.workflow_name
+    project_root = common.record_root(ctx, record)
+    overrides = [
+        project_root / ".rayspec" / "workflows" / f"{name}.yaml",
+        ctx.home / "workflows" / f"{name}.yaml",
+    ]
+    override = next((p for p in overrides if p.is_file()), None)
+    if override is None:
+        return
+    err_console().print(
+        f"note: this run recorded the bundled {name!r}; a resume reloads that, not the "
+        f"{override} you have since added. To continue on the ejected copy instead, start a new "
+        f"run (`rayspec run {name}`) or `rayspec run {name} --resume {record.run_id} --force`.",
+        style="dim",
+    )
 
 
 def register(app: typer.Typer) -> None:

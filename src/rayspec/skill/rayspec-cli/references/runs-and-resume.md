@@ -468,6 +468,14 @@ Resume re-executes the workflow **from the top** with a reuse cache:
 - leaf fingerprints are compared on **every** resume, not only after a hash mismatch (an
   interrupted `--force` resume has already stamped the new hash; a later plain resume must still
   notice a step whose upstream output changed);
+- a resume reloads the **file the run recorded** (`run.json`'s `workflow_path`), falling back to
+  the name only when that file is gone. Ejecting a bundled workflow changes what `rayspec run
+  <name>` resolves from now on, not what `rayspec resume <id>` of an earlier run loads — so a run
+  that recorded the bundled copy keeps loading the bundled copy on resume, even after you eject.
+  `resume`/`approve`/`reject` print a `note:` when they notice this (a project/user copy of the
+  recorded bundled name now exists); to continue on the ejected copy, start a new run or
+  `rayspec run <name> --resume <id> --force`. (This — not a missing budget in the fingerprint —
+  is why an eject-then-`resume --force` can replay a stale gate answer.)
 - a run whose `run.json` still says `running` with a live `pid` on this host — or recorded on
   another host (shared `RAYSPEC_HOME`) — is refused (hint: stop it first, or `--force`); a run of
   another workflow is always refused (`rayspec run <other> --resume <id>`);
