@@ -275,8 +275,8 @@ agents:
     instructions: "..."         # template; xor instructions_file
     instructions_file: prompts/implementer.md   # relative to the .rayspec/ dir of the file that set it
     instructions_mode: append   # append | replace
-    max_turns: 60               # >= 1; capability max_turns
-    budget_usd: 2.5             # > 0;  capability budget_usd
+    max_turns: 60               # >= 1; capability max_turns; or {{ inputs.<name> }}
+    budget_usd: 2.5             # > 0;  capability budget_usd; or {{ inputs.<name> }}
     tools: { allow: [], deny: [web] }   # see below
     thinking: true              # capability thinking
     on_denial: fail             # warn (default) | fail — what a refused tool call does
@@ -296,7 +296,7 @@ agents:
 | `access` | `workspace-write` |
 | `instructions` / `instructions_file` | `null`; at most one of them |
 | `instructions_mode` | `append` (`replace` = no provider system prompt at all) |
-| `max_turns`, `budget_usd`, `thinking` | `null` |
+| `max_turns`, `budget_usd`, `thinking` | `null`. `max_turns` / `budget_usd` are the **one** numeric fields that also accept exactly `{{ inputs.<name> }}` (a reference to an integer / numeric input, resolved per run) — so a run can raise a budget with `--input` instead of editing the file. It is a reference, not an expression: no arithmetic, no step reference, no partial template. The input must be declared, not `secret: true`, and numeric. `rayspec plan` shows the resolved number (or the reference when the input is not yet supplied). |
 | `on_denial` | `warn` — a tool call the provider's permission or sandbox layer refused is recorded on the step (`steps.<id>.denials`, `run.json`) and the step stands. `fail` fails the step instead, and needs a provider that reports refused calls on a turn that otherwise succeeded (capability `denial_reporting`: `claude` yes, `codex` no). See [providers.md](https://github.com/rayspec-labs/rayspec-py/blob/main/docs/providers.md#denied-tool-calls-on_denial) |
 | `tools.allow`, `tools.deny` | `[]` |
 | `mcp` | `{}`; `transport` defaults to `stdio` (needs `command`); `http`/`sse` need `url` |

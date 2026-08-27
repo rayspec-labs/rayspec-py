@@ -305,7 +305,9 @@ steps (valid on: shell)`.
   message, `stop.reason`, `cwd`, `env`/`with`/`outputs` values). `when`, `until`, `each`,
   `auto_if` are **bare expressions** — `when: "{{ x }}"` is an error ("expression fields take a
   bare Jinja expression"); they must evaluate to exactly `true`/`false` (`each`: a list).
-  Numeric fields (`max_iterations`, `max_parallel`, `max_turns`, `attempts`) are never templated.
+  Numeric fields (`max_iterations`, `max_parallel`, `attempts`) are never templated. The one
+  exception: an agent's `budget_usd` / `max_turns` also accept exactly `{{ inputs.<name> }}` (a
+  reference to a numeric input, resolved per run) — so a run can raise a budget with `--input`.
   The expression field itself is a **string**, so parking a step with a bare YAML `when: false` is
   a load-time type error (*"Input should be a valid string"*) — write `when: "false"`, or an
   expression such as `when: 1 == 2`.

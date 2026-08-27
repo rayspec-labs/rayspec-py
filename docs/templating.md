@@ -201,6 +201,11 @@ variable `RAYSPEC_INPUT_<NAME>` > the declared `default`. Text values are coerce
 | `array` | a JSON array (`'["a","b"]'`), or one element per repeated `--input tags=a --input tags=b` (elements coerced via `items.type`) |
 | `object` | a JSON object |
 
+Numeric fields are not templated, with one exception: an agent's `budget_usd` / `max_turns` accept
+exactly `{{ inputs.<name> }}` (a reference to a numeric, non-secret input), so a run can raise a
+budget with `--input` instead of editing the file. It is a reference, not an expression — no
+arithmetic, no step reference. See [schema.md § agents](schema.md#agents).
+
 Repeating a non-array `--input` is an error; unknown names get a did-you-mean; every missing
 required input is reported in one go; the final values are validated against the compiled JSON
 Schema (`enum`, `items`, `properties`). Inputs are fixed for the life of a run: `--resume` refuses

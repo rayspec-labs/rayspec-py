@@ -18,6 +18,7 @@ Two views over the same loaded workflow:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -51,6 +52,7 @@ from rayspec.engine.approval_classes import ApprovalClasses, ClassRules, unheld_
 from rayspec.errors import InputError, RayspecError
 from rayspec.loader import ResolvedWorkflow, load_workflow, resolve_inputs, validate_workflow
 from rayspec.loader.inputs import SECRET_PLACEHOLDER
+from rayspec.loader.loader import ResolvedAgent
 from rayspec.loader.validate import topological_order
 from rayspec.schema import (
     ApproveStep,
@@ -117,9 +119,34 @@ def _caps_line(rw: ResolvedWorkflow) -> str:
     return "".join(f"  {part}" for part in parts)
 
 
+#: A step's `description:` shortened for a table cell — first line, capped.
+def _first_line(text: str, limit: int = 48) -> str:
+    line = (text or "").strip().splitlines()[0].strip() if text.strip() else ""
+    return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+
+
+def _agent_number_display(agent: ResolvedAgent, field_name: str, values: Mapping[str, Any]) -> Any:
+    """The concrete number an agent's E1 field will use, or its `{{ inputs.<name> }}` reference
+    when the plan's inputs cannot resolve it yet — never raises, so a preview always renders."""
+    literal = getattr(agent, field_name)
+    if literal is not None:
+        return literal
+    ref = agent.input_refs.get(field_name)
+    if ref is None:
+        return None
+    if ref in values:
+        return values[ref]
+    return f"{{{{ inputs.{ref} }}}}"
+
+
+def _num_cell(value: Any) -> str:
+    """A number/reference cell for the agents table (empty when unset)."""
+    return "" if value is None else str(value)
+
+
 def _steps_table(rw: ResolvedWorkflow) -> Table:
     table = new_table()
-    for col in ("#", "path", "kind", "needs", "join", "when", "detail"):
+    for col in ("#", "path", "kind", "needs", "join", "when", "detail", "description"):
         table.add_column(col)
     bodies = {g.prefix: g for g in rw.graphs()}
     counter = 0
@@ -137,6 +164,7 @@ def _steps_table(rw: ResolvedWorkflow) -> Table:
                 step.join if step.join != "all" or step.needs else "",
                 step.when or "",
                 _step_detail(step, rw, path),
+                _first_line(step.description),
             )
             body = bodies.get(f"{path}/")
             if body is not None:
@@ -146,9 +174,21 @@ def _steps_table(rw: ResolvedWorkflow) -> Table:
     return table
 
 
-def _agents_table(rw: ResolvedWorkflow) -> Table:
+def _agents_table(rw: ResolvedWorkflow, values: Mapping[str, Any] | None = None) -> Table:
+    values = values or {}
     table = new_table()
-    for col in ("agent", "provider", "model", "effort", "access", "used by", "source"):
+    cols = (
+        "agent",
+        "provider",
+        "model",
+        "effort",
+        "access",
+        "budget",
+        "turns",
+        "used by",
+        "source",
+    )
+    for col in cols:
         table.add_column(col, style="bold" if col == "agent" else None)
     used: dict[str, list[str]] = {}
     for path, key in rw.step_agents.items():
@@ -163,6 +203,8 @@ def _agents_table(rw: ResolvedWorkflow) -> Table:
             model,
             agent.effort or "",
             agent.access,
+            _num_cell(_agent_number_display(agent, "budget_usd", values)),
+            _num_cell(_agent_number_display(agent, "max_turns", values)),
             ", ".join(used.get(key, [])),
             agent.source,
         )
@@ -619,6 +661,9 @@ def register(app: typer.Typer) -> None:
                         "model": a.model,
                         "effort": a.effort,
                         "access": a.access,
+                        "budget_usd": _agent_number_display(a, "budget_usd", values),
+                        "max_turns": _agent_number_display(a, "max_turns", values),
+                        "input_refs": dict(a.input_refs),
                         "used_by": [p for p, k in rw.step_agents.items() if k == key],
                         "source": a.source,
                     }
@@ -684,7 +729,7 @@ def register(app: typer.Typer) -> None:
         out.print("")
         out.print("[bold]agents[/bold]")
         if rw.agents:
-            out.print(_agents_table(rw))
+            out.print(_agents_table(rw, values))
         else:
             out.print("  (no prompt steps)")
         out.print("")
@@ -732,6 +777,7 @@ def _steps_json(rw: ResolvedWorkflow) -> list[dict[str, Any]]:
                     "when": step.when,
                     "depth": depth,
                     "detail": _step_detail(step, rw, path),
+                    "description": step.description,
                 }
             )
             body = bodies.get(f"{path}/")
