@@ -215,7 +215,7 @@ steps:
 
   - id: setup
     needs: [size_check]
-    when: steps.size_check.output.setup_command != ''
+    when: steps.size_check.output.verdict == 'ok' and steps.size_check.output.setup_command != ''
     description: Bootstrap a fresh worktree (deps, tools) before anything runs; a failure fails the run — a red baseline afterwards would be meaningless.
     timeout: 30m
     shell: eval "{{ steps.size_check.output.setup_command }}" 2>&1
@@ -403,9 +403,16 @@ steps:
       output = (run.stdout + run.stderr)[-8000:]
       pattern = re.compile({{ inputs.failure_pattern }}, re.M)
       failed_files = {m.group(1) for m in pattern.finditer(run.stdout + run.stderr)}
-      failing = sorted(f for f in files if f in failed_files)
-      already_green = sorted(f for f in files if f not in failed_files)
-      verdict = "empty" if not files else ("red" if failing else "vacuous")
+      # the suite exit code is the source of truth for the verdict; failure_pattern only refines
+      # WHICH files failed (a non-pytest runner may match nothing — then a red suite is all-failing)
+      verdict = "empty" if not files else ("red" if run.returncode != 0 else "vacuous")
+      if failed_files:
+          failing = sorted(f for f in files if f in failed_files)
+          already_green = sorted(f for f in files if f not in failed_files)
+      elif verdict == "red":
+          failing, already_green = list(files), []   # red, but not attributable per file
+      else:
+          failing, already_green = [], list(files)
       print(json.dumps({"verdict": verdict, "files": files, "failing": failing,
                         "already_green": already_green, "exit_code": run.returncode, "output": output}))
     output_schema:
@@ -491,8 +498,8 @@ steps:
             Attempt {{ iteration.n }} of {{ inputs.max_attempts }} (session continued).
             {% if iteration.prev.implement.status != 'succeeded' %}
             Your previous attempt was cut off ({{ iteration.prev.implement.error | default('no result') }}) — continue where you left off.
-            {% elif iteration.prev.implement.output.status == 'blocked' and iteration.prev.blocked_gate.output %}
-            The blocked question was answered (or the acceptance tests were amended): {{ iteration.prev.blocked_gate.output }}. Continue.
+            {% elif iteration.prev.implement.output.status == 'blocked' %}
+            {% if iteration.prev.blocked_gate.output %}The blocked question was answered: {{ iteration.prev.blocked_gate.output }}.{% else %}The acceptance tests were amended.{% endif %} Continue.
             {% elif iteration.prev.implement.output.status == 'unfinished' %}
             You reported `unfinished` — continue.
             {% endif %}
@@ -543,7 +550,7 @@ steps:
             fi
             mkdir -p "$RAYSPEC_STATE_DIR/prd_to_pr"
             git rev-parse HEAD > "$RAYSPEC_STATE_DIR/prd_to_pr/contract"
-            printf '%s\n' {{ steps.blocked_gate.output | tojson }} >> "$RAYSPEC_STATE_DIR/prd_to_pr/answers"
+            printf '%s\n' "{{ steps.blocked_gate.output | tojson }}" >> "$RAYSPEC_STATE_DIR/prd_to_pr/answers"
 
         - id: guard
           needs: [implement]
@@ -695,13 +702,18 @@ steps:
       blocked_answers = []
       if os.path.exists(answers_path):
           with open(answers_path) as fh:
-              blocked_answers = [json.loads(line) for line in fh if line.strip()]
+              for line in fh:
+                  if line.strip():
+                      try:
+                          blocked_answers.append(json.loads(line))
+                      except ValueError:
+                          blocked_answers.append(line.strip())   # never fail the PR on a stray line
 
       # the run's own cost, read from its published record (sum of every leaf's cost_usd)
       cost, estimated = 0.0, False
-      record_path = os.path.join(os.environ.get("RAYSPEC_STATE_DIR", ""), "..", "run.json")
+      record_path = os.path.join(os.environ.get("RAYSPEC_STATE_DIR", ""), "run.json")
       try:
-          with open(os.path.normpath(record_path)) as fh:
+          with open(record_path) as fh:
               rec = json.load(fh)
           for step in rec.get("steps", {}).values():
               if step.get("cost_usd"):

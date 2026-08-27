@@ -1,6 +1,6 @@
 # Running rayspec on rayspec
 
-rayspec develops rayspec. The bundled workflows — `prd_to_pr`, `fix_issue`, `review_pr`,
+rayspec develops rayspec. The bundled workflows — `prd_to_pr`, `fix_issue`, `pr_review`,
 `refactor_safely` — run against this repository the same way they run against any other, and this
 page is the operator's guide to doing that safely. It is written for this repo, but every rule
 here is a rule for using rayspec on itself, so it doubles as the worked example the other pages

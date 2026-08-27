@@ -449,7 +449,7 @@ class _Validator:
                     "loop body must contain at least one step",
                     location=self.rw.location_of(path, "loop"),
                 )
-            self._check_loop_timeout(step, path)
+            self._check_loop_timeout(step, path, scope)
             if step.loop.until is not None:
                 body = _Scope(
                     graph=GraphView("loop", f"{path}/", tuple(step.loop.steps), path, step),
@@ -504,7 +504,7 @@ class _Validator:
         elif isinstance(step, IncludeStep):
             self._check_include(step, path, scope, allowed)
 
-    def _check_loop_timeout(self, step: LoopStep, path: str) -> None:
+    def _check_loop_timeout(self, step: LoopStep, path: str, scope: _Scope) -> None:
         """Warn when a loop's whole-step timeout cannot cover even one iteration of its body.
 
         A loop's ``timeout`` (or, when it has none, the inherited ``defaults.timeout``) bounds the
@@ -522,7 +522,12 @@ class _Validator:
         timeout, like any other step. An unbounded loop (no timeout in force) is not flagged —
         this lint is about a bound that is too small, not a missing one.
         """
-        defaults_to = self.rw.workflow.defaults.timeout  # float seconds | None
+        # defaults.timeout is lexically scoped: a loop inside an include: body inherits the
+        # INCLUDED workflow's defaults, which the engine's timeout_for reads the same way.
+        defaults = (
+            scope.include.defaults if scope.include is not None else self.rw.workflow.defaults
+        )
+        defaults_to = defaults.timeout  # float seconds | None
         loop_to = step.timeout if step.timeout is not None else defaults_to
         if loop_to is None:
             return

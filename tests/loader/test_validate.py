@@ -697,3 +697,41 @@ steps:
     rep = _validate(tree, wf)
     assert rep.errors == [], rep.errors
     assert not any("whole-step timeout" in w for w in rep.warnings), rep.warnings
+
+
+def test_a_loop_inside_an_include_uses_the_included_workflows_defaults_timeout(tree: Tree):
+    """defaults.timeout is lexically scoped: a loop inside an include: body inherits the INCLUDED
+    workflow's defaults, not the caller's — the lint must read the right one (B-review #6)."""
+    tree.workflow(
+        "blk",
+        """
+rayspec: 1
+name: blk
+defaults:
+  timeout: 20m
+steps:
+  - id: work
+    loop:
+      max_iterations: 3
+      steps:
+        - id: step
+          shell: echo
+""",
+    )
+    # the caller's defaults.timeout is huge; the block's is small — the warning must fire on the
+    # BLOCK's 20m (naming it), proving the lint used the included scope, not the root.
+    rep = _validate(
+        tree,
+        HEAD
+        + """
+defaults:
+  timeout: 99h
+steps:
+  - id: sub
+    include: blk
+""",
+    )
+    assert rep.errors == [], rep.errors
+    hits = [w for w in rep.warnings if "whole-step timeout" in w and "sub/work" in w]
+    assert hits, rep.warnings
+    assert "20m" in hits[0] and "99h" not in hits[0], hits

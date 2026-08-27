@@ -73,5 +73,12 @@ def test_text_plan_shows_the_budget_and_description(project: Path) -> None:
     result = CliRunner().invoke(app, ["plan", "budgeted", "--root", str(project)])
     assert result.exit_code == 0, result.output
     assert "budget" in result.output and "turns" in result.output
-    assert "12" in result.output  # the resolved budget
+    # the reference must be RESOLVED in the agents table, not shown verbatim: pass a distinctive
+    # value so it cannot coincide with the input row's default (12) or anything else on the page
+    result = CliRunner().invoke(
+        app, ["plan", "budgeted", "--root", str(project), "--input", "cap=37"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "37" in result.output  # the resolved budget in the writer row
+    assert "{{ inputs.cap }}" not in result.output  # the reference did not survive into the plan
     assert "Write the first draft" in result.output
