@@ -226,6 +226,7 @@ that writes ([docs/agent-skill.md](docs/agent-skill.md#selecting-a-workflow-from
 - [docs/isolation.md](docs/isolation.md) — worktrees, `--repo`, registered projects, locks
 - [docs/extending.md](docs/extending.md) — adding a provider via entry points, sinks, stores, embedding
 - [docs/examples.md](docs/examples.md) — the example projects and what each one shows
+- [docs/dogfooding.md](docs/dogfooding.md) — running rayspec on rayspec: bootstrap, policy, budgets, resume/eject, writing a PRD
 - [docs/testing.md](docs/testing.md) — `rayspec test`: declarative cases, `--junit` in CI, the golden corpus
 - [docs/ci.md](docs/ci.md) — rayspec in CI: the dry-run check as a reusable workflow, and how rayspec is released
 - [docs/constitution.md](docs/constitution.md) — why the schema is narrow (admissibility test, case law)

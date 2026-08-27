@@ -14,6 +14,7 @@
 | [testing.md](testing.md) | testing workflows offline: `rayspec test`, the case format, `--junit` in CI, the golden corpus and the fault-injecting store |
 | [ci.md](ci.md) | rayspec in CI: the dry-run check as a reusable workflow, `--locked` under CI, how rayspec itself is released and how the docs site is published |
 | [examples.md](examples.md) | the example projects and the capability coverage matrix |
+| [dogfooding.md](dogfooding.md) | running rayspec on rayspec: bootstrap, the environment a run exports, the policy layers, budgets, resume/eject, writing a PRD |
 | [constitution.md](constitution.md) | the design constitution: admissibility test for new fields, filter policy, case law |
 | [agent-skill.md](agent-skill.md) | the two Claude Code skills shipped with rayspec (`rayspec-workflows`, `rayspec-cli`): what each contains, `rayspec skill install|show|path`, `rayspec init`, how they are generated and kept fresh |
 

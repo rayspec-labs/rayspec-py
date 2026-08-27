@@ -59,7 +59,16 @@ WORKFLOWS_SKILL = Skill(
 CLI_SKILL = Skill(
     name="rayspec-cli",
     summary="running, inspecting, resuming, testing and governing rayspec (the CLI)",
-    references=("cli", "providers", "testing", "policy", "runs-and-resume", "isolation", "ci"),
+    references=(
+        "cli",
+        "providers",
+        "testing",
+        "policy",
+        "runs-and-resume",
+        "isolation",
+        "ci",
+        "dogfooding",
+    ),
 )
 
 #: Every packaged skill, in the order the CLI lists and installs them.

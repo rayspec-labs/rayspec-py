@@ -502,6 +502,8 @@ otherwise exit 2. The absolute path is recorded in `run.json` (`stubs_path`), so
   slugs. Read it when a workspace or a lock is in the way.
 - `references/ci.md` — rayspec in CI: the dry-run check, `--locked` under CI, `trust check` as a
   gate, releases.
+- `references/dogfooding.md` — running rayspec on rayspec: bootstrap, the environment a run
+  exports into its steps, the policy layers, input-backed budgets, resume/eject, writing a PRD.
 - The YAML itself — `concepts.md`, `schema.md`, `templating.md`, `examples.md` — ships with the
   **`rayspec-workflows`** skill. Load it before writing or editing a workflow, an agent or a
   prompt file; this skill will not tell you what a field means.

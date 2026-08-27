@@ -1,6 +1,6 @@
 <!-- Generated from docs/runs-and-resume.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/runs-and-resume.md -->
-<!-- Sibling references in this directory: cli.md · providers.md · testing.md · policy.md · runs-and-resume.md · isolation.md · ci.md -->
+<!-- Sibling references in this directory: cli.md · providers.md · testing.md · policy.md · runs-and-resume.md · isolation.md · ci.md · dogfooding.md -->
 
 # Runs, checkpoints and resume
 

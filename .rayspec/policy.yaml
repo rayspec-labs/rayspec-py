@@ -1,0 +1,11 @@
+# Operator policy for developing rayspec with rayspec (docs/dogfooding.md). Layered under
+# ~/.rayspec/policy.yaml and $RAYSPEC_POLICY; most-restrictive wins. `budget`/`approvals` are
+# runtime controls (not load-time), so this file does not affect `rayspec validate`.
+budget:
+  per_run: 40                 # no single run spends more than $40 without an explicit override
+approvals:
+  classes:
+    scope:
+      allow_yes: false        # the plan gate always asks a human — the cheapest moment to catch a misread PRD
+    # `chore` (the PR gate) and `blocked` stay open: a clean review self-approves, and an
+    # unattended run may answer a blocked implementer with --approve-class blocked.
