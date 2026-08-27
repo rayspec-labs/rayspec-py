@@ -46,7 +46,9 @@ class Liveness(StrEnum):
     ALIVE = "alive"
 
 
-#: The verdicts ``reconcile_run`` flips to ``interrupted`` and a resume may proceed over.
+#: The verdicts ``reconcile_run`` flips to ``interrupted``. A resume proceeds over a
+#: DEAD_PID/PID_REUSED record but refuses STALE_HEARTBEAT (a live-looking but wedged process,
+#: with a ``cancel --now`` hint), so it is the CLI that acts uniformly on this set.
 DEAD_LIKE: frozenset[Liveness] = frozenset(
     {Liveness.DEAD_PID, Liveness.PID_REUSED, Liveness.STALE_HEARTBEAT}
 )

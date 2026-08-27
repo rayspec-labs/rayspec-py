@@ -683,17 +683,28 @@ class Runner:
                     hint=f"use `rayspec resume {run.run_id}` (it reloads the run's own workflow)",
                 )
             if run.status is RunStatus.RUNNING and not self.options.force:
-                if _on_other_host(run):
+                # one liveness rule, shared with the CLI's reconcile_run: a live process refuses
+                # the resume, a stale-heartbeat process refuses with a wedged-process hint, and a
+                # dead or REUSED pid (the case the heartbeat exists for) is resumable.
+                verdict = liveness.assess(run)
+                if verdict is liveness.Liveness.OTHER_HOST:
                     raise ResumeError(
                         f"run {run.run_id} is recorded as running on host {run.host} "
                         f"(pid {run.pid or '?'}) — its process cannot be checked from here",
                         hint="resume it on that host, or pass --force if you are sure it is dead",
                     )
-                if run_pid_alive(run):
+                if verdict is liveness.Liveness.ALIVE:
                     raise ResumeError(
                         f"run {run.run_id} is still running (pid {run.pid} on {run.host})",
                         hint=f"stop it first with `rayspec cancel {run.run_id}`, "
                         "or pass --force if you are sure it is dead",
+                    )
+                if verdict is liveness.Liveness.STALE_HEARTBEAT:
+                    raise ResumeError(
+                        f"run {run.run_id} (pid {run.pid}) has not proved it is alive for over "
+                        f"{liveness.HEARTBEAT_STALE_AFTER_S:g}s — it may be wedged",
+                        hint=f"`rayspec cancel {run.run_id} --now` if it is stuck, "
+                        "or pass --force to resume anyway",
                     )
             mismatch = run.workflow_hash != self.resolved.hash
             if mismatch and not self.options.force:
@@ -721,6 +732,11 @@ class Runner:
                 # as the placeholder so that it is exported (and required) like the others
                 if name in self.secret_inputs and name not in run.inputs:
                     run.inputs[name] = SECRET_PLACEHOLDER
+            # a run cancelled earlier left a cancel.json; clear it before the graph starts, or
+            # the scheduler reads it at the first step and re-cancels the resume (PRD-07 R5, D4).
+            from rayspec.engine.cancel import clear_cancel_flag
+
+            clear_cancel_flag(self.store.run_dir(run.run_id))
             cache = dict(run.steps)
             if self.options.stubs_path is not None:
                 run.stubs_path = self.options.stubs_path  # --stubs on resume overrides
