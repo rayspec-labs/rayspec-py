@@ -137,9 +137,13 @@ async def test_the_prompt_executor_does_not_stamp_the_heartbeat_itself(
 ) -> None:
     """The two per-call ``touch_heartbeat`` writes are gone: liveness during a prompt step rests
     on the periodic timer and the step's own record save, not two extra run.json writes."""
+    import inspect
+
     from rayspec.engine.executors import prompt as prompt_exec
 
-    assert not hasattr(prompt_exec, "_TOUCH_MARKER")
+    # the real regression is the executor calling touch_heartbeat around the provider call;
+    # assert the module simply does not mention it (the old +2-per-prompt writes are gone)
+    assert "touch_heartbeat" not in inspect.getsource(prompt_exec)
     monkeypatch.setattr(liveness, "HEARTBEAT_INTERVAL_S", 3600)  # timer effectively off
     harness.workflow("t", wf("  - {id: p, agent: {provider: stub}, prompt: go}\n"))
     saves = {"n": 0}
@@ -154,5 +158,7 @@ async def test_the_prompt_executor_does_not_stamp_the_heartbeat_itself(
         "t", options=RunOptions(interactive=False), providers={"stub": StubProvider()}
     )
     assert result.status is RunStatus.SUCCEEDED
-    # start + toolchain + step-start + step-finish + finalize — a handful, not "+2 per prompt"
-    assert saves["n"] <= 8, saves["n"]
+    # measured baseline is 6 saves (start, toolchain, step-start, step-finish, finalize + the
+    # record's own persist); the reverted "+2 touch_heartbeat per prompt" would be 8, so a bound
+    # at the baseline catches that regression rather than waving it through
+    assert saves["n"] <= 6, saves["n"]

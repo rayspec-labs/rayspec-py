@@ -6,6 +6,7 @@ exactly the stale ``running`` record this reconciliation must catch. Nothing cor
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -93,3 +94,8 @@ def test_kill9_then_runs_reports_interrupted(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+        # SIGKILL of the rayspec parent orphans the shell step's own group (the engine runs it
+        # with start_new_session, so pgid == the pid the step wrote to the pidfile). Reap that
+        # group so a stray `sleep` does not linger after the test.
+        with contextlib.suppress(Exception):
+            os.killpg(int(pidfile.read_text().strip()), signal.SIGKILL)

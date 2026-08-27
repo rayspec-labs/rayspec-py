@@ -336,10 +336,17 @@ def test_cancel_now_stops_a_detached_run(tmp_path: Path) -> None:
     launched = _run_detach(root, home, "slow", env={"E2E_SLEEP": "30"})
     run_id = launched.stdout.strip()
     assert RUN_ID_RE.match(run_id)
-    _wait_status(home, run_id, {"running"}, timeout=10)
-    cancelled = invoke(["cancel", run_id, "--now", "--yes", "--root", str(root)], home)
-    assert cancelled.exit_code == 0, cancelled.output
-    assert _wait_status(home, run_id, {"cancelled", "interrupted"}) in {"cancelled", "interrupted"}
+    try:
+        _wait_status(home, run_id, {"running"}, timeout=10)
+        cancelled = invoke(["cancel", run_id, "--now", "--yes", "--root", str(root)], home)
+        assert cancelled.exit_code == 0, cancelled.output
+        assert _wait_status(home, run_id, {"cancelled", "interrupted"}) in {
+            "cancelled",
+            "interrupted",
+        }
+    finally:
+        # a mid-test failure must still tear the detached 30s group down, like the siblings
+        _cancel_now(root, home, run_id)
 
 
 def test_cancel_flag_stops_a_detached_loop_between_iterations(tmp_path: Path) -> None:
