@@ -486,3 +486,30 @@ def test_the_inputs_file_of_a_case_is_written_privately(
     )
     assert result.ok, result.report()
     assert modes == [0o600], modes
+
+
+def test_case_environment_clears_an_ambient_policy(tmp_path: Path) -> None:
+    """A ``RAYSPEC_POLICY`` a surrounding rayspec run exported must not silently apply to a case:
+    ``rayspec test`` isolates each case's environment, and a policy the developer never chose for
+    this suite is exactly the kind of ambient state that isolation exists to strip (F4)."""
+    from rayspec.testing.runner import case_environment
+
+    os.environ["RAYSPEC_POLICY"] = "/a/leaked/policy.yaml"
+    try:
+        with case_environment({}, home=tmp_path):
+            assert "RAYSPEC_POLICY" not in os.environ
+    finally:
+        os.environ.pop("RAYSPEC_POLICY", None)
+
+
+def test_case_environment_keeps_a_policy_the_case_sets(tmp_path: Path) -> None:
+    """Clearing the ambient one must not stop a case from choosing its OWN policy via ``env:`` —
+    the case's value is applied after the strip and wins."""
+    from rayspec.testing.runner import case_environment
+
+    os.environ["RAYSPEC_POLICY"] = "/a/leaked/policy.yaml"
+    try:
+        with case_environment({"RAYSPEC_POLICY": "/the/case/policy.yaml"}, home=tmp_path):
+            assert os.environ["RAYSPEC_POLICY"] == "/the/case/policy.yaml"
+    finally:
+        os.environ.pop("RAYSPEC_POLICY", None)

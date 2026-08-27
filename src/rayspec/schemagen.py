@@ -56,6 +56,8 @@ _DURATION_PATTERN = r"^(?=.*\d)\s*(?:\d+(?:\.\d+)?h)?\s*(?:\d+(?:\.\d+)?m(?!s))?
 _MONEY_PATTERN = r"^\s*\$?\s*\d+(?:\.\d+)?\s*(?:[Uu][Ss][Dd])?\s*$"
 #: ``defaults.max_tokens`` (``schema.workflow.parse_token_count``): ``1500``, ``"500k"``, ``1.5M``.
 _TOKENS_PATTERN = r"^\s*\d+(?:_\d+)*(?:\.\d+)?\s*[kKmM]?\s*$"
+#: An agent number backed by an input (``schema.common.INPUT_REF_RE``): exactly ``{{ inputs.x }}``.
+_INPUT_REF_PATTERN = r"^\s*\{\{\s*inputs\.[a-zA-Z_][a-zA-Z0-9_]*\s*\}\}\s*$"
 #: One ``artifacts:`` entry (``schema.steps.validate_artifact_path``): a relative file path, no
 #: ``~``, no ``..`` segment, no template syntax, no control characters, not a directory.
 _ARTIFACT_PATTERN = (
@@ -91,6 +93,31 @@ def _tokens() -> dict[str, Any]:
             {"type": "null"},
         ],
         "description": "A token count (500000) or a string ('500k', '1.5M').",
+    }
+
+
+def _templated_money() -> dict[str, Any]:
+    """``AgentDef.budget_usd`` (E1): a USD literal OR exactly ``{{ inputs.<name> }}``."""
+    return {
+        "anyOf": [
+            {"type": "number", "exclusiveMinimum": 0},
+            {"type": "string", "pattern": _MONEY_PATTERN},
+            {"type": "string", "pattern": _INPUT_REF_PATTERN},
+            {"type": "null"},
+        ],
+        "description": "A USD amount (1.5, '$1.50') or exactly {{ inputs.<name> }}.",
+    }
+
+
+def _templated_turns() -> dict[str, Any]:
+    """``AgentDef.max_turns`` (E1): a positive integer OR exactly ``{{ inputs.<name> }}``."""
+    return {
+        "anyOf": [
+            {"type": "integer", "minimum": 1},
+            {"type": "string", "pattern": _INPUT_REF_PATTERN},
+            {"type": "null"},
+        ],
+        "description": "A positive integer or exactly {{ inputs.<name> }}.",
     }
 
 
@@ -131,6 +158,10 @@ def _workflow_patches() -> dict[str, dict[str, Any]]:
         "Defaults.timeout_total": _duration(positive=True, nullable=True),
         "Defaults.budget_usd": _money(),
         "Defaults.max_tokens": _tokens(),
+        "AgentDef.budget_usd": _templated_money(),
+        "AgentDef.max_turns": _templated_turns(),
+        "AgentOverride.budget_usd": _templated_money(),
+        "AgentOverride.max_turns": _templated_turns(),
         "RetryPolicy.delay": _duration(positive=False, nullable=False),
         "ApproveStep.approve": {
             "anyOf": [

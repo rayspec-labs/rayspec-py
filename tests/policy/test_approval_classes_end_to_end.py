@@ -78,7 +78,6 @@ class Project:
         (self.root / ".rayspec" / "workflows" / "ship.yaml").write_text(SHIP, encoding="utf-8")
         self.marker = tmp_path / "published.marker"
         monkeypatch.setenv("RAYSPEC_HOME", str(self.home))
-        monkeypatch.delenv("RAYSPEC_POLICY", raising=False)
 
     def policy(self, text: str, *, user: bool = False) -> Path:
         path = (self.home if user else self.root / ".rayspec") / "policy.yaml"

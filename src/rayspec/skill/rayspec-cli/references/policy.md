@@ -1,6 +1,6 @@
 <!-- Generated from docs/policy.md by scripts/gen_skill.py — do not edit here. -->
 <!-- Canonical source: https://github.com/rayspec-labs/rayspec-py/blob/main/docs/policy.md -->
-<!-- Sibling references in this directory: cli.md · providers.md · testing.md · policy.md · runs-and-resume.md · isolation.md · ci.md -->
+<!-- Sibling references in this directory: cli.md · providers.md · testing.md · policy.md · runs-and-resume.md · isolation.md · ci.md · dogfooding.md -->
 
 # Policy: guardrails as a file
 
@@ -521,6 +521,8 @@ approvals:
       allow_yes: false      # what the bundled `resolve_conflicts` names for a conflict it wants a human to see
     scope:
       allow_yes: false      # what the bundled `prd_to_pr` names for its plan gate — the cheapest moment to catch a misread PRD
+    blocked:
+      allow_yes: false      # `prd_to_pr`'s in-loop gate when the implementer hits a contradiction — a human answers it or amends the acceptance tests
 ```
 
 A workflow names a class and cannot define one:

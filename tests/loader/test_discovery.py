@@ -14,6 +14,7 @@ WF = "rayspec: 1\nname: {name}\ndescription: {desc}\nsteps:\n  - id: a\n    shel
 BUNDLED = [
     "architect",
     "create_issue",
+    "explore_block",
     "fix_issue",
     "pr_review",
     "prd_to_pr",

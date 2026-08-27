@@ -95,8 +95,14 @@ def _run_dir(home: Path, run_id: str) -> Path:
     return next(home.rglob(f"runs/{run_id}"))
 
 
-def _status(home: Path, run_id: str) -> str:
-    return json.loads((_run_dir(home, run_id) / "run.json").read_text())["status"]
+def _status(home: Path, run_id: str) -> str | None:
+    # the --detach launcher pre-creates run.json with O_EXCL and the child writes the record a
+    # moment later, so a fast poll can read an empty file — treat that (and a torn write) as
+    # "not settled yet" rather than crashing the test.
+    try:
+        return json.loads((_run_dir(home, run_id) / "run.json").read_text())["status"]
+    except (ValueError, KeyError, OSError):
+        return None
 
 
 def _wait_status(home: Path, run_id: str, wanted: set[str], *, timeout: float = 20) -> str:
@@ -107,7 +113,9 @@ def _wait_status(home: Path, run_id: str, wanted: set[str], *, timeout: float = 
         timeout=timeout,
         what=f"run {run_id} to reach {wanted}",
     )
-    return _status(home, run_id)
+    status = _status(home, run_id)
+    assert status is not None
+    return status
 
 
 def _run_detach(

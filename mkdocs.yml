@@ -90,6 +90,7 @@ nav:
       - Testing workflows: testing.md
       - Continuous integration: ci.md
       - Examples: examples.md
+      - Dogfooding (rayspec on rayspec): dogfooding.md
   - Extend:
       - Extending rayspec: extending.md
       - Agent skill: agent-skill.md

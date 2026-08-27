@@ -80,7 +80,7 @@ flags is every flag**, not a selection — `--help` aside, a flag missing from a
 | `rayspec eval <run> <expr>` | evaluate a Jinja expression in a stored run's context (nothing runs, nothing is written) | `--step PATH`, `--shell`, `--json`, `--output`, `--root` | 0 / 2 |
 | `rayspec audit <run>` | what the run did: commands, tool calls, files, warnings, approvals, and who launched it | `--commands`, `--json`, `--output`, `--root` | 0 / 2 |
 | `rayspec costs` | sum this project's runs by workflow: tokens, cost and where each cost came from | `--since 7d`, `--workflow NAME`, `--json`, `--output`, `--root` | 0 / 2 |
-| `rayspec resume <run>` | resume a paused/failed/interrupted run; succeeded steps are replayed, not re-executed | `--force`, `--yes`, `--approve-class NAME`, `--no-interactive`, `--input k=v`, `--stubs FILE`, `--fail-fast`, `--wait-slot 30m`, `--locked`, `--json`, `--output`, `--quiet`, `--verbose`, `--root` | run's code / 2 |
+| `rayspec resume <run>` | resume a paused/failed/interrupted run; succeeded steps are replayed, not re-executed (`--rerun GLOB` re-runs matching steps instead) | `--force`, `--yes`, `--approve-class NAME`, `--no-interactive`, `--rerun GLOB`, `--input k=v`, `--stubs FILE`, `--fail-fast`, `--wait-slot 30m`, `--locked`, `--json`, `--output`, `--quiet`, `--verbose`, `--root` | run's code / 2 |
 | `rayspec approve <run> [comment]` · `reject <run> [reason]` | decide the pending gate and continue the run **in this process** (real agents, real money) | `--force`, `--input k=v`, `--stubs FILE`, `--wait-slot 30m`, `--locked`, `--quiet`, `--json`, `--output`, `--root` | run's code / 2 |
 | `rayspec cancel <run>` | cooperatively cancel a live run (`--now` to SIGINT it), or mark a paused/stale one cancelled | `--yes`, `--now`, `--mark`, `--force`, `--json`, `--output`, `--root` | 0 / 1 / 2 |
 | `rayspec lock [names…]` | pin every agent's literal model id and effort to `.rayspec/rayspec.lock` | `--check`, `--json`, `--output`, `--root` | 0 / 1 / 2 |
@@ -502,6 +502,8 @@ otherwise exit 2. The absolute path is recorded in `run.json` (`stubs_path`), so
   slugs. Read it when a workspace or a lock is in the way.
 - `references/ci.md` — rayspec in CI: the dry-run check, `--locked` under CI, `trust check` as a
   gate, releases.
+- `references/dogfooding.md` — running rayspec on rayspec: bootstrap, the environment a run
+  exports into its steps, the policy layers, input-backed budgets, resume/eject, writing a PRD.
 - The YAML itself — `concepts.md`, `schema.md`, `templating.md`, `examples.md` — ships with the
   **`rayspec-workflows`** skill. Load it before writing or editing a workflow, an agent or a
   prompt file; this skill will not tell you what a field means.

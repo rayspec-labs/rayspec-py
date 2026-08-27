@@ -54,6 +54,7 @@ from rayspec.engine.graph import classify, join_decision
 from rayspec.engine.paths import StepPath
 from rayspec.errors import RayspecError
 from rayspec.loader import ResolvedWorkflow
+from rayspec.loader.agent_numbers import resolve_agent_numbers
 from rayspec.providers.base import Usage
 from rayspec.schema import PromptStep, StepModel
 from rayspec.store.file import FileRunStore
@@ -299,6 +300,7 @@ def agent_section(
         "access": agent.access,
         "instructions_mode": agent.instructions_mode,
         "max_turns": agent.max_turns,
+        "budget_usd": agent.budget_usd,
         "tools": {"allow": list(agent.tools.allow), "deny": list(agent.tools.deny)},
         "source": agent.source,
         "recorded_provider": record.provider if record is not None else None,
@@ -559,6 +561,9 @@ def register(app: typer.Typer) -> None:
         store, record = common.lookup_run(ctx, run)
         try:
             resolved = common.load_resolved_for(ctx, record)
+            # E1: fill each agent's `{{ inputs.<name> }}` budget_usd/max_turns from the run's
+            # recorded inputs, so `explain` shows the numbers the run actually used, not None.
+            resolved = resolve_agent_numbers(resolved, record.inputs)
         except RayspecError as exc:
             fail(f"cannot load the workflow of run {record.run_id}: {exc}", hint=exc.hint)
             return

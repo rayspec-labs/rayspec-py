@@ -378,6 +378,8 @@ AGENT_NON_CONTROLS: Mapping[str, str] = {
     "source": "which file the agent was defined in",
     "yaml_path": "the YAML path of the agent, for error messages",
     "locations": "file:line of every field, for error messages",
+    "input_refs": "which max_turns/budget_usd came from {{ inputs.x }}; the resolved NUMBER is "
+    "what a policy caps, and it is classified above — this only records where it came from",
 }
 
 #: ``tools:`` on an agent (``ToolsSpec``). Both lists are read by the agent's ``tools`` control.
@@ -979,6 +981,9 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     ),
     "--force": ExternalControl(False, "proceed past a guard that would have stopped: a widening"),
     "--resume": ExternalControl(False, "which run to continue"),
+    "--rerun": ExternalControl(
+        False, "re-run matching recorded steps instead of replaying them on resume"
+    ),
     "--base": ExternalControl(False, "the branch a worktree is cut from"),
     "--repo": ExternalControl(False, "which project or checkout the run happens in"),
     "--root": ExternalControl(False, "which project root to read files from"),

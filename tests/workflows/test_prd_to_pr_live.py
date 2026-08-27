@@ -36,11 +36,7 @@ from .test_prd_to_pr import (
 )
 
 pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("RAYSPEC_LIVE"),
-        reason="set RAYSPEC_LIVE=1 to run the live prd_to_pr e2e (real agents, real money)",
-    ),
+    pytest.mark.live,  # the conftest live gate skips these unless RAYSPEC_LIVE=1
 ]
 
 #: the rayspec-py checkout: `uv run rayspec` resolves the project from here
@@ -83,7 +79,7 @@ def test_a_real_run_turns_the_prd_into_a_pushed_branch_and_a_pr(
     home = tmp_path / "home"
     home.mkdir()
     policy = tmp_path / "policy.yaml"
-    policy.write_text("budget:\n  per_run: 10.00\n", encoding="utf-8")
+    policy.write_text("budget:\n  per_run: 20.00\n", encoding="utf-8")
 
     command = [
         "uv", "run", "rayspec", "run", "prd_to_pr",
@@ -92,6 +88,7 @@ def test_a_real_run_turns_the_prd_into_a_pushed_branch_and_a_pr(
         "--input", f"typecheck_command={TYPECHECK_COMMAND}",
         "--input", f"test_command={TEST_COMMAND}",
         "--approve-class", "scope",
+        "--approve-class", "blocked",
         "--approve-class", "chore",
         "--json",
     ]  # fmt: skip
@@ -143,4 +140,8 @@ def test_a_real_run_turns_the_prd_into_a_pushed_branch_and_a_pr(
     assert PR_LINE.format(branch=branch) in logged
     assert "## Summary" in logged and "## Coverage (reviewer's verdict: " in logged
     assert "## Assumptions" in logged
+    assert "## Unrequested behaviour — review before merge" in logged  # v2 checklist
     assert "The plan gate was approved automatically" in logged
+    # v2: the explore phase ran (the planner was handed reports) and the PR reports the run cost
+    scout = json.loads((run_dir / "steps" / "scout" / "output.json").read_text(encoding="utf-8"))
+    assert "questions" in scout

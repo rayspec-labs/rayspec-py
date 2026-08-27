@@ -1,0 +1,10 @@
+# Two questions, both answered — exercises the fan-out and the collect reshape.
+steps:
+  "scan[*]/inspect":
+    output:
+      question: "answered"
+      answer: "read the code"
+      files: [{ path: "src/a.py", why: "the entry point" }]
+      reuse: [{ symbol: "helper", path: "src/a.py", why: "already does half of it" }]
+      conventions: ["snake_case"]
+      risks: ["none obvious"]

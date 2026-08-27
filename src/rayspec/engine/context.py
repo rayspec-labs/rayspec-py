@@ -235,6 +235,11 @@ class RunOptions:
     #: absolute path of the ``--stubs`` file: recorded in ``run.json`` at launch, and on a
     #: resume replaces the recorded one when given (``None`` keeps the record's value)
     stubs_path: str | None = None
+    #: ``resume --rerun GLOB`` (repeatable): step-path globs (``StepPath.matches``) whose recorded
+    #: results are RE-RUN instead of replayed from the resume cache. Per-entry, never recorded in
+    #: ``run.json`` — a plain resume replays; only this invocation re-runs. A pending gate
+    #: short-circuits the whole entry, so ``--rerun`` never applies there.
+    rerun: tuple[str, ...] = ()
     #: additive: ``config.secrets`` resolved once at run start, ``NAME`` → value. Handed
     #: ONLY to ``shell:``/``python:`` steps as environment variables (see
     #: ``engine.executors._process.process_env``); never persisted, never templated, never in a

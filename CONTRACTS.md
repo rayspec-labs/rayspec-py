@@ -143,8 +143,21 @@ parse_money` accepts `1.5`, `"1.50"`, `"$1.50"`, `"12 USD"`) and `Defaults.max_t
 that is not a whole number of tokens — `"1.5"`, `"1.0005k"` — is rejected, never rounded) — the
 run-level circuit breaker caps (Duration-like `BeforeValidator` parsing, the `parse_*` functions
 carry the `> 0` check; `Money` / `TokenCount` annotated types exported from
-`rayspec.schema.workflow`). Root workflow only; included bodies' values are
+`rayspec.schema.workflow` — `Money`/`parse_money` now live in `rayspec.schema.common`, re-exported
+from `schema.workflow` for that promise, so `schema.agent` can reach them without the
+workflow→agent import cycle). Root workflow only; included bodies' values are
 ignored by the engine.
+
+Additive (E1, PRD-09 F6/F13): an agent's `budget_usd` / `max_turns` accept a literal OR **exactly**
+`{{ inputs.<name> }}` — the one numeric field that takes an input reference, so a run can raise a
+budget with `--input` instead of ejecting the YAML. `schema/agent.py::TemplatedMoney`
+(`float | str`) / `TemplatedTurns` (`int | str`) via `parse_templated_money` / `parse_templated_turns`
+(a string is kept verbatim only when `schema.common.input_ref_name` matches — no arithmetic, no
+step ref, no partial template; the `> 0` / `>= 1` bound is enforced in the validator, not on the
+`Field`, since the value may be a string). The published schema constrains the string branch to
+`_INPUT_REF_PATTERN` (schemagen patches `AgentDef`/`AgentOverride`). It is a **reference, not an
+expression** (constitution: a lever the author sets, resolved to the run's own input). The engine
+resolves it once per run entry (see `resolve_agent_numbers` below).
 
 Additive: `Defaults.timeout_total: PositiveDuration | None = None` — the run-level
 WALL-CLOCK cap, the third circuit breaker beside `budget_usd`/`max_tokens` (same `Duration`
@@ -283,7 +296,13 @@ as a whole (a `Ref` with `name=None`: `inputs | tojson`, `inputs.get(..)`, `inpu
 declares a secret. `coerce_input` / the jsonschema message print `<secret>` instead of the
 rejected value of a `secret: true` input (never echoed, not even in `plan` rows). Expression
 references (`when`/`until`/`each`) are collected with `references(text, kind="expr")` (they were
-parsed as text before and yielded nothing).
+parsed as text before and yielded nothing). Loader lints (warnings): `timeout` on an `approve:`/
+`stop:` step is an **error** (`_check_no_timeout` — it would be ignored); a `loop:` whose
+whole-step timeout (`step.timeout` or the inherited `defaults.timeout`, applied by `fail_after`
+around the whole loop) is not larger than a body step's per-attempt timeout **warns**
+(`_check_loop_timeout`, PRD-09 F14) — it cannot cover even one iteration; the message names the
+loop, the timeout source, the offending body step, and suggests `~max_iterations x` the slowest
+body step. `each:`/`include:` bodies are not linted (their cost is data-/graph-dependent).
 Strict YAML (`load_yaml`): booleans only `true/false` spellings, no sexagesimal, no leading-zero
 octal (`0123` stays a string, `0o17` is octal), no timestamps (dates stay strings), duplicate keys
 are errors.
@@ -1489,6 +1508,9 @@ from rayspec.engine.runner import (
 )
 from rayspec.engine.context import (
     RunOptions,  # dry_run, exec_shell, yes, interactive=True, fail_fast, force, resume,
+    #   rerun (tuple of step-path globs — `resume --rerun`; try_reuse refuses the replay for a
+    #     matching record and warns `re-running <path> (--rerun <glob>)`, so it re-runs; per-entry,
+    #     never persisted in run.json; a pending-gate short-circuit skips it),
     #   stub_script (StubScript | dict; dry run / --stubs), provider_settings ({id: settings})
     #   fail_fast is the --fail-fast FLAG only. The scheduler reads two derived methods, ONCE
     #   per graph, for the scope it is running — and NEVER options.fail_fast or a root-only
@@ -3738,8 +3760,16 @@ recorded — never the tool input.
   convergence on the first and on the third attempt with the two distinct briefs and a resumed
   session, vacuous tests failing the run before any implementation, the give-up bound retaining
   the work, the tamper guard, a question answered at the plan gate reaching the prompts and the
-  PR body, a partial review asking at the PR gate; `test_prd_to_pr_live.py` (`@pytest.mark.live`,
-  `RAYSPEC_LIVE=1`) drives the real CLI with real agents on the same fixture.
+  PR body, the v2 blocked gate auto-approving into an amend-and-continue round, a partial review
+  asking at the PR gate; `test_prd_to_pr_live.py` (`@pytest.mark.live`, `RAYSPEC_LIVE=1`) drives
+  the real CLI with real agents on the same fixture. v2 (PRD-09 dogfood): a scout →
+  `explore_block` fan-out feeds the planner, `setup_command` bootstraps the worktree
+  (`baseline needs [start, setup]`, `join: any`), the agent budgets are `{{ inputs.* }}` (E1),
+  `red` reports `failing`/`already_green` per file, `implement` is `allow_failure` with a
+  `[done, blocked, unfinished]` status, and `blocked` is an in-loop `approve:` (class `blocked`)
+  + `amend` that moves the contract sha in `$RAYSPEC_STATE_DIR/prd_to_pr/contract`.
+  `test_explore_block.py` covers the bundled `explore_block` block standalone (both answered; one
+  lost explorer → an index-aligned null in `reports`).
 - The repo's own workflows live in `.rayspec/workflows/` (`review_pr`, `fix_issue`,
   `implement_feature_tdd`, `docs_sync`, `release_check`) with agents in `.rayspec/agents/`,
   prompts in `.rayspec/prompts/` and dry-run checks + stubs in `.rayspec/dryrun/`.
@@ -3758,6 +3788,14 @@ recorded — never the tool input.
 - anyio pytest plugin (`pytestmark = pytest.mark.anyio`; `anyio_backend` fixture = "asyncio").
 - No network in unit tests; real SDK calls only under `-m live`.
 - Every module ships at least one end-to-end style test of its public surface.
+- The autouse `tests/conftest.py::_no_ambient_env` scrubs, for every test, both `AMBIENT_ENV`
+  (colour/CI vars that change what a command renders) and `NESTED_ENV` — the `RAYSPEC_*` a
+  surrounding `rayspec run` exports into its steps (`RAYSPEC_HOME`, `RAYSPEC_POLICY`,
+  `RAYSPEC_ACTOR`, … and the `RAYSPEC_INPUT_*` / `RAYSPEC_V<n>` families) — so the suite's outcome
+  never depends on being run from inside another run (the dogfood leak, PRD-09 F4). `RAYSPEC_HOME`
+  is re-set by the `home` fixture; a test that needs one asks for it. NOT scrubbed: `RAYSPEC_LIVE`,
+  `RAYSPEC_UPDATE_GOLDEN`, `RAYSPEC_PROP_*` (read at import to select what a run is).
+  `tests/repo/test_ambient_env.py` proves both classes change a real target's outcome.
 
 ### CLI ↔ workspace seam
 `rayspec.cli.commands.run.prepare_workspace(*, project_root, home, workflow_name, run_id, isolation,
@@ -3822,8 +3860,9 @@ store; nothing depends on it.
   `Workspace.in_place(suite.root)`, `handle_signals=False` and no `home=` (so no path lock). The
   store is `FileRunStore(home / "projects" / fallback_project_slug(suite.root))` — the project's
   ordinary store, so `rayspec logs <run_id>` explains a failure. `case_environment` clears
-  `RAYSPEC_INPUT_*`, sets `RAYSPEC_HOME`/`NO_COLOR` and applies the case's `env:` (`null` unsets),
-  restoring `os.environ` afterwards. With `keep_run_dir=False` a *passing* case deletes its run dir
+  `RAYSPEC_INPUT_*` **and `RAYSPEC_POLICY`** (a policy a surrounding run exported must not apply to
+  a suite that never chose it; a case sets its own via `env:`), sets `RAYSPEC_HOME`/`NO_COLOR` and
+  applies the case's `env:` (`null` unsets), restoring `os.environ` afterwards. With `keep_run_dir=False` a *passing* case deletes its run dir
   (what the CLI does); a failing one always keeps it.
 - **`report.py`** — `Failure(field, summary, detail, fix, location)` renders the house four-line
   block (`<field>: <claim>` / `  <detail>` / `  fix: …` / `  at <file>:<line>`). `CaseResult` has

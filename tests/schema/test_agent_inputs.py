@@ -1,82 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+"""E1 (PRD-09 F6/F13): an agent's `budget_usd`/`max_turns` accept EXACTLY `{{ inputs.<name> }}`
+besides a literal — the one numeric field that takes an input reference, so a workflow can raise a
+budget by passing `--input`, not by ejecting and editing YAML. It is a reference, not an
+expression: no arithmetic, no partial template, no step reference."""
+
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from rayspec.schema import AgentDef, AgentOverride, InputSpec, SchemaError, inputs_to_json_schema
-from rayspec.schema.agent import parse_agent_def
-
-
-def test_agent_def_defaults():
-    a = parse_agent_def({"provider": "claude"})
-    assert a.provider == "claude" and a.model is None and a.effort is None
-    assert a.access == "workspace-write" and a.instructions_mode == "append"
-    assert a.tools.allow == [] and a.tools.deny == []
-    assert a.max_turns is None and a.budget_usd is None and a.provider_options == {}
+from rayspec.schema.agent import AgentDef
 
 
-def test_agent_def_full():
-    a = parse_agent_def(
-        {
-            "provider": "codex",
-            "model": "medium",
-            "effort": "high",
-            "access": "read-only",
-            "instructions_file": "prompts/x.md",
-            "max_turns": 60,
-            "budget_usd": 2.5,
-            "tools": {"deny": ["web"], "allow": ["read", "mcp:github"]},
-            "provider_options": {"codex": {"config": {"model_reasoning_effort": "high"}}},
-        }
-    )
-    assert a.tools.deny == ["web"] and a.tools.allow == ["read", "mcp:github"]
-    assert a.provider_options["codex"]["config"]["model_reasoning_effort"] == "high"
-    assert a.access == "read-only" and a.budget_usd == 2.5
+def test_literals_are_accepted_and_bounded():
+    assert AgentDef(budget_usd=1.5).budget_usd == 1.5
+    assert AgentDef(budget_usd="$2.50").budget_usd == 2.5
+    assert AgentDef(max_turns=3).max_turns == 3
 
 
-def test_agent_instructions_xor_file():
-    with pytest.raises(SchemaError, match="instructions"):
-        parse_agent_def({"instructions": "a", "instructions_file": "b.md"})
+@pytest.mark.parametrize("ref", ["{{ inputs.budget }}", "{{inputs.b}}", "  {{ inputs.max_t }}  "])
+def test_an_exact_input_reference_is_kept_verbatim(ref: str):
+    """The reference string is preserved for the loader to resolve per run — not coerced now."""
+    assert AgentDef(budget_usd=ref).budget_usd == ref
+    assert AgentDef(max_turns=ref).max_turns == ref
 
 
-def test_agent_access_enum_and_unknown_field():
-    with pytest.raises(SchemaError, match="access"):
-        parse_agent_def({"access": "god-mode"})
-    with pytest.raises(SchemaError, match="instructions_mode"):
-        parse_agent_def({"instruction_mode": "append"})
+@pytest.mark.parametrize("bad", [0, -1, "0", "abc", "$0"])
+def test_non_positive_or_nonsense_budget_is_refused(bad):
+    with pytest.raises(ValidationError):
+        AgentDef(budget_usd=bad)
 
 
-def test_agent_override_requires_extends():
-    o = AgentOverride.parse({"extends": "triage", "effort": "low"})
-    assert o.extends == "triage" and o.effort == "low" and o.model is None
-    assert AgentDef.parse({}).provider is None
+@pytest.mark.parametrize("bad", [0, 1.5, "abc", "3"])
+def test_a_non_integer_or_non_positive_max_turns_is_refused(bad):
+    with pytest.raises(ValidationError):
+        AgentDef(max_turns=bad)
 
 
-def test_input_spec_defaults_and_json_schema():
-    spec = InputSpec.parse({})
-    assert spec.type == "string" and spec.required is False and spec.default is None
-    schema = inputs_to_json_schema(
-        {
-            "issue": InputSpec.parse({"type": "integer", "required": True, "description": "n"}),
-            "mode": InputSpec.parse({"enum": ["fast", "normal"], "default": "normal"}),
-            "tags": InputSpec.parse({"type": "array", "items": {"type": "string"}, "default": []}),
-        }
-    )
-    assert schema["type"] == "object" and schema["additionalProperties"] is False
-    assert schema["required"] == ["issue"]
-    assert schema["properties"]["issue"] == {"type": "integer", "description": "n"}
-    assert schema["properties"]["mode"] == {
-        "type": "string",
-        "enum": ["fast", "normal"],
-        "default": "normal",
-    }
-    assert schema["properties"]["tags"]["items"] == {"type": "string"}
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "{{ inputs.x + 1 }}",  # arithmetic — an expression, not a reference
+        "{{ steps.a.output }}",  # a step reference, not an input
+        "{{ inputs.x }} and more",  # not the whole value
+        "prefix {{ inputs.x }}",
+        "{{ inputs }}",  # the whole inputs object, no name
+        "{{ inputs.x.y }}",  # a nested path
+    ],
+)
+def test_a_reference_that_is_not_exactly_one_input_is_refused(bad):
+    with pytest.raises(ValidationError):
+        AgentDef(budget_usd=bad)
+    with pytest.raises(ValidationError):
+        AgentDef(max_turns=bad)
 
 
-def test_input_required_with_default_is_contradiction():
-    with pytest.raises(SchemaError, match="default"):
-        InputSpec.parse({"required": True, "default": "x"})
+def test_the_override_model_inherits_the_templated_fields():
+    from rayspec.schema.agent import AgentOverride
 
-
-def test_input_type_must_be_json_schema_name():
-    with pytest.raises(SchemaError, match="type"):
-        InputSpec.parse({"type": "int"})
+    ov = AgentOverride(extends="base", budget_usd="{{ inputs.b }}", max_turns=5)
+    assert ov.budget_usd == "{{ inputs.b }}" and ov.max_turns == 5

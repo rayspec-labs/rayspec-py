@@ -17,6 +17,9 @@ Two rules keep cases hermetic and are the reason the environment is patched arou
 
 * ``RAYSPEC_INPUT_*`` variables of the developer's shell are removed — a case must resolve the
   same inputs on every machine;
+* ``RAYSPEC_POLICY`` is removed too — a policy a surrounding rayspec run exported (a ceiling, an
+  approval class) must not apply to a suite that never chose it; a case that wants a specific
+  policy sets it in its own ``env:``;
 * a case's ``env:`` mapping is applied to the process environment (``null`` unsets), because
   ``env.<VAR>`` in a template and a ``shell:`` step's environment must agree.
 """
@@ -73,6 +76,11 @@ def case_environment(env: Mapping[str, str | None], *, home: Path) -> Iterator[N
     try:
         for name in [n for n in os.environ if n.startswith("RAYSPEC_INPUT_")]:
             del os.environ[name]
+        # A RAYSPEC_POLICY a surrounding rayspec run exported would otherwise apply to every case
+        # — a ceiling or an approval class the developer never chose for this suite. Strip it here
+        # (before the case's own env: below, so a case may still choose its own policy), the same
+        # isolation the RAYSPEC_INPUT_* strip gives inputs.
+        os.environ.pop("RAYSPEC_POLICY", None)
         os.environ["RAYSPEC_HOME"] = str(home)
         os.environ.setdefault("NO_COLOR", "1")
         for name, value in env.items():

@@ -64,6 +64,7 @@ def test_values_workflows_lists_the_project_workflows(
         "architect",
         "create_issue",
         "example",
+        "explore_block",
         "fix_issue",
         "pr_review",
         "prd_to_pr",

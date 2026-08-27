@@ -49,6 +49,7 @@ from rayspec.schema import (
     parse_workflow,
 )
 from rayspec.schema.base import suggest
+from rayspec.schema.common import input_ref_name
 from rayspec.schema.errors import SchemaError, expand_schema_errors
 
 #: Maximum nesting of ``include:`` steps.
@@ -119,6 +120,11 @@ class ResolvedAgent:
     yaml_path: str
     locations: Mapping[str, str] = field(default_factory=dict)
     raw_model: str | None = None
+    #: field name (`max_turns` / `budget_usd`) → the input it references, for the fields set to
+    #: `{{ inputs.<name> }}` (E1). The number stays `None` until `resolve_agent_numbers` fills it
+    #: from the run's inputs; the validator and capability checks read this to treat a reference
+    #: as "set".
+    input_refs: Mapping[str, str] = field(default_factory=dict)
 
     def location(self, field_name: str) -> str | None:
         """``<file>:<line>`` of the YAML that set ``field_name`` (when known)."""
@@ -713,6 +719,19 @@ class _Loader:
             instructions = self.read_file(
                 file, what="instructions_file", location=locations.get("instructions_file")
             )
+        # E1: a `{{ inputs.<name> }}` reference reaches here as a str; record the reference and
+        # leave the number None for `resolve_agent_numbers` to fill from the run's inputs.
+        max_turns_val: int | None = None
+        budget_val: float | None = None
+        input_refs: dict[str, str] = {}
+        if isinstance(definition.max_turns, str):
+            input_refs["max_turns"] = input_ref_name(definition.max_turns) or ""
+        else:
+            max_turns_val = definition.max_turns
+        if isinstance(definition.budget_usd, str):
+            input_refs["budget_usd"] = input_ref_name(definition.budget_usd) or ""
+        else:
+            budget_val = definition.budget_usd
         return ResolvedAgent(
             key=key,
             name=name,
@@ -722,8 +741,9 @@ class _Loader:
             access=definition.access,
             instructions=instructions,
             instructions_mode=definition.instructions_mode,
-            max_turns=definition.max_turns,
-            budget_usd=definition.budget_usd,
+            max_turns=max_turns_val,
+            budget_usd=budget_val,
+            input_refs=input_refs,
             tools=definition.tools,
             network=definition.network,
             commands=definition.commands,

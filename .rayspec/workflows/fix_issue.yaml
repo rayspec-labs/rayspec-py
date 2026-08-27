@@ -45,6 +45,7 @@ steps:
   - id: build
     needs: [assess]
     when: steps.assess.output.verdict == 'fix'
+    timeout: 3h                       # whole-step over all iterations: max_iterations(4) x defaults.timeout(45m)
     loop:
       max_iterations: 4
       until: steps.gate.ok and (steps.review.output | has_signal('LGTM'))

@@ -854,6 +854,7 @@ def resume_run(
     secret_provider: SecretProvider | None = None,
     wait_slot: str | None = None,
     approve_classes: Sequence[str] = (),
+    rerun: Sequence[str] = (),
 ) -> int:
     """Resume ``run`` in-process through the engine runner and print the summary.
 
@@ -973,6 +974,7 @@ def resume_run(
         resume=True,
         stub_script=stub_script,
         stubs_path=stubs_path,
+        rerun=tuple(rerun),
         provider_settings=ctx.config.providers,
         config_secrets=config_secrets,  # shell/python step env only
         approval_classes=approval_classes_for(

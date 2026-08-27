@@ -343,7 +343,9 @@ not be in force.
 `--json`: `{workflow, path, hash, isolation, budget_usd, max_tokens, timeout_total, description,
 inputs: {name: {name, type, value, state: ok|missing|invalid|undefined, problem, secret}},
 input_errors, agents: [{name, provider, model,
-effort, access, used_by, source}], steps: [{path, kind, needs, join, when, depth, detail}],
+effort, access, budget_usd, max_turns, input_refs, used_by, source}] (`budget_usd`/`max_turns` are
+the resolved number, or the `{{ inputs.<name> }}` reference when an input is not yet supplied;
+`input_refs` maps each input-backed field to its input name), steps: [{path, kind, needs, join, when, depth, detail, description}],
 providers: {id: {structured_output, cost_reporting, cost: provider|table|none, priced_models,
 unpriced_models, disabled_models, pricing_error?}}, policy: {layers, searched}, errors, warnings,
 unsupported}` (a secret input's `value` is `"<secret>"`, `secret: true`; the three cap keys are
@@ -1131,6 +1133,7 @@ Options:
 - `--yes` / `-y` — Auto-approve gates (except gates whose [approval class](runs-and-resume.md#approval-classes) is `allow_yes: false`).
 - `--approve-class` `<name>` — Pre-approve gates of one approval class (repeatable). Given, it also lifts the "still paused" short-circuit: the run is resumed so the flag can answer the pending gate, instead of exiting 3 with the approve/reject pointer.
 - `--no-interactive` — Never prompt; pause at gates (exit 3).
+- `--rerun` `GLOB` — Re-run the recorded steps whose path matches `GLOB` instead of replaying them from the reuse cache (repeatable; `*` spans loop/each indices, so `build[*]/implement` re-runs that step in every iteration, `build[*]/*` the whole body). Each re-run emits a `warning` event. **Per-invocation, not recorded in `run.json`** — a plain resume replays as usual; a glob that matches no recorded step is a usage error (exit 2). A run paused at a gate short-circuits before `--rerun` applies (answer the gate first). Use it to force a step that the fingerprint considers unchanged (an external input the fingerprint cannot see moved) without editing the record.
 - `--fail-fast` — On a failure, cancel the running siblings instead of letting them finish. Only ever *tightens*: a run started with `--fail-fast` keeps it when it is resumed without the flag (`run.json` records it), and passing it here adds it to the run for good — no later entry point drops it again. A run paused at a gate records it on the way out too (`--fail-fast recorded on the run: …`, still exit 3), so the blast radius can be narrowed *before* the gate is decided with `approve`/`reject`. `rayspec runs --json`, `rayspec show` and `rayspec show --json` report the recorded policy (`fail_fast`).
 - `--json` / `--output json` — Machine-readable output.
 - `--quiet` — Only problems and run-level lines.

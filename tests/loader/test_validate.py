@@ -602,3 +602,136 @@ steps:
     )
     assert any(e.startswith("steps.gate.timeout") for e in rep.errors), rep.errors
     assert any(e.startswith("steps.halt.timeout") for e in rep.errors), rep.errors
+
+
+# -- B4: a loop's whole-step timeout that cannot cover its body ------------------------------------
+
+_LOOP_WF = """
+defaults:
+  timeout: {defaults_to}
+steps:
+  - id: build
+    {loop_timeout}
+    loop:
+      max_iterations: 3
+      steps:
+        - id: work
+          {work_timeout}
+          shell: echo
+"""
+
+
+def test_a_loop_inheriting_defaults_timeout_warns(tree: Tree):
+    """defaults.timeout is a WHOLE-STEP bound over all iterations; a loop with no own timeout and
+    a body leaf inheriting the same bound cannot cover even one iteration — warn."""
+    rep = _validate(
+        tree, HEAD + _LOOP_WF.format(defaults_to="30m", loop_timeout="", work_timeout="")
+    )
+    assert rep.errors == [], rep.errors
+    hits = [w for w in rep.warnings if "whole-step timeout" in w and "build" in w]
+    assert hits, rep.warnings
+    assert "defaults.timeout" in hits[0] and "max_iterations" in hits[0]
+
+
+def test_an_explicit_loop_timeout_larger_than_the_body_is_silent(tree: Tree):
+    rep = _validate(
+        tree,
+        HEAD + _LOOP_WF.format(defaults_to="30m", loop_timeout="timeout: 2h", work_timeout=""),
+    )
+    assert rep.errors == [], rep.errors
+    assert not any("whole-step timeout" in w for w in rep.warnings), rep.warnings
+
+
+def test_a_loop_timeout_not_larger_than_a_body_leaf_timeout_warns(tree: Tree):
+    """Even with an explicit loop timeout, if a single body leaf's own per-attempt timeout is >=
+    the loop's whole-step budget, the loop cannot cover one attempt — warn, naming the leaf."""
+    rep = _validate(
+        tree,
+        HEAD
+        + _LOOP_WF.format(
+            defaults_to="30m", loop_timeout="timeout: 40m", work_timeout="timeout: 40m"
+        ),
+    )
+    assert rep.errors == [], rep.errors
+    hits = [w for w in rep.warnings if "whole-step timeout" in w]
+    assert hits and "work" in hits[0], rep.warnings
+
+
+def test_an_unbounded_loop_does_not_warn(tree: Tree):
+    """No defaults.timeout and no own timeout => the loop is unbounded; this lint is about a bound
+    too small, not a missing one, so it stays silent."""
+    wf = (
+        HEAD
+        + """
+steps:
+  - id: build
+    loop:
+      max_iterations: 3
+      steps:
+        - id: work
+          shell: echo
+"""
+    )
+    rep = _validate(tree, wf)
+    assert rep.errors == [], rep.errors
+    assert not any("whole-step timeout" in w for w in rep.warnings), rep.warnings
+
+
+def test_each_and_include_bodies_get_no_loop_timeout_warning(tree: Tree):
+    """The warning is loop-only; an `each:` fanout's timeout is data-dependent, not a fixed
+    whole-step-over-iterations bound, so it is not linted here."""
+    wf = (
+        HEAD
+        + """
+defaults:
+  timeout: 30m
+steps:
+  - id: fan
+    each: '[1, 2, 3]'
+    as: n
+    steps:
+      - id: work
+        shell: echo
+"""
+    )
+    rep = _validate(tree, wf)
+    assert rep.errors == [], rep.errors
+    assert not any("whole-step timeout" in w for w in rep.warnings), rep.warnings
+
+
+def test_a_loop_inside_an_include_uses_the_included_workflows_defaults_timeout(tree: Tree):
+    """defaults.timeout is lexically scoped: a loop inside an include: body inherits the INCLUDED
+    workflow's defaults, not the caller's — the lint must read the right one (B-review #6)."""
+    tree.workflow(
+        "blk",
+        """
+rayspec: 1
+name: blk
+defaults:
+  timeout: 20m
+steps:
+  - id: work
+    loop:
+      max_iterations: 3
+      steps:
+        - id: step
+          shell: echo
+""",
+    )
+    # the caller's defaults.timeout is huge; the block's is small — the warning must fire on the
+    # BLOCK's 20m (naming it), proving the lint used the included scope, not the root.
+    rep = _validate(
+        tree,
+        HEAD
+        + """
+defaults:
+  timeout: 99h
+steps:
+  - id: sub
+    include: blk
+""",
+    )
+    assert rep.errors == [], rep.errors
+    hits = [w for w in rep.warnings if "whole-step timeout" in w and "sub/work" in w]
+    assert hits, rep.warnings
+    assert "20m" in hits[0] and "99h" not in hits[0], hits

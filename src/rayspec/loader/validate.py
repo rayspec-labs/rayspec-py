@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from rayspec.errors import RayspecError, UnsupportedFeatureError
+from rayspec.fmt import format_duration
 from rayspec.loader.loader import GraphView, IncludedBody, ResolvedAgent, ResolvedWorkflow
 from rayspec.loader.secrets import (
     check_secret_reference,
@@ -249,6 +250,13 @@ def _cap_flag(name: str) -> _CapCheck:
     return _CapCheck(name, lambda c: bool(getattr(c, name)), lambda c: getattr(c, name))
 
 
+def _agent_number_shown(agent: ResolvedAgent, field_name: str) -> object:
+    """The literal number, or the ``{{ inputs.<name> }}`` reference, of an agent's E1 field — for
+    a capability message that names what the workflow actually wrote."""
+    ref = agent.input_refs.get(field_name)
+    return f"{{{{ inputs.{ref} }}}}" if ref else getattr(agent, field_name)
+
+
 def _cap_member(name: str, member: str) -> _CapCheck:
     return _CapCheck(
         name,
@@ -441,6 +449,7 @@ class _Validator:
                     "loop body must contain at least one step",
                     location=self.rw.location_of(path, "loop"),
                 )
+            self._check_loop_timeout(step, path, scope)
             if step.loop.until is not None:
                 body = _Scope(
                     graph=GraphView("loop", f"{path}/", tuple(step.loop.steps), path, step),
@@ -494,6 +503,55 @@ class _Validator:
                 )
         elif isinstance(step, IncludeStep):
             self._check_include(step, path, scope, allowed)
+
+    def _check_loop_timeout(self, step: LoopStep, path: str, scope: _Scope) -> None:
+        """Warn when a loop's whole-step timeout cannot cover even one iteration of its body.
+
+        A loop's ``timeout`` (or, when it has none, the inherited ``defaults.timeout``) bounds the
+        WHOLE step — every iteration together, applied by ``anyio.fail_after`` around the loop
+        executor. A body leaf's own per-attempt timeout is ``leaf.timeout`` or the same
+        ``defaults.timeout``. If the loop's whole-step budget is not larger than a single body
+        step's per-attempt budget, the loop cannot finish even one iteration before its own
+        timeout fires — the run dies mid-attempt with no useful diagnosis. This is the trap F14
+        recorded: every shipped loop inherited ``defaults.timeout`` whole-step, so a step timeout
+        that comfortably covered one attempt silently bounded all of them.
+
+        Only ``loop:`` is linted. An ``each:``/``include:`` body's cost is data- or graph-
+        dependent (how many items, what they contain), so no fixed "iterations x body" bound
+        exists to compare against; a nested composite in the body counts as its own whole-step
+        timeout, like any other step. An unbounded loop (no timeout in force) is not flagged —
+        this lint is about a bound that is too small, not a missing one.
+        """
+        # defaults.timeout is lexically scoped: a loop inside an include: body inherits the
+        # INCLUDED workflow's defaults, which the engine's timeout_for reads the same way.
+        defaults = (
+            scope.include.defaults if scope.include is not None else self.rw.workflow.defaults
+        )
+        defaults_to = defaults.timeout  # float seconds | None
+        loop_to = step.timeout if step.timeout is not None else defaults_to
+        if loop_to is None:
+            return
+        worst: float | None = None
+        worst_id = ""
+        for body in step.loop.steps:
+            body_to = body.timeout if body.timeout is not None else defaults_to
+            if body_to is None:
+                continue  # an unbounded body step — nothing to compare a finite loop bound to
+            if worst is None or body_to > worst:
+                worst, worst_id = body_to, body.id
+        if worst is None or loop_to > worst:
+            return
+        source = "its own `timeout`" if step.timeout is not None else "`defaults.timeout`"
+        suggested = format_duration(worst * step.loop.max_iterations * 1000)
+        self.report.warn(
+            f"steps.{path}.timeout",
+            f"the loop's whole-step timeout ({format_duration(loop_to * 1000)}, from {source}) is "
+            f"not larger than the per-attempt timeout of body step '{worst_id}' "
+            f"({format_duration(worst * 1000)}), so it cannot cover even one iteration of "
+            f"max_iterations={step.loop.max_iterations}; set an explicit `timeout:` on the loop "
+            f"of at least ~{suggested} (max_iterations x the body's slowest step)",
+            location=self.rw.location_of(path, "loop"),
+        )
 
     def _check_no_timeout(self, step: ApproveStep | StopStep, path: str) -> None:
         """``timeout:`` is a leaf/composite knob; a gate or ``stop:`` would ignore it silently."""
@@ -917,6 +975,7 @@ class _Validator:
             return
         if agent.key not in self._agent_checked:
             self._agent_checked.add(agent.key)
+            self._check_agent_input_refs(agent)
             self._check_agent_capabilities(agent, caps)
         # the agent may have been rewritten (effort alias) — re-fetch
         agent = self.rw.agents[agent.key]
@@ -974,6 +1033,38 @@ class _Validator:
                     location=agent.location("tools"),
                 )
 
+    def _check_agent_input_refs(self, agent: ResolvedAgent) -> None:
+        """Validate an agent's `{{ inputs.<name> }}` numbers (E1) statically: the input exists, is
+        not secret, and is declared with a numeric type. The concrete value is checked at run time
+        by `resolve_agent_numbers`; here we catch what is knowable from the declaration alone."""
+        inputs = self.rw.workflow.inputs
+        for field_name, input_name in agent.input_refs.items():
+            if input_name not in inputs:
+                hint = suggest(input_name, set(inputs))
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r}, which the workflow does not "
+                    f"declare{f'; did you mean {hint!r}?' if hint else ''}",
+                    location=agent.location(field_name),
+                )
+                continue
+            spec = inputs[input_name]
+            if spec.secret:
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r}, which is declared "
+                    f"secret: true — a budget/turn limit may not come from a secret",
+                    location=agent.location(field_name),
+                )
+            allowed = {"integer"} if field_name == "max_turns" else {"integer", "number"}
+            if spec.type not in allowed:
+                self.report.error(
+                    agent.field_path(field_name),
+                    f"{field_name} references input {input_name!r} of type {spec.type!r}; it must "
+                    f"be {' or '.join(sorted(allowed))}",
+                    location=agent.location(field_name),
+                )
+
     def _check_agent_capabilities(self, agent: ResolvedAgent, caps: ProviderCapabilities) -> None:
         provider = agent.provider
 
@@ -990,10 +1081,17 @@ class _Validator:
                 field=field,
             )
 
-        if agent.max_turns is not None and not caps.max_turns:
-            unsupported("max_turns", agent.max_turns, _cap_flag("max_turns"))
-        if agent.budget_usd is not None and not caps.budget_usd:
-            unsupported("budget_usd", agent.budget_usd, _cap_flag("budget_usd"))
+        # an input-backed number (E1) counts as "set" here — the provider still needs the
+        # capability, and its concrete value only arrives at run time
+        turns_set = agent.max_turns is not None or "max_turns" in agent.input_refs
+        budget_set = agent.budget_usd is not None or "budget_usd" in agent.input_refs
+        if turns_set and not caps.max_turns:
+            unsupported(
+                "max_turns", _agent_number_shown(agent, "max_turns"), _cap_flag("max_turns")
+            )
+        if budget_set and not caps.budget_usd:
+            shown = _agent_number_shown(agent, "budget_usd")
+            unsupported("budget_usd", shown, _cap_flag("budget_usd"))
         if agent.thinking is not None and not caps.thinking:
             unsupported("thinking", agent.thinking, _cap_flag("thinking"))
         if agent.on_denial == "fail" and not caps.denial_reporting:

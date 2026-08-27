@@ -77,7 +77,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("RAYSPEC_HOME", str(home))
-    monkeypatch.delenv("RAYSPEC_INPUT_ISSUE", raising=False)
     return root
 
 

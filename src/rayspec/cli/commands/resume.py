@@ -211,10 +211,39 @@ def guard_workflow_unchanged(
     except RayspecError as exc:
         fail(str(exc), hint=exc.hint)
         raise AssertionError("unreachable") from None  # pragma: no cover
+    _note_ejected_override(ctx, record)
     refuse_policy_violations(resolved)
     refuse_changed_workflow(record, resolved, force=force)
     enforce_lockfile(ctx.loader_context, resolved, locked=locked, project_root=ctx.project_root)
     return resolved
+
+
+def _note_ejected_override(ctx: common.RunsContext, record: RunRecord) -> None:
+    """When a run recorded a BUNDLED workflow but a project/user copy of the same name now exists
+    (someone ejected it since), say plainly that a resume reloads the file the run RECORDED, not
+    the ejected copy — the surprise that made the dogfood's `resume --force` replay a stale answer.
+    """
+    from rayspec.cli.commands._loader_common import err_console
+    from rayspec.loader.bundled import BUNDLED_LABEL_PREFIX
+
+    label = record.workflow_path or ""
+    if not label.startswith(BUNDLED_LABEL_PREFIX):
+        return  # the run already recorded a project/user file; a resume loads exactly it
+    name = record.workflow_name
+    project_root = common.record_root(ctx, record)
+    overrides = [
+        project_root / ".rayspec" / "workflows" / f"{name}.yaml",
+        ctx.home / "workflows" / f"{name}.yaml",
+    ]
+    override = next((p for p in overrides if p.is_file()), None)
+    if override is None:
+        return
+    err_console().print(
+        f"note: this run recorded the bundled {name!r}; a resume reloads that, not the "
+        f"{override} you have since added. To continue on the ejected copy instead, start a new "
+        f"run (`rayspec run {name}`) or `rayspec run {name} --resume {record.run_id} --force`.",
+        style="dim",
+    )
 
 
 def register(app: typer.Typer) -> None:
@@ -247,6 +276,16 @@ def register(app: typer.Typer) -> None:
                 ),
             ),
         ] = False,
+        rerun: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--rerun",
+                metavar="GLOB",
+                help="Re-run recorded steps whose path matches GLOB instead of replaying them "
+                "(repeatable; `build[*]/implement`, `build[*]/*`). Per-invocation, not recorded.",
+                show_default=False,
+            ),
+        ] = None,
         locked: LockedOption = None,
         wait_slot: WaitSlotOption = None,
         root: RootOption = None,
@@ -348,6 +387,19 @@ def register(app: typer.Typer) -> None:
         stub_script, stubs_path = resume_stub_script(
             record, resolved, stubs=stubs, dry_run=record.dry_run
         )
+        rerun_globs = rerun or []
+        if rerun_globs:
+            from rayspec.engine.paths import StepPath
+
+            recorded = [StepPath.parse(path) for path in record.steps]
+            for glob in rerun_globs:
+                if not any(sp.matches(glob) for sp in recorded):
+                    fail(
+                        f"--rerun {glob!r} matches no recorded step of run {record.run_id}",
+                        hint="a glob spans indices (`build[*]/implement`); "
+                        "run `rayspec show <id>` to see the recorded step paths",
+                    )
+                    return
         code = common.resume_run(
             ctx,
             store,
@@ -366,6 +418,7 @@ def register(app: typer.Typer) -> None:
             stubs_path=stubs_path,
             wait_slot=wait_slot,
             approve_classes=approve_class or (),
+            rerun=rerun_globs,
         )
         raise typer.Exit(code=code)
 

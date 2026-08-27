@@ -64,7 +64,8 @@ checks:
       steps:
         baseline: { status: failed, output_regex: "FAILED test_app.py::test_helper - AssertionError" }
         red_baseline: succeeded
-        plan: { status: skipped, skip_reason: when_false }
+        scout: { status: skipped, skip_reason: when_false }
+        plan: { status: skipped, skip_reason: upstream_skipped }
         gate_plan: skipped
   - id: held_scope                 # the operator holds `scope`: the dry run may not approve the plan
     workflow: prd_to_pr

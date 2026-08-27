@@ -129,3 +129,12 @@ def test_the_recorded_policy_is_visible_without_reading_run_json(
     assert shown["fail_fast"] is True
     text = cli.invoke(app, ["show", run_id, "--root", str(project)]).output
     assert "fail-fast" in text, text
+
+
+def test_rerun_with_a_glob_that_matches_no_step_is_a_usage_error(
+    cli: CliRunner, home: Path, project: Path
+) -> None:
+    run_id = _start(cli, project)
+    result = cli.invoke(app, ["resume", run_id, "--rerun", "nope[*]/gone", "--root", str(project)])
+    assert result.exit_code == 2, result.output
+    assert "matches no recorded step" in result.output

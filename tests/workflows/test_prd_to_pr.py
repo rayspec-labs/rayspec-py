@@ -382,16 +382,22 @@ class PrdProvider:
         plan: dict[str, Any] | None = None,
         tests: Edit | None = None,
         review: dict[str, Any] | None = COMPLETE,
+        scout_questions: list[str] | None = None,
     ) -> None:
         self.plan = plan or PLAN
         self.tests = tests or writes("test_total.py", TEST_TOTAL)
         self.edits = list(edits)
         self.review = review
+        # default: no questions → the explore fan-out is a no-op, so tests that do not care
+        # about it keep the same planner/tester/implementer/reviewer call counts they had in v1
+        self.scout_questions = list(scout_questions or [])
         self.plan_prompts: list[str] = []
         self.test_prompts: list[str] = []
         self.implement_prompts: list[str] = []
         self.implement_sessions: list[str | None] = []
         self.review_prompts: list[str] = []
+        self.scout_prompts: list[str] = []
+        self.explorer_prompts: list[str] = []
 
     async def open(
         self, *, run_id: str, workdir: str, env: Mapping[str, str], max_parallel: int
@@ -409,6 +415,21 @@ class PrdProvider:
         if "unresolved" in properties:  # the planner
             self.plan_prompts.append(req.prompt)
             return AgentResult(status="success", text=json.dumps(self.plan), structured=self.plan)
+        if "questions" in properties:  # the scout (names the explorer questions)
+            self.scout_prompts.append(req.prompt)
+            out = {"questions": list(self.scout_questions)}
+            return AgentResult(status="success", text=json.dumps(out), structured=out)
+        if "reuse" in properties:  # an explorer (answers exactly one question, read-only)
+            self.explorer_prompts.append(req.prompt)
+            out = {
+                "question": "explored",
+                "answer": "read the code",
+                "files": [{"path": "app.py", "why": "the module"}],
+                "reuse": [],
+                "conventions": [],
+                "risks": [],
+            }
+            return AgentResult(status="success", text=json.dumps(out), structured=out)
         if "question" in properties:  # the implementer
             self.implement_prompts.append(req.prompt)
             self.implement_sessions.append(req.resume_session)
@@ -552,13 +573,13 @@ async def test_converges_on_the_third_try_with_distinct_briefs(
     assert result.status == "succeeded", result.reason
     assert result.outputs is not None and result.outputs["attempts"] == 3
     _first, second, third = provider.implement_prompts
-    assert second.startswith("Attempt 2 of 4.\n")
+    assert second.startswith("Attempt 2 of 4 (session continued).\n")
     assert (
         "The tree does not typecheck after your last edit (`python3 -B typecheck.py` exited 1):\n"
         "app.py:5: SyntaxError:"
     ) in second
     assert "The tests fail too (`python3 -B run_tests.py` exited 1):\n" in second
-    assert third.startswith("Attempt 3 of 4.\n")
+    assert third.startswith("Attempt 3 of 4 (session continued).\n")
     assert "does not typecheck" not in third
     assert (
         "The tree typechecks, but the tests fail (`python3 -B run_tests.py` exited 1):\n" in third
@@ -582,8 +603,7 @@ async def test_vacuous_tests_fail_the_run_before_any_implementation(
     assert result.exit_code == 1
     assert result.reason is not None
     assert (
-        "the new tests pass without any implementation — vacuous tests: test_total.py"
-        in result.reason
+        "no new test fails against the current code — vacuous tests: test_total.py" in result.reason
     )
     assert result.steps["vacuous"].status == "succeeded"
     assert result.steps["commit_tests"].status == "skipped"
@@ -602,7 +622,7 @@ async def test_exhaustion_fails_and_retains_the_work(
     result = await run_in_place(repo, home, provider, max_attempts=2)
     assert result.status == "failed", result.reason
     assert result.reason is not None
-    assert "not green after 2 attempt(s) — typecheck exited 0, tests exited 1" in result.reason
+    assert "not green after 2 done attempt(s) — typecheck exited 0, tests exited 1" in result.reason
     assert result.steps["build[2]/give_up"].status == "succeeded"
     assert len(provider.implement_prompts) == 2
     assert provider.review_prompts == []  # nothing to review: the loop never went green
@@ -695,7 +715,7 @@ async def test_a_partial_review_asks_at_the_pr_gate_and_still_opens_the_pr(
     assert remote_branches(origin) == ["main", f"prd/prd-{short_id(result)}"]
     logged = log.read_text(encoding="utf-8")
     assert (
-        "## Coverage (reviewer's verdict: partial)\n\ncovered:\n- R1\n\nuncovered:\n- R2\n\nunrequested:\n- logging\n"
+        "## Coverage (reviewer's verdict: partial)\n\ncovered:\n- R1\n\nuncovered:\n- R2\n"
         in logged
     )
 

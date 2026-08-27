@@ -5,12 +5,47 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from rayspec.schema.base import StrictModel
-from rayspec.schema.common import AccessLevelName, EffortName, InstructionsModeName, Name
+from rayspec.schema.common import (
+    AccessLevelName,
+    EffortName,
+    InstructionsModeName,
+    Name,
+    input_ref_name,
+    parse_money,
+)
+
+
+def parse_templated_money(value: object) -> float | str:
+    """``budget_usd``: a positive USD literal (``1.5``, ``"$1.50"``) OR exactly one
+    ``{{ inputs.<name> }}`` reference, kept verbatim for the loader to resolve per run."""
+    if input_ref_name(value) is not None:
+        return value  # type: ignore[return-value]  # a str, narrowed by input_ref_name
+    return parse_money(value)  # a literal → float, > 0 enforced
+
+
+def parse_templated_turns(value: object) -> int | str:
+    """``max_turns``: a positive integer literal OR exactly one ``{{ inputs.<name> }}`` reference.
+    Unlike a token count there are no ``500k`` string forms — a string is a reference or nothing."""
+    if input_ref_name(value) is not None:
+        return value  # type: ignore[return-value]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"invalid max_turns {value!r}: use a positive integer or {{{{ inputs.<name> }}}}"
+        )
+    if value < 1:
+        raise ValueError("must be >= 1")
+    return value
+
+
+#: ``budget_usd`` on an agent: a literal USD amount or exactly ``{{ inputs.<name> }}`` (E1).
+TemplatedMoney = Annotated[float | str, BeforeValidator(parse_templated_money)]
+#: ``max_turns`` on an agent: a literal positive int or exactly ``{{ inputs.<name> }}`` (E1).
+TemplatedTurns = Annotated[int | str, BeforeValidator(parse_templated_turns)]
 
 #: ``network:`` — whether the agent may reach the network through its provider's own tools.
 NetworkModeName = Literal["on", "off"]
@@ -94,8 +129,10 @@ class AgentDef(StrictModel):
     instructions: str | None = None
     instructions_file: str | None = None
     instructions_mode: InstructionsModeName = "append"
-    max_turns: int | None = Field(default=None, ge=1)
-    budget_usd: float | None = Field(default=None, gt=0)
+    # `ge`/`gt` cannot live on the Field (the value may be a `{{ inputs.x }}` string); the
+    # numeric bound is enforced inside the validator for a literal instead.
+    max_turns: TemplatedTurns | None = None
+    budget_usd: TemplatedMoney | None = None
     tools: ToolsSpec = Field(default_factory=ToolsSpec)
     network: NetworkModeName | None = None
     commands: CommandsSpec | None = None

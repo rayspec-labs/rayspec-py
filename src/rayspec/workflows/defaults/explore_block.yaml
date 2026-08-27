@@ -1,0 +1,113 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/rayspec-labs/rayspec-py/main/schemas/workflow.schema.json
+rayspec: 1
+name: explore_block
+description: >
+  Reusable read-only "plan-mode" fan-out: one explorer agent per question reads the code in
+  parallel and answers exactly its question — the files to touch, the symbols worth reusing, the
+  conventions to follow and the risks — and a python step reshapes the reports for a planner to
+  consume. Include it with `include: explore_block`, passing `questions` (and optional
+  `context`/`focus`) through `with:`. It proposes nothing and changes nothing.
+
+inputs:
+  questions:
+    type: array
+    items: { type: string }
+    default: []
+    description: "The questions to answer, one explorer each (empty = a no-op that yields no reports)"
+  context: { type: string, default: "", description: "One line of shared context for every explorer" }
+  focus: { type: string, default: "", description: "What every explorer should pay attention to" }
+
+isolation: none
+
+agents:                             # inline: the block needs no .rayspec/agents/ or config.yaml
+  explorer:
+    provider: claude
+    model: medium                   # tier → sonnet (config.tiers, else the built-in defaults)
+    effort: medium
+    access: read-only               # Read/Glob/Grep only — it cannot edit or run anything
+    thinking: true
+    budget_usd: 1.00                # hard stop per explorer
+    instructions_mode: append
+    instructions: |
+      You explore {{ project.name }} ({{ project.slug }}) to answer ONE question by READING the
+      code. Name concrete files, the symbols worth reusing, the conventions to follow and the
+      risks. You never propose a change, and you never edit or run anything.
+    tools: { deny: [web] }
+
+steps:
+  - id: scan
+    each: inputs.questions
+    as: question
+    max_parallel: 4
+    on_failure: continue            # one explorer that fails becomes a null slot; the sweep goes on
+    steps:
+      - id: inspect
+        agent: explorer
+        retry: { attempts: 2, delay: 2s }   # a flaky read retries; a real failure becomes a null slot
+        prompt: |
+          Question {{ each.index + 1 }} of {{ each.total }} about {{ project.name }}:
+          {{ question }}
+          {% if inputs.context %}
+          Context: {{ inputs.context }}
+          {% endif %}
+          {% if inputs.focus %}
+          Focus on: {{ inputs.focus }}
+          {% endif %}
+          Answer ONLY this question by reading the code. Name the files (each with why it matters),
+          the symbols worth reusing, the conventions to follow, and the risks. Propose nothing.
+        output_schema:
+          type: object
+          properties:
+            question: { type: string }
+            answer: { type: string }
+            files:
+              type: array
+              items:
+                type: object
+                properties: { path: { type: string }, why: { type: string } }
+                required: [path, why]
+            reuse:
+              type: array
+              items:
+                type: object
+                properties:
+                  symbol: { type: string }
+                  path: { type: string }
+                  why: { type: string }
+                required: [symbol, path, why]
+            conventions: { type: array, items: { type: string } }
+            risks: { type: array, items: { type: string } }
+          required: [question, answer, files, reuse, conventions, risks]
+
+  - id: collect
+    needs: [scan]
+    # Strict Jinja cannot map over the `null` slot a failed explorer leaves, so the reshape is
+    # code: an index-aligned `reports` list (null where an explorer failed), the questions that
+    # were answered, and the ones that were lost.
+    python: |
+      import json
+      items = {{ steps.scan.output }}          # [{inspect: report} | null, …] index-aligned
+      questions = {{ inputs.questions }}
+      reports, answered, lost = [], [], []
+      for i, item in enumerate(items):
+          report = item.get("inspect") if isinstance(item, dict) else None
+          reports.append(report)
+          q = questions[i] if i < len(questions) else None
+          if report is None:
+              if q is not None:
+                  lost.append(q)
+          else:
+              answered.append(report.get("question") or q or "")
+      print(json.dumps({"reports": reports, "answered": answered, "lost": lost}))
+    output_schema:
+      type: object
+      properties:
+        reports: { type: array }
+        answered: { type: array, items: { type: string } }
+        lost: { type: array, items: { type: string } }
+      required: [reports, answered, lost]
+
+outputs:                            # what the including workflow sees as steps.<include>.output
+  reports: "{{ steps.collect.output.reports }}"
+  answered: "{{ steps.collect.output.answered }}"
+  lost: "{{ steps.collect.output.lost }}"

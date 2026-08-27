@@ -56,6 +56,7 @@ def test_workflows_lists_and_json(tree: Tree):
     assert [d["name"] for d in data if d["scope"] == "bundled"] == [
         "architect",
         "create_issue",
+        "explore_block",
         "fix_issue",
         "pr_review",
         "prd_to_pr",

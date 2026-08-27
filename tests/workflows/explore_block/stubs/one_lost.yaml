@@ -1,0 +1,13 @@
+# The second explorer fails outright (an outage): on_failure: continue leaves a null slot, so
+# `reports` keeps an index-aligned null, `answered` has one, `lost` names the failed question.
+steps:
+  "scan[0]/inspect":
+    output:
+      question: "kept"
+      answer: "read it"
+      files: []
+      reuse: []
+      conventions: []
+      risks: []
+  "scan[1]/inspect":
+    fail: { kind: api, message: "simulated outage", transient: false }

@@ -21,7 +21,6 @@ is the signal to revisit the decision, not a flake.
 
 from __future__ import annotations
 
-import os
 import textwrap
 from pathlib import Path
 
@@ -30,8 +29,7 @@ import pytest
 from ._helpers import invoke
 
 pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(os.environ.get("RAYSPEC_LIVE") != "1", reason="set RAYSPEC_LIVE=1 to run"),
+    pytest.mark.live,  # the conftest live gate skips these unless RAYSPEC_LIVE=1
 ]
 
 PROBE = "rayspec-live-probe-QQZZ7788"

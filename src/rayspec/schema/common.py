@@ -139,6 +139,51 @@ def _positive(value: float) -> float:
 PositiveDuration = Annotated[float, BeforeValidator(parse_duration), AfterValidator(_positive)]
 
 
+_MONEY_RE = re.compile(r"^\s*\$?\s*(\d+(?:\.\d+)?)\s*(?:USD)?\s*$", re.IGNORECASE)
+_MONEY_HINT = "use a USD amount (e.g. 1.5) or a string like '$1.50'"
+
+
+def parse_money(value: object) -> float:
+    """Parse a USD cap into a float (``1.5``, ``"1.50"``, ``"$1.50"``, ``"12 USD"``).
+
+    Lives here (not in ``schema.workflow``) so ``schema.agent`` — which ``schema.workflow``
+    imports — can reach it without a cycle; ``schema.workflow`` re-exports ``Money``/``parse_money``
+    for the callers CONTRACTS names.
+    """
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
+    if isinstance(value, int | float):
+        amount = float(value)
+    elif isinstance(value, str):
+        match = _MONEY_RE.match(value)
+        if match is None:
+            raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
+        amount = float(match.group(1))
+    else:
+        raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
+    if amount <= 0:
+        raise ValueError("must be greater than 0")
+    return amount
+
+
+#: ``defaults.budget_usd``: positive USD amount; accepts ``"$1.50"`` strings.
+Money = Annotated[float, BeforeValidator(parse_money)]
+
+#: An agent number backed by an input: EXACTLY ``{{ inputs.<name> }}`` (whitespace tolerant),
+#: nothing else — not an arithmetic expression, not a partial template. This is the one place a
+#: numeric field accepts a reference, and it is a reference, not an expression (constitution: a
+#: lever the workflow author sets, resolved to the run's own input, not computed).
+INPUT_REF_RE = re.compile(r"^\s*\{\{\s*inputs\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\s*$")
+
+
+def input_ref_name(value: object) -> str | None:
+    """The input name in ``{{ inputs.<name> }}``, or ``None`` when ``value`` is not exactly one."""
+    if not isinstance(value, str):
+        return None
+    match = INPUT_REF_RE.match(value)
+    return match.group(1) if match else None
+
+
 class StepStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -180,6 +225,7 @@ class RunStatus(StrEnum):
 
 __all__ = [
     "IDENT_RE",
+    "INPUT_REF_RE",
     "MAX_IDENT_LEN",
     "RESERVED_ROOTS",
     "AccessLevelName",
@@ -189,13 +235,16 @@ __all__ = [
     "InstructionsModeName",
     "Isolation",
     "JoinPolicy",
+    "Money",
     "Name",
     "OnStepFailure",
     "OnUnsupported",
     "PositiveDuration",
     "RunStatus",
     "StepStatus",
+    "input_ref_name",
     "parse_duration",
+    "parse_money",
     "validate_identifier",
     "validate_name",
 ]

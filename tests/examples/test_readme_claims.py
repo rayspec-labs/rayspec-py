@@ -29,9 +29,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "home"
     path.mkdir()
     monkeypatch.setenv("RAYSPEC_HOME", str(path))
-    for name in list(check_examples.os.environ):
-        if name.startswith("RAYSPEC_INPUT_"):
-            monkeypatch.delenv(name)
     return path
 
 
