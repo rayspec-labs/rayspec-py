@@ -956,8 +956,13 @@ class Runner:
         if cost_source != "none":
             data["cost_source"] = cost_source
         try:
-            await ctx.save_run()
+            # RUN_FINISHED must be on disk (events.jsonl) BEFORE run.json flips to a terminal
+            # status: `logs --follow` keys its final drain off run.json, and does exactly one
+            # more poll once it reads a terminal status. Saving run.json first would open a
+            # window where the follower sees the run end and drains events.jsonl before the
+            # closing event was appended — terminating without ever printing `run.finished`.
             await ctx.emit(EventType.RUN_FINISHED, **data)
+            await ctx.save_run()
         finally:
             await ctx.providers.aclose()
         return RunResult(
