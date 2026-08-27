@@ -252,6 +252,48 @@ def resolve_source(
     )
 
 
+def source_slug_for(arg: str, config: Config | None, *, cwd: Path | None = None) -> str:
+    """The project slug a ``--repo`` argument resolves to — WITHOUT cloning or fetching anything.
+
+    Mirrors :func:`resolve_source`'s order (path → registered name → URL → bare name that is a
+    directory) but computes only the slug, so the detach launcher can pre-create a run directory
+    for a ``--repo`` run before the child materialises the workspace. Raises
+    :class:`WorkspaceError` for an argument that does not resolve (same message as
+    :func:`resolve_source`)."""
+    text = arg.strip()
+    here = (Path.cwd() if cwd is None else cwd).resolve()
+    if not text:
+        raise WorkspaceError("--repo needs a path, registered project name or git URL")
+
+    def _path_slug(raw: str) -> str:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = here / path
+        return project_from_root(path.resolve()).slug
+
+    if not is_git_url(text) and _looks_like_path(text):
+        return _path_slug(text)
+    if config is not None:
+        for spec in config.projects:
+            if spec.name == text:
+                return (
+                    source_slug(spec.source) if is_git_url(spec.source) else _path_slug(spec.source)
+                )
+    if is_git_url(text):
+        return source_slug(text)
+    if (here / text).is_dir():
+        return _path_slug(text)
+    names = sorted(p.name for p in config.projects) if config else []
+    hint = (
+        f"registered projects: {', '.join(names)}"
+        if names
+        else "rayspec projects add <name> <source>"
+    )
+    raise WorkspaceError(
+        f"--repo {arg!r}: not a directory, registered project or git URL", hint=hint
+    )
+
+
 def default_base(source: RepoSource) -> str | None:
     """The base ref for a source when ``--base`` is absent.
 
@@ -278,4 +320,5 @@ __all__ = [
     "resolve_source",
     "source_dir",
     "source_slug",
+    "source_slug_for",
 ]

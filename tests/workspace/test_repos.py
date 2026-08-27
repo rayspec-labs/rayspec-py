@@ -18,6 +18,7 @@ from rayspec.workspace.repos import (
     remote_tracking_ref,
     resolve_source,
     source_slug,
+    source_slug_for,
 )
 
 from .gitfixtures import git, make_repo
@@ -224,3 +225,26 @@ def test_stale_clone_heads_are_ignored(tmp_path: Path, home: Path) -> None:
     src = resolve_source(url, None, home=home)
     assert g.rev_parse(bare, remote_tracking_ref(bare, "main")) == g.rev_parse(upstream, "main")
     assert default_base(src) == "origin/main"
+
+
+def test_source_slug_for_matches_resolve_without_cloning(
+    repo: Path, home: Path, tmp_path: Path
+) -> None:
+    """The launcher's slug for a --repo source equals what resolve_source/prepare_workspace use,
+    and computing it materialises nothing (no source.git clone for a URL)."""
+    # a path source
+    assert source_slug_for(str(repo), None) == resolve_source(str(repo), None, home=home).slug
+    # a registered project name (path)
+    config = Config(projects=[ProjectSpec(name="widget", source=str(repo), base="main")])
+    assert source_slug_for("widget", config) == resolve_source("widget", config, home=home).slug
+    # a URL source: the slug is derived, nothing is cloned
+    url = "git@github.com:Acme/Widget.git"
+    assert source_slug_for(url, None) == source_slug(url)
+    assert not (home / "projects" / source_slug(url) / "source.git").exists()
+    # a relative bare name resolves against cwd
+    assert source_slug_for(repo.name, None, cwd=repo.parent) == source_slug_for(str(repo), None)
+
+
+def test_source_slug_for_rejects_an_unresolvable_argument(home: Path) -> None:
+    with pytest.raises(WorkspaceError):
+        source_slug_for("nope-not-a-thing", None)
