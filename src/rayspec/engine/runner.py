@@ -25,7 +25,6 @@ import contextlib
 import hashlib
 import os
 import socket
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,10 +34,18 @@ import anyio
 from anyio import to_thread
 
 from rayspec.actor import resolve_actor
+from rayspec.engine import liveness
 from rayspec.engine.approval import ApprovalPrompt
-from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
+from rayspec.engine.context import (
+    CANCEL_SKIP_REASON,
+    ExecScope,
+    RunContext,
+    RunOptions,
+    StepOutcome,
+)
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
 from rayspec.engine.graph import FAILED_LIKE, StepGraph
+from rayspec.engine.liveness import process_start_time, run_pid_alive
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import (
     Runtime,
@@ -385,6 +392,9 @@ class Runner:
                 base_sha=self.workspace.base_sha,
             )
         await self._consume_envelope_decision(ctx, run)
+        # prove the process is alive before the first slow thing (toolchain capture, envelope):
+        # the periodic timer starts inside ``body()``, so stamp once up front too.
+        await to_thread.run_sync(ctx._stamp_alive)
         if not resumed and run.toolchain is None:  # the SDK/CLI/models in effect, once
             run.toolchain = await capture_toolchain(ctx)
             await ctx.save_run()
@@ -393,29 +403,51 @@ class Runner:
         await ctx.check_budget()
 
         engine_error: BaseException | None = None
+        # PRD-07 R2: a periodic timer that proves this process is still alive for the life of
+        # the run, independent of any single step — a long shell/prompt step with no provider
+        # call still moves ``heartbeat_at`` between its own start and end events.
+        heartbeat_s = liveness.HEARTBEAT_INTERVAL_S  # read at call time: tests shorten it
+
+        async def _heartbeat_loop() -> None:
+            # best-effort: a liveness write that fails (a full disk, a slow FS) must never end the
+            # run — the run's own step saves stamp ``heartbeat_at`` too, and finalize decides the
+            # real status. Letting an OSError escape the task group here would bypass ``_finalize``
+            # and leave ``run.json`` stuck on ``running`` with a live pid.
+            while True:
+                await anyio.sleep(heartbeat_s)
+                try:
+                    await ctx.touch_heartbeat()
+                except Exception as exc:  # a liveness write is never fatal
+                    with contextlib.suppress(Exception):
+                        await ctx.warn(f"heartbeat write failed (continuing): {exc}")
 
         async def body() -> None:
             nonlocal engine_error
-            try:
-                outcomes.update(await run_graph(graph, root_scope, ctx))
-            except RunStopped as exc:
-                ctx.stopped = exc
-            except RunPaused as exc:
-                ctx.paused = ctx.paused or exc
-            except anyio.get_cancelled_exc_class():
-                raise
-            except BaseExceptionGroup as group:
-                inner = unwrap_exception_group(group)
-                if isinstance(inner, RunStopped):
-                    ctx.stopped = inner
-                elif isinstance(inner, RunPaused):
-                    ctx.paused = ctx.paused or inner
-                elif isinstance(inner, anyio.get_cancelled_exc_class()):
-                    raise
-                else:  # a bug in the engine: finalize the run as failed, never leave it running
-                    engine_error = inner
-            except Exception as exc:
-                engine_error = exc
+            async with anyio.create_task_group() as hb_tg:
+                hb_tg.start_soon(_heartbeat_loop)
+                try:
+                    try:
+                        outcomes.update(await run_graph(graph, root_scope, ctx))
+                    except RunStopped as exc:
+                        ctx.stopped = exc
+                    except RunPaused as exc:
+                        ctx.paused = ctx.paused or exc
+                    except anyio.get_cancelled_exc_class():
+                        raise
+                    except BaseExceptionGroup as group:
+                        inner = unwrap_exception_group(group)
+                        if isinstance(inner, RunStopped):
+                            ctx.stopped = inner
+                        elif isinstance(inner, RunPaused):
+                            ctx.paused = ctx.paused or inner
+                        elif isinstance(inner, anyio.get_cancelled_exc_class()):
+                            raise
+                        else:  # a bug in the engine: finalize failed, never leave it running
+                            engine_error = inner
+                    except Exception as exc:
+                        engine_error = exc
+                finally:
+                    hb_tg.cancel_scope.cancel()
 
         interrupted = False
         try:
@@ -657,17 +689,28 @@ class Runner:
                     hint=f"use `rayspec resume {run.run_id}` (it reloads the run's own workflow)",
                 )
             if run.status is RunStatus.RUNNING and not self.options.force:
-                if _on_other_host(run):
+                # one liveness rule, shared with the CLI's reconcile_run: a live process refuses
+                # the resume, a stale-heartbeat process refuses with a wedged-process hint, and a
+                # dead or REUSED pid (the case the heartbeat exists for) is resumable.
+                verdict = liveness.assess(run)
+                if verdict is liveness.Liveness.OTHER_HOST:
                     raise ResumeError(
                         f"run {run.run_id} is recorded as running on host {run.host} "
                         f"(pid {run.pid or '?'}) — its process cannot be checked from here",
                         hint="resume it on that host, or pass --force if you are sure it is dead",
                     )
-                if _pid_alive(run):
+                if verdict is liveness.Liveness.ALIVE:
                     raise ResumeError(
                         f"run {run.run_id} is still running (pid {run.pid} on {run.host})",
                         hint=f"stop it first with `rayspec cancel {run.run_id}`, "
                         "or pass --force if you are sure it is dead",
+                    )
+                if verdict is liveness.Liveness.STALE_HEARTBEAT:
+                    raise ResumeError(
+                        f"run {run.run_id} (pid {run.pid}) has not proved it is alive for over "
+                        f"{liveness.HEARTBEAT_STALE_AFTER_S:g}s — it may be wedged",
+                        hint=f"`rayspec cancel {run.run_id} --now` if it is stuck, "
+                        "or pass --force to resume anyway",
                     )
             mismatch = run.workflow_hash != self.resolved.hash
             if mismatch and not self.options.force:
@@ -695,6 +738,11 @@ class Runner:
                 # as the placeholder so that it is exported (and required) like the others
                 if name in self.secret_inputs and name not in run.inputs:
                     run.inputs[name] = SECRET_PLACEHOLDER
+            # a run cancelled earlier left a cancel.json; clear it before the graph starts, or
+            # the scheduler reads it at the first step and re-cancels the resume (PRD-07 R5, D4).
+            from rayspec.engine.cancel import clear_cancel_flag
+
+            clear_cancel_flag(self.store.run_dir(run.run_id))
             cache = dict(run.steps)
             if self.options.stubs_path is not None:
                 run.stubs_path = self.options.stubs_path  # --stubs on resume overrides
@@ -712,6 +760,7 @@ class Runner:
             run.resume_count += 1
             run.pid = os.getpid()
             run.pid_started_at = pid_started_at  # a new process: refresh
+            run.heartbeat_at = utcnow()
             run.host = socket.gethostname()
             run.started_at = run.started_at or utcnow()
             run.workflow_hash = self.resolved.hash
@@ -739,6 +788,7 @@ class Runner:
             started_at=utcnow(),
             pid=os.getpid(),
             pid_started_at=pid_started_at,
+            heartbeat_at=utcnow(),
             host=socket.gethostname(),
             workspace=self.workspace.info(),
             dry_run=bool(self.options.dry_run),
@@ -824,6 +874,17 @@ class Runner:
             # finally idiom) — and a capped run must never report success to its caller.
             status = RunStatus.FAILED
             reason = ctx.budget_exceeded
+        elif ctx.cancel_requested is not None and failed:
+            # a cancel that arrived while a step had already failed must not launder that failure
+            # into ``cancelled``/exit 4 — an untolerated failure is the run's verdict (like the
+            # ``stopped`` ladder above)
+            status = RunStatus.FAILED
+            reason = _failure_reason()
+        elif ctx.cancel_requested is not None:
+            # PRD-07 R5: cooperative cancel — drained exactly like a run-level cap, but this is
+            # not a defect, so it finalizes ``cancelled`` (exit 4) rather than ``failed``
+            status = RunStatus.CANCELLED
+            reason = ctx.cancel_requested
         elif ctx.stopped is not None and failed:
             status = RunStatus.FAILED
             reason = _failure_reason()
@@ -868,6 +929,11 @@ class Runner:
         run.ended_at = utcnow()
         if status is not RunStatus.PAUSED:
             run.pid = None
+            # the run has reached a terminal status: consume the cancel flag so a later resume
+            # does not read it and cancel again (a paused run keeps it — resume clears it there)
+            from rayspec.engine.cancel import clear_cancel_flag
+
+            clear_cancel_flag(self.store.run_dir(run.run_id))
         await to_thread.run_sync(self._refresh_head_sha)  # pause / run end
         run.workspace = self.workspace.info()
         await self._publish_branch(ctx)  # opt-in, best effort — never changes ``status``
@@ -890,8 +956,13 @@ class Runner:
         if cost_source != "none":
             data["cost_source"] = cost_source
         try:
-            await ctx.save_run()
+            # RUN_FINISHED must be on disk (events.jsonl) BEFORE run.json flips to a terminal
+            # status: `logs --follow` keys its final drain off run.json, and does exactly one
+            # more poll once it reads a terminal status. Saving run.json first would open a
+            # window where the follower sees the run end and drains events.jsonl before the
+            # closing event was appended — terminating without ever printing `run.finished`.
             await ctx.emit(EventType.RUN_FINISHED, **data)
+            await ctx.save_run()
         finally:
             await ctx.providers.aclose()
         return RunResult(
@@ -929,93 +1000,8 @@ def _on_other_host(run: RunRecord) -> bool:
 
 
 #: Linux process table (overridable in tests).
-_PROC_ROOT = Path("/proc")
-
-
-#: Environment for the ``ps`` probe: the ``lstart`` string depends on the locale (``Do. 20 Aug.``
-#: vs ``Thu Aug 20``) and on ``TZ``, and the engine (launch) and ``rayspec cancel`` may run under
-#: different shells (cron/CI vs interactive) — pin both so the two sides always agree.
-_PS_ENV = {"LC_ALL": "C", "TZ": "UTC"}
-
-
-def _ps_lstart(pid: int, *, timeout_s: float) -> str | None:
-    """``ps -o lstart= -p <pid>`` under ``LC_ALL=C TZ=UTC``, stripped; ``None`` when the process
-    is gone or ``ps`` fails (non-zero exit, e.g. a busybox ``ps`` without ``-o lstart``).
-
-    Raises :class:`FileNotFoundError` when there is no ``ps`` at all and
-    :class:`subprocess.TimeoutExpired` when it hangs (the caller falls back to ``/proc``).
-    """
-    proc = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-        env={**os.environ, **_PS_ENV},
-    )
-    if proc.returncode != 0:
-        return None
-    line = proc.stdout.strip()
-    return line or None
-
-
-def _proc_starttime(pid: int, *, proc_root: Path | None = None) -> str | None:
-    """Field 22 (``starttime``, clock ticks since boot) of ``/proc/<pid>/stat`` — Linux only.
-
-    The ``comm`` field (2) is parenthesised and may contain spaces and parentheses, so the fields
-    are counted from the LAST ``)``. ``None`` when the file is missing or malformed.
-    """
-    root = _PROC_ROOT if proc_root is None else proc_root
-    try:
-        text = (root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    _, sep, rest = text.rpartition(")")
-    if not sep:
-        return None
-    fields = rest.split()
-    # ``rest`` starts at field 3 (state): starttime is field 22 → index 19
-    if len(fields) < 20 or not fields[19].isdigit():
-        return None
-    return fields[19]
-
-
-def process_start_time(pid: int, *, timeout_s: float = 5.0) -> str | None:
-    """The start time of process ``pid`` as an opaque string to compare for equality.
-
-    The ``ps -o lstart= -p <pid>`` output run under a fixed environment (``LC_ALL=C TZ=UTC``, e.g.
-    ``Thu Aug 20 12:00:00 2026``; one-second resolution) — so the string is the same for the same
-    process whichever shell, locale or timezone the caller has; when ``ps`` is missing, fails
-    (busybox without ``-o lstart``) or hangs, the ``/proc/<pid>/stat`` ``starttime`` field on
-    Linux. ``None`` for a pid that does not exist, an invalid pid, or when neither source can be
-    read — callers treat "unknown" as "not verified". The engine records it next to ``pid`` in
-    ``run.json`` at launch and on resume; ``rayspec cancel`` compares it with the live process.
-    """
-    if pid <= 0:
-        return None
-    value: str | None = None
-    try:
-        value = _ps_lstart(pid, timeout_s=timeout_s)
-    except (OSError, subprocess.SubprocessError):
-        value = None
-    if value is not None:
-        return value
-    return _proc_starttime(pid)
-
-
-def _pid_alive(run: RunRecord) -> bool:
-    """Whether the process recorded in ``run.json`` still exists (same host only; POSIX)."""
-    if run.pid is None or run.pid <= 0 or (run.host and run.host != socket.gethostname()):
-        return False
-    try:
-        os.kill(run.pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+#: the historical name; the rule itself lives in :mod:`rayspec.engine.liveness`
+_pid_alive = run_pid_alive
 
 
 def _null_sink() -> EventSink:
@@ -1050,6 +1036,23 @@ def stop_collateral(record: StepRecord) -> bool:
     records can, which is what :func:`run_failures` reads.
     """
     return record.status is StepStatus.INTERRUPTED and record.skip_reason == STOPPED_REASON
+
+
+def cancel_collateral(record: StepRecord) -> bool:
+    """Whether ``record`` was torn down by a cooperative cancel (PRD-07 R5) rather than failing
+    on its own — the cancel's own teardown, exactly as :func:`stop_collateral` is the ``stop:``'s.
+
+    A cancel drains the run: a step it refused to start is ``skipped`` (:data:`CANCEL_SKIP_REASON`),
+    and a composite (a ``loop:``) cut between iterations is recorded ``interrupted`` with the same
+    reason. Both are ``FAILED_LIKE`` for the ``interrupted`` case, so — like the stop's collateral
+    — they must not count as an independent failure that would turn a deliberate ``cancelled``
+    (exit 4) into ``failed``. A body step whose OWN failure the cancel buried is still counted, by
+    the same ``run_failures`` reading of the body's records that guards the stop path.
+    """
+    return record.skip_reason == CANCEL_SKIP_REASON and record.status in {
+        StepStatus.INTERRUPTED,
+        StepStatus.SKIPPED,
+    }
 
 
 def answered_by_a_composite(run: RunRecord, record: StepRecord) -> bool:
@@ -1099,7 +1102,9 @@ def run_failures(run: RunRecord) -> list[StepRecord]:
     return [
         r
         for r in failed_steps(run)
-        if not stop_collateral(r) and not answered_by_a_composite(run, r)
+        if not stop_collateral(r)
+        and not cancel_collateral(r)
+        and not answered_by_a_composite(run, r)
     ]
 
 
@@ -1108,6 +1113,7 @@ __all__ = [
     "Runner",
     "Workspace",
     "answered_by_a_composite",
+    "cancel_collateral",
     "failed_steps",
     "fallback_project_slug",
     "process_start_time",

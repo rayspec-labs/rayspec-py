@@ -868,6 +868,19 @@
       "default": null,
       "title": "Pid Started At"
     },
+    "heartbeat_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Heartbeat At"
+    },
     "dry_run": {
       "default": false,
       "title": "Dry Run",

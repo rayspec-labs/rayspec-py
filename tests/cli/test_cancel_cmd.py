@@ -1,4 +1,10 @@
-"""`rayspec cancel <run>`: SIGINT a live run (with confirmation), cancel a paused one."""
+"""`rayspec cancel <run>`: flag a live run cooperatively (with confirmation), cancel a paused one.
+
+PRD-07 R5 changed what "cancel a live run" does: it used to SIGINT the process directly; it now
+writes a ``cancel.json`` flag beside ``run.json`` and lets the run's own process notice it at the
+next step boundary. The confirmation, ``--yes``/``--json``, ``--mark`` and dead-pid/other-host
+paths are unchanged.
+"""
 
 from __future__ import annotations
 
@@ -61,19 +67,22 @@ def _running(seeded: Seeded, run_id: str, pid: int | None, host: str | None) -> 
     return run
 
 
-def test_cancel_live_run_sends_sigint_after_confirmation(cli: CliRunner, seeded: Seeded) -> None:
+def test_cancel_live_run_flags_after_confirmation(cli: CliRunner, seeded: Seeded) -> None:
     proc = subprocess.Popen(FAKE_RAYSPEC)
     try:
         run = _running(seeded, "20260820-150000-live", proc.pid, socket.gethostname())
+        run_dir = seeded.store.run_dir(run.run_id)
         declined = cli.invoke(
             app, ["cancel", run.run_id, "--root", str(seeded.project)], input="n\n"
         )
         assert declined.exit_code == 1, declined.output
         assert proc.poll() is None
+        assert not (run_dir / "cancel.json").exists()
         result = cli.invoke(app, ["cancel", run.run_id, "--root", str(seeded.project)], input="y\n")
         assert result.exit_code == 0, result.output
-        assert "SIGINT" in result.output and str(proc.pid) in result.output
-        proc.wait(timeout=10)
+        assert "SIGINT" not in result.output and str(proc.pid) in result.output
+        assert (run_dir / "cancel.json").exists()
+        assert proc.poll() is None  # cooperative: the process itself is never touched
         # the record is the engine's to finalize: cancel does not rewrite a live run
         assert seeded.store.load(run.run_id).status is RunStatus.RUNNING
     finally:
@@ -92,11 +101,12 @@ def test_cancel_live_run_yes_and_json(cli: CliRunner, seeded: Seeded) -> None:
         data = json.loads(result.output)
         assert data == {
             "run_id": run.run_id,
-            "action": "signalled",
+            "action": "flagged",
             "pid": proc.pid,
             "status": "running",
         }
-        proc.wait(timeout=10)
+        assert (seeded.store.run_dir(run.run_id) / "cancel.json").exists()
+        assert proc.poll() is None
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -264,3 +274,115 @@ def test_cancel_never_signals_an_unrelated_process(cli: CliRunner, seeded: Seede
         for proc in (sleeper, probe):
             if proc.poll() is None:
                 proc.kill()
+
+
+def test_cancel_now_signals_a_live_run(cli: CliRunner, seeded: Seeded) -> None:
+    """PRD-07: `--now` interrupts the process (SIGINT) instead of flagging it."""
+    proc = subprocess.Popen(FAKE_RAYSPEC)
+    signalled: list[int] = []
+    try:
+        run = _running(seeded, "20260820-150900-now", proc.pid, socket.gethostname())
+        import rayspec.cli._runs_common as common
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(common, "interrupt_pid", lambda pid: signalled.append(pid))
+            result = cli.invoke(
+                app,
+                ["cancel", run.run_id, "--now", "--yes", "--json", "--root", str(seeded.project)],
+            )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["action"] == "signalled" and data["pid"] == proc.pid
+        assert signalled == [proc.pid]
+        assert not (
+            seeded.store.run_dir(run.run_id) / "cancel.json"
+        ).exists()  # signalled, not flagged
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_cancel_mark_is_decided_before_reconcile(cli: CliRunner, seeded: Seeded) -> None:
+    """PRD-07 D12: a running record with a dead pid + `--mark` reports action 'marked', not
+    'cancelled' — --mark is honoured before the reconcile that would flip the status."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=10)
+    run = _running(seeded, "20260820-151000-mark", proc.pid, socket.gethostname())
+    result = cli.invoke(
+        app, ["cancel", run.run_id, "--mark", "--json", "--root", str(seeded.project)]
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["action"] == "marked"
+
+
+def test_cancel_an_already_interrupted_run_is_nothing_to_cancel(
+    cli: CliRunner, seeded: Seeded
+) -> None:
+    """PRD-07 D13: a run already interrupted on disk is not re-cancellable; the hint points at
+    resume."""
+    run = _running(seeded, "20260820-151100-intr", None, socket.gethostname())
+    run.status = RunStatus.INTERRUPTED
+    seeded.store.save(run)
+    result = cli.invoke(app, ["cancel", run.run_id, "--root", str(seeded.project)])
+    assert result.exit_code == 2, result.output
+    assert "nothing to cancel" in result.output and "resume" in result.output
+
+
+def test_cancel_flags_a_stale_but_alive_run(cli: CliRunner, seeded: Seeded) -> None:
+    """PRD-07 N3: a run whose heartbeat went stale while its process is still alive is still
+    status running on disk, so cancel reaches it and writes the flag (not a mark)."""
+    from datetime import timedelta
+
+    proc = subprocess.Popen(FAKE_RAYSPEC)
+    try:
+        run = _running(seeded, "20260820-151200-stal", proc.pid, socket.gethostname())
+        run.pid_started_at = (
+            None  # older record: pid_is_rayspec_run uses the command-line heuristic
+        )
+        run.heartbeat_at = datetime.now(UTC) - timedelta(minutes=5)  # stale
+        seeded.store.save(run)
+        result = cli.invoke(
+            app, ["cancel", run.run_id, "--yes", "--json", "--root", str(seeded.project)]
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["action"] == "flagged"
+        assert (seeded.store.run_dir(run.run_id) / "cancel.json").is_file()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_mark_cancelled_writes_run_finished_before_the_terminal_record(seeded: Seeded) -> None:
+    """PRD-07 R3 (the sibling of tests/engine/test_finalize_ordering): `logs --follow` keys its
+    single final drain off run.json's status, so mark_cancelled must append run.finished to
+    events.jsonl BEFORE it saves the terminal record — else a follower can see the run end and
+    drain the event log without the closing line."""
+    from rayspec.cli.commands.cancel import mark_cancelled
+    from rayspec.store.file import EVENTS_JSONL
+
+    run = RunRecord(
+        run_id="20260827-150000-mark",
+        workflow_name="live",
+        workflow_path="x.yaml",
+        workflow_hash="f" * 64,
+        project_slug=seeded.slug,
+        project_root=str(seeded.project),
+        status=RunStatus.RUNNING,
+        started_at=datetime.now(UTC),
+    )
+    seeded.store.create(run)
+    observed: dict[str, bool] = {}
+    real_save = seeded.store.save
+
+    def watching_save(record, *args, **kwargs):
+        if record.status.is_terminal and "at_terminal_save" not in observed:
+            events = seeded.store.run_dir(record.run_id) / EVENTS_JSONL
+            text = events.read_text(encoding="utf-8") if events.exists() else ""
+            observed["at_terminal_save"] = "run.finished" in text
+        return real_save(record, *args, **kwargs)
+
+    seeded.store.save = watching_save  # type: ignore[method-assign]
+    mark_cancelled(seeded.store, run, reason="operator asked")
+    assert observed.get("at_terminal_save") is True, (
+        "run.json reached a terminal status before run.finished was in events.jsonl"
+    )

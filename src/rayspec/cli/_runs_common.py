@@ -30,6 +30,7 @@ from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.cli.commands._loader_common import Context, fail, make_context, stdout_is_tty
 from rayspec.config import Config
 from rayspec.engine.context import cost_source_of
+from rayspec.engine.liveness import heartbeat_is_stale as _heartbeat_is_stale
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.fmt import format_duration
@@ -44,7 +45,7 @@ from rayspec.store.file import (
     StoreError,
     UnknownRunIdError,
 )
-from rayspec.store.model import RunRecord, StepRecord
+from rayspec.store.model import RunRecord, StepRecord, utcnow
 from rayspec.textsafe import safe_text
 
 if TYPE_CHECKING:
@@ -454,6 +455,7 @@ def run_row(
         "fail_fast": run.fail_fast,
         "pid": run.pid,
         "host": run.host,
+        "heartbeat_at": _iso(run.heartbeat_at),
         "workspace": run.workspace.model_dump(mode="json"),
         "pause": run.pause.model_dump(mode="json") if run.pause else None,
     }
@@ -1123,10 +1125,11 @@ def pid_command_line(pid: int, *, timeout_s: float = 5.0) -> str | None:
     return line or None
 
 
-#: ``rayspec`` (as a whole token: ``rayspec``, ``/…/bin/rayspec``, ``-m rayspec``, ``rayspec.exe``)
-#: followed by one of the commands that run an engine process.
+#: ``rayspec`` (as a whole token: ``rayspec``, ``/…/bin/rayspec``, ``rayspec.exe``, and the
+#: ``-m rayspec`` / ``-m rayspec.cli`` / ``-m rayspec.cli.app`` module forms a detached child
+#: launches under) followed by one of the commands that run an engine process.
 _RAYSPEC_COMMAND_RE = re.compile(
-    r"(?:^|[\s/])rayspec(?:\.exe)?\s+(?:run|resume|approve|reject)(?=\s|$)"
+    r"(?:^|[\s/])rayspec(?:\.cli(?:\.app)?|\.exe)?\s+(?:run|resume|approve|reject)(?=\s|$)"
 )
 
 
@@ -1178,6 +1181,48 @@ def pid_is_rayspec_run(run: RunRecord) -> bool:
     return any(_names_token(cmdline, needle) for needle in needles)
 
 
+def heartbeat_is_stale(run: RunRecord, *, now: datetime | None = None) -> bool:
+    """Whether ``run.heartbeat_at`` has not moved in longer than the engine's fixed threshold
+    (:data:`rayspec.engine.liveness.HEARTBEAT_STALE_AFTER_S`); ``None`` is never stale."""
+    return _heartbeat_is_stale(run.heartbeat_at, now=now)
+
+
+def reconcile_run(store: FileRunStore, run: RunRecord) -> RunRecord:
+    """PRD-07 R4: correct a stored ``running`` record that plainly is not — a dead pid, or a
+    live one whose heartbeat has gone stale — to ``interrupted``, and persist the correction.
+
+    Applied wherever a record is loaded for display or a liveness decision (``runs``, ``show``,
+    ``logs --follow``, ``cancel``): the corrected status is then consistent everywhere it is
+    read, not only in the listing that happened to notice first. A run recorded as running on
+    another host is left alone — its process cannot be checked from here.
+    """
+    from rayspec.engine import liveness
+
+    verdict = liveness.assess(run)
+    L = liveness.Liveness
+    if verdict in {L.NOT_RUNNING, L.OTHER_HOST, L.ALIVE}:
+        return run
+    pid = run.pid
+    run.status = RunStatus.INTERRUPTED
+    if verdict is liveness.Liveness.STALE_HEARTBEAT:
+        run.reason = (
+            f"interrupted: heartbeat stale since {fmt_stamp(run.heartbeat_at)} "
+            f"(recorded process {pid or '?'} is still alive but not responding)"
+        )
+    elif verdict is liveness.Liveness.PID_REUSED:
+        run.reason = f"interrupted: the process behind pid {pid or '?'} is a different one now"
+    else:  # DEAD_PID
+        run.reason = f"interrupted: recorded process {pid or '?'} is no longer running"
+    run.ended_at = run.ended_at or utcnow()
+    run.pid = None
+    # a read-only store (a shared RAYSPEC_HOME mounted ro, a permission-locked run dir) must not
+    # turn the read-only ``runs``/``show``/``logs -f`` into a traceback — persist best effort and
+    # return the corrected record either way (D9).
+    with contextlib.suppress(OSError):
+        store.save(run)
+    return run
+
+
 def release_workdir_lock(ctx: RunsContext, run: RunRecord) -> bool:
     """Best effort: clear the workdir lock of a run that is no longer alive.
 
@@ -1219,6 +1264,7 @@ __all__ = [
     "fmt_stamp",
     "fmt_tokens",
     "fmt_when",
+    "heartbeat_is_stale",
     "interrupt_pid",
     "iter_project_stores",
     "load_resolved_for",
@@ -1234,6 +1280,7 @@ __all__ = [
     "planned_step_paths",
     "project_store",
     "read_output_text",
+    "reconcile_run",
     "record_context",
     "record_root",
     "recorded_calls",

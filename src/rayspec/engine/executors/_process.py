@@ -40,7 +40,13 @@ from rayspec.engine.paths import StepPath
 from rayspec.events.model import StreamRecord
 from rayspec.redact import StreamRedactor
 from rayspec.schema import PythonStep, ShellStep, StepStatus
-from rayspec.store.file import open_private
+from rayspec.store.file import (
+    LOG_CAP_BYTES,
+    LOG_CAP_TRIGGER_MULTIPLIER,
+    open_private_rdwr,
+    text_log_marker,
+    truncate_open_file,
+)
 from rayspec.store.model import ErrorInfo, StepRecord
 from rayspec.templating import RenderedScript, export_env, write_context_file
 
@@ -242,16 +248,30 @@ async def _pump(  # noqa: PLR0917 - task-group entry point, positional by design
     scrub = StreamRedactor(ctx.store.redactor)
     pending = ""
     first = attempt <= 1 or not log_path.exists()
-    with open_private(log_path, "w" if first else "a") as log:  # 0600: script output
+    cap = getattr(ctx.store, "log_cap_bytes", LOG_CAP_BYTES)
+    trigger = cap * LOG_CAP_TRIGGER_MULTIPLIER
+    since_cap = 0  # bytes written since the last cap check — check every 64 KiB, not every line
+
+    def write(text: str) -> None:
+        nonlocal since_cap
+        data = text.encode("utf-8")
+        log.write(data)
+        log.flush()
+        since_cap += len(data)
+        if since_cap >= 65536:
+            since_cap = 0
+            if os.fstat(log.fileno()).st_size > trigger:
+                truncate_open_file(log, cap, marker=text_log_marker)
+
+    with open_private_rdwr(log_path, truncate=first) as log:  # 0600: script output
         if not first:
-            log.write(f"\n--- attempt {attempt} ---\n")
+            write(f"\n--- attempt {attempt} ---\n")
         async for raw in stream:
             text = scrub.feed(decoder.decode(raw))
             if not text:
                 continue
             chunks.append(text)
-            log.write(text)
-            log.flush()
+            write(text)
             pending += text
             *lines, pending = pending.split("\n")
             for line in lines:
@@ -261,8 +281,11 @@ async def _pump(  # noqa: PLR0917 - task-group entry point, positional by design
         tail = scrub.feed(decoder.decode(b"", final=True)) + scrub.flush()
         if tail:
             chunks.append(tail)
-            log.write(tail)
+            write(tail)
             pending += tail
+        # a final cap after the stream ends (the last chunk may have crossed the trigger)
+        if os.fstat(log.fileno()).st_size > trigger:
+            truncate_open_file(log, cap, marker=text_log_marker)
         if pending:
             await ctx.emit_stream(path, StreamRecord(kind=kind, attempt=attempt, text=pending))
 

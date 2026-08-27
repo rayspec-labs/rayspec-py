@@ -16,6 +16,7 @@ from typing import Any
 
 from rayspec.engine.context import (
     BUDGET_SKIP_REASON,
+    CANCEL_SKIP_REASON,
     ExecScope,
     RunContext,
     StepOutcome,
@@ -81,6 +82,16 @@ async def run_loop(
                 transient=False,
             )
             break
+        cancelled = await ctx.check_cancelled()
+        if cancelled is not None:
+            # PRD-07 R5: the iteration already in flight (if any) already finished before this
+            # loop got back here — only the NEXT one is refused
+            error = ErrorInfo(
+                type="cancelled",
+                message=f"{cancelled}: no further iteration started",
+                transient=False,
+            )
+            break
         iteration = {"n": n, "max": n_max, "first": n == 1, "prev": prev_views}
         child = scope.child(
             prefix=scope.record_path(step.id).indexed(n),
@@ -128,6 +139,14 @@ async def run_loop(
         converged = True
     record.loop = LoopInfo(iterations=iterations, converged=converged)
     output = body_outputs(last, graph.ids)
+    if error is not None and error.type == "cancelled":
+        # PRD-07 R5: a loop cut between iterations by a cooperative cancel is the cancel's own
+        # teardown, not a failure of the loop — record it like the scheduler records a drained
+        # step (interrupted + CANCEL_SKIP_REASON) so it is collateral, not a run failure.
+        record.status = StepStatus.INTERRUPTED
+        record.ok = False
+        record.skip_reason = CANCEL_SKIP_REASON
+        return StepOutcome(record=record, output=output if last else None, output_kind="json")
     if error is not None:
         record.status = StepStatus.FAILED
         record.ok = False

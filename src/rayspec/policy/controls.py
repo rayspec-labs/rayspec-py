@@ -898,6 +898,16 @@ EXTERNAL_CONTROLS: Mapping[str, ExternalControl] = {
         "key, and a record of past spending restricts nothing on its own",
     ),
     "run.json": ExternalControl(False, "a run record rayspec writes; an output, never an input"),
+    "cancel.json": ExternalControl(
+        False,
+        "the PRD-07 cancellation marker `rayspec cancel` writes beside run.json; it asks the run "
+        "to stop at the next step boundary, which withholds nothing a running step may already do",
+    ),
+    "detach-handshake.json": ExternalControl(
+        False,
+        "the PRD-07 detach handshake the background child writes and the launcher reads once, "
+        "purely to learn the child started; transient plumbing, never a control an operator sets",
+    ),
     "events.jsonl": ExternalControl(False, "a run's event log; written after the fact"),
     "stream.jsonl": ExternalControl(False, "a run's raw provider stream; written after the fact"),
     "audit.jsonl": ExternalControl(False, "the audit log; it records what ran, it permits nothing"),
@@ -981,6 +991,13 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--verbose": ExternalControl(False, "print more"),
     "--yes": ExternalControl(False, "auto-approve gates — a widening"),
     "--mark": ExternalControl(False, "the status a cancelled run is recorded with"),
+    "--now": ExternalControl(False, "cancel by signalling the process instead of the flag"),
+    "--detach": ExternalControl(
+        False, "background the run behind a forked child; what it may do is unchanged"
+    ),
+    "--detached-child": ExternalControl(
+        False, "internal: the run directory a --detach launcher pre-created for its child"
+    ),
     "--step": ExternalControl(False, "which step to report on"),
     "--select": ExternalControl(False, "which test cases to run"),
     "--case": ExternalControl(False, "the same, by name"),
@@ -992,6 +1009,7 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--raw": ExternalControl(False, "print the provider's own stream"),
     "--stream": ExternalControl(False, "which stream to print"),
     "--follow": ExternalControl(False, "keep printing as the run goes"),
+    "--exit-code": ExternalControl(False, "make `logs --follow` exit with the run's code"),
     "--check": ExternalControl(False, "report whether the lockfile is up to date and exit"),
     "--commands": ExternalControl(False, "print the audit log's command entries"),
     "--since": ExternalControl(False, "the window a cost report covers"),

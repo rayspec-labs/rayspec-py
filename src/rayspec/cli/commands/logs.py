@@ -8,15 +8,19 @@ deltas are joined per block and printed as whole ``thinking:`` lines, internal `
 records are hidden unless ``--verbose``); ``--stream`` interleaves every step's stream
 into the event log (ordered by timestamp); ``--json`` prints the raw JSONL records (events as
 stored, stream records wrapped as ``{"type": "stream", "step_path": ..., "record": {...}}``);
-``--follow`` tails the files until ``run.json`` leaves the ``running`` status. Every rendered
-string is untrusted text and goes through :mod:`rayspec.textsafe`; ``--raw`` prints it
-unescaped for debugging. Reading only — the store owns the files.
+``--follow`` tails the files until ``run.json`` leaves the ``running`` status, and with
+``--exit-code`` exits with that final status's code (``0``/``1``/``3``/``4``) rather than
+always ``0`` — the way to wait for a detached run and learn its outcome. Every rendered string
+is untrusted text and goes through :mod:`rayspec.textsafe`; ``--raw`` prints it unescaped for
+debugging. Reading, except that ``--follow`` reconciles a stale ``running`` record (writes the
+corrected status back) so a dead run's follow terminates.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+import os
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,7 +43,7 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
 )
 from rayspec.engine.paths import StepPath
-from rayspec.engine.runtime import EXIT_INTERRUPTED
+from rayspec.engine.runtime import EXIT_INTERRUPTED, exit_code_for
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.schema import RunStatus
 from rayspec.store.file import EVENTS_JSONL, STREAM_JSONL, FileRunStore, StoreError
@@ -69,6 +73,12 @@ class LogTailer:
     step: str | None = None
     stream: bool = False
     _offsets: dict[Path, int] = field(default_factory=dict)
+    #: inode of each file at the last poll — a change means the store replaced it (a truncation),
+    #: so a byte offset kept from before now points into a different (shorter) file.
+    _inodes: dict[Path, int] = field(default_factory=dict)
+    #: the last whole line yielded per file — the anchor a follower resumes after when the file
+    #: was truncated (D7: without it, ``seek(stale offset)`` reads nothing forever).
+    _last_line: dict[Path, bytes] = field(default_factory=dict)
 
     @property
     def run_dir(self) -> Path:
@@ -106,6 +116,27 @@ class LogTailer:
         offset = self._offsets.get(file, 0)
         try:
             with file.open("rb") as fh:
+                st = os.fstat(fh.fileno())
+                shrunk = (file in self._inodes and st.st_ino != self._inodes[file]) or (
+                    st.st_size < offset
+                )
+                # inode change and a smaller size are the cheap signals, but neither fires when
+                # the store's os.replace reused the freed inode (common on Linux) and the
+                # truncated file is still larger than our stale offset. Confirm the last line we
+                # yielded is still the one ending at `offset`; if not, the file was rewritten
+                # under us and the offset points into unrelated bytes — resume by anchor. (D7)
+                anchor = self._last_line.get(file)
+                if not shrunk and anchor is not None and offset >= len(anchor) + 1:
+                    fh.seek(offset - len(anchor) - 1)
+                    if fh.read(len(anchor) + 1) != anchor + b"\n":
+                        shrunk = True
+                if shrunk:
+                    # PRD-07 D7: the store replaced this file with a middle-truncated, shorter one.
+                    # Resume from just after the last line already shown, or — when that line was
+                    # in the dropped middle — from the truncation marker, so the follower prints
+                    # the "truncated" warning and the tail rather than going silent forever.
+                    offset = self._resume_offset(fh, self._last_line.get(file))
+                self._inodes[file] = st.st_ino
                 fh.seek(offset)
                 chunk = fh.read()
         except FileNotFoundError:
@@ -116,10 +147,30 @@ class LogTailer:
         if end < 0:
             return  # only a torn line so far
         self._offsets[file] = offset + end + 1
+        last: bytes | None = None
         for raw in chunk[:end].split(b"\n"):
-            line = raw.decode("utf-8", errors="replace").strip()
-            if line:
-                yield line
+            if raw.strip():
+                last = raw
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    yield line
+        if last is not None:
+            self._last_line[file] = last
+
+    @staticmethod
+    def _resume_offset(fh: Any, anchor: bytes | None) -> int:
+        """Where to resume reading a file the store just truncated: right after ``anchor`` (the
+        last line already shown) if it survived, else at the last truncation marker line."""
+        fh.seek(0)
+        data = fh.read()
+        if anchor:
+            pos = data.rfind(anchor + b"\n")
+            if pos >= 0:
+                return pos + len(anchor) + 1
+        marker = data.rfind(b"log_truncated")
+        if marker >= 0:
+            return data.rfind(b"\n", 0, marker) + 1  # start of the marker line (0 if it is first)
+        return 0
 
 
 def _sort_key(pair: tuple[str, LogItem]) -> datetime:
@@ -140,7 +191,8 @@ def read_history(
 
 def _run_is_live(store: FileRunStore, run_id: str) -> bool:
     try:
-        return store.load(run_id).status is RunStatus.RUNNING
+        record = common.reconcile_run(store, store.load(run_id))
+        return record.status is RunStatus.RUNNING
     except StoreError:
         return False
     except OSError:
@@ -184,16 +236,25 @@ async def follow(
 _stamp = common.fmt_clock
 
 
-def format_event(event: RunEvent, formatter: Any, *, raw: bool = False) -> Text:
+def format_event(
+    event: RunEvent, formatter: Any, *, raw: bool = False, show_outputs: bool = False
+) -> Text:
     """One line for a lifecycle event: the quiet console sink's rendering (already safe text),
     or a generic ``<type> <step> <data>`` line for the events it does not print (loop/each
-    progress) — escape sequences removed unless ``raw``."""
+    progress) — escape sequences removed unless ``raw``.
+
+    ``show_outputs`` (``--follow`` only — see :func:`make_emitter`) appends ``outputs: k=v, …``
+    to the ``run.finished`` line when the run declared any: a `--follow`ed run — the one a
+    `--detach`ed launch has no other console for — is otherwise done watching having never seen
+    its own result. A plain, non-following `logs` reads the event log as recorded and nothing
+    else, same as `--step`/`--stream` already draw the line at "no output content by default".
+    """
+
+    def clean(value: Any) -> str:
+        return str(value) if raw else safe_text(value, keep_newlines=False)
+
     line = formatter.format_event(event)
     if line is None:
-
-        def clean(value: Any) -> str:
-            return str(value) if raw else safe_text(value, keep_newlines=False)
-
         line = Text(event.type.value)
         if event.step_path:
             line.append(f" {clean(event.step_path)}")
@@ -206,6 +267,11 @@ def format_event(event: RunEvent, formatter: Any, *, raw: bool = False) -> Text:
         elif event.data:
             data = json.dumps(event.data, ensure_ascii=False, default=str)
             line.append(f" {clean(data)}", style="dim")
+    elif show_outputs and event.type is EventType.RUN_FINISHED:
+        outputs = event.data.get("outputs")
+        if isinstance(outputs, Mapping) and outputs:
+            preview = ", ".join(f"{k}={v}" for k, v in outputs.items())
+            line.append(f" outputs: {clean(preview)}", style="dim")
     return Text.assemble((f"{_stamp(event.ts)}  ", "dim"), line)
 
 
@@ -394,6 +460,7 @@ def make_emitter(
     prefix_steps: bool,
     verbose: bool = False,
     raw: bool = False,
+    show_outputs: bool = False,
 ) -> tuple[EmitFn, Callable[[], None]]:
     """``(emit, finish)``: ``emit`` prints one record, ``finish`` flushes buffered deltas."""
     if json_mode:
@@ -410,7 +477,7 @@ def make_emitter(
     def emit(source: str, item: LogItem) -> None:
         if isinstance(item, RunEvent):
             renderer.flush()
-            line = format_event(item, formatter, raw=raw)
+            line = format_event(item, formatter, raw=raw, show_outputs=show_outputs)
             out.print(line, markup=False, highlight=False, soft_wrap=True)
         else:
             renderer.render(source, item)
@@ -449,11 +516,23 @@ def register(app: typer.Typer) -> None:
                 "included) — for debugging only.",
             ),
         ] = False,
+        exit_code: Annotated[
+            bool,
+            typer.Option(
+                "--exit-code",
+                help="With --follow: exit with the run's final status code (0/1/3/4, or 130 if "
+                "interrupted) instead of 0. The way to wait for a detached run and learn its "
+                "outcome.",
+            ),
+        ] = False,
         json_: JsonOption = False,
         output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Show a run's event log (or one step's stream); --follow tails a live run."""
+        if exit_code and not follow:
+            fail("--exit-code needs --follow (a run not being followed has no live outcome)")
+            return
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
@@ -474,7 +553,12 @@ def register(app: typer.Typer) -> None:
                 return
         out = console()
         emit, finish = make_emitter(
-            out, json_mode=json_, prefix_steps=step is None and stream, verbose=verbose, raw=raw
+            out,
+            json_mode=json_,
+            prefix_steps=step is None and stream,
+            verbose=verbose,
+            raw=raw,
+            show_outputs=False,  # parity with plain logs; `rayspec show` has outputs
         )
         if follow:
             try:
@@ -485,9 +569,13 @@ def register(app: typer.Typer) -> None:
             except KeyboardInterrupt:
                 finish()
                 raise typer.Exit(code=EXIT_INTERRUPTED) from None
-        else:
-            for source, item in read_history(store, record.run_id, step=step, stream=stream):
-                emit(source, item)
+            finish()
+            if exit_code:
+                final = common.reconcile_run(store, store.load(record.run_id))
+                raise typer.Exit(code=exit_code_for(final.status))
+            return
+        for source, item in read_history(store, record.run_id, step=step, stream=stream):
+            emit(source, item)
         finish()
 
 

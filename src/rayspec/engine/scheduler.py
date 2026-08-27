@@ -36,6 +36,7 @@ from anyio.streams.memory import MemoryObjectSendStream
 
 from rayspec.engine.context import (
     BUDGET_SKIP_REASON,
+    CANCEL_SKIP_REASON,
     LEAF_KINDS,
     REUSABLE_KINDS,
     ExecScope,
@@ -128,6 +129,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
         )
 
     async def decide_and_launch(tg: TaskGroup) -> None:
+        await ctx.check_cancelled()  # PRD-07 R5: checked at every step-boundary decision point
         progressed = True
         while progressed:
             progressed = False
@@ -136,15 +138,21 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                 needs = graph.needs[sid]
                 if not decidable(sid):
                     continue
-                if ctx.budget_exceeded is not None and step.join != "always":
-                    # the run-level cap tripped — nothing new starts (running steps drain,
-                    # ``join: always`` steps still run); a resume replay is free, so a reusable
-                    # record is replayed instead of being overwritten as skipped
+                drain_reason = ctx.budget_exceeded or ctx.cancel_requested
+                if drain_reason is not None and step.join != "always":
+                    # the run-level cap tripped, or the run was cancelled — nothing new starts
+                    # (running steps drain, ``join: always`` steps still run); a resume replay
+                    # is free, so a reusable record is replayed instead of being skipped
                     del pending[sid]
                     record = ctx.new_record(step, scope)
                     outcome = await try_reuse(step, scope, ctx, record)
                     if outcome is None:
-                        outcome = _skipped(record, BUDGET_SKIP_REASON)
+                        reason = (
+                            BUDGET_SKIP_REASON
+                            if ctx.budget_exceeded is not None
+                            else CANCEL_SKIP_REASON
+                        )
+                        outcome = _skipped(record, reason)
                     await finish(outcome, step, scope, ctx)
                     settle(outcome)
                     progressed = True
@@ -429,14 +437,23 @@ async def run_leaf(
             # Only once the permit is held does the attempt exist: a leaf cancelled while it
             # queues for a ``max_parallel`` slot / the launch gate keeps the totals its record
             # carries (earlier attempts, the previous run) and is not counted as an attempt.
-            if step.join != "always" and await ctx.check_budget(pending=record) is not None:
-                # The run-level cap may have tripped while this attempt waited for a slot. The
+            if step.join != "always" and (
+                await ctx.check_budget(pending=record) is not None
+                or await ctx.check_cancelled() is not None
+            ):
+                # The run-level cap may have tripped, or the run was cancelled, while this attempt
+                # waited for a slot. The
                 # ready-set gate cannot see a step that is already queued, and a queued step has
                 # not started — so the breaker is ASKED again here (not just read: the clock can
                 # run out with no step finishing), or a wall-clock cap would keep launching the
                 # backlog long after it ran out. A retry keeps the failure it already has; a
-                # first attempt is recorded like any other step the cap skipped.
-                return last if last is not None else _skipped(record, BUDGET_SKIP_REASON)
+                # first attempt is recorded like any other step the drain skipped.
+                if last is not None:
+                    return last
+                reason = (
+                    BUDGET_SKIP_REASON if ctx.budget_exceeded is not None else CANCEL_SKIP_REASON
+                )
+                return _skipped(record, reason)
             record.attempts += 1
             attempts_this_run += 1
             attempt = record.attempts
@@ -467,8 +484,11 @@ async def run_leaf(
         accumulate(outcome.record)
         last = outcome
         rec = outcome.record
-        if rec.status is StepStatus.FAILED and await ctx.check_budget(pending=rec) is not None:
-            return outcome  # a retry is a new start — not once the cap tripped
+        if rec.status is StepStatus.FAILED and (
+            await ctx.check_budget(pending=rec) is not None
+            or await ctx.check_cancelled() is not None
+        ):
+            return outcome  # a retry is a new start — not once the cap tripped or a cancel arrived
         if rec.status is StepStatus.FAILED and should_retry(policy, attempts_this_run, rec.error):
             assert policy is not None
             delay = delay_for(policy, attempts_this_run)

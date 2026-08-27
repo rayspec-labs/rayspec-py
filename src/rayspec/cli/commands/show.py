@@ -29,6 +29,7 @@ from rich.table import Table
 from rich.text import Text
 
 from rayspec.cli import _runs_common as common
+from rayspec.cli._detach import DETACH_LAUNCH_LOG
 from rayspec.cli.commands._loader_common import (
     JsonOption,
     OutputOption,
@@ -235,6 +236,19 @@ def _cell(value: Any) -> str:
     return safe_text(value, keep_newlines=False)
 
 
+def _heartbeat_age(heartbeat_at: Any) -> str:
+    """``"12s ago"`` / ``"3m ago"`` for a fresh heartbeat — how long since the run last proved
+    it was alive. ``heartbeat_at`` is a timezone-aware datetime."""
+    from datetime import UTC, datetime
+
+    seconds = max(0, int((datetime.now(UTC) - heartbeat_at).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    return f"{seconds // 3600}h ago"
+
+
 def toolchain_lines(run: RunRecord) -> list[str]:
     """The ``toolchain:`` block of ``show``: what produced this run.
 
@@ -328,7 +342,15 @@ def print_show(
         # a paused run's process has exited (exit 3); say so instead of looking live
         live = " (alive)" if common.pid_alive(run) else " (exited)"
         out.print(f"  pid:        {run.pid} on {run.host or '?'}{live}", markup=False)
+        if run.status.value == "running" and run.heartbeat_at is not None:
+            # a live run stamps its heartbeat every ~10s; a beat older than the staleness
+            # threshold is the signal the reconcile above turns into `interrupted`
+            beat = "stale" if common.heartbeat_is_stale(run) else _heartbeat_age(run.heartbeat_at)
+            out.print(f"  heartbeat:  {beat}", markup=False)
     out.print(f"  run dir:    {store.run_dir(run.run_id)}", markup=False)
+    launch_log = store.run_dir(run.run_id) / DETACH_LAUNCH_LOG
+    if launch_log.exists():
+        out.print(f"  launched:   detached (log: {launch_log})", markup=False)
     ws = run.workspace
     out.print(f"  workspace:  {_cell(ws.isolation)}  {_cell(ws.workdir or '')}", markup=False)
     if ws.branch or ws.base_branch or ws.head_sha:
@@ -402,6 +424,7 @@ def register(app: typer.Typer) -> None:
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
+        record = common.reconcile_run(store, record)
         out = console()
         planned = common.planned_step_paths(ctx, record)
         if json_:

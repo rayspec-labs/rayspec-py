@@ -116,13 +116,16 @@ def test_audit_sweep_tolerates_one_failed_item_and_still_reports(
         project,
         "audit_sweep",
         {
-            "audit[*]/judge": {
-                "sequence": [
-                    {"output": {"risk": "low"}},
-                    {"fail": {"kind": "api", "message": "model refused", "transient": False}},
-                    {"output": {"risk": "high"}},
-                ]
-            }
+            # Parallel `each` items have no guaranteed order (max_parallel: 2), so a single
+            # `sequence:` over the glob would map answers to whichever item happened to call
+            # first — which differs across asyncio scheduling (it broke on 3.14). Index the keys
+            # so item 1 deterministically fails, the shape the recorder itself uses for a
+            # non-sequential each.
+            "audit[0]/judge": {"output": {"risk": "low"}},
+            "audit[1]/judge": {
+                "fail": {"kind": "api", "message": "model refused", "transient": False}
+            },
+            "audit[2]/judge": {"output": {"risk": "high"}},
         },
         ["--exec-shell", "--no-worktree"],  # the report is a python: step; run it for real
     )

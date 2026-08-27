@@ -131,6 +131,19 @@ _ARTIFACT_CHUNK_BYTES = 1 << 20
 PROMPT_TXT = "prompt.txt"
 EVENTS_JSONL = "events.jsonl"
 STREAM_JSONL = "stream.jsonl"
+#: PRD-07 R8: per-file cap for ``events.jsonl`` and each step's ``stream.jsonl`` — a background
+#: run nobody watches must not fill the disk. Fixed default from the plan-gate answer (no config
+#: key yet). Exceeding it truncates whole lines from the MIDDLE (never tearing a JSON line),
+#: keeping roughly the first third and the last two thirds — the run's start and its most recent
+#: activity survive, only the noisy middle is dropped.
+LOG_CAP_BYTES = 16 * 1024 * 1024
+#: A log file is trimmed only once it grows past ``LOG_CAP_BYTES * LOG_CAP_TRIGGER_MULTIPLIER``,
+#: and is then trimmed back to ``LOG_CAP_BYTES`` — so a file at the cap is not rewritten on every
+#: append (the storm the flat "> cap" trigger caused), only about once per cap-worth of growth.
+LOG_CAP_TRIGGER_MULTIPLIER = 2
+#: tmp files for a module-level truncate (no ``FileRunStore`` instance in hand).
+_module_tmp_counter = itertools.count()
+
 #: The optional local ledger (see :func:`audit_log_enabled`).
 AUDIT_JSONL = "audit.jsonl"
 #: Environment variable that turns the ledger on for every run of this process.
@@ -496,6 +509,93 @@ class AmbiguousRunIdError(StoreError):
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CapSplit:
+    """How a middle-truncation splits an over-cap log file: the kept ``head`` and ``tail`` (whole
+    lines), how many bytes fell out between them, and the offset in the ORIGINAL file where the
+    kept tail began (a follower remaps its read position to this)."""
+
+    head: bytes
+    tail: bytes
+    dropped_bytes: int
+    tail_from: int
+
+
+def split_for_cap(data: bytes, cap: int, *, reserve: int = 0) -> CapSplit:
+    """Split ``data`` to fit ``cap`` bytes (minus ``reserve`` for a marker line): keep the first
+    ``budget // 3`` on a line boundary and the last ``budget - head`` on a line boundary, dropping
+    the middle. A single line longer than the head budget yields an empty head; a tail with no
+    newline is kept torn (better than an empty file — readers already skip a torn leading line)."""
+    size = len(data)
+    budget = max(cap - reserve, 0)
+    head_budget = budget // 3
+    tail_budget = budget - head_budget
+    head = data[:head_budget]
+    nl = head.rfind(b"\n")
+    head = head[: nl + 1] if nl >= 0 else b""
+    tail_from = max(len(head), size - tail_budget)
+    tail = data[tail_from:]
+    nl = tail.find(b"\n")
+    if 0 <= nl < len(tail) - 1:  # drop a torn leading line, but never the whole tail
+        tail = tail[nl + 1 :]
+        tail_from += nl + 1
+    return CapSplit(head=head, tail=tail, dropped_bytes=tail_from - len(head), tail_from=tail_from)
+
+
+def _cap_split_with_marker(data: bytes, cap: int, marker: Callable[[CapSplit], bytes]) -> CapSplit:
+    """A :func:`split_for_cap` that leaves room for the marker line the cut needs — split once to
+    learn how much is dropped, build the marker, split again reserving its length so head + marker
+    + tail stays within ``cap``."""
+    provisional = split_for_cap(data, cap)
+    reserve = len(marker(provisional))
+    return split_for_cap(data, cap, reserve=reserve)
+
+
+def truncate_path(path: Path, cap: int, *, marker: Callable[[CapSplit], bytes]) -> CapSplit | None:
+    """Middle-truncate ``path`` to ``cap`` bytes with a marker line at the cut (tmp + replace);
+    returns the :class:`CapSplit` performed, or ``None`` when the file is already within ``cap``."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) <= cap:
+        return None
+    split = _cap_split_with_marker(data, cap, marker)
+    tmp = path.parent / f"{path.name}.{os.getpid()}.{next(_module_tmp_counter)}.tmp"
+    try:
+        with _open_private_bytes(tmp) as out:
+            out.write(split.head)
+            out.write(marker(split))
+            out.write(split.tail)
+            out.flush()
+        os.replace(tmp, path)
+    except BaseException:
+        _unlink_quietly(tmp)
+        raise
+    return split
+
+
+def truncate_open_file(
+    fh: BinaryIO, cap: int, *, marker: Callable[[CapSplit], bytes]
+) -> CapSplit | None:
+    """Middle-truncate a file through the read/write handle ``fh`` that a writer keeps open (a
+    process pump), in place: the fd survives, so a concurrent ``os.replace`` cannot strand it.
+    ``None`` when already within ``cap``."""
+    fh.flush()
+    fh.seek(0)
+    data = fh.read()
+    if len(data) <= cap:
+        return None
+    split = _cap_split_with_marker(data, cap, marker)
+    fh.seek(0)
+    fh.truncate(0)
+    fh.write(split.head)
+    fh.write(marker(split))
+    fh.write(split.tail)
+    fh.flush()
+    return split
+
+
 class RunExistsError(StoreError):
     """``create`` was called for a run id that already has a directory."""
 
@@ -555,6 +655,8 @@ class FileRunStore:
         self._save_lock = threading.Lock()
         self._append_lock = threading.Lock()
         self._tmp_counter = itertools.count()
+        #: per-file log cap; the default ships the constant, tests set a small one on the instance.
+        self.log_cap_bytes = LOG_CAP_BYTES
         #: applied to every byte this store writes. The store is built before the run's
         #: secrets are known, so the CLI assigns the real redactor to this attribute at run
         #: start; ``NULL_REDACTOR`` (the default) is a no-op the writers skip entirely.
@@ -598,8 +700,16 @@ class FileRunStore:
         — the fact no event carries — WHO started the run.
         """
         run_dir = self.run_dir(run.run_id)
-        if run_dir.exists():
-            raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}")
+        _ensure_skeleton(run_dir)
+        # The run is claimed by its ``run.json``, not by its directory: a launcher may pre-create
+        # the directory (a detached run's launch log lives there before the run exists), and two
+        # creates of one id are still exclusive — ``O_EXCL`` on the record is the claim, which
+        # ``save`` then replaces atomically.
+        try:
+            with open_private(run_dir / RUN_JSON, "x"):
+                pass
+        except FileExistsError:
+            raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}") from None
         self.save(run)
         self._append_audit(run.run_id, audit_entry_for_create(run))
 
@@ -856,7 +966,12 @@ class FileRunStore:
                 self.flush_streams(run_id, event.step_path)
             elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
                 self.flush_streams(run_id)
-        self._append_line(self.run_dir(run_id) / EVENTS_JSONL, _event_json(event, self.redactor))
+        self._append_line(
+            self.run_dir(run_id) / EVENTS_JSONL,
+            _event_json(event, self.redactor),
+            cap_bytes=self.log_cap_bytes,
+            marker=_events_marker(run_id),
+        )
         self._append_audit(run_id, audit_entry_for_event(event))
 
     def _append_audit(self, run_id: str, entry: dict[str, Any] | None) -> None:
@@ -879,7 +994,12 @@ class FileRunStore:
         path = self.run_dir(run_id) / AUDIT_JSONL
         try:
             payload = finish_audit_row(entry, self.redactor)
-            self._append_line(path, json.dumps(payload, ensure_ascii=False, default=str))
+            self._append_line(
+                path,
+                json.dumps(payload, ensure_ascii=False, default=str),
+                cap_bytes=self.log_cap_bytes,
+                marker=_audit_marker,
+            )
         except OSError as exc:
             _log.warning("%s: could not append to %s (%s)", path, AUDIT_JSONL, exc)
 
@@ -919,7 +1039,12 @@ class FileRunStore:
             record = self._redact_stream(run_id, step_path, record)
         # the transcript first: the ledger is a convenience and must not pre-empt the file the
         # run is actually judged by
-        self._append_line(self.step_dir(run_id, step_path) / STREAM_JSONL, record.to_json())
+        self._append_line(
+            self.step_dir(run_id, step_path) / STREAM_JSONL,
+            record.to_json(),
+            cap_bytes=self.log_cap_bytes,
+            marker=_stream_marker,
+        )
         self._append_audit(run_id, entry)
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
@@ -935,7 +1060,12 @@ class FileRunStore:
             tail = stream.flush()
             if tail:
                 record = StreamRecord(kind=key[2], attempt=key[3], text=tail)
-                self._append_line(self.step_dir(run_id, key[1]) / STREAM_JSONL, record.to_json())
+                self._append_line(
+                    self.step_dir(run_id, key[1]) / STREAM_JSONL,
+                    record.to_json(),
+                    cap_bytes=self.log_cap_bytes,
+                    marker=_stream_marker,
+                )
 
     def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
         """``record`` with every part that can carry a value redacted.
@@ -993,11 +1123,28 @@ class FileRunStore:
 
     # -- internals ----------------------------------------------------------------------------
 
-    def _append_line(self, path: Path, line: str) -> None:
+    def _append_line(
+        self,
+        path: Path,
+        line: str,
+        *,
+        cap_bytes: int | None = None,
+        marker: Callable[[CapSplit], bytes] | None = None,
+    ) -> None:
         secure_mkdir(path.parent)
-        with self._append_lock, open_private(path, "a") as fh:
-            fh.write(line + "\n")
-            fh.flush()
+        with self._append_lock:
+            with open_private(path, "a") as fh:
+                fh.write(line + "\n")
+                fh.flush()
+                size = os.fstat(fh.fileno()).st_size  # free, on the handle already held
+            # hysteresis: trim only once past 2x the cap, back to the cap — so a file sitting at
+            # the cap is not rewritten on every append, only about once per cap-worth of growth.
+            if (
+                cap_bytes is not None
+                and marker is not None
+                and size > cap_bytes * LOG_CAP_TRIGGER_MULTIPLIER
+            ):
+                truncate_path(path, cap_bytes, marker=marker)
 
     def _resolve_ref(self, run_id: str, output_ref: str) -> Path:
         run_dir = self.run_dir(run_id)
@@ -1135,6 +1282,75 @@ def _write_text_durably(path: Path, tmp: Path, chunks: Iterable[str]) -> tuple[s
     return digest.hexdigest(), size
 
 
+def _events_marker(run_id: str) -> Callable[[CapSplit], bytes]:
+    """A WARNING event line for the cut in ``events.jsonl`` — rendered by every events reader
+    and by ``rayspec audit`` (which re-derives from events), carrying ``log_truncated`` so a
+    follower can remap."""
+
+    def build(split: CapSplit) -> bytes:
+        event = RunEvent(
+            type=EventType.WARNING,
+            run_id=run_id,
+            data={
+                "message": f"events.jsonl truncated: {split.dropped_bytes} bytes dropped",
+                "log_truncated": {
+                    "dropped_bytes": split.dropped_bytes,
+                    "tail_from": split.tail_from,
+                },
+            },
+        )
+        return (event.model_dump_json() + "\n").encode("utf-8")
+
+    return build
+
+
+def _stream_marker(split: CapSplit) -> bytes:
+    """A ``warning`` stream record for the cut in a step's ``stream.jsonl``."""
+    record = StreamRecord(
+        kind="warning",
+        text=f"stream truncated: {split.dropped_bytes} bytes dropped",
+        data={
+            "log_truncated": {"dropped_bytes": split.dropped_bytes, "tail_from": split.tail_from}
+        },
+    )
+    return (record.model_dump_json() + "\n").encode("utf-8")
+
+
+def _audit_marker(split: CapSplit) -> bytes:
+    return (
+        json.dumps(
+            {"event": "log.truncated", "detail": f"{split.dropped_bytes} bytes dropped"},
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def open_private_rdwr(path: Path, *, truncate: bool) -> BinaryIO:
+    """A private (``0600``) binary read/write handle — for a writer (a process pump) that must
+    cap its own file in place with :func:`truncate_open_file` without an ``os.replace`` (which
+    would strand the open fd). ``truncate=True`` starts fresh; otherwise the position is left at
+    end so writes append."""
+    flags = os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC
+    if truncate:
+        flags |= os.O_TRUNC
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        fh = cast(BinaryIO, os.fdopen(fd, "r+b"))
+    except BaseException:  # pragma: no cover
+        os.close(fd)
+        raise
+    if not truncate:
+        fh.seek(0, os.SEEK_END)
+    return fh
+
+
+def text_log_marker(split: CapSplit) -> bytes:
+    """The marker line a capped ``stdout.log``/``stderr.log`` carries at the cut — plain text,
+    since these files are not JSONL."""
+    return f"\n--- log truncated: {split.dropped_bytes} bytes dropped ---\n".encode()
+
+
 def _open_private_bytes(path: Path) -> BinaryIO:
     """``open(path, "wb")`` that creates the file ``0600`` — the binary twin of
     :func:`open_private` (same ``O_NOFOLLOW``/``O_CLOEXEC`` guarantees)."""
@@ -1264,6 +1480,7 @@ __all__ = [
     "AUDIT_JSONL",
     "AUDIT_STREAM_KINDS",
     "EVENTS_JSONL",
+    "LOG_CAP_BYTES",
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
     "PROMPT_TXT",

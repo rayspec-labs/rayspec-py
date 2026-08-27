@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -23,10 +24,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from rayspec.cli import _detach as detach_mod
 from rayspec.cli import _runs_common as runs_common
 from rayspec.cli.commands import _loader_common as common
 from rayspec.cli.commands._loader_common import (
     AllowUnsupportedOption,
+    Context,
     OutputOption,
     RootOption,
     error_lines,
@@ -628,6 +631,198 @@ def print_summary(
         )
 
 
+#: The hidden option the launcher hands its child: the run directory it pre-created (whose
+#: basename is the run id). Kept in sync with :data:`rayspec.cli._detach.DETACHED_CHILD_OPT`.
+_DETACHED_CHILD_OPT = detach_mod.DETACHED_CHILD_OPT
+
+
+def _precheck_path_lock(*, home: Path, slug: str, workdir: Path, run_id: str) -> None:
+    """PRD-07 R7: fail fast (exit 2, naming the holder) before anything is backgrounded.
+
+    Only attempted when the workdir is already known without preparing a workspace — i.e. an
+    in-place run (``--no-worktree``, or ``defaults.isolation: none``). A worktree's path does
+    not exist until it is prepared, which the launcher deliberately does not do (that is the
+    detached child's job); contention there is instead caught the same way a foreground run
+    catches it, inside the child's own :meth:`~rayspec.engine.runner.Runner._acquire_lock`.
+    The lock is released immediately after the probe — the child takes it again itself, for
+    the duration of the run.
+    """
+    from rayspec.loader.loader import import_optional
+
+    module = import_optional("rayspec.workspace")
+    lock_cls = getattr(module, "PathLock", None) if module is not None else None
+    if lock_cls is None:
+        return
+    lock = lock_cls(home, slug, workdir, run_id=run_id)
+    try:
+        lock.acquire()
+    except NotImplementedError:  # no fcntl (Windows): the POSIX-only check above already fired
+        return
+    except Exception as exc:
+        hint = getattr(exc, "hint", None)
+        fail(str(exc), hint=hint)
+        return
+    lock.release()
+
+
+def _detach_slug(repo: str | None, project_root: Path, config: Any) -> str:
+    """The project slug the detached run will store under — computed WITHOUT materialising a
+    ``--repo`` workspace, so it matches the slug the child later derives (see
+    :func:`rayspec.workspace.repos.source_slug_for`) and the launcher pre-creates the right dir.
+    """
+    if repo is None:
+        return project_slug_for(project_root)
+    from rayspec.loader.loader import import_optional
+
+    module = import_optional("rayspec.workspace")
+    slug_fn = getattr(module, "source_slug_for", None) if module is not None else None
+    if slug_fn is None:
+        # no workspace extension: a --repo run cannot be prepared here at all; let the child
+        # produce the real error. Fall back to the local slug for the pre-created directory.
+        return project_slug_for(project_root)
+    try:
+        return str(slug_fn(repo, config, cwd=project_root))
+    except RayspecError as exc:
+        fail(str(exc), hint=exc.hint)
+        raise typer.Exit(code=EXIT_USAGE) from None
+
+
+def _detach_isolation_in_place(
+    workflow: str, *, ctx: Context, project_root: Path, worktree: bool | None, pure_dry_run: bool
+) -> bool:
+    """Whether the detached run happens in the project tree (so its path lock can be prechecked
+    up front, R7). True for ``--no-worktree``; also for a workflow whose ``isolation`` is
+    ``none`` — probed with a best-effort load so the common case gets a clean synchronous "held
+    by <run>" instead of a launch that dies in the child. A pure dry run takes no lock."""
+    if pure_dry_run:
+        return False
+    if worktree is False:
+        return True
+    if worktree is True:
+        return False
+    with contextlib.suppress(RayspecError):
+        probe = load_workflow(workflow, project_root=project_root, home=ctx.home, config=ctx.config)
+        return probe.workflow.isolation == "none"
+    return False
+
+
+def _detach_gate_note(
+    workflow: str, *, ctx: Context, project_root: Path, yes: bool, approve_class: list[str] | None
+) -> str | None:
+    """A one-line heads-up (stderr) that a detached run WILL pause at a gate because neither
+    ``--yes`` nor ``--approve-class`` was given — a detached run cannot be answered at a
+    terminal, so say so at launch rather than leaving it silently paused. Best-effort: a load
+    failure here is not the launcher's to report (the child will)."""
+    if yes or approve_class:
+        return None
+    with contextlib.suppress(RayspecError):
+        rw = load_workflow(workflow, project_root=project_root, home=ctx.home, config=ctx.config)
+        has_gate = any(isinstance(step, ApproveStep) for _, step in rw.all_steps())
+        if has_gate:
+            return (
+                "note: this workflow has an approval gate and will pause (see `rayspec runs`); "
+                "answer with `rayspec approve <id>` / `rayspec reject <id>`, or relaunch with "
+                "--yes / --approve-class to pre-authorise it"
+            )
+    return None
+
+
+def _launch_detached_run(
+    *,
+    workflow: str,
+    inputs: list[str] | None,
+    inputs_file: Path | None,
+    root: Path | None,
+    dry_run: bool,
+    stubs: Path | None,
+    stubs_from: str | None,
+    stubs_init: Path | None,
+    exec_shell: bool,
+    yes: bool,
+    approve_class: list[str] | None,
+    allow_unsupported: bool,
+    fail_fast: bool,
+    resume: str | None,
+    worktree: bool | None,
+    base: str | None,
+    locked: bool | None,
+    wait_slot: str | None,
+    repo: str | None,
+    json_: bool,
+    run_id: str,
+    ctx: Context,
+    project_root: Path,
+    pure_dry_run: bool,
+) -> None:
+    """PRD-07 R1/R6/R7: fork a background run and return almost immediately.
+
+    Refuses the combinations a detached run cannot honour (``--resume`` — its workspace is
+    fixed and a resume is answered, not launched; ``--stubs-init`` — it writes a scaffold and
+    exits), prechecks the path lock for an in-place run (R7), pre-creates the run directory,
+    then hands off to :func:`rayspec.cli._detach.launch_detached`, which spawns the child and
+    waits for its handshake. The child is an ordinary ``rayspec run`` with no controlling
+    terminal, so a gate pauses (exit 3) rather than blocking on stdin (R6).
+    """
+    if os.name != "posix":
+        fail(
+            f"--detach needs POSIX process groups (setsid); {sys.platform!r} has none",
+            hint="drop --detach on this platform (Windows is out of scope for PRD-07)",
+        )
+        return
+    if resume is not None:
+        fail(
+            "--detach cannot be combined with --resume",
+            hint=f"resume in the foreground: `rayspec resume {resume}` (it returns promptly)",
+        )
+        return
+    if stubs_init is not None:
+        fail(
+            "--detach cannot be combined with --stubs-init",
+            hint="write the scaffold first (`rayspec run <wf> --stubs-init <file>`), then --detach",
+        )
+        return
+    slug = _detach_slug(repo, project_root, ctx.config)
+    store = FileRunStore(ctx.home / "projects" / slug)
+    run_dir = store.run_dir(run_id)
+    if _detach_isolation_in_place(
+        workflow, ctx=ctx, project_root=project_root, worktree=worktree, pure_dry_run=pure_dry_run
+    ):
+        _precheck_path_lock(home=ctx.home, slug=slug, workdir=project_root, run_id=run_id)
+    child_argv = detach_mod.child_run_argv(
+        workflow=workflow,
+        inputs=inputs,
+        inputs_file=str(inputs_file) if inputs_file is not None else None,
+        root=str(root) if root is not None else None,
+        dry_run=dry_run,
+        stubs=str(stubs) if stubs is not None else None,
+        stubs_from=stubs_from,
+        exec_shell=exec_shell,
+        yes=yes,
+        approve_class=approve_class,
+        allow_unsupported=allow_unsupported,
+        fail_fast=fail_fast,
+        worktree=worktree,
+        base=base,
+        locked=locked,
+        wait_slot=wait_slot,
+        repo=repo,
+        run_dir=run_dir,
+    )
+    gate_note = _detach_gate_note(
+        workflow, ctx=ctx, project_root=project_root, yes=yes, approve_class=approve_class
+    )
+    detach_mod.launch_detached(
+        run_id=run_id,
+        run_dir=run_dir,
+        runs_root=store.runs_root,
+        child_argv=child_argv,
+        json_output=json_,
+        gate_note=gate_note,
+        err=common.err_console(),
+        fail=fail,
+    )
+
+
 def register(app: typer.Typer) -> None:
     @app.command()
     def run(  # noqa: PLR0917 - Typer options are positional by construction
@@ -713,13 +908,61 @@ def register(app: typer.Typer) -> None:
         repo: Annotated[
             str | None, typer.Option("--repo", help="Registered project / path / url.")
         ] = None,
+        detach: Annotated[
+            bool,
+            typer.Option(
+                "--detach",
+                help="Fork, run in the background, print the run id and exit immediately "
+                "(POSIX only). Follow with `rayspec logs <id> -f`, list with `rayspec runs`, "
+                "stop with `rayspec cancel <id>`.",
+            ),
+        ] = False,
+        detached_child: Annotated[
+            Path | None,
+            typer.Option(
+                _DETACHED_CHILD_OPT,
+                hidden=True,
+                help="Internal: the run directory a `--detach` launcher pre-created for this "
+                "child. Never set by a user.",
+            ),
+        ] = None,
     ) -> None:
         """Run a workflow (or resume one with --resume)."""
         json_ = resolve_output(output, json_)
         ctx = make_context(root)
         out = common.err_console() if json_ else common.console()
         project_root = ctx.project_root
-        run_id = new_run_id()
+        # A detached child is handed its run directory (hence its id) by the launcher, which
+        # already committed to printing it; a normal run mints a fresh id.
+        run_id = detached_child.name if detached_child is not None else new_run_id()
+        if detach:
+            _launch_detached_run(
+                workflow=workflow,
+                inputs=inputs,
+                inputs_file=inputs_file,
+                root=root,
+                dry_run=dry_run,
+                stubs=stubs,
+                stubs_from=stubs_from,
+                stubs_init=stubs_init,
+                exec_shell=exec_shell,
+                yes=yes,
+                approve_class=approve_class,
+                allow_unsupported=allow_unsupported,
+                fail_fast=fail_fast,
+                resume=resume,
+                worktree=worktree,
+                base=base,
+                locked=locked,
+                wait_slot=wait_slot,
+                repo=repo,
+                json_=json_,
+                run_id=run_id,
+                ctx=ctx,
+                project_root=project_root,
+                pure_dry_run=(dry_run and not exec_shell),
+            )
+            return
         prepared: tuple[Workspace, str | None, Path] | None = None
         if repo and resume:
             fail(
@@ -1017,6 +1260,13 @@ def register(app: typer.Typer) -> None:
             home=ctx.home,
             envelope=envelope,
         )
+        if detached_child is not None:
+            # Proof-of-life to the --detach launcher: written after every synchronous usage
+            # check but before acquiring a host slot, so a queued run (--wait-slot) still hands
+            # the launcher its id promptly. The launcher watches the exact directory it created.
+            detach_mod.write_handshake(
+                detached_child, run_id=run_id, pid=os.getpid(), queued=bool(slot_wait)
+            )
         try:
             with acquire_slots(
                 ctx.home, providers_used, slot_limits, run_id=run_id, wait_s=slot_wait

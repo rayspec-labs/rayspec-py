@@ -130,3 +130,52 @@ def test_show_without_a_toolchain_prints_no_block(cli: CliRunner, seeded: Seeded
     res = cli.invoke(app, ["show", SUCCEEDED_ID, "--root", str(seeded.project)])
     assert res.exit_code == 0
     assert "toolchain:" not in res.output
+
+
+def _running_detached(seeded: Seeded, run_id: str, *, heartbeat_ago_s: float, launch_log: bool):
+    import socket
+    from datetime import UTC, datetime, timedelta
+
+    from rayspec.schema import RunStatus
+    from rayspec.store.model import RunRecord
+
+    run = RunRecord(
+        run_id=run_id,
+        workflow_name="live",
+        workflow_path="x.yaml",
+        workflow_hash="f" * 64,
+        project_slug=seeded.slug,
+        project_root=str(seeded.project),
+        status=RunStatus.RUNNING,
+        started_at=datetime.now(UTC),
+        pid=__import__("os").getpid(),
+        host=socket.gethostname(),
+        heartbeat_at=datetime.now(UTC) - timedelta(seconds=heartbeat_ago_s),
+    )
+    seeded.store.create(run)
+    if launch_log:
+        (seeded.store.run_dir(run_id) / "detach-launch.log").write_text("boot\n", encoding="utf-8")
+    return run
+
+
+def test_show_reports_heartbeat_age_for_a_live_run(cli: CliRunner, seeded: Seeded) -> None:
+    run = _running_detached(seeded, "20260827-130000-live", heartbeat_ago_s=3, launch_log=False)
+    result = cli.invoke(app, ["show", run.run_id, "--root", str(seeded.project)])
+    assert result.exit_code == 0, result.output
+    assert "heartbeat" in result.output, result.output
+
+
+def test_show_marks_a_stale_heartbeat(cli: CliRunner, seeded: Seeded) -> None:
+    run = _running_detached(seeded, "20260827-130100-stal", heartbeat_ago_s=3600, launch_log=False)
+    result = cli.invoke(app, ["show", run.run_id, "--root", str(seeded.project)])
+    assert result.exit_code == 0, result.output
+    # a stale heartbeat is reconciled to interrupted; the header must say the beat went stale
+    assert "stale" in result.output.lower(), result.output
+
+
+def test_show_marks_a_detached_launch(cli: CliRunner, seeded: Seeded) -> None:
+    run = _running_detached(seeded, "20260827-130200-dtch", heartbeat_ago_s=2, launch_log=True)
+    result = cli.invoke(app, ["show", run.run_id, "--root", str(seeded.project)])
+    assert result.exit_code == 0, result.output
+    assert "detached" in result.output.lower(), result.output
+    assert "detach-launch.log" in result.output, result.output

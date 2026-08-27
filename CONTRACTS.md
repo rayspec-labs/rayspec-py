@@ -642,6 +642,18 @@ Additive: `RunRecord.stubs_path: str | None = None` (absolute path of the `--stu
 file given at launch; overridden by `--stubs` on a resume entry) and `RunRecord.secret_inputs:
 tuple[str, ...] = ()` (names of the `secret: true` inputs; `RunRecord.inputs` holds
 `"<secret>"` for the ones that were given). Older `run.json` files read as `None` / `()`.
+`RunRecord.heartbeat_at: datetime | None = None` (additive, PRD-07 R2): last time this run's
+process proved it was alive — stamped by `RunContext.touch_heartbeat()` (`engine/context.py`) on
+a **fixed-interval** timer for the life of the run (`rayspec.engine.liveness.HEARTBEAT_INTERVAL_S`
+= 10 s; the timer is its own task, so a long shell/prompt step never stalls it — the prompt
+executor adds no per-call heartbeat write of its own). `None` in records written before the
+field existed, and read that way by every consumer — liveness then rests on `pid` alone.
+`rayspec.engine.liveness` owns the one liveness rule: `heartbeat_is_stale(heartbeat_at)` compares
+against `HEARTBEAT_STALE_AFTER_S` = 90 s (a `None` heartbeat is never stale on its own) and
+`assess(run)` → `Liveness` (`not_running | other_host | dead_pid | pid_reused | stale_heartbeat |
+alive`) is what `cli._runs_common.reconcile_run` (see the CLI run management section) and the
+engine's resume guard act on. The interval is deliberately not derived from the step timeout: a
+derived interval let the writer and the reader disagree on the threshold.
 ```python
 from rayspec.store import FileRunStore, RunStore  # + all store.model names, errors, WrittenOutput
 from rayspec.store.file import (
@@ -658,7 +670,9 @@ from rayspec.store.file import (
 #   step_dir(run_id, path)    -> Path, created with parents; path validated via StepPath.parse
 #                             (ValueError for the empty/root path)
 #   exists(run_id)            -> bool
-#   create(run)               mkdir skeleton (steps/, artifacts/, tmp/) + first save; RunExistsError
+#   create(run)               mkdir skeleton (steps/, artifacts/, tmp/; a pre-created directory is
+#                             accepted) + an O_EXCL claim of run.json + first save; RunExistsError
+#                             when run.json already exists
 #   save(run)                 atomic: run.json.<pid>.<n>.tmp + fsync + os.replace; single writer
 #                             (threading.Lock) — safe from anyio.to_thread / several tasks;
 #                             ensures the skeleton too
@@ -729,17 +743,30 @@ from rayspec.store.file import (
 #   record_step(run, record, output=None, *, kind="text") -> WrittenOutput | None
 #       write-ahead: output file -> record.output_ref/output_kind/output_sha256 ->
 #       run.steps[record.path] = record -> save(run)
-#   append_event(run_id, event)          -> events.jsonl  (one flushed line per call, locked)
-#   append_stream(run_id, path, record)  -> steps/<path>/stream.jsonl (same guarantees)
+#   append_event(run_id, event)          -> events.jsonl  (one flushed line per call, locked;
+#                             capped, see below)
+#   append_stream(run_id, path, record)  -> steps/<path>/stream.jsonl (same guarantees, same cap)
 #   read_events(run_id) -> Iterator[RunEvent]; read_stream(run_id, path) -> Iterator[StreamRecord]
 #       a torn trailing line (crash mid-write) ends the iteration with a warning; an unreadable
 #       middle line is skipped with a warning — neither raises
 #   read_stream(run_id, path, *, kinds=None) (additive): with kinds={"warning", …}
 #       only records of those kinds are yielded and only lines containing one of the kind names
 #       as a JSON string are parsed (cheap scan of multi-MB transcripts; FileRunStore only)
-# Layout: <root>/runs/<run-id>/run.json, events.jsonl, steps/<path>/{output.txt|output.json,
-#   prompt.txt, stream.jsonl, stdout.log, stderr.log}, artifacts/[<path>/<declared>], tmp/
-#   (path = StepPath.fs_path())
+# Log rotation (PRD-07 R8, additive, FileRunStore only): file.LOG_CAP_BYTES = 16 MiB per
+#   events.jsonl / per-step stream.jsonl / audit.jsonl / stdout.log / stderr.log;
+#   file.LOG_CAP_TRIGGER_MULTIPLIER = 2 — a file is left alone until it grows past 2x the cap
+#   (hysteresis: trimming exactly at the cap would rewrite a noisy file on every append), then
+#   FileRunStore._append_line (via the module-level truncate_path / truncate_open_file, which
+#   split_for_cap drives) truncates it back down to ~LOG_CAP_BYTES from the MIDDLE (whole lines
+#   only): the first cap_bytes//3 bytes are kept, the rest of the budget is the tail, and a
+#   synthesised marker is left at the cut, so a run's start and its most recent activity survive
+#   and only the noisy middle is dropped. The pump (executors/_process.py) caps stdout.log/
+#   stderr.log in place while it holds them. Bounded-seek reads (cost O(cap_bytes), not O(file
+#   size)); written flushed, not fsynced, matching every other JSONL append in this module.
+# Layout: <root>/runs/<run-id>/run.json, cancel.json (PRD-07 R5, only while a cancel is
+#   in flight — see the CLI run management section), events.jsonl, steps/<path>/{output.txt|
+#   output.json, prompt.txt, stream.jsonl, stdout.log, stderr.log}, artifacts/[<path>/<declared>],
+#   tmp/ (path = StepPath.fs_path())
 # Permissions: every directory the store creates — <root> and its missing parents
 #   ($RAYSPEC_HOME, projects/<slug>) included — is 0700, every file it writes 0600, regardless
 #   of the umask (PRIVATE_DIR_MODE / PRIVATE_FILE_MODE); pre-existing dirs are never chmodded.
@@ -1745,11 +1772,27 @@ Semantics fixed here (tests in `tests/engine/`):
   rather than reading `ctx.budget_exceeded`, because the wall clock can run out while nothing
   finishes. A first attempt is recorded `skipped`/`budget_exceeded` (`attempts` stays 0); a
   retry that loses the permit race keeps the failed outcome it already has.
+- Cooperative cancel (PRD-07 R5, `engine.cancel` + `RunContext.check_cancelled`/
+  `cancel_requested`): `rayspec cancel` on a live run does not signal the process by default (the
+  `--now` flag SIGINTs it as an escape hatch — see the CLI run management section) — it writes
+  `cancel.json` (`{reason, actor, requested_at}`) beside `run.json`. `RunContext.check_cancelled()`
+  reads it (`engine.cancel.read_cancel_flag`) at step-boundary decision points only —
+  `scheduler.run_graph.decide_and_launch` (every ready-set evaluation) and `executors/loop.py`
+  (before starting the next iteration) — never mid-attempt, so a step already running is left to
+  finish; the first sighting is cached on `ctx.cancel_requested` (and warned about once), later
+  calls just return it. Once set it drains exactly like the run-level cap
+  (`ctx.budget_exceeded or ctx.cancel_requested` is the one drain gate `decide_and_launch` reads):
+  no new step starts except `join: always`, a reusable record is replayed for free, otherwise the
+  step is recorded `skipped` with `context.CANCEL_SKIP_REASON = "cancelled"`. `Runner._finalize`
+  ranks `ctx.cancel_requested` BELOW `ctx.budget_exceeded` (a cap that also tripped wins the
+  reason) but ABOVE `ctx.stopped`: the run finalizes `RunStatus.CANCELLED` (exit 4) with
+  `reason = ctx.cancel_requested`, not `failed` — a cancel is not a defect. Works identically for
+  a foreground or a `--detach`ed run and needs no terminal.
 
 ### CLI `run` — `rayspec run <workflow> [--input k=v]* [--inputs-file f] [--root]
 [--dry-run] [--stubs f] [--stubs-init f] [--exec-shell] [--yes] [--no-interactive] [--json] [--quiet]
 [--verbose] [--allow-unsupported] [--fail-fast] [--resume <run-id|prefix>] [--force]
-[--worktree/--no-worktree] [--base <branch>] [--repo <url|path|name>]`. Store root =
+[--worktree/--no-worktree] [--base <branch>] [--repo <url|path|name>] [--detach]`. Store root =
 `$RAYSPEC_HOME/projects/<slug>` (slug from `rayspec.workspace.project_slug` when importable, else
 `fallback_project_slug`; with `--repo` the slug the prepared workspace reports — the source's
 slug, i.e. the bare clone's project dir for URL sources). `--json` prints JSONL events on stdout and a final summary object
@@ -1808,6 +1851,43 @@ safe to persist for whoever continues the run, and the flag must not be accepted
 `rayspec.textsafe.safe_text` (ESC/CSI/OSC sequences and C0/C1 control characters stripped;
 `safe_markup` = `rich.markup.escape(safe_text(s))`).
 
+`--detach` (PRD-07 R1/R6/R7, `run.py::_launch_detached_run` → `cli/_detach.py::launch_detached`):
+POSIX only — `os.name != "posix"` is a usage error (exit 2, names `sys.platform`) before anything
+else runs; `--detach` with `--resume` or `--stubs-init` is refused the same way (a resume is
+answered, not launched; `--stubs-init` writes a scaffold and exits). Not `os.fork`: the launcher
+computes the run's slug WITHOUT materialising a workspace (`workspace.repos.source_slug_for` for
+`--repo`, else `project_slug_for`), mints the run id and pre-creates its directory, and when the
+run is in-place (`--no-worktree`, or the workflow's `isolation: none`, and not a pure dry run)
+takes and releases `rayspec.workspace.PathLock` synchronously (`run.py::_precheck_path_lock`) — a
+held lock is exit 2 naming the holder, before anything is backgrounded; a worktree's path does not
+exist yet, so its contention is left to the child's own `Runner._acquire_lock`. It then
+`subprocess.Popen`s `[sys.executable, "-m", "rayspec.cli.app", *child_run_argv(...)]` — the child
+argv REBUILT from the run command's parsed parameters (`_detach.py::child_run_argv`, a test pins
+that every `run` option is threaded or explicitly launcher-owned), with `--detach`/`--json`/
+`--output`/`--verbose` dropped, `--resume`/`--stubs-init`/`--force` never present, and `--quiet
+--no-interactive --detached-child <run dir>` (a hidden option) added — with `stdin=DEVNULL`,
+`stdout=stderr=<run_dir>/detach-launch.log` (opened via `store.open_private`, so a boot crash is
+captured; the child runs `--quiet`, so it stays small), `start_new_session=True` (`setsid`) and
+`env` hardened with `GIT_TERMINAL_PROMPT=0`/`PYTHONUNBUFFERED=1`. The child writes
+`<run_dir>/detach-handshake.json` (`{run_id, pid, run_dir, queued}`) just before it acquires its
+host slot — after every synchronous usage check — and the launcher waits for handshake-or-exit
+with NO fixed deadline while the child is alive (so a `--wait-slot` queue or a slow `--repo` clone
+does not flip a legitimate slow start to "did not start", the failure mode the old 8 s poll had).
+On the handshake, stdout gets exactly one line — the bare run id (never through Rich), or one
+compact `{"run_id","pid","run_dir","launch_log","started"}` object with `--json` — and the
+launcher exits 0: the exit code reflects the *launch*, not the workflow's outcome. A child that
+exits before handshaking is a launch failure (exit 2, the launch log's tail as the hint — the
+child's own error, byte-identical); a run directory that never got a `run.json` is removed, one
+that did is left for inspection. Ctrl-C while waiting prints the id and exits 130 (the child runs
+on). The child has no controlling terminal, so `_runs_common.stdin_is_tty()` reads `False` exactly
+as over a closed pipe — a gate it reaches pauses (exit 3) precisely as `--no-interactive` would;
+no detach-specific code path (the launcher warns on stderr up front when the workflow has a gate
+and neither `--yes` nor `--approve-class` was given). `rayspec logs <id> --follow [--exit-code]`,
+`rayspec runs`, `rayspec show` and `rayspec cancel <id>` all work against a detached run exactly
+as against a foreground one — purely file-based (see `reconcile_run` below for how a crashed
+detached child's stale `running` record is corrected). `detach-handshake.json` is transient
+plumbing; `detach-launch.log` persists inside the run directory.
+
 ### CLI run management
 Thin commands over the store and engine; shared glue in `rayspec.cli._runs_common` (store
 factory `project_store(home, slug)` / `make_runs_context(root)` = `$RAYSPEC_HOME/projects/<slug>`
@@ -1838,7 +1918,17 @@ hash rule as a `ResumeError`, applied before anything is persisted) / `record_ro
 `record_context(ctx, run)` / `resume_run(...,
 resolved=None)` (builds the `Runner(resume_run_id=)` with the workspace from `run.json`, prints
 the `run` summary, returns the exit code) / `pid_alive` (delegates to the engine's rule) /
-`on_other_host` / `release_workdir_lock`). All commands take `--root` and honour `RAYSPEC_HOME`;
+`on_other_host` / `release_workdir_lock` / `reconcile_run(store, run)` (PRD-07 R4, additive):
+correct a stored `running` record that plainly is not — `run.pid` no longer alive on this host
+(`pid_alive`), or alive but `heartbeat_is_stale(run)` (`RunRecord.heartbeat_at` — see the store
+section — has not moved in over `rayspec.engine.liveness.HEARTBEAT_STALE_AFTER_S`) — to `interrupted`
+(`reason = "interrupted: recorded process <pid> is no longer running"` or `"interrupted:
+heartbeat stale since <stamp> (recorded process <pid> is still alive but not responding)"`, `pid` cleared, `ended_at`
+stamped), and PERSIST the correction (`store.save`), not merely display it. A record on another
+host is left alone (`on_other_host` — its process cannot be checked from here). Called wherever a
+record is loaded for display or a liveness decision — `runs`, `show`, `logs --follow`'s
+`_run_is_live`, `cancel` — so the corrected status is consistent everywhere it is read next, not
+only in whichever listing happened to notice first). All commands take `--root` and honour `RAYSPEC_HOME`;
 every `<run>` argument accepts a unique prefix. Human output renders everything that comes from
 `run.json`/output files as plain text (never Rich markup). `--json` on `resume/approve/reject`
 prints the JSONL events **and** the final summary object on stdout (Rich progress/errors on
@@ -1885,7 +1975,11 @@ project B's.
   Exit 0 · 2 unknown/ambiguous. All run data is safe plain text.
 - `rayspec logs <run> [--step <path>] [--follow] [--stream] [--verbose] [--raw] [--json]`:
   timestamped (UTC) event lines (`events.jsonl`, rendered like the quiet console sink, loop/each
-  progress as generic lines); `--step` renders that step's `stream.jsonl` (text deltas buffered
+  progress as generic lines; with `--follow` the `run.finished` line additionally appends
+  ` outputs: k=v, …` when `data.outputs` is a non-empty mapping — a `--follow`ed run, the one a
+  `--detach`ed launch has no other console for, is otherwise done watching having never seen its
+  own result; a plain non-following `logs` shows the event log as recorded, nothing more);
+  `--step` renders that step's `stream.jsonl` (text deltas buffered
   until the completed text, reasoning deltas joined per block into whole `thinking:` lines,
   tool calls/results, command start/output/end, shell stdout/stderr/exit, usage, session…;
   `raw`/unknown kinds only with `--verbose`); `--stream` interleaves every step's stream
@@ -1912,7 +2006,7 @@ project B's.
   wording/hint, nothing recorded); only then write `pause.decision{approved, comment, by:
   "cli"}` and resume non-interactively — the gate consumes the decision when its token matches.
   Exit = how the run ends (approve typically 0; reject with the default `on_reject: cancel` ⇒ 4).
-- `rayspec cancel <run> [--yes] [--force] [--mark] [--json]`: live run (status `running`, pid
+- `rayspec cancel <run> [--yes] [--now] [--mark] [--force] [--json]`: live run (status `running`, pid
   alive on this host **and** `pid_is_rayspec_run` — else exit 2 "pid N is not a rayspec run
   process (stale record?) — use `rayspec cancel --mark` …"; when the record
   carries `pid_started_at` the live process's start time (`_runs_common.pid_start_time(pid)` =
@@ -1920,9 +2014,19 @@ project B's.
   command-line heuristic is the second check; records without the field use the heuristic
   alone) ⇒ confirmation (`--yes`/`--json`
   skip it; declined ⇒ exit 1; no terminal to answer on ⇒ exit 2 with the `--yes` hint), then
-  SIGINT to the pid (the engine finalizes its own record; exit 0, JSON `{run_id, action:
-  "signalled", pid, status}`); `--mark` ⇒ the running/paused record is finalized as cancelled
-  without any signal (JSON `action: "marked"`); a `running` record whose `host` is another
+  — PRD-07 R5, cooperative, NOT a signal — `engine.cancel.write_cancel_flag(run_dir, reason=,
+  actor=resolve_actor().id)` writes `cancel.json` (`{reason, actor, requested_at}`, tmp + rename,
+  0600) beside `run.json`; exit 0, JSON `{run_id, action: "flagged", pid, status}`, text "cancel
+  requested for run <id> (pid <pid>) — it stops at the next step boundary (watch with `rayspec
+  logs <id> --follow`)". The run's own process notices the flag at the next step-boundary check
+  (`RunContext.check_cancelled`, cached after the first sighting — see the engine section), lets
+  any step already in flight finish, still runs `join: always` steps, then finalizes itself
+  `cancelled` (exit 4) — nothing here signals or kills it, and this is identical for a foreground
+  or a `--detach`ed run. `--now` ⇒ the escape hatch for a step wedged with no boundary to reach:
+  after the same pid verification it SIGINTs the verified process (`_runs_common.interrupt_pid`)
+  instead of writing a flag; the run unwinds through anyio and ends `interrupted` (exit 130), JSON
+  `{run_id, action: "signalled", pid, status}`. `--mark` ⇒ the running/paused record is finalized as cancelled
+  without any signal or flag (JSON `action: "marked"`); a `running` record whose `host` is another
   machine (shared `RAYSPEC_HOME`) ⇒ exit 2 "recorded as running on host X" unless `--force`;
   paused run or a `running` record whose process is gone ⇒ the record is marked `cancelled`
   (`pid` cleared, `ended_at`, reason, `run.finished{status: cancelled}` appended) and a stale
