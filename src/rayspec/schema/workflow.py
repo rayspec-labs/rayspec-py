@@ -20,10 +20,12 @@ from rayspec.schema.common import (
     Duration,
     Identifier,
     Isolation,
+    Money,
     Name,
     OnStepFailure,
     OnUnsupported,
     PositiveDuration,
+    parse_money,
 )
 from rayspec.schema.errors import schema_error_from_validation
 from rayspec.schema.inputs import InputSpec
@@ -33,8 +35,6 @@ SCHEMA_VERSION = 1
 
 _TOKEN_COUNT_RE = re.compile(r"^\s*(\d+(?:_\d+)*(?:\.\d+)?)\s*([kKmM])?\s*$")
 _TOKEN_COUNT_HINT = "use a whole number of tokens (e.g. 500000) or a string like '500k', '1.5M'"
-_MONEY_RE = re.compile(r"^\s*\$?\s*(\d+(?:\.\d+)?)\s*(?:USD)?\s*$", re.IGNORECASE)
-_MONEY_HINT = "use a USD amount (e.g. 1.5) or a string like '$1.50'"
 
 
 def parse_token_count(value: object) -> int:
@@ -62,28 +62,8 @@ def parse_token_count(value: object) -> int:
     return count
 
 
-def parse_money(value: object) -> float:
-    """Parse a USD cap into a float (``1.5``, ``"1.50"``, ``"$1.50"``, ``"12 USD"``)."""
-    if isinstance(value, bool) or value is None:
-        raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
-    if isinstance(value, int | float):
-        amount = float(value)
-    elif isinstance(value, str):
-        match = _MONEY_RE.match(value)
-        if match is None:
-            raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
-        amount = float(match.group(1))
-    else:
-        raise ValueError(f"invalid amount {value!r}; {_MONEY_HINT}")
-    if amount <= 0:
-        raise ValueError("must be greater than 0")
-    return amount
-
-
 #: ``defaults.max_tokens``: positive int; accepts ``500k`` / ``1.5M`` strings.
 TokenCount = Annotated[int, BeforeValidator(parse_token_count)]
-#: ``defaults.budget_usd``: positive USD amount; accepts ``"$1.50"`` strings.
-Money = Annotated[float, BeforeValidator(parse_money)]
 
 
 class Defaults(StrictModel):

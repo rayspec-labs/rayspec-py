@@ -98,30 +98,44 @@
           "type": "string"
         },
         "max_turns": {
+          "default": null,
+          "title": "Max Turns",
           "anyOf": [
             {
-              "minimum": 1,
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\{\\{\\s*inputs\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\}\\}\\s*$"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Max Turns"
+          "description": "A positive integer or exactly {{ inputs.<name> }}."
         },
         "budget_usd": {
+          "default": null,
+          "title": "Budget Usd",
           "anyOf": [
             {
-              "exclusiveMinimum": 0,
-              "type": "number"
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\$?\\s*\\d+(?:\\.\\d+)?\\s*(?:[Uu][Ss][Dd])?\\s*$"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\{\\{\\s*inputs\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\}\\}\\s*$"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Budget Usd"
+          "description": "A USD amount (1.5, '$1.50') or exactly {{ inputs.<name> }}."
         },
         "tools": {
           "$ref": "#/$defs/ToolsSpec"
@@ -287,30 +301,44 @@
           "type": "string"
         },
         "max_turns": {
+          "default": null,
+          "title": "Max Turns",
           "anyOf": [
             {
-              "minimum": 1,
-              "type": "integer"
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\{\\{\\s*inputs\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\}\\}\\s*$"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Max Turns"
+          "description": "A positive integer or exactly {{ inputs.<name> }}."
         },
         "budget_usd": {
+          "default": null,
+          "title": "Budget Usd",
           "anyOf": [
             {
-              "exclusiveMinimum": 0,
-              "type": "number"
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\$?\\s*\\d+(?:\\.\\d+)?\\s*(?:[Uu][Ss][Dd])?\\s*$"
+            },
+            {
+              "type": "string",
+              "pattern": "^\\s*\\{\\{\\s*inputs\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\}\\}\\s*$"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Budget Usd"
+          "description": "A USD amount (1.5, '$1.50') or exactly {{ inputs.<name> }}."
         },
         "tools": {
           "$ref": "#/$defs/ToolsSpec"

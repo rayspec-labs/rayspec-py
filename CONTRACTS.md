@@ -143,8 +143,21 @@ parse_money` accepts `1.5`, `"1.50"`, `"$1.50"`, `"12 USD"`) and `Defaults.max_t
 that is not a whole number of tokens — `"1.5"`, `"1.0005k"` — is rejected, never rounded) — the
 run-level circuit breaker caps (Duration-like `BeforeValidator` parsing, the `parse_*` functions
 carry the `> 0` check; `Money` / `TokenCount` annotated types exported from
-`rayspec.schema.workflow`). Root workflow only; included bodies' values are
+`rayspec.schema.workflow` — `Money`/`parse_money` now live in `rayspec.schema.common`, re-exported
+from `schema.workflow` for that promise, so `schema.agent` can reach them without the
+workflow→agent import cycle). Root workflow only; included bodies' values are
 ignored by the engine.
+
+Additive (E1, PRD-09 F6/F13): an agent's `budget_usd` / `max_turns` accept a literal OR **exactly**
+`{{ inputs.<name> }}` — the one numeric field that takes an input reference, so a run can raise a
+budget with `--input` instead of ejecting the YAML. `schema/agent.py::TemplatedMoney`
+(`float | str`) / `TemplatedTurns` (`int | str`) via `parse_templated_money` / `parse_templated_turns`
+(a string is kept verbatim only when `schema.common.input_ref_name` matches — no arithmetic, no
+step ref, no partial template; the `> 0` / `>= 1` bound is enforced in the validator, not on the
+`Field`, since the value may be a string). The published schema constrains the string branch to
+`_INPUT_REF_PATTERN` (schemagen patches `AgentDef`/`AgentOverride`). It is a **reference, not an
+expression** (constitution: a lever the author sets, resolved to the run's own input). The engine
+resolves it once per run entry (see `resolve_agent_numbers` below).
 
 Additive: `Defaults.timeout_total: PositiveDuration | None = None` — the run-level
 WALL-CLOCK cap, the third circuit breaker beside `budget_usd`/`max_tokens` (same `Duration`
