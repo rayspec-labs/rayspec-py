@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from rayspec.engine import liveness as liveness_mod
 from rayspec.engine import runner as runner_mod
 from rayspec.engine.context import RunOptions
 from rayspec.engine.runner import process_start_time
@@ -78,13 +79,13 @@ def test_proc_stat_fallback_parses_field_22(tmp_path: Path) -> None:
     stat = tmp_path / "stat"
     fields = ["S", *(str(n) for n in range(4, 22)), "4242424", "99"]  # 3, 4..21, 22, 23
     stat.write_text("4711 (ray (spec) run) " + " ".join(fields) + "\n")
-    assert runner_mod._proc_starttime(4711, proc_root=tmp_path.parent) is None  # no such dir
+    assert liveness_mod._proc_starttime(4711, proc_root=tmp_path.parent) is None  # no such dir
     proc_root = tmp_path / "proc"
     (proc_root / "4711").mkdir(parents=True)
     (proc_root / "4711" / "stat").write_text(stat.read_text())
-    assert runner_mod._proc_starttime(4711, proc_root=proc_root) == "4242424"
+    assert liveness_mod._proc_starttime(4711, proc_root=proc_root) == "4242424"
     (proc_root / "4711" / "stat").write_text("garbage\n")
-    assert runner_mod._proc_starttime(4711, proc_root=proc_root) is None
+    assert liveness_mod._proc_starttime(4711, proc_root=proc_root) is None
 
 
 def test_process_start_time_falls_back_to_proc_when_ps_is_missing(
@@ -93,7 +94,7 @@ def test_process_start_time_falls_back_to_proc_when_ps_is_missing(
     proc_root = tmp_path / "proc"
     (proc_root / "77").mkdir(parents=True)
     (proc_root / "77" / "stat").write_text("77 (x) S " + " ".join(["1"] * 18) + " 123456 0\n")
-    monkeypatch.setattr(runner_mod, "_PROC_ROOT", proc_root)
+    monkeypatch.setattr(liveness_mod, "_PROC_ROOT", proc_root)
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))  # no ps anywhere
     (tmp_path / "empty-bin").mkdir()
     assert process_start_time(77) == "123456"
@@ -109,7 +110,7 @@ def test_process_start_time_falls_back_to_proc_when_ps_cannot_report(
     proc_root = tmp_path / "proc"
     (proc_root / "77").mkdir(parents=True)
     (proc_root / "77" / "stat").write_text("77 (x) S " + " ".join(["1"] * 18) + " 123456 0\n")
-    monkeypatch.setattr(runner_mod, "_PROC_ROOT", proc_root)
+    monkeypatch.setattr(liveness_mod, "_PROC_ROOT", proc_root)
     shim_bin = tmp_path / "shim-bin"
     shim_bin.mkdir()
     ps = shim_bin / "ps"

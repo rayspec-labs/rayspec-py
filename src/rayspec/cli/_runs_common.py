@@ -30,7 +30,7 @@ from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.cli.commands._loader_common import Context, fail, make_context, stdout_is_tty
 from rayspec.config import Config
 from rayspec.engine.context import cost_source_of
-from rayspec.engine.heartbeat import heartbeat_stale_after_s
+from rayspec.engine.liveness import heartbeat_is_stale as _heartbeat_is_stale
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.fmt import format_duration
@@ -1181,17 +1181,9 @@ def pid_is_rayspec_run(run: RunRecord) -> bool:
 
 
 def heartbeat_is_stale(run: RunRecord, *, now: datetime | None = None) -> bool:
-    """Whether ``run.heartbeat_at`` has not moved in longer than the staleness threshold.
-
-    ``None`` (a record written before the field existed, or one whose engine has not ticked
-    yet) is never stale on its own — liveness then rests on the pid check alone, exactly as
-    before this field existed.
-    """
-    if run.heartbeat_at is None:
-        return False
-    now = now or datetime.now(UTC)
-    age = (now - _utc(run.heartbeat_at)).total_seconds()
-    return age > heartbeat_stale_after_s()
+    """Whether ``run.heartbeat_at`` has not moved in longer than the engine's fixed threshold
+    (:data:`rayspec.engine.liveness.HEARTBEAT_STALE_AFTER_S`); ``None`` is never stale."""
+    return _heartbeat_is_stale(run.heartbeat_at, now=now)
 
 
 def reconcile_run(store: FileRunStore, run: RunRecord) -> RunRecord:

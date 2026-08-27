@@ -644,15 +644,16 @@ tuple[str, ...] = ()` (names of the `secret: true` inputs; `RunRecord.inputs` ho
 `"<secret>"` for the ones that were given). Older `run.json` files read as `None` / `()`.
 `RunRecord.heartbeat_at: datetime | None = None` (additive, PRD-07 R2): last time this run's
 process proved it was alive — stamped by `RunContext.touch_heartbeat()` (`engine/context.py`) on
-a periodic timer for the life of the run (`rayspec.engine.heartbeat.heartbeat_interval_s(
-step_timeout)` = `min(60s, max(5s, step_timeout / 10))`, `step_timeout` = the root
-`defaults.timeout`, falling back to a 60s base when unset) and right before/after every provider
-call (`executors/prompt.py`), so a long shell/prompt step between `step.started`/`step.finished`
-still moves it. `None` in records written before the field existed, and read that way by every
-consumer — liveness then rests on `pid` alone. `cli._runs_common.heartbeat_is_stale(run)` compares
-it against `heartbeat_stale_after_s()` = `heartbeat_interval_s() * 3` (a `None` heartbeat is never
-stale on its own); `cli._runs_common.reconcile_run` (see the CLI run management section) is what
-acts on it.
+a **fixed-interval** timer for the life of the run (`rayspec.engine.liveness.HEARTBEAT_INTERVAL_S`
+= 10 s; the timer is its own task, so a long shell/prompt step never stalls it) and right
+before/after every provider call (`executors/prompt.py`). `None` in records written before the
+field existed, and read that way by every consumer — liveness then rests on `pid` alone.
+`rayspec.engine.liveness` owns the one liveness rule: `heartbeat_is_stale(heartbeat_at)` compares
+against `HEARTBEAT_STALE_AFTER_S` = 90 s (a `None` heartbeat is never stale on its own) and
+`assess(run)` → `Liveness` (`not_running | other_host | dead_pid | pid_reused | stale_heartbeat |
+alive`) is what `cli._runs_common.reconcile_run` (see the CLI run management section) and the
+engine's resume guard act on. The interval is deliberately not derived from the step timeout: a
+derived interval let the writer and the reader disagree on the threshold.
 ```python
 from rayspec.store import FileRunStore, RunStore  # + all store.model names, errors, WrittenOutput
 from rayspec.store.file import (
@@ -1899,7 +1900,7 @@ the `run` summary, returns the exit code) / `pid_alive` (delegates to the engine
 `on_other_host` / `release_workdir_lock` / `reconcile_run(store, run)` (PRD-07 R4, additive):
 correct a stored `running` record that plainly is not — `run.pid` no longer alive on this host
 (`pid_alive`), or alive but `heartbeat_is_stale(run)` (`RunRecord.heartbeat_at` — see the store
-section — has not moved in over `heartbeat_stale_after_s()`) — to `interrupted`
+section — has not moved in over `rayspec.engine.liveness.HEARTBEAT_STALE_AFTER_S`) — to `interrupted`
 (`reason = "interrupted: recorded process <pid> is no longer running"` or `"interrupted:
 heartbeat stale since <stamp> (recorded process <pid> is still alive)"`, `pid` cleared, `ended_at`
 stamped), and PERSIST the correction (`store.save`), not merely display it. A record on another

@@ -25,7 +25,6 @@ import contextlib
 import hashlib
 import os
 import socket
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,11 +34,12 @@ import anyio
 from anyio import to_thread
 
 from rayspec.actor import resolve_actor
+from rayspec.engine import liveness
 from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
 from rayspec.engine.graph import FAILED_LIKE, StepGraph
-from rayspec.engine.heartbeat import heartbeat_interval_s
+from rayspec.engine.liveness import process_start_time, run_pid_alive
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import (
     Runtime,
@@ -397,7 +397,7 @@ class Runner:
         # PRD-07 R2: a periodic timer that proves this process is still alive for the life of
         # the run, independent of any single step — a long shell/prompt step with no provider
         # call still moves ``heartbeat_at`` between its own start and end events.
-        heartbeat_s = heartbeat_interval_s(workflow.defaults.timeout)
+        heartbeat_s = liveness.HEARTBEAT_INTERVAL_S  # read at call time: tests shorten it
 
         async def _heartbeat_loop() -> None:
             while True:
@@ -678,7 +678,7 @@ class Runner:
                         f"(pid {run.pid or '?'}) — its process cannot be checked from here",
                         hint="resume it on that host, or pass --force if you are sure it is dead",
                     )
-                if _pid_alive(run):
+                if run_pid_alive(run):
                     raise ResumeError(
                         f"run {run.run_id} is still running (pid {run.pid} on {run.host})",
                         hint=f"stop it first with `rayspec cancel {run.run_id}`, "
@@ -951,93 +951,8 @@ def _on_other_host(run: RunRecord) -> bool:
 
 
 #: Linux process table (overridable in tests).
-_PROC_ROOT = Path("/proc")
-
-
-#: Environment for the ``ps`` probe: the ``lstart`` string depends on the locale (``Do. 20 Aug.``
-#: vs ``Thu Aug 20``) and on ``TZ``, and the engine (launch) and ``rayspec cancel`` may run under
-#: different shells (cron/CI vs interactive) — pin both so the two sides always agree.
-_PS_ENV = {"LC_ALL": "C", "TZ": "UTC"}
-
-
-def _ps_lstart(pid: int, *, timeout_s: float) -> str | None:
-    """``ps -o lstart= -p <pid>`` under ``LC_ALL=C TZ=UTC``, stripped; ``None`` when the process
-    is gone or ``ps`` fails (non-zero exit, e.g. a busybox ``ps`` without ``-o lstart``).
-
-    Raises :class:`FileNotFoundError` when there is no ``ps`` at all and
-    :class:`subprocess.TimeoutExpired` when it hangs (the caller falls back to ``/proc``).
-    """
-    proc = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-        env={**os.environ, **_PS_ENV},
-    )
-    if proc.returncode != 0:
-        return None
-    line = proc.stdout.strip()
-    return line or None
-
-
-def _proc_starttime(pid: int, *, proc_root: Path | None = None) -> str | None:
-    """Field 22 (``starttime``, clock ticks since boot) of ``/proc/<pid>/stat`` — Linux only.
-
-    The ``comm`` field (2) is parenthesised and may contain spaces and parentheses, so the fields
-    are counted from the LAST ``)``. ``None`` when the file is missing or malformed.
-    """
-    root = _PROC_ROOT if proc_root is None else proc_root
-    try:
-        text = (root / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    _, sep, rest = text.rpartition(")")
-    if not sep:
-        return None
-    fields = rest.split()
-    # ``rest`` starts at field 3 (state): starttime is field 22 → index 19
-    if len(fields) < 20 or not fields[19].isdigit():
-        return None
-    return fields[19]
-
-
-def process_start_time(pid: int, *, timeout_s: float = 5.0) -> str | None:
-    """The start time of process ``pid`` as an opaque string to compare for equality.
-
-    The ``ps -o lstart= -p <pid>`` output run under a fixed environment (``LC_ALL=C TZ=UTC``, e.g.
-    ``Thu Aug 20 12:00:00 2026``; one-second resolution) — so the string is the same for the same
-    process whichever shell, locale or timezone the caller has; when ``ps`` is missing, fails
-    (busybox without ``-o lstart``) or hangs, the ``/proc/<pid>/stat`` ``starttime`` field on
-    Linux. ``None`` for a pid that does not exist, an invalid pid, or when neither source can be
-    read — callers treat "unknown" as "not verified". The engine records it next to ``pid`` in
-    ``run.json`` at launch and on resume; ``rayspec cancel`` compares it with the live process.
-    """
-    if pid <= 0:
-        return None
-    value: str | None = None
-    try:
-        value = _ps_lstart(pid, timeout_s=timeout_s)
-    except (OSError, subprocess.SubprocessError):
-        value = None
-    if value is not None:
-        return value
-    return _proc_starttime(pid)
-
-
-def _pid_alive(run: RunRecord) -> bool:
-    """Whether the process recorded in ``run.json`` still exists (same host only; POSIX)."""
-    if run.pid is None or run.pid <= 0 or (run.host and run.host != socket.gethostname()):
-        return False
-    try:
-        os.kill(run.pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+#: the historical name; the rule itself lives in :mod:`rayspec.engine.liveness`
+_pid_alive = run_pid_alive
 
 
 def _null_sink() -> EventSink:

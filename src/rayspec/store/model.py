@@ -269,7 +269,7 @@ class RunRecord(_Model):
     pid_started_at: str | None = None
     #: additive: last time this run's process proved it was still alive — a periodic timer
     #: while any step is in flight, plus a stamp right before/after every provider call
-    #: (:mod:`rayspec.engine.heartbeat`). ``rayspec runs``/``show`` read it alongside ``pid`` to
+    #: (:mod:`rayspec.engine.liveness`). ``rayspec runs``/``show`` read it alongside ``pid`` to
     #: tell a genuinely running process from one whose record was never corrected after a crash
     #: (PRD-07 R2/R4); ``None`` in records written before the field existed, and read that way —
     #: liveness then falls back to the pid check alone.

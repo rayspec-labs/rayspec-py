@@ -13,6 +13,7 @@ import json
 import anyio
 import pytest
 
+from rayspec.engine import liveness
 from rayspec.engine.context import RunOptions
 from rayspec.providers.stub import StubProvider
 from rayspec.schema import RunStatus
@@ -27,9 +28,14 @@ def wf(steps: str) -> str:
     return f"rayspec: 1\nname: t\nsteps:\n{steps}"
 
 
-async def test_heartbeat_is_updated_periodically_during_a_run(harness: Harness) -> None:
+async def test_heartbeat_is_updated_periodically_during_a_run(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A single step slower than one heartbeat interval must see the heartbeat advance more
     than once while it runs — a timer, not a one-shot stamp at start."""
+    monkeypatch.setattr(
+        liveness, "HEARTBEAT_INTERVAL_S", 0.5
+    )  # the timer is fixed; shorten it here
     harness.workflow(
         "t",
         wf("""
