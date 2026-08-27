@@ -3758,6 +3758,14 @@ recorded — never the tool input.
 - anyio pytest plugin (`pytestmark = pytest.mark.anyio`; `anyio_backend` fixture = "asyncio").
 - No network in unit tests; real SDK calls only under `-m live`.
 - Every module ships at least one end-to-end style test of its public surface.
+- The autouse `tests/conftest.py::_no_ambient_env` scrubs, for every test, both `AMBIENT_ENV`
+  (colour/CI vars that change what a command renders) and `NESTED_ENV` — the `RAYSPEC_*` a
+  surrounding `rayspec run` exports into its steps (`RAYSPEC_HOME`, `RAYSPEC_POLICY`,
+  `RAYSPEC_ACTOR`, … and the `RAYSPEC_INPUT_*` / `RAYSPEC_V<n>` families) — so the suite's outcome
+  never depends on being run from inside another run (the dogfood leak, PRD-09 F4). `RAYSPEC_HOME`
+  is re-set by the `home` fixture; a test that needs one asks for it. NOT scrubbed: `RAYSPEC_LIVE`,
+  `RAYSPEC_UPDATE_GOLDEN`, `RAYSPEC_PROP_*` (read at import to select what a run is).
+  `tests/repo/test_ambient_env.py` proves both classes change a real target's outcome.
 
 ### CLI ↔ workspace seam
 `rayspec.cli.commands.run.prepare_workspace(*, project_root, home, workflow_name, run_id, isolation,

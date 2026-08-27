@@ -40,9 +40,6 @@ def clean_identity_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Itera
     """No inherited identity: the resolver must see only what a test puts there."""
     saved = dict(os.environ)
     forget_env_file_values()
-    monkeypatch.delenv("RAYSPEC_ACTOR", raising=False)
-    monkeypatch.delenv("RAYSPEC_AUDIT_LOG", raising=False)
-    monkeypatch.delenv("RAYSPEC_PUSH_BRANCH", raising=False)
     for name, _label in CI_ENV_MARKERS:
         monkeypatch.delenv(name, raising=False)
     for names in PROVIDER_ACCOUNT_ENV.values():
