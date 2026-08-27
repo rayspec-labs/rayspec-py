@@ -1196,22 +1196,30 @@ def reconcile_run(store: FileRunStore, run: RunRecord) -> RunRecord:
     read, not only in the listing that happened to notice first. A run recorded as running on
     another host is left alone — its process cannot be checked from here.
     """
-    if run.status is not RunStatus.RUNNING or on_other_host(run):
+    from rayspec.engine import liveness
+
+    verdict = liveness.assess(run)
+    L = liveness.Liveness
+    if verdict in {L.NOT_RUNNING, L.OTHER_HOST, L.ALIVE}:
         return run
-    alive = pid_alive(run)
-    stale = heartbeat_is_stale(run)
-    if alive and not stale:
-        return run
+    pid = run.pid
     run.status = RunStatus.INTERRUPTED
-    run.reason = (
-        f"interrupted: heartbeat stale since {fmt_stamp(run.heartbeat_at)} "
-        f"(recorded process {run.pid or '?'} is still alive)"
-        if alive
-        else f"interrupted: recorded process {run.pid or '?'} is no longer running"
-    )
+    if verdict is liveness.Liveness.STALE_HEARTBEAT:
+        run.reason = (
+            f"interrupted: heartbeat stale since {fmt_stamp(run.heartbeat_at)} "
+            f"(recorded process {pid or '?'} is still alive but not responding)"
+        )
+    elif verdict is liveness.Liveness.PID_REUSED:
+        run.reason = f"interrupted: the process behind pid {pid or '?'} is a different one now"
+    else:  # DEAD_PID
+        run.reason = f"interrupted: recorded process {pid or '?'} is no longer running"
     run.ended_at = run.ended_at or utcnow()
     run.pid = None
-    store.save(run)
+    # a read-only store (a shared RAYSPEC_HOME mounted ro, a permission-locked run dir) must not
+    # turn the read-only ``runs``/``show``/``logs -f`` into a traceback — persist best effort and
+    # return the corrected record either way (D9).
+    with contextlib.suppress(OSError):
+        store.save(run)
     return run
 
 

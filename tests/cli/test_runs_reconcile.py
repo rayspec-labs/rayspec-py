@@ -95,3 +95,36 @@ def test_show_also_reconciles_status(cli: CliRunner, seeded: Seeded) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["status"] == "interrupted", data
+
+
+def test_reconcile_reports_a_reused_pid_as_interrupted(cli: CliRunner, seeded: Seeded) -> None:
+    """A running record whose pid now belongs to a different process (start time differs) is
+    interrupted — the case a bare pid check would miss."""
+
+    run = _running(
+        seeded, "20260827-100900-reuse", pid=os.getpid(), heartbeat_at=datetime.now(UTC)
+    )
+    run.pid_started_at = "a-start-time-that-is-not-this-process"
+    seeded.store.save(run)
+    result = cli.invoke(app, ["runs", "--root", str(seeded.project), "--json"])
+    assert result.exit_code == 0, result.output
+    rows = {row["run_id"]: row for row in json.loads(result.output)}
+    assert rows[run.run_id]["status"] == "interrupted"
+
+
+def test_reconcile_never_tracebacks_on_a_read_only_store(cli: CliRunner, seeded: Seeded) -> None:
+    """PRD-07 D9: the correction persists best-effort — a run dir the process cannot write must
+    not turn the read-only ``runs`` into a crash; the status is still corrected in the output."""
+    import stat
+
+    run = _running(seeded, "20260827-101000-ro", pid=_dead_pid())
+    run_dir = seeded.store.run_dir(run.run_id)
+    original = run_dir.stat().st_mode
+    run_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x: reads work, writes fail
+    try:
+        result = cli.invoke(app, ["runs", "--root", str(seeded.project), "--json"])
+    finally:
+        run_dir.chmod(original)
+    assert result.exit_code == 0, result.output
+    rows = {row["run_id"]: row for row in json.loads(result.output)}
+    assert rows[run.run_id]["status"] == "interrupted"
