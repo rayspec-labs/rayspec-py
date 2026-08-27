@@ -1,10 +1,29 @@
 # A dry run simulates every shell/python step green: the PRD reads as '' (`cat` is skipped), the
 # size check says ok, `red` says red, the loop converges on its first pass and `pr` prints ''.
-# The `expect:` blocks pin what each of the four agents was asked — the planner (fresh,
-# read-only), the tester (fresh, write access, no schema), the implementer's first brief (fresh,
-# write access, structured) and the reviewer (fresh, read-only, structured).
+# The `expect:` blocks pin what each agent was asked — the scout (names the questions), the two
+# explorers (answer them, read-only), the planner (uses their reports), the tester (fresh, write
+# access, no schema), the implementer's first brief (structured) and the reviewer (structured).
 defaults: { latency_ms: 0, usage: { input: 2500, output: 300 } }
 steps:
+  scout:
+    output:
+      questions: ["where does the sum live?", "what to reuse?"]
+    expect:
+      session: fresh
+      access: read-only
+      output_schema: true
+      prompt_contains: ["name the 2 to", "questions"]
+  "*inspect":
+    output:
+      question: "where does the sum live?"
+      answer: "in app.py"
+      files: [{ path: "app.py", why: "the module under test" }]
+      reuse: [{ symbol: "sum", path: "builtins", why: "the stdlib does it" }]
+      conventions: ["snake_case"]
+      risks: ["none"]
+    expect:
+      access: read-only
+      output_schema: true
   plan:
     output:
       summary: "add app.total"
@@ -15,7 +34,7 @@ steps:
       session: fresh
       access: read-only
       output_schema: true
-      prompt_contains: ["Read this PRD and the code in ", "Return: a short summary"]
+      prompt_contains: ["Plan how to implement this PRD test-first", "Explorer reports:"]
   tests_first:
     text: "Wrote test_total.py; it fails with AttributeError."
     expect:

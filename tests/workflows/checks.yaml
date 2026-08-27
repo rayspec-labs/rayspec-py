@@ -377,17 +377,24 @@ checks:
         size_check: succeeded
         refuse: { status: skipped, skip_reason: when_false }
         start: succeeded
+        setup: { status: skipped, skip_reason: when_false }
         baseline: succeeded
         red_baseline: { status: skipped, skip_reason: when_false }
+        scout: succeeded
+        clip: succeeded
+        explore: succeeded
+        "explore/scan": succeeded
+        "explore/collect": succeeded
         plan: succeeded
         gate_plan: succeeded
         tests_first: succeeded
-        red: { status: succeeded, output_json: { verdict: red, files: [], exit_code: 0, output: "" } }
+        red: { status: succeeded, output_json: { verdict: red, files: [], failing: [], already_green: [], exit_code: 0, output: "" } }
         vacuous: { status: skipped, skip_reason: when_false }
         commit_tests: succeeded
         build: succeeded
         "build[1]/implement": succeeded
-        "build[1]/blocked": { status: skipped, skip_reason: when_false }
+        "build[1]/blocked_gate": { status: skipped, skip_reason: when_false }
+        "build[1]/amend": { status: skipped, skip_reason: upstream_skipped }
         "build[1]/guard": { status: succeeded, output_json: [] }
         "build[1]/tampered": { status: skipped, skip_reason: when_false }
         "build[1]/typecheck": succeeded
@@ -405,6 +412,7 @@ checks:
         uncovered: []
         unrequested: []
         unresolved: []
+        already_green: []
   - id: prd_scripted               # the four briefs pinned: planner, tester, implementer, reviewer
     workflow: prd_to_pr
     inputs: { prd: docs/prd.md, typecheck_command: "mypy src" }
@@ -426,20 +434,24 @@ checks:
       exit_code: 0
       outputs:
         unresolved: [{ question: "GHCR or Docker Hub?", assumption: GHCR, affects: [R3] }]
-  - id: prd_blocked                # the implementer declines to guess: cancelled with the question
+  - id: prd_blocked                # blocked → the gate is auto-approved (amend the tests) → the implementer continues → PR
     workflow: prd_to_pr
     inputs: { prd: docs/prd.md, typecheck_command: "mypy src" }
     stubs: stubs/prd_to_pr_blocked.yaml
     expect:
-      status: cancelled
-      exit_code: 4
-      reason_contains: "blocked: Should total([]) raise or return 0?"
+      status: succeeded
+      exit_code: 0
       steps:
         "build[1]/implement": succeeded
-        "build[1]/blocked": succeeded
-        commit_impl: skipped
-        review: skipped
-        pr: skipped
+        "build[1]/blocked_gate": succeeded
+        "build[1]/amend": succeeded
+        "build[2]/implement": succeeded
+        "build[2]/blocked_gate": { status: skipped, skip_reason: when_false }
+        commit_impl: succeeded
+        review: succeeded
+        pr: succeeded
+      outputs:
+        attempts: 2
   - id: prd_partial                # a partial review annotates; the PR still opens
     workflow: prd_to_pr
     inputs: { prd: docs/prd.md, typecheck_command: "mypy src" }
