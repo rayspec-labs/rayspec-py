@@ -1923,7 +1923,7 @@ correct a stored `running` record that plainly is not — `run.pid` no longer al
 (`pid_alive`), or alive but `heartbeat_is_stale(run)` (`RunRecord.heartbeat_at` — see the store
 section — has not moved in over `rayspec.engine.liveness.HEARTBEAT_STALE_AFTER_S`) — to `interrupted`
 (`reason = "interrupted: recorded process <pid> is no longer running"` or `"interrupted:
-heartbeat stale since <stamp> (recorded process <pid> is still alive)"`, `pid` cleared, `ended_at`
+heartbeat stale since <stamp> (recorded process <pid> is still alive but not responding)"`, `pid` cleared, `ended_at`
 stamped), and PERSIST the correction (`store.save`), not merely display it. A record on another
 host is left alone (`on_other_host` — its process cannot be checked from here). Called wherever a
 record is loaded for display or a liveness decision — `runs`, `show`, `logs --follow`'s

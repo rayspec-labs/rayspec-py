@@ -60,8 +60,12 @@ def mark_cancelled(store: FileRunStore, run: RunRecord, *, reason: str) -> None:
     run.reason = reason
     run.ended_at = utcnow()
     run.pid = None
-    store.save(run)
     usage = run.total_usage()
+    # RUN_FINISHED must reach events.jsonl BEFORE run.json flips terminal, for the same reason
+    # `Runner._finalize` orders them that way: `logs --follow` keys its single final drain off
+    # run.json's status, so saving the terminal record first would let a follower see the run
+    # end and drain the event log before the closing event was written — terminating without
+    # ever printing `run.finished`. The event is built from in-memory state, so this is safe.
     store.append_event(
         run.run_id,
         RunEvent(
@@ -76,6 +80,7 @@ def mark_cancelled(store: FileRunStore, run: RunRecord, *, reason: str) -> None:
             },
         ),
     )
+    store.save(run)
 
 
 def register(app: typer.Typer) -> None:

@@ -350,3 +350,39 @@ def test_cancel_flags_a_stale_but_alive_run(cli: CliRunner, seeded: Seeded) -> N
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_mark_cancelled_writes_run_finished_before_the_terminal_record(seeded: Seeded) -> None:
+    """PRD-07 R3 (the sibling of tests/engine/test_finalize_ordering): `logs --follow` keys its
+    single final drain off run.json's status, so mark_cancelled must append run.finished to
+    events.jsonl BEFORE it saves the terminal record — else a follower can see the run end and
+    drain the event log without the closing line."""
+    from rayspec.cli.commands.cancel import mark_cancelled
+    from rayspec.store.file import EVENTS_JSONL
+
+    run = RunRecord(
+        run_id="20260827-150000-mark",
+        workflow_name="live",
+        workflow_path="x.yaml",
+        workflow_hash="f" * 64,
+        project_slug=seeded.slug,
+        project_root=str(seeded.project),
+        status=RunStatus.RUNNING,
+        started_at=datetime.now(UTC),
+    )
+    seeded.store.create(run)
+    observed: dict[str, bool] = {}
+    real_save = seeded.store.save
+
+    def watching_save(record, *args, **kwargs):
+        if record.status.is_terminal and "at_terminal_save" not in observed:
+            events = seeded.store.run_dir(record.run_id) / EVENTS_JSONL
+            text = events.read_text(encoding="utf-8") if events.exists() else ""
+            observed["at_terminal_save"] = "run.finished" in text
+        return real_save(record, *args, **kwargs)
+
+    seeded.store.save = watching_save  # type: ignore[method-assign]
+    mark_cancelled(seeded.store, run, reason="operator asked")
+    assert observed.get("at_terminal_save") is True, (
+        "run.json reached a terminal status before run.finished was in events.jsonl"
+    )
