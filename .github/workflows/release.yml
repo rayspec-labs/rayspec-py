@@ -138,6 +138,64 @@ jobs:
           path: ${{ runner.temp }}/provenance/
           if-no-files-found: error
 
+  docker:
+    name: Build and push the Docker image
+    needs: build
+    runs-on: ubuntu-latest
+    # No top-level `if`: a `workflow_dispatch` rehearsal still builds the image to validate the
+    # Dockerfile and the multi-arch build, the same rehearsal-vs-publish split `build`/`publish`
+    # already draw for PyPI. Only the push step below is gated on an actual pushed tag.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Work out which tags to publish
+        id: tags
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tags="ghcr.io/rayspec-labs/rayspec:${VERSION}"
+          # `latest` only ever points at a final release — a release candidate must never become
+          # what a bare `docker pull rayspec-labs/rayspec` gets someone.
+          if [ "$PRERELEASE" != "true" ]; then
+            tags="${tags}"$'\n'"ghcr.io/rayspec-labs/rayspec:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        # Same gate as `publish`/`announce`: a pushed release tag only, never a rehearsal — and no
+        # stored registry credential either way, just the run's own short-lived GITHUB_TOKEN piped
+        # to `docker login` directly (not `docker/login-action`, so nothing here needs a
+        # credential-shaped input field).
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+
+      - name: Build (and push on a real release) the image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.tags.outputs.tags }}
+
   publish:
     name: Publish to PyPI
     needs: build
