@@ -299,9 +299,7 @@ def test_a_broken_ledger_never_costs_the_run_its_own_files(
     store = FileRunStore(home / "brittle", audit=True)
     original = FileRunStore._append_line
 
-    def refuse_the_ledger(
-        self: FileRunStore, path: _Path, line: str, **kwargs: object
-    ) -> None:
+    def refuse_the_ledger(self: FileRunStore, path: _Path, line: str, **kwargs: object) -> None:
         if path.name == AUDIT_JSONL:  # a full disk, a read-only mount, a bad mode
             raise OSError("no space left on device")
         original(self, path, line, **kwargs)  # type: ignore[arg-type]
