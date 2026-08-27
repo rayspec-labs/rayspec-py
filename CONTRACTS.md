@@ -670,7 +670,9 @@ from rayspec.store.file import (
 #   step_dir(run_id, path)    -> Path, created with parents; path validated via StepPath.parse
 #                             (ValueError for the empty/root path)
 #   exists(run_id)            -> bool
-#   create(run)               mkdir skeleton (steps/, artifacts/, tmp/) + first save; RunExistsError
+#   create(run)               mkdir skeleton (steps/, artifacts/, tmp/; a pre-created directory is
+#                             accepted) + an O_EXCL claim of run.json + first save; RunExistsError
+#                             when run.json already exists
 #   save(run)                 atomic: run.json.<pid>.<n>.tmp + fsync + os.replace; single writer
 #                             (threading.Lock) — safe from anyio.to_thread / several tasks;
 #                             ensures the skeleton too

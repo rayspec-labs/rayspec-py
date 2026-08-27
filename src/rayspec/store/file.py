@@ -604,8 +604,16 @@ class FileRunStore:
         — the fact no event carries — WHO started the run.
         """
         run_dir = self.run_dir(run.run_id)
-        if run_dir.exists():
-            raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}")
+        _ensure_skeleton(run_dir)
+        # The run is claimed by its ``run.json``, not by its directory: a launcher may pre-create
+        # the directory (a detached run's launch log lives there before the run exists), and two
+        # creates of one id are still exclusive — ``O_EXCL`` on the record is the claim, which
+        # ``save`` then replaces atomically.
+        try:
+            with open_private(run_dir / RUN_JSON, "x"):
+                pass
+        except FileExistsError:
+            raise RunExistsError(f"run {run.run_id!r} already exists at {run_dir}") from None
         self.save(run)
         self._append_audit(run.run_id, audit_entry_for_create(run))
 
