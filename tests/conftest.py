@@ -113,3 +113,27 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path.mkdir()
     monkeypatch.setenv("RAYSPEC_HOME", str(path))
     return path
+
+
+#: The skip reason the live gate stamps on a `live`-marked test when RAYSPEC_LIVE is unset — a
+#: distinctive string so a meta-test can tell the CENTRAL gate apart from any per-test skip.
+LIVE_GATE_REASON = "needs RAYSPEC_LIVE=1 (the `live` marker hits a real provider)"
+
+
+def live_is_enabled() -> bool:
+    """Whether `live`-marked tests run: RAYSPEC_LIVE is set to a truthy value (`1`)."""
+    return os.environ.get("RAYSPEC_LIVE") == "1"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Enforce the `live` marker from one place: every `live` item is SKIPPED unless
+    RAYSPEC_LIVE=1. This is not a `-m` deselection (a bare `pytest` still collects them, which
+    `tests/docs/test_community_health.py` pins) — it is a collection-time skip, so a NEW live
+    test needs no per-file `skipif` to stay out of the default run, and a hang inside a live test
+    is diagnosable (see `faulthandler_timeout` in pyproject) rather than silent."""
+    if live_is_enabled():
+        return
+    skip = pytest.mark.skip(reason=LIVE_GATE_REASON)
+    for item in items:
+        if item.get_closest_marker("live") is not None:
+            item.add_marker(skip)

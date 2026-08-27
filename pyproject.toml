@@ -115,8 +115,12 @@ only-include = ["src/rayspec", "examples"]
 testpaths = ["tests"]
 addopts = "-q -ra -p anyio"
 markers = [
-  "live: hits a real provider (needs credentials); deselected by default",
+  "live: hits a real provider (needs credentials); skipped by the conftest gate unless RAYSPEC_LIVE=1 (still collected — run `-m live` to select only these)",
 ]
+# Dump every thread's traceback if a test runs longer than this, so a hung live/e2e test (a
+# provider call that never returns, an orphaned subprocess) is diagnosable instead of silent. No
+# plugin dependency — faulthandler is stdlib and this is its pytest hook.
+faulthandler_timeout = 600
 filterwarnings = ["error::DeprecationWarning:rayspec.*"]
 
 [tool.ruff]

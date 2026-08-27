@@ -1245,8 +1245,7 @@ async def test_healthcheck_probe_failure_reported(monkeypatch, tmp_path: Path):
 # -- live smoke -------------------------------------------------------------------------------
 
 
-@pytest.mark.live
-@pytest.mark.skipif(os.environ.get("RAYSPEC_LIVE") != "1", reason="set RAYSPEC_LIVE=1 to run")
+@pytest.mark.live  # the conftest live gate skips this unless RAYSPEC_LIVE=1
 async def test_live_one_turn_query(tmp_path: Path):
     provider = ClaudeProvider({})
     col = Collector()

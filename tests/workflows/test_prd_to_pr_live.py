@@ -36,11 +36,7 @@ from .test_prd_to_pr import (
 )
 
 pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("RAYSPEC_LIVE"),
-        reason="set RAYSPEC_LIVE=1 to run the live prd_to_pr e2e (real agents, real money)",
-    ),
+    pytest.mark.live,  # the conftest live gate skips these unless RAYSPEC_LIVE=1
 ]
 
 #: the rayspec-py checkout: `uv run rayspec` resolves the project from here

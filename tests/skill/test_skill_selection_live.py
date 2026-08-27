@@ -25,10 +25,7 @@ from rayspec.cli.app import app
 from rayspec.skill import SKILLS, install_skill, project_skill_dir
 
 pytestmark = [
-    pytest.mark.live,
-    pytest.mark.skipif(
-        not os.environ.get("RAYSPEC_LIVE"), reason="set RAYSPEC_LIVE=1 to drive Claude Code"
-    ),
+    pytest.mark.live,  # the conftest live gate skips these unless RAYSPEC_LIVE=1
     pytest.mark.skipif(shutil.which("claude") is None, reason="needs the claude CLI on PATH"),
 ]
 

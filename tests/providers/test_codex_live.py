@@ -10,19 +10,14 @@ server reports; it creates one persisted (non-ephemeral) thread under ``~/.codex
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from rayspec.providers.base import AccessLevel, AgentEvent, AgentRequest, Usage
 from rayspec.providers.codex import CodexProvider, usage_delta
 
 pytestmark = [
-    pytest.mark.live,
+    pytest.mark.live,  # the conftest live gate skips these unless RAYSPEC_LIVE=1
     pytest.mark.anyio,
-    pytest.mark.skipif(
-        not os.environ.get("RAYSPEC_LIVE"), reason="set RAYSPEC_LIVE=1 to hit Codex"
-    ),
 ]
 
 
