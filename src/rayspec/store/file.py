@@ -655,6 +655,8 @@ class FileRunStore:
         self._save_lock = threading.Lock()
         self._append_lock = threading.Lock()
         self._tmp_counter = itertools.count()
+        #: per-file log cap; the default ships the constant, tests set a small one on the instance.
+        self.log_cap_bytes = LOG_CAP_BYTES
         #: applied to every byte this store writes. The store is built before the run's
         #: secrets are known, so the CLI assigns the real redactor to this attribute at run
         #: start; ``NULL_REDACTOR`` (the default) is a no-op the writers skip entirely.
@@ -967,7 +969,8 @@ class FileRunStore:
         self._append_line(
             self.run_dir(run_id) / EVENTS_JSONL,
             _event_json(event, self.redactor),
-            cap_bytes=LOG_CAP_BYTES,
+            cap_bytes=self.log_cap_bytes,
+            marker=_events_marker(run_id),
         )
         self._append_audit(run_id, audit_entry_for_event(event))
 
@@ -991,7 +994,12 @@ class FileRunStore:
         path = self.run_dir(run_id) / AUDIT_JSONL
         try:
             payload = finish_audit_row(entry, self.redactor)
-            self._append_line(path, json.dumps(payload, ensure_ascii=False, default=str))
+            self._append_line(
+                path,
+                json.dumps(payload, ensure_ascii=False, default=str),
+                cap_bytes=self.log_cap_bytes,
+                marker=_audit_marker,
+            )
         except OSError as exc:
             _log.warning("%s: could not append to %s (%s)", path, AUDIT_JSONL, exc)
 
@@ -1034,7 +1042,8 @@ class FileRunStore:
         self._append_line(
             self.step_dir(run_id, step_path) / STREAM_JSONL,
             record.to_json(),
-            cap_bytes=LOG_CAP_BYTES,
+            cap_bytes=self.log_cap_bytes,
+            marker=_stream_marker,
         )
         self._append_audit(run_id, entry)
 
@@ -1054,7 +1063,8 @@ class FileRunStore:
                 self._append_line(
                     self.step_dir(run_id, key[1]) / STREAM_JSONL,
                     record.to_json(),
-                    cap_bytes=LOG_CAP_BYTES,
+                    cap_bytes=self.log_cap_bytes,
+                    marker=_stream_marker,
                 )
 
     def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
@@ -1113,57 +1123,28 @@ class FileRunStore:
 
     # -- internals ----------------------------------------------------------------------------
 
-    def _append_line(self, path: Path, line: str, *, cap_bytes: int | None = None) -> None:
+    def _append_line(
+        self,
+        path: Path,
+        line: str,
+        *,
+        cap_bytes: int | None = None,
+        marker: Callable[[CapSplit], bytes] | None = None,
+    ) -> None:
         secure_mkdir(path.parent)
         with self._append_lock:
             with open_private(path, "a") as fh:
                 fh.write(line + "\n")
                 fh.flush()
-            if cap_bytes is not None:
-                self._cap_file(path, cap_bytes)
-
-    def _cap_file(self, path: Path, cap_bytes: int) -> None:
-        """Truncate ``path`` from the middle down to ``cap_bytes`` (whole lines only), whenever
-        an append has left it larger than ``cap_bytes``.
-
-        Keeps roughly the first third (``cap_bytes // 3``) and the last two thirds, read with
-        bounded seeks — cost is O(cap_bytes), not O(file size). Checked synchronously after
-        every append (not once growth clears some multiple of the cap) so a background run
-        nobody watches never holds more than ``cap_bytes`` of any one stream file on disk.
-        """
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return
-        if size <= cap_bytes:
-            return
-        head_budget = cap_bytes // 3
-        tail_budget = cap_bytes - head_budget
-        try:
-            with open(path, "rb") as fh:
-                head = fh.read(head_budget)
-                cut = head.rfind(b"\n")
-                head = head[: cut + 1] if cut >= 0 else b""
-                fh.seek(max(len(head), size - tail_budget))
-                tail = fh.read()
-                nl = tail.find(b"\n")
-                tail = tail[nl + 1 :] if nl >= 0 else tail
-        except OSError:
-            return
-        # flushed, not fsynced: JSONL logs are append-and-flush throughout this module (see the
-        # module docstring); a torn trailing line after a crash is already tolerated by every
-        # reader, and fsyncing megabytes on every truncation would make a noisy stream far more
-        # expensive to cap than to simply append
-        tmp = path.parent / f"{path.name}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
-        try:
-            with _open_private_bytes(tmp) as out:
-                out.write(head)
-                out.write(tail)
-                out.flush()
-            os.replace(tmp, path)
-        except BaseException:
-            _unlink_quietly(tmp)
-            raise
+                size = os.fstat(fh.fileno()).st_size  # free, on the handle already held
+            # hysteresis: trim only once past 2x the cap, back to the cap — so a file sitting at
+            # the cap is not rewritten on every append, only about once per cap-worth of growth.
+            if (
+                cap_bytes is not None
+                and marker is not None
+                and size > cap_bytes * LOG_CAP_TRIGGER_MULTIPLIER
+            ):
+                truncate_path(path, cap_bytes, marker=marker)
 
     def _resolve_ref(self, run_id: str, output_ref: str) -> Path:
         run_dir = self.run_dir(run_id)
@@ -1299,6 +1280,50 @@ def _write_text_durably(path: Path, tmp: Path, chunks: Iterable[str]) -> tuple[s
         raise
     _fsync_dir(path.parent)
     return digest.hexdigest(), size
+
+
+def _events_marker(run_id: str) -> Callable[[CapSplit], bytes]:
+    """A WARNING event line for the cut in ``events.jsonl`` — rendered by every events reader
+    and by ``rayspec audit`` (which re-derives from events), carrying ``log_truncated`` so a
+    follower can remap."""
+
+    def build(split: CapSplit) -> bytes:
+        event = RunEvent(
+            type=EventType.WARNING,
+            run_id=run_id,
+            data={
+                "message": f"events.jsonl truncated: {split.dropped_bytes} bytes dropped",
+                "log_truncated": {
+                    "dropped_bytes": split.dropped_bytes,
+                    "tail_from": split.tail_from,
+                },
+            },
+        )
+        return (event.model_dump_json() + "\n").encode("utf-8")
+
+    return build
+
+
+def _stream_marker(split: CapSplit) -> bytes:
+    """A ``warning`` stream record for the cut in a step's ``stream.jsonl``."""
+    record = StreamRecord(
+        kind="warning",
+        text=f"stream truncated: {split.dropped_bytes} bytes dropped",
+        data={
+            "log_truncated": {"dropped_bytes": split.dropped_bytes, "tail_from": split.tail_from}
+        },
+    )
+    return (record.model_dump_json() + "\n").encode("utf-8")
+
+
+def _audit_marker(split: CapSplit) -> bytes:
+    return (
+        json.dumps(
+            {"event": "log.truncated", "detail": f"{split.dropped_bytes} bytes dropped"},
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
 
 
 def _open_private_bytes(path: Path) -> BinaryIO:

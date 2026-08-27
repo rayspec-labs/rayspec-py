@@ -1001,6 +1001,7 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--raw": ExternalControl(False, "print the provider's own stream"),
     "--stream": ExternalControl(False, "which stream to print"),
     "--follow": ExternalControl(False, "keep printing as the run goes"),
+    "--exit-code": ExternalControl(False, "make `logs --follow` exit with the run's code"),
     "--check": ExternalControl(False, "report whether the lockfile is up to date and exit"),
     "--commands": ExternalControl(False, "print the audit log's command entries"),
     "--since": ExternalControl(False, "the window a cost report covers"),

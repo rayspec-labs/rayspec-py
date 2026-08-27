@@ -1,22 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PRD-07, R8: log rotation bound — a background run nobody watches must not fill the disk.
+"""PRD-07 R8: per-file log caps with hysteresis and a marker at the cut.
 
-Per the plan-gate answer: a fixed 16 MiB cap per stream file (``events.jsonl`` and each step's
-``stream.jsonl``), truncating whole lines from the middle (keep roughly the first third and the
-last two thirds), never tearing a JSON line. None of this exists yet: ``FileRunStore.append_stream``
-(and ``append_event``) just keep appending — there is no cap, no truncation, anywhere.
+A file is trimmed only once it grows past ``2x`` the cap, back to the cap — so a noisy stream is
+not rewritten on every append (the storm the flat "> cap" trigger caused). The cut leaves a
+parseable marker; ``events.jsonl``, each step's ``stream.jsonl`` and ``audit.jsonl`` are all
+capped. Tests use a small cap on the store instance (``log_cap_bytes``) rather than 16 MiB.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from rayspec.events.model import StreamRecord
-from rayspec.store.file import STREAM_JSONL, FileRunStore
+import pytest
+
+from rayspec.events.model import EventType, RunEvent, StreamRecord
+from rayspec.store.file import AUDIT_JSONL, EVENTS_JSONL, STREAM_JSONL, FileRunStore
 from rayspec.store.model import RunRecord
 
-CAP_BYTES = 16 * 1024 * 1024  # 16 MiB, the fixed default from the plan-gate answer
-_FILLER = "x" * 200_000  # large chunks: few append calls needed to cross the cap
+CAP = 4096
+
+
+def _store(tmp_path: Path) -> FileRunStore:
+    store = FileRunStore(tmp_path / "store")
+    store.log_cap_bytes = CAP
+    return store
 
 
 def _record(run_id: str) -> RunRecord:
@@ -30,65 +38,83 @@ def _record(run_id: str) -> RunRecord:
     )
 
 
-def _pad_stream_past(store: FileRunStore, run_id: str, step: str, target_bytes: int) -> None:
-    """Append at least ``target_bytes`` of records, counted as *written* — never as observed on
-    disk: a cap that truncates synchronously keeps the file at or under ``CAP_BYTES``, so its size
-    is not something a loop can wait on."""
-    written = n = 0
-    while written < target_bytes:
-        text = f"{_FILLER}-{n}"
-        store.append_stream(run_id, step, StreamRecord(kind="text", text=text))
-        written += len(text) + 64  # the record's framing is a few dozen bytes
-        n += 1
+def _event(n: int) -> RunEvent:
+    return RunEvent(type=EventType.WARNING, run_id="r", data={"n": n, "pad": "x" * 200})
 
 
-def test_log_size_capped_with_middle_truncation(tmp_path: Path) -> None:
-    store = FileRunStore(tmp_path / "store")
-    run = _record("20260827-120000-cap1")
+def test_events_are_capped_with_2x_hysteresis(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    run = _record("20260827-140000-ev")
     store.create(run)
-    head_text = "HEAD-MARKER-0000"
-    tail_text = "TAIL-MARKER-9999"
-    store.append_stream(run.run_id, "noisy", StreamRecord(kind="text", text=head_text))
-    _pad_stream_past(store, run.run_id, "noisy", CAP_BYTES * 2)
-    store.append_stream(run.run_id, "noisy", StreamRecord(kind="text", text=tail_text))
-
-    stream_path = store.step_dir(run.run_id, "noisy") / STREAM_JSONL
-    size = stream_path.stat().st_size
-    assert size <= CAP_BYTES, f"stream.jsonl grew to {size} bytes, past the {CAP_BYTES} cap"
-
-    content = stream_path.read_text()
-    assert head_text in content, "the head of the stream must survive truncation"
-    assert tail_text in content, "the tail of the stream must survive truncation"
+    path = store.run_dir(run.run_id) / EVENTS_JSONL
+    for n in range(400):  # ~90 KiB of events
+        store.append_event(run.run_id, _event(n))
+        assert path.stat().st_size <= CAP * 2, n  # never past the trigger (hysteresis bound)
+    # it was trimmed at least once (a marker is present), and it never exceeded 2x the cap
+    assert any(
+        json.loads(line).get("data", {}).get("log_truncated")
+        for line in path.read_text().splitlines()
+    )
 
 
-def test_log_rotation_does_not_corrupt_jsonl_framing(tmp_path: Path) -> None:
-    store = FileRunStore(tmp_path / "store")
-    run = _record("20260827-120100-cap2")
+def test_no_rewrite_below_the_trigger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _store(tmp_path)
+    run = _record("20260827-140100-few")
     store.create(run)
-    _pad_stream_past(store, run.run_id, "noisy", CAP_BYTES * 2)
+    from rayspec.store import file as file_mod
 
-    stream_path = store.step_dir(run.run_id, "noisy") / STREAM_JSONL
-    size = stream_path.stat().st_size
-    # asserted first and on purpose: today nothing truncates, so nothing tears a line either —
-    # the cap itself is the feature under test; framing is only meaningful once it exists.
-    assert size <= CAP_BYTES, f"stream.jsonl was never capped ({size} bytes)"
-    for line in stream_path.read_text().splitlines():
-        if line.strip():
-            StreamRecord.from_json(line)  # every surviving line must still parse
+    calls = {"n": 0}
+    real = file_mod.truncate_path
+    monkeypatch.setattr(
+        file_mod,
+        "truncate_path",
+        lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), real(*a, **k))[1],
+    )
+    for n in range(400):
+        store.append_event(run.run_id, _event(n))
+    # ~90 KiB / 4 KiB cap with a 2x trigger ⇒ a handful of trims, not one per append
+    assert calls["n"] <= 40, calls["n"]  # ~23 expected; without hysteresis it would be ~380
 
 
-def test_unwatched_detached_run_disk_use_bounded(tmp_path: Path) -> None:
-    """A long, noisy run with several streaming steps must not grow past a small multiple of
-    the per-file cap, even though nobody is following it (no truncation is ever triggered by a
-    reader — the store itself must bound what it writes)."""
-    store = FileRunStore(tmp_path / "store")
-    run = _record("20260827-120200-cap3")
+def test_events_marker_is_a_parseable_warning_with_log_truncated(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    run = _record("20260827-140200-mk")
     store.create(run)
-    steps = ["step0", "step1", "step2", "step3"]
-    for step in steps:
-        _pad_stream_past(store, run.run_id, step, int(CAP_BYTES * 1.5))
+    for n in range(400):
+        store.append_event(run.run_id, _event(n))
+    path = store.run_dir(run.run_id) / EVENTS_JSONL
+    markers = []
+    for line in path.read_text().splitlines():
+        obj = json.loads(line)  # every surviving line parses
+        if obj.get("data", {}).get("log_truncated"):
+            markers.append(obj)
+    assert markers, "a truncation marker event must be present"
+    assert markers[-1]["data"]["log_truncated"]["dropped_bytes"] > 0
 
-    run_dir = store.run_dir(run.run_id)
-    total = sum(p.stat().st_size for p in run_dir.rglob("*") if p.is_file())
-    budget = CAP_BYTES * (len(steps) + 1) * 1.1  # +1 slot for events.jsonl, 10% slack
-    assert total <= budget, f"unwatched run directory grew to {total} bytes (budget {budget:.0f})"
+
+def test_stream_marker_is_a_parseable_warning_record(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    run = _record("20260827-140300-sm")
+    store.create(run)
+    for _n in range(400):
+        store.append_stream(
+            run.run_id, "step", StreamRecord(kind="stdout", text="row " + "y" * 200)
+        )
+    store.flush_streams(run.run_id, "step")
+    path = store.step_dir(run.run_id, "step") / STREAM_JSONL
+    kinds = [json.loads(line)["kind"] for line in path.read_text().splitlines()]
+    assert "warning" in kinds
+    assert path.stat().st_size <= CAP * 2
+
+
+def test_audit_jsonl_is_capped(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "store", audit=True)
+    store.log_cap_bytes = CAP
+    run = _record("20260827-140400-au")
+    store.create(run)
+    for n in range(600):
+        store.append_event(run.run_id, _event(n))
+    path = store.run_dir(run.run_id) / AUDIT_JSONL
+    assert path.exists() and path.stat().st_size <= CAP * 2
+    for line in path.read_text().splitlines():
+        json.loads(line)  # every surviving audit line parses
