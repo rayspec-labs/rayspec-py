@@ -12,7 +12,9 @@ and, once it sees one, stops launching new work — a running step is left to fi
 from __future__ import annotations
 
 import contextlib
+import itertools
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,16 +32,37 @@ class CancelFlag:
     requested_at: datetime
 
 
+#: Distinguishes this process's tmp files from another writer's (the run store's convention).
+_tmp_counter = itertools.count(1)
+
+
 def write_cancel_flag(run_dir: Path, *, reason: str, actor: str | None = None) -> None:
-    """Write ``<run_dir>/cancel.json`` (tmp file + rename; ``0600``, matching the run store)."""
+    """Write ``<run_dir>/cancel.json`` the way the store writes ``run.json``: a private
+    ``cancel.json.<pid>.<n>.tmp`` (``0600``) replaced onto the name, so a crash never leaves a
+    half-written flag and two writers never share a tmp file.
+
+    Raises :class:`FileNotFoundError` when ``run_dir`` does not exist — the caller decides what
+    a run directory that is gone means (``rayspec cancel`` reports it as a usage error).
+    """
     from rayspec.store.file import open_private
 
     path = run_dir / CANCEL_JSON
     payload = {"reason": reason, "actor": actor, "requested_at": datetime.now(UTC).isoformat()}
-    tmp = path.with_name(f"{CANCEL_JSON}.tmp")
+    tmp = path.with_name(f"{CANCEL_JSON}.{os.getpid()}.{next(_tmp_counter)}.tmp")
     with open_private(tmp, "w") as fh:
         fh.write(json.dumps(payload, indent=2) + "\n")
-    tmp.replace(path)
+    os.replace(tmp, path)
+
+
+def clear_cancel_flag(run_dir: Path) -> bool:
+    """Remove ``<run_dir>/cancel.json``; ``True`` when there was one. A run consumes its flag
+    when it finalizes, and a resume clears a stale one before it starts, so a cancelled run can
+    be resumed at all."""
+    try:
+        (run_dir / CANCEL_JSON).unlink()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def read_cancel_flag(run_dir: Path) -> CancelFlag | None:
@@ -60,4 +83,10 @@ def read_cancel_flag(run_dir: Path) -> CancelFlag | None:
     return CancelFlag(reason=raw["reason"], actor=actor, requested_at=requested_at)
 
 
-__all__ = ["CANCEL_JSON", "CancelFlag", "read_cancel_flag", "write_cancel_flag"]
+__all__ = [
+    "CANCEL_JSON",
+    "CancelFlag",
+    "clear_cancel_flag",
+    "read_cancel_flag",
+    "write_cancel_flag",
+]
