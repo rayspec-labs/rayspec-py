@@ -31,10 +31,14 @@ def _record(run_id: str) -> RunRecord:
 
 
 def _pad_stream_past(store: FileRunStore, run_id: str, step: str, target_bytes: int) -> None:
-    path = store.step_dir(run_id, step) / STREAM_JSONL
-    n = 0
-    while not path.exists() or path.stat().st_size < target_bytes:
-        store.append_stream(run_id, step, StreamRecord(kind="text", text=f"{_FILLER}-{n}"))
+    """Append at least ``target_bytes`` of records, counted as *written* — never as observed on
+    disk: a cap that truncates synchronously keeps the file at or under ``CAP_BYTES``, so its size
+    is not something a loop can wait on."""
+    written = n = 0
+    while written < target_bytes:
+        text = f"{_FILLER}-{n}"
+        store.append_stream(run_id, step, StreamRecord(kind="text", text=text))
+        written += len(text) + 64  # the record's framing is a few dozen bytes
         n += 1
 
 

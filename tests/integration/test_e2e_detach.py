@@ -30,7 +30,7 @@ name: slow
 steps:
   - id: canary
     shell: |
-      echo $$ > "$E2E_PIDFILE"
+      echo $$ > "${E2E_PIDFILE:-/dev/null}"
       sleep "${E2E_SLEEP:-30}"
       echo canary-done
 outputs:
