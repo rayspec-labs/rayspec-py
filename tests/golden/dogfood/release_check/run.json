@@ -10,6 +10,7 @@
   "dry_run": true,
   "ended_at": "<ts>",
   "fail_fast": false,
+  "heartbeat_at": "<ts>",
   "host": "<host>",
   "inputs": {
     "push": false,

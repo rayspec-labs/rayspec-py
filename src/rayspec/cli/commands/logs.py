@@ -16,7 +16,7 @@ unescaped for debugging. Reading only — the store owns the files.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,7 +140,8 @@ def read_history(
 
 def _run_is_live(store: FileRunStore, run_id: str) -> bool:
     try:
-        return store.load(run_id).status is RunStatus.RUNNING
+        record = common.reconcile_run(store, store.load(run_id))
+        return record.status is RunStatus.RUNNING
     except StoreError:
         return False
     except OSError:
@@ -184,16 +185,25 @@ async def follow(
 _stamp = common.fmt_clock
 
 
-def format_event(event: RunEvent, formatter: Any, *, raw: bool = False) -> Text:
+def format_event(
+    event: RunEvent, formatter: Any, *, raw: bool = False, show_outputs: bool = False
+) -> Text:
     """One line for a lifecycle event: the quiet console sink's rendering (already safe text),
     or a generic ``<type> <step> <data>`` line for the events it does not print (loop/each
-    progress) — escape sequences removed unless ``raw``."""
+    progress) — escape sequences removed unless ``raw``.
+
+    ``show_outputs`` (``--follow`` only — see :func:`make_emitter`) appends ``outputs: k=v, …``
+    to the ``run.finished`` line when the run declared any: a `--follow`ed run — the one a
+    `--detach`ed launch has no other console for — is otherwise done watching having never seen
+    its own result. A plain, non-following `logs` reads the event log as recorded and nothing
+    else, same as `--step`/`--stream` already draw the line at "no output content by default".
+    """
+
+    def clean(value: Any) -> str:
+        return str(value) if raw else safe_text(value, keep_newlines=False)
+
     line = formatter.format_event(event)
     if line is None:
-
-        def clean(value: Any) -> str:
-            return str(value) if raw else safe_text(value, keep_newlines=False)
-
         line = Text(event.type.value)
         if event.step_path:
             line.append(f" {clean(event.step_path)}")
@@ -206,6 +216,11 @@ def format_event(event: RunEvent, formatter: Any, *, raw: bool = False) -> Text:
         elif event.data:
             data = json.dumps(event.data, ensure_ascii=False, default=str)
             line.append(f" {clean(data)}", style="dim")
+    elif show_outputs and event.type is EventType.RUN_FINISHED:
+        outputs = event.data.get("outputs")
+        if isinstance(outputs, Mapping) and outputs:
+            preview = ", ".join(f"{k}={v}" for k, v in outputs.items())
+            line.append(f" outputs: {clean(preview)}", style="dim")
     return Text.assemble((f"{_stamp(event.ts)}  ", "dim"), line)
 
 
@@ -394,6 +409,7 @@ def make_emitter(
     prefix_steps: bool,
     verbose: bool = False,
     raw: bool = False,
+    show_outputs: bool = False,
 ) -> tuple[EmitFn, Callable[[], None]]:
     """``(emit, finish)``: ``emit`` prints one record, ``finish`` flushes buffered deltas."""
     if json_mode:
@@ -410,7 +426,7 @@ def make_emitter(
     def emit(source: str, item: LogItem) -> None:
         if isinstance(item, RunEvent):
             renderer.flush()
-            line = format_event(item, formatter, raw=raw)
+            line = format_event(item, formatter, raw=raw, show_outputs=show_outputs)
             out.print(line, markup=False, highlight=False, soft_wrap=True)
         else:
             renderer.render(source, item)
@@ -474,7 +490,12 @@ def register(app: typer.Typer) -> None:
                 return
         out = console()
         emit, finish = make_emitter(
-            out, json_mode=json_, prefix_steps=step is None and stream, verbose=verbose, raw=raw
+            out,
+            json_mode=json_,
+            prefix_steps=step is None and stream,
+            verbose=verbose,
+            raw=raw,
+            show_outputs=follow,
         )
         if follow:
             try:

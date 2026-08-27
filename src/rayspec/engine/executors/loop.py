@@ -81,6 +81,16 @@ async def run_loop(
                 transient=False,
             )
             break
+        cancelled = await ctx.check_cancelled()
+        if cancelled is not None:
+            # PRD-07 R5: the iteration already in flight (if any) already finished before this
+            # loop got back here — only the NEXT one is refused
+            error = ErrorInfo(
+                type="cancelled",
+                message=f"{cancelled}: no further iteration started",
+                transient=False,
+            )
+            break
         iteration = {"n": n, "max": n_max, "first": n == 1, "prev": prev_views}
         child = scope.child(
             prefix=scope.record_path(step.id).indexed(n),

@@ -898,6 +898,11 @@ EXTERNAL_CONTROLS: Mapping[str, ExternalControl] = {
         "key, and a record of past spending restricts nothing on its own",
     ),
     "run.json": ExternalControl(False, "a run record rayspec writes; an output, never an input"),
+    "cancel.json": ExternalControl(
+        False,
+        "the PRD-07 cancellation marker `rayspec cancel` writes beside run.json; it asks the run "
+        "to stop at the next step boundary, which withholds nothing a running step may already do",
+    ),
     "events.jsonl": ExternalControl(False, "a run's event log; written after the fact"),
     "stream.jsonl": ExternalControl(False, "a run's raw provider stream; written after the fact"),
     "audit.jsonl": ExternalControl(False, "the audit log; it records what ran, it permits nothing"),
@@ -981,6 +986,9 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--verbose": ExternalControl(False, "print more"),
     "--yes": ExternalControl(False, "auto-approve gates — a widening"),
     "--mark": ExternalControl(False, "the status a cancelled run is recorded with"),
+    "--detach": ExternalControl(
+        False, "background the run behind a forked child; what it may do is unchanged"
+    ),
     "--step": ExternalControl(False, "which step to report on"),
     "--select": ExternalControl(False, "which test cases to run"),
     "--case": ExternalControl(False, "the same, by name"),

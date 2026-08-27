@@ -30,6 +30,7 @@ from rayspec.cli.commands import _loader_common as loader_common
 from rayspec.cli.commands._loader_common import Context, fail, make_context, stdout_is_tty
 from rayspec.config import Config
 from rayspec.engine.context import cost_source_of
+from rayspec.engine.heartbeat import heartbeat_stale_after_s
 from rayspec.engine.runtime import EXIT_USAGE
 from rayspec.errors import RayspecError
 from rayspec.fmt import format_duration
@@ -44,7 +45,7 @@ from rayspec.store.file import (
     StoreError,
     UnknownRunIdError,
 )
-from rayspec.store.model import RunRecord, StepRecord
+from rayspec.store.model import RunRecord, StepRecord, utcnow
 from rayspec.textsafe import safe_text
 
 if TYPE_CHECKING:
@@ -454,6 +455,7 @@ def run_row(
         "fail_fast": run.fail_fast,
         "pid": run.pid,
         "host": run.host,
+        "heartbeat_at": _iso(run.heartbeat_at),
         "workspace": run.workspace.model_dump(mode="json"),
         "pause": run.pause.model_dump(mode="json") if run.pause else None,
     }
@@ -1178,6 +1180,48 @@ def pid_is_rayspec_run(run: RunRecord) -> bool:
     return any(_names_token(cmdline, needle) for needle in needles)
 
 
+def heartbeat_is_stale(run: RunRecord, *, now: datetime | None = None) -> bool:
+    """Whether ``run.heartbeat_at`` has not moved in longer than the staleness threshold.
+
+    ``None`` (a record written before the field existed, or one whose engine has not ticked
+    yet) is never stale on its own — liveness then rests on the pid check alone, exactly as
+    before this field existed.
+    """
+    if run.heartbeat_at is None:
+        return False
+    now = now or datetime.now(UTC)
+    age = (now - _utc(run.heartbeat_at)).total_seconds()
+    return age > heartbeat_stale_after_s()
+
+
+def reconcile_run(store: FileRunStore, run: RunRecord) -> RunRecord:
+    """PRD-07 R4: correct a stored ``running`` record that plainly is not — a dead pid, or a
+    live one whose heartbeat has gone stale — to ``interrupted``, and persist the correction.
+
+    Applied wherever a record is loaded for display or a liveness decision (``runs``, ``show``,
+    ``logs --follow``, ``cancel``): the corrected status is then consistent everywhere it is
+    read, not only in the listing that happened to notice first. A run recorded as running on
+    another host is left alone — its process cannot be checked from here.
+    """
+    if run.status is not RunStatus.RUNNING or on_other_host(run):
+        return run
+    alive = pid_alive(run)
+    stale = heartbeat_is_stale(run)
+    if alive and not stale:
+        return run
+    run.status = RunStatus.INTERRUPTED
+    run.reason = (
+        f"interrupted: heartbeat stale since {fmt_stamp(run.heartbeat_at)} "
+        f"(recorded process {run.pid or '?'} is still alive)"
+        if alive
+        else f"interrupted: recorded process {run.pid or '?'} is no longer running"
+    )
+    run.ended_at = run.ended_at or utcnow()
+    run.pid = None
+    store.save(run)
+    return run
+
+
 def release_workdir_lock(ctx: RunsContext, run: RunRecord) -> bool:
     """Best effort: clear the workdir lock of a run that is no longer alive.
 
@@ -1219,6 +1263,7 @@ __all__ = [
     "fmt_stamp",
     "fmt_tokens",
     "fmt_when",
+    "heartbeat_is_stale",
     "interrupt_pid",
     "iter_project_stores",
     "load_resolved_for",
@@ -1234,6 +1279,7 @@ __all__ = [
     "planned_step_paths",
     "project_store",
     "read_output_text",
+    "reconcile_run",
     "record_context",
     "record_root",
     "recorded_calls",

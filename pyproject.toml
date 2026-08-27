@@ -154,3 +154,11 @@ typeCheckingMode = "standard"
 reportMissingTypeStubs = false
 venvPath = "."
 venv = ".venv"
+# anyio.abc.TaskGroup.__aexit__ is typed to return `bool` (not `Literal[False]`), so pyright
+# treats every exception raised inside an `async with create_task_group() as tg:` block as
+# possibly suppressed — flagging a variable assigned in the block and read after it as
+# "possibly unbound" even though TaskGroup never actually swallows exceptions. Scoped to the one
+# file this fires on rather than relaxed project-wide.
+[[tool.pyright.executionEnvironments]]
+root = "tests/engine/test_heartbeat.py"
+reportPossiblyUnboundVariable = "none"

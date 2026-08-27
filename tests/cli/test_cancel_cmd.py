@@ -1,4 +1,10 @@
-"""`rayspec cancel <run>`: SIGINT a live run (with confirmation), cancel a paused one."""
+"""`rayspec cancel <run>`: flag a live run cooperatively (with confirmation), cancel a paused one.
+
+PRD-07 R5 changed what "cancel a live run" does: it used to SIGINT the process directly; it now
+writes a ``cancel.json`` flag beside ``run.json`` and lets the run's own process notice it at the
+next step boundary. The confirmation, ``--yes``/``--json``, ``--mark`` and dead-pid/other-host
+paths are unchanged.
+"""
 
 from __future__ import annotations
 
@@ -61,19 +67,22 @@ def _running(seeded: Seeded, run_id: str, pid: int | None, host: str | None) -> 
     return run
 
 
-def test_cancel_live_run_sends_sigint_after_confirmation(cli: CliRunner, seeded: Seeded) -> None:
+def test_cancel_live_run_flags_after_confirmation(cli: CliRunner, seeded: Seeded) -> None:
     proc = subprocess.Popen(FAKE_RAYSPEC)
     try:
         run = _running(seeded, "20260820-150000-live", proc.pid, socket.gethostname())
+        run_dir = seeded.store.run_dir(run.run_id)
         declined = cli.invoke(
             app, ["cancel", run.run_id, "--root", str(seeded.project)], input="n\n"
         )
         assert declined.exit_code == 1, declined.output
         assert proc.poll() is None
+        assert not (run_dir / "cancel.json").exists()
         result = cli.invoke(app, ["cancel", run.run_id, "--root", str(seeded.project)], input="y\n")
         assert result.exit_code == 0, result.output
-        assert "SIGINT" in result.output and str(proc.pid) in result.output
-        proc.wait(timeout=10)
+        assert "SIGINT" not in result.output and str(proc.pid) in result.output
+        assert (run_dir / "cancel.json").exists()
+        assert proc.poll() is None  # cooperative: the process itself is never touched
         # the record is the engine's to finalize: cancel does not rewrite a live run
         assert seeded.store.load(run.run_id).status is RunStatus.RUNNING
     finally:
@@ -92,11 +101,12 @@ def test_cancel_live_run_yes_and_json(cli: CliRunner, seeded: Seeded) -> None:
         data = json.loads(result.output)
         assert data == {
             "run_id": run.run_id,
-            "action": "signalled",
+            "action": "flagged",
             "pid": proc.pid,
             "status": "running",
         }
-        proc.wait(timeout=10)
+        assert (seeded.store.run_dir(run.run_id) / "cancel.json").exists()
+        assert proc.poll() is None
     finally:
         if proc.poll() is None:
             proc.kill()

@@ -39,6 +39,7 @@ from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.context import ExecScope, RunContext, RunOptions, StepOutcome
 from rayspec.engine.errors import EngineError, ResumeError, RunPaused, RunStopped
 from rayspec.engine.graph import FAILED_LIKE, StepGraph
+from rayspec.engine.heartbeat import heartbeat_interval_s
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import (
     Runtime,
@@ -393,29 +394,43 @@ class Runner:
         await ctx.check_budget()
 
         engine_error: BaseException | None = None
+        # PRD-07 R2: a periodic timer that proves this process is still alive for the life of
+        # the run, independent of any single step — a long shell/prompt step with no provider
+        # call still moves ``heartbeat_at`` between its own start and end events.
+        heartbeat_s = heartbeat_interval_s(workflow.defaults.timeout)
+
+        async def _heartbeat_loop() -> None:
+            while True:
+                await anyio.sleep(heartbeat_s)
+                await ctx.touch_heartbeat()
 
         async def body() -> None:
             nonlocal engine_error
-            try:
-                outcomes.update(await run_graph(graph, root_scope, ctx))
-            except RunStopped as exc:
-                ctx.stopped = exc
-            except RunPaused as exc:
-                ctx.paused = ctx.paused or exc
-            except anyio.get_cancelled_exc_class():
-                raise
-            except BaseExceptionGroup as group:
-                inner = unwrap_exception_group(group)
-                if isinstance(inner, RunStopped):
-                    ctx.stopped = inner
-                elif isinstance(inner, RunPaused):
-                    ctx.paused = ctx.paused or inner
-                elif isinstance(inner, anyio.get_cancelled_exc_class()):
-                    raise
-                else:  # a bug in the engine: finalize the run as failed, never leave it running
-                    engine_error = inner
-            except Exception as exc:
-                engine_error = exc
+            async with anyio.create_task_group() as hb_tg:
+                hb_tg.start_soon(_heartbeat_loop)
+                try:
+                    try:
+                        outcomes.update(await run_graph(graph, root_scope, ctx))
+                    except RunStopped as exc:
+                        ctx.stopped = exc
+                    except RunPaused as exc:
+                        ctx.paused = ctx.paused or exc
+                    except anyio.get_cancelled_exc_class():
+                        raise
+                    except BaseExceptionGroup as group:
+                        inner = unwrap_exception_group(group)
+                        if isinstance(inner, RunStopped):
+                            ctx.stopped = inner
+                        elif isinstance(inner, RunPaused):
+                            ctx.paused = ctx.paused or inner
+                        elif isinstance(inner, anyio.get_cancelled_exc_class()):
+                            raise
+                        else:  # a bug in the engine: finalize failed, never leave it running
+                            engine_error = inner
+                    except Exception as exc:
+                        engine_error = exc
+                finally:
+                    hb_tg.cancel_scope.cancel()
 
         interrupted = False
         try:
@@ -712,6 +727,7 @@ class Runner:
             run.resume_count += 1
             run.pid = os.getpid()
             run.pid_started_at = pid_started_at  # a new process: refresh
+            run.heartbeat_at = utcnow()
             run.host = socket.gethostname()
             run.started_at = run.started_at or utcnow()
             run.workflow_hash = self.resolved.hash
@@ -739,6 +755,7 @@ class Runner:
             started_at=utcnow(),
             pid=os.getpid(),
             pid_started_at=pid_started_at,
+            heartbeat_at=utcnow(),
             host=socket.gethostname(),
             workspace=self.workspace.info(),
             dry_run=bool(self.options.dry_run),
@@ -824,6 +841,11 @@ class Runner:
             # finally idiom) — and a capped run must never report success to its caller.
             status = RunStatus.FAILED
             reason = ctx.budget_exceeded
+        elif ctx.cancel_requested is not None:
+            # PRD-07 R5: cooperative cancel — drained exactly like a run-level cap, but this is
+            # not a defect, so it finalizes ``cancelled`` (exit 4) rather than ``failed``
+            status = RunStatus.CANCELLED
+            reason = ctx.cancel_requested
         elif ctx.stopped is not None and failed:
             status = RunStatus.FAILED
             reason = _failure_reason()

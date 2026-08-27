@@ -131,6 +131,12 @@ _ARTIFACT_CHUNK_BYTES = 1 << 20
 PROMPT_TXT = "prompt.txt"
 EVENTS_JSONL = "events.jsonl"
 STREAM_JSONL = "stream.jsonl"
+#: PRD-07 R8: per-file cap for ``events.jsonl`` and each step's ``stream.jsonl`` — a background
+#: run nobody watches must not fill the disk. Fixed default from the plan-gate answer (no config
+#: key yet). Exceeding it truncates whole lines from the MIDDLE (never tearing a JSON line),
+#: keeping roughly the first third and the last two thirds — the run's start and its most recent
+#: activity survive, only the noisy middle is dropped.
+LOG_CAP_BYTES = 16 * 1024 * 1024
 #: The optional local ledger (see :func:`audit_log_enabled`).
 AUDIT_JSONL = "audit.jsonl"
 #: Environment variable that turns the ledger on for every run of this process.
@@ -856,7 +862,11 @@ class FileRunStore:
                 self.flush_streams(run_id, event.step_path)
             elif event.type is EventType.RUN_FINISHED or event.type is EventType.RUN_PAUSED:
                 self.flush_streams(run_id)
-        self._append_line(self.run_dir(run_id) / EVENTS_JSONL, _event_json(event, self.redactor))
+        self._append_line(
+            self.run_dir(run_id) / EVENTS_JSONL,
+            _event_json(event, self.redactor),
+            cap_bytes=LOG_CAP_BYTES,
+        )
         self._append_audit(run_id, audit_entry_for_event(event))
 
     def _append_audit(self, run_id: str, entry: dict[str, Any] | None) -> None:
@@ -919,7 +929,11 @@ class FileRunStore:
             record = self._redact_stream(run_id, step_path, record)
         # the transcript first: the ledger is a convenience and must not pre-empt the file the
         # run is actually judged by
-        self._append_line(self.step_dir(run_id, step_path) / STREAM_JSONL, record.to_json())
+        self._append_line(
+            self.step_dir(run_id, step_path) / STREAM_JSONL,
+            record.to_json(),
+            cap_bytes=LOG_CAP_BYTES,
+        )
         self._append_audit(run_id, entry)
 
     def flush_streams(self, run_id: str, step_path: str | None = None) -> None:
@@ -935,7 +949,11 @@ class FileRunStore:
             tail = stream.flush()
             if tail:
                 record = StreamRecord(kind=key[2], attempt=key[3], text=tail)
-                self._append_line(self.step_dir(run_id, key[1]) / STREAM_JSONL, record.to_json())
+                self._append_line(
+                    self.step_dir(run_id, key[1]) / STREAM_JSONL,
+                    record.to_json(),
+                    cap_bytes=LOG_CAP_BYTES,
+                )
 
     def _redact_stream(self, run_id: str, step_path: str, record: StreamRecord) -> StreamRecord:
         """``record`` with every part that can carry a value redacted.
@@ -993,11 +1011,57 @@ class FileRunStore:
 
     # -- internals ----------------------------------------------------------------------------
 
-    def _append_line(self, path: Path, line: str) -> None:
+    def _append_line(self, path: Path, line: str, *, cap_bytes: int | None = None) -> None:
         secure_mkdir(path.parent)
-        with self._append_lock, open_private(path, "a") as fh:
-            fh.write(line + "\n")
-            fh.flush()
+        with self._append_lock:
+            with open_private(path, "a") as fh:
+                fh.write(line + "\n")
+                fh.flush()
+            if cap_bytes is not None:
+                self._cap_file(path, cap_bytes)
+
+    def _cap_file(self, path: Path, cap_bytes: int) -> None:
+        """Truncate ``path`` from the middle down to ``cap_bytes`` (whole lines only), whenever
+        an append has left it larger than ``cap_bytes``.
+
+        Keeps roughly the first third (``cap_bytes // 3``) and the last two thirds, read with
+        bounded seeks — cost is O(cap_bytes), not O(file size). Checked synchronously after
+        every append (not once growth clears some multiple of the cap) so a background run
+        nobody watches never holds more than ``cap_bytes`` of any one stream file on disk.
+        """
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return
+        if size <= cap_bytes:
+            return
+        head_budget = cap_bytes // 3
+        tail_budget = cap_bytes - head_budget
+        try:
+            with open(path, "rb") as fh:
+                head = fh.read(head_budget)
+                cut = head.rfind(b"\n")
+                head = head[: cut + 1] if cut >= 0 else b""
+                fh.seek(max(len(head), size - tail_budget))
+                tail = fh.read()
+                nl = tail.find(b"\n")
+                tail = tail[nl + 1 :] if nl >= 0 else tail
+        except OSError:
+            return
+        # flushed, not fsynced: JSONL logs are append-and-flush throughout this module (see the
+        # module docstring); a torn trailing line after a crash is already tolerated by every
+        # reader, and fsyncing megabytes on every truncation would make a noisy stream far more
+        # expensive to cap than to simply append
+        tmp = path.parent / f"{path.name}.{os.getpid()}.{next(self._tmp_counter)}.tmp"
+        try:
+            with _open_private_bytes(tmp) as out:
+                out.write(head)
+                out.write(tail)
+                out.flush()
+            os.replace(tmp, path)
+        except BaseException:
+            _unlink_quietly(tmp)
+            raise
 
     def _resolve_ref(self, run_id: str, output_ref: str) -> Path:
         run_dir = self.run_dir(run_id)
@@ -1264,6 +1328,7 @@ __all__ = [
     "AUDIT_JSONL",
     "AUDIT_STREAM_KINDS",
     "EVENTS_JSONL",
+    "LOG_CAP_BYTES",
     "PRIVATE_DIR_MODE",
     "PRIVATE_FILE_MODE",
     "PROMPT_TXT",

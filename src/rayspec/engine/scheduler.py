@@ -36,6 +36,7 @@ from anyio.streams.memory import MemoryObjectSendStream
 
 from rayspec.engine.context import (
     BUDGET_SKIP_REASON,
+    CANCEL_SKIP_REASON,
     LEAF_KINDS,
     REUSABLE_KINDS,
     ExecScope,
@@ -128,6 +129,7 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
         )
 
     async def decide_and_launch(tg: TaskGroup) -> None:
+        await ctx.check_cancelled()  # PRD-07 R5: checked at every step-boundary decision point
         progressed = True
         while progressed:
             progressed = False
@@ -136,15 +138,21 @@ async def run_graph(graph: StepGraph, scope: ExecScope, ctx: RunContext) -> dict
                 needs = graph.needs[sid]
                 if not decidable(sid):
                     continue
-                if ctx.budget_exceeded is not None and step.join != "always":
-                    # the run-level cap tripped — nothing new starts (running steps drain,
-                    # ``join: always`` steps still run); a resume replay is free, so a reusable
-                    # record is replayed instead of being overwritten as skipped
+                drain_reason = ctx.budget_exceeded or ctx.cancel_requested
+                if drain_reason is not None and step.join != "always":
+                    # the run-level cap tripped, or the run was cancelled — nothing new starts
+                    # (running steps drain, ``join: always`` steps still run); a resume replay
+                    # is free, so a reusable record is replayed instead of being skipped
                     del pending[sid]
                     record = ctx.new_record(step, scope)
                     outcome = await try_reuse(step, scope, ctx, record)
                     if outcome is None:
-                        outcome = _skipped(record, BUDGET_SKIP_REASON)
+                        reason = (
+                            BUDGET_SKIP_REASON
+                            if ctx.budget_exceeded is not None
+                            else CANCEL_SKIP_REASON
+                        )
+                        outcome = _skipped(record, reason)
                     await finish(outcome, step, scope, ctx)
                     settle(outcome)
                     progressed = True

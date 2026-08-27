@@ -114,17 +114,20 @@ def test_cancel_refuses_when_the_start_time_differs(
 def test_cancel_signals_when_the_start_time_matches(
     cli: CliRunner, seeded: Seeded, tmp_path: Path
 ) -> None:
+    """PRD-07 R5: a matching pid is not signalled — it is flagged. The process is left running
+    (it is the run's own step boundary check that later notices the flag)."""
     marker = tmp_path / "match.armed"
     proc = subprocess.Popen(_sigint_recorder(marker))
     try:
         live = process_start_time(proc.pid)
         assert live is not None
         run = _running(seeded, "20260820-160100-mtch", proc.pid, started_at=live)
-        _armed(proc, marker)  # the exit code below is only about the handler, not about timing
+        _armed(proc, marker)  # arming is irrelevant to a flag write, but keeps the fixture shared
         result = cli.invoke(app, ["cancel", run.run_id, "--yes", "--root", str(seeded.project)])
         assert result.exit_code == 0, result.output
-        assert "SIGINT" in result.output and str(proc.pid) in result.output
-        assert proc.wait(timeout=10) == 0  # the SIGINT handler exited 0: the signal arrived
+        assert "cancel requested" in result.output and str(proc.pid) in result.output
+        assert (seeded.store.run_dir(run.run_id) / "cancel.json").is_file()
+        assert proc.poll() is None  # not signalled: still running
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -150,7 +153,8 @@ def test_cancel_with_a_faked_ps_start_time(
         _armed(proc, marker)
         ok = cli.invoke(app, ["cancel", run.run_id, "--yes", "--root", str(seeded.project)])
         assert ok.exit_code == 0, ok.output
-        assert proc.wait(timeout=10) == 0
+        assert (seeded.store.run_dir(run.run_id) / "cancel.json").is_file()
+        assert proc.poll() is None  # not signalled: still running
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -173,7 +177,8 @@ def test_records_without_pid_started_at_fall_back_to_the_heuristic(
         _armed(rayspec_like, marker)  # `sleeper` needs none: it is only ever asserted alive
         ok = cli.invoke(app, ["cancel", ok_run.run_id, "--yes", "--root", str(seeded.project)])
         assert ok.exit_code == 0, ok.output
-        assert rayspec_like.wait(timeout=10) == 0
+        assert (seeded.store.run_dir(ok_run.run_id) / "cancel.json").is_file()
+        assert rayspec_like.poll() is None  # not signalled: still running
     finally:
         for proc in (rayspec_like, sleeper):
             if proc.poll() is None:

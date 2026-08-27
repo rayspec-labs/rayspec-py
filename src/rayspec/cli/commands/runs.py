@@ -49,14 +49,19 @@ from rayspec.textsafe import safe_text
 def collect_runs(
     ctx: common.RunsContext, *, all_projects: bool, limit: int | None
 ) -> list[RunRecord]:
-    """Runs newest first (``created_at``, then id) from the project store or every store."""
+    """Runs newest first (``created_at``, then id) from the project store or every store.
+
+    Each record is reconciled (:func:`rayspec.cli._runs_common.reconcile_run`) against reality
+    before it is returned: a stored ``running`` row a dead pid or a stale heartbeat no longer
+    backs is reported (and persisted) as ``interrupted`` — PRD-07 R4.
+    """
     if not all_projects:
-        runs = ctx.store.list_runs(limit=None)
+        runs = [common.reconcile_run(ctx.store, r) for r in ctx.store.list_runs(limit=None)]
         runs.sort(key=_newest_first_key, reverse=True)
         return runs[:limit] if limit is not None else runs
     runs: list[RunRecord] = []
     for _slug, store in common.iter_project_stores(ctx.home):
-        runs.extend(store.list_runs(limit=limit))
+        runs.extend(common.reconcile_run(store, r) for r in store.list_runs(limit=limit))
     runs.sort(key=_newest_first_key, reverse=True)
     return runs[:limit] if limit is not None else runs
 

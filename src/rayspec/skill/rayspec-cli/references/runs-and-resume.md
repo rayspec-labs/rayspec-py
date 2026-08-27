@@ -31,12 +31,14 @@ unique prefix.
 ```
 runs/<run-id>/
   run.json                      RunRecord — rewritten atomically after every step
-  events.jsonl                  lifecycle events, one JSON object per line
+  cancel.json                   present only while a `rayspec cancel` is in flight (see "Cancelling a run")
+  events.jsonl                  lifecycle events, one JSON object per line (capped at 16 MiB, see below)
   audit.jsonl                   the local ledger, only with RAYSPEC_AUDIT_LOG=1 (see below)
+  detach-launch.log             `rayspec run --detach` only: the child's stdout/stderr before it has a run.json
   steps/<path>/                 one directory per executed step (build[2]/implement → steps/build[2]/implement/)
     output.txt | output.json    the step's output (written BEFORE the record that points at it)
     prompt.txt                  prompt steps: the rendered prompt: body, written BEFORE the provider call (StepRecord.prompt_ref; `rayspec explain --full`; a write that fails is a warning, never a failed step)
-    stream.jsonl                agent events / shell stdout+stderr lines, with the attempt number
+    stream.jsonl                agent events / shell stdout+stderr lines, with the attempt number (capped at 16 MiB)
     stdout.log, stderr.log      shell/python: attempt 1 starts the file, later attempts append under "--- attempt N ---"
     context.json                the template context the step saw (what RAYSPEC_CONTEXT points at)
   artifacts/                    yours (RAYSPEC_ARTIFACTS_DIR)
@@ -64,7 +66,8 @@ runs/<run-id>/
                                                                    // RAYSPEC_ACTOR from a .env is refused
                                                                    // and kept as declared_id (see below)
   "resume_count": 0, "pid": null, "pid_started_at": null, "host": "<host>",   // pid_started_at: start time of the
-  "dry_run": false,                       // pid's process (`ps -o lstart=`, for cancel); dry_run: a --dry-run rehearsal (stub providers)
+  "heartbeat_at": "2026-08-20T12:59:03Z",  // pid's process (`ps -o lstart=`, for cancel); last proof the run's
+  "dry_run": false,                       // process was alive (see "Is this run still alive?"); dry_run: a --dry-run rehearsal (stub providers)
   "workspace": {"isolation": "worktree", "workdir": "…/worktrees/review-ikd7",   // head_sha: tip of the workdir at the
                 "branch": "rayspec/review-ikd7", "base_branch": "main", "base_sha": "…", "head_sha": "…"},   // last record write (pause/end/resume)
   "pause": null,                          // {token, step, message, requested_at,
@@ -109,6 +112,13 @@ records written before it existed). `error` is `{type, message, transient}`; `lo
 resolved agent (used by `--resume --force`). Unknown keys are ignored when loading (forward
 compatible).
 
+`heartbeat_at` is the last time the run's process proved it was still alive — moved by a periodic
+timer for the life of the run (every 5–60s, derived from `defaults.timeout`: `min(60s, max(5s,
+timeout / 10))`, 60s when the workflow states none) and, on top of that, right before and right
+after every provider call, so a single long-running step still moves it between its own
+`step.started`/`step.finished`. `null` in records written before the field existed and in a record
+whose engine has not ticked yet; see "Is this run still alive?" below for what reads it.
+
 ### `events.jsonl`
 
 Each line is `{"type", "run_id", "ts", "step_path", "data"}`:
@@ -132,6 +142,13 @@ they are per-step `stream.jsonl` records (`{kind, ts, attempt, text, name, call_
 `rayspec run --json` prints both streams interleaved on stdout (stream records wrapped as
 `{"type": "stream", "step_path", "record"}`); the final summary object is the last stdout line
 (see [cli.md](cli.md#rayspec-run)).
+
+`events.jsonl` and each step's `stream.jsonl` are capped at 16 MiB so a long-running or
+unattended (`--detach`ed) run nobody watches cannot fill the disk: once a file grows past three
+times the cap, it is truncated from the **middle**, keeping the first third and the most recent
+two thirds — never tearing a JSON line — so a run's start and its latest activity both survive
+and only the noisy middle is dropped. This only ever affects a file that would otherwise grow into
+the tens of megabytes; a normal run never notices it.
 
 ### Who ran it
 
@@ -463,6 +480,80 @@ Resume re-executes the workflow **from the top** with a reuse cache:
 - `resume_count` increments and `run.resumed` is emitted.
 
 After Ctrl-C, partial `stream.jsonl` records and any changes in the worktree are left alone.
+
+## Detached runs
+
+```
+rayspec run <workflow> --detach [...the usual flags]
+```
+
+`--detach` forks the run into the background and hands control back almost immediately: rayspec
+re-execs itself (`python -m rayspec.cli.app`, the same command line minus `--detach`) as a
+`setsid` child with stdin closed and stdout/stderr redirected into `<run dir>/detach-launch.log`,
+waits for that child's `run.json` to appear (up to 8s), then prints the bare run id — nothing
+else — to stdout and exits 0. **The exit code is the launch succeeding, not the workflow's
+eventual outcome** — a workflow that goes on to fail still reports `0` here, because at that point
+it has barely started; check on it the same way you would any other run:
+
+```
+rayspec run build --detach                    # prints just the run id, e.g. 20260827-101500-h2nx
+rayspec logs 20260827-101500-h2nx --follow     # watch it
+rayspec runs                                    # or list it among everything else
+rayspec cancel 20260827-101500-h2nx             # or stop it — see below
+```
+
+Detached is POSIX only (it needs `setsid`); on a platform without one this is a usage error before
+anything runs. If the workdir is already known without preparing a workspace (`--no-worktree`, or
+`defaults.isolation: none`), the launcher checks the workdir path lock itself before backgrounding
+anything, so a conflict is reported synchronously (exit 2, naming the holder run) rather than
+discovered later in a log file nobody is watching; a worktree's own lock is taken by the detached
+child, exactly as a foreground run would.
+
+The detached process is otherwise an entirely ordinary run — it goes through the same code path a
+foreground `rayspec run` does, with one consequence worth knowing: it has no controlling terminal,
+so an `approve:` gate it reaches cannot prompt anybody and **pauses** (exit 3 in the detached
+process) exactly as it would for `--no-interactive` or any other non-TTY invocation. Nothing
+detach-specific decides that — it falls out of the same "can this stdin answer a question?" check
+every run makes. Plan for it: pre-authorise the gates you expect (`--yes`, `--approve-class`, a
+[policy](policy.md#approval-classes)) or be ready to `rayspec approve`/`rayspec resume` the run
+once it gets there.
+
+## Cancelling a run
+
+```
+rayspec cancel <run-id or prefix> [--yes] [--mark] [--force]
+```
+
+Cancelling a **live** run is cooperative — rayspec does not signal the process. `rayspec cancel`
+writes a small marker, `cancel.json` (`{reason, actor, requested_at}`), next to `run.json` in the
+run directory (after confirming, unless `--yes`/`--json`); the run's own process notices it at its
+next step boundary — the same points that check the run-level budget cap, never in the middle of
+an attempt — lets any step already running finish, still runs `join: always` cleanup steps, and
+then finalizes itself `cancelled` (exit 4, same as before). Nothing outside the run's own process
+ever touches its steps or its workdir, so there is no window in which a signal can land mid-write.
+This needs no terminal on the run's side and works identically for a foreground run or one started
+with `--detach` — `rayspec logs <id> --follow` shows it happening either way. A run deep inside one
+long provider call keeps running until that call returns; cancel does not preempt it.
+
+Before writing the flag, `rayspec cancel` verifies the recorded `pid` really is *this run's*
+rayspec process — the same check as before (its `pid_started_at`, then its command line — see
+[Security notes](#security-notes)) — so a pid reused by an unrelated process after a crash is
+never flagged. `--mark` finalizes a stale `running`/`paused` record as cancelled without writing
+any flag or touching any process, for exactly that situation. A **paused** run, or a `running`
+record whose process is confirmed gone, is simply marked cancelled outright (there is no process
+left to cooperate with).
+
+### Is this run still alive?
+
+`rayspec runs`, `rayspec show`, `rayspec logs --follow` and `rayspec cancel` all correct a stored
+`running` record before they act on it: if the recorded `pid` is no longer alive on this host, or
+it is alive but `heartbeat_at` (see `run.json` above) has not moved in over three heartbeat
+intervals, the record is rewritten to `interrupted` right there — not just displayed that way.
+Before `heartbeat_at` existed, only a dead pid told a genuinely running process apart from a
+`run.json` a crash left behind; a pid that got reused by something else on a busy machine could
+leave a run reading `running` forever. A run recorded as running on **another** host (a shared
+`RAYSPEC_HOME`) is left alone either way — its process cannot be checked from here, which is also
+why `rayspec cancel` on it needs `--force`.
 
 ## Approval gates
 
@@ -941,12 +1032,13 @@ and `outputs` are in clear text. So:
   configuration, which is what they are for, and that is a boundary you are trusting the way you
   trust `~/.bashrc`.
 - **`cancel` pid check.** A `running` record keeps the engine's pid; after a crash or reboot the
-  pid may belong to an unrelated process. `rayspec cancel` signals only a process whose start
+  pid may belong to an unrelated process. `rayspec cancel` writes its cooperative cancel flag (see
+  [Cancelling a run](#cancelling-a-run)) only for a process whose start
   time equals the recorded `pid_started_at` (exact; older records without the field skip this)
   *and* whose command line contains a rayspec execution command (`rayspec run|resume|approve|
   reject`) and names this run (id or workflow, as whole words) — anything else is refused with
   exit 2; `rayspec cancel <run> --mark` finalizes such a stale record as cancelled without
-  signalling.
+  writing anything for the process.
 - **Untrusted text on the terminal.** Agent output, step output and input values are printed by
   the console, `show`, `logs` and the approval panel with control characters and terminal escape
   sequences removed (no title changes, screen clears, colour spoofing or hyperlinks from a

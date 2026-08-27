@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -97,6 +98,9 @@ def test_logs_prefix_and_failed_run(cli: CliRunner, seeded: Seeded) -> None:
 
 
 def _running_run(seeded: Seeded, run_id: str) -> RunRecord:
+    # PRD-07 R4: `reconcile_run` treats a `running` record with no live, recently-heartbeating
+    # pid as interrupted — this process's own pid (always alive) and a fresh heartbeat keep the
+    # simulated run "live" for the reconciliation check, same as a real run would be.
     run = RunRecord(
         run_id=run_id,
         workflow_name="live",
@@ -106,6 +110,8 @@ def _running_run(seeded: Seeded, run_id: str) -> RunRecord:
         project_root=str(seeded.project),
         status=RunStatus.RUNNING,
         started_at=datetime.now(UTC),
+        pid=os.getpid(),
+        heartbeat_at=datetime.now(UTC),
     )
     seeded.store.create(run)
     return run

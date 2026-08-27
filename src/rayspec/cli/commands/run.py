@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, TextIO, TypeVar
@@ -628,6 +631,117 @@ def print_summary(
         )
 
 
+#: PRD-07 R1: how long the launcher waits for the detached child's ``run.json`` to appear
+#: before giving up — generous relative to the sub-second happy path, but bounded so a child
+#: that never starts (a broken interpreter, a missing module) does not hang the launcher.
+DETACH_LAUNCH_TIMEOUT_S = 8.0
+DETACH_POLL_INTERVAL_S = 0.02
+#: Internal only — never documented, never set by a user. ``--detach`` re-execs the exact same
+#: command line, so the child would otherwise mint its own fresh id (``new_run_id()`` again);
+#: this is how the launcher hands the child the id it already committed to printing.
+_DETACH_RUN_ID_ENV = "_RAYSPEC_DETACH_RUN_ID"
+
+
+def _precheck_path_lock(*, home: Path, slug: str, workdir: Path, run_id: str) -> None:
+    """PRD-07 R7: fail fast (exit 2, naming the holder) before anything is backgrounded.
+
+    Only attempted when the workdir is already known without preparing a workspace — i.e. an
+    in-place run (``--no-worktree``, or ``defaults.isolation: none``). A worktree's path does
+    not exist until it is prepared, which the launcher deliberately does not do (that is the
+    detached child's job); contention there is instead caught the same way a foreground run
+    catches it, inside the child's own :meth:`~rayspec.engine.runner.Runner._acquire_lock`.
+    The lock is released immediately after the probe — the child takes it again itself, for
+    the duration of the run.
+    """
+    from rayspec.loader.loader import import_optional
+
+    module = import_optional("rayspec.workspace")
+    lock_cls = getattr(module, "PathLock", None) if module is not None else None
+    if lock_cls is None:
+        return
+    lock = lock_cls(home, slug, workdir, run_id=run_id)
+    try:
+        lock.acquire()
+    except NotImplementedError:  # no fcntl (Windows): the POSIX-only check above already fired
+        return
+    except Exception as exc:
+        hint = getattr(exc, "hint", None)
+        fail(str(exc), hint=hint)
+        return
+    lock.release()
+
+
+def launch_detached(
+    *,
+    argv: Sequence[str],
+    home: Path,
+    project_root: Path,
+    run_id: str,
+    slug: str,
+    worktree: bool | None,
+) -> None:
+    """PRD-07 R1/R6/R7: fork a background run and return almost immediately.
+
+    A re-exec, not ``os.fork``: the launcher validates the platform and (when the workdir is
+    already known — ``--no-worktree``) the path lock, then spawns a ``setsid`` child that
+    re-runs this exact command line minus ``--detach``, with stdin closed and stdout/stderr
+    redirected into the run directory. It waits until the child's ``run.json`` exists, prints
+    the bare run id to stdout and exits 0 — the *launch*, not the workflow's eventual outcome.
+
+    The child is otherwise a completely ordinary (non-detached) ``rayspec run``: with no
+    controlling terminal, ``rayspec.cli._runs_common.stdin_is_tty`` reports ``False`` exactly
+    as it would over a closed pipe, so a gate pauses (exit 3) instead of blocking on stdin —
+    R6 falls out of that existing behaviour rather than needing a separate code path — and the
+    child takes the same workdir path lock (R7) a foreground run would, for as long as it runs.
+    """
+    if os.name != "posix":
+        fail(
+            f"--detach needs POSIX process groups (setsid); {sys.platform!r} has none",
+            hint="drop --detach on this platform (Windows is out of scope for PRD-07)",
+        )
+        return
+    if worktree is False:
+        _precheck_path_lock(home=home, slug=slug, workdir=project_root, run_id=run_id)
+    from rayspec.store.file import open_private, secure_mkdir
+
+    store = FileRunStore(home / "projects" / slug)
+    run_dir = store.run_dir(run_id)
+    # NOT run_dir itself — FileRunStore.create() refuses a run id whose directory already
+    # exists, and the child (which has not run yet) is the one that creates it. A sibling of
+    # the run directory, under the same `runs/` folder, keeps the launch log "in the run
+    # directory" in spirit without racing the child's own store.create().
+    secure_mkdir(store.runs_root)
+    log_path = store.runs_root / f"{run_id}.detach-launch.log"
+    child_argv = [a for a in argv if a != "--detach"]
+    # the child re-execs `run` from scratch and would otherwise mint its OWN fresh run id
+    # (new_run_id() again) — this internal env var is the only thing that ties the process the
+    # launcher is polling for to the one it actually printed
+    child_env = {**os.environ, _DETACH_RUN_ID_ENV: run_id}
+    with open_private(log_path, "a") as log_fh:
+        subprocess.Popen(
+            [sys.executable, "-m", "rayspec.cli.app", *child_argv],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,  # setsid: detaches from the controlling terminal
+            close_fds=True,
+            env=child_env,
+        )
+    run_json = run_dir / "run.json"
+    deadline = time.monotonic() + DETACH_LAUNCH_TIMEOUT_S
+    while time.monotonic() < deadline and not run_json.exists():
+        time.sleep(DETACH_POLL_INTERVAL_S)
+    if not run_json.exists():
+        fail(
+            f"run {run_id} did not start within {DETACH_LAUNCH_TIMEOUT_S:.0f}s",
+            hint=f"check {log_path} for what the detached process printed",
+        )
+        return
+    # bare stdout: exactly one line, the run id, and nothing else (R1) — never the Rich console
+    print(run_id)
+    raise typer.Exit(code=0)
+
+
 def register(app: typer.Typer) -> None:
     @app.command()
     def run(  # noqa: PLR0917 - Typer options are positional by construction
@@ -713,13 +827,34 @@ def register(app: typer.Typer) -> None:
         repo: Annotated[
             str | None, typer.Option("--repo", help="Registered project / path / url.")
         ] = None,
+        detach: Annotated[
+            bool,
+            typer.Option(
+                "--detach",
+                help="Fork, run in the background, print the run id and exit immediately "
+                "(POSIX only). Follow with `rayspec logs <id> -f`, list with `rayspec runs`, "
+                "stop with `rayspec cancel <id>`.",
+            ),
+        ] = False,
     ) -> None:
         """Run a workflow (or resume one with --resume)."""
         json_ = resolve_output(output, json_)
         ctx = make_context(root)
         out = common.err_console() if json_ else common.console()
         project_root = ctx.project_root
-        run_id = new_run_id()
+        # set only by our own --detach launcher's re-exec (never by a user) — ties this
+        # process's fresh run to the id the launcher already committed to printing
+        run_id = os.environ.get(_DETACH_RUN_ID_ENV) or new_run_id()
+        if detach:
+            launch_detached(
+                argv=sys.argv[1:],
+                home=ctx.home,
+                project_root=project_root,
+                run_id=run_id,
+                slug=project_slug_for(project_root),
+                worktree=worktree,
+            )
+            return
         prepared: tuple[Workspace, str | None, Path] | None = None
         if repo and resume:
             fail(
@@ -1298,6 +1433,7 @@ def _problems_only_sink(out: Console) -> Any:
 
 
 __all__ = [
+    "DETACH_LAUNCH_TIMEOUT_S",
     "SUMMARY_KEYS",
     "TERMINAL_PROMPT_ID",
     "ApproveClassOption",
@@ -1311,6 +1447,7 @@ __all__ = [
     "decide_hint",
     "failed_leaf_paths",
     "gate_classes",
+    "launch_detached",
     "load_stub_script",
     "non_stub_agents",
     "operator_policy",

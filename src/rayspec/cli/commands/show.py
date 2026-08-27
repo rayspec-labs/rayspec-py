@@ -402,6 +402,7 @@ def register(app: typer.Typer) -> None:
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
+        record = common.reconcile_run(store, record)
         out = console()
         planned = common.planned_step_paths(ctx, record)
         if json_:

@@ -36,6 +36,7 @@ from anyio import to_thread
 
 from rayspec.engine.approval import ApprovalPrompt
 from rayspec.engine.approval_classes import ApprovalClasses
+from rayspec.engine.cancel import read_cancel_flag
 from rayspec.engine.errors import RunControl, RunPaused, RunStopped
 from rayspec.engine.paths import StepPath
 from rayspec.engine.runtime import Runtime
@@ -65,6 +66,9 @@ REUSABLE_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python", "approv
 LEAF_KINDS: frozenset[str] = frozenset({"prompt", "shell", "python"})
 #: ``skip_reason`` of steps that were not started because the run-level cap tripped.
 BUDGET_SKIP_REASON = "budget_exceeded"
+#: ``skip_reason`` of steps that were not started because ``rayspec cancel`` flagged the run
+#: (PRD-07 R5).
+CANCEL_SKIP_REASON = "cancelled"
 
 #: How much of an artifact is read at a time when the store keeps no copy of it.
 _ARTIFACT_CHUNK_BYTES = 1 << 20
@@ -553,6 +557,11 @@ class RunContext:
         self.price_table: Any = None
         #: set (to the reason) once the run-level cap tripped: no new step starts
         self.budget_exceeded: str | None = None
+        #: set (to the reason) once ``rayspec cancel`` flagged this run (PRD-07 R5): no new step
+        #: starts, running steps finish, ``join: always`` steps still run, and the run finalizes
+        #: ``cancelled`` (exit 4) rather than ``failed``. Cached after the first sighting of
+        #: ``cancel.json`` — see :meth:`check_cancelled`.
+        self.cancel_requested: str | None = None
         #: the operator's cross-run spending envelope / circuit breaker
         #: (:class:`rayspec.limits.envelope.RunEnvelope`), or ``None`` when no policy caps this
         #: machine. Unlike the in-workflow caps it PAUSES the run instead of failing it.
@@ -808,6 +817,36 @@ class RunContext:
     def save_run_sync(self) -> None:
         """Synchronous flush (used by the second-SIGINT hard-exit path)."""
         self.store.save(self.run)
+
+    async def touch_heartbeat(self) -> None:
+        """Stamp ``run.heartbeat_at`` and persist it (PRD-07 R2) — cheap, no output write.
+
+        Called by a periodic timer for the life of the run and right before/after every
+        provider call (:mod:`rayspec.engine.executors.prompt`), so a long shell/prompt step
+        still proves it is alive between the ``step.started``/``step.finished`` events that
+        would otherwise be the only writes.
+        """
+        async with self.lock:
+            self.run.heartbeat_at = utcnow()
+            await to_thread.run_sync(self.store.save, self.run)
+
+    async def check_cancelled(self) -> str | None:
+        """The reason ``rayspec cancel`` flagged this run, or ``None`` (PRD-07 R5).
+
+        Checked at step boundaries — the scheduler's ready-set gate and a loop's next iteration
+        — never mid-attempt: a step already running is left to finish. The first sighting of
+        ``cancel.json`` is cached (and warned about once); later calls just return it.
+        """
+        if self.cancel_requested is not None:
+            return self.cancel_requested
+        flag = await to_thread.run_sync(read_cancel_flag, self.run_dir)
+        if flag is None:
+            return None
+        self.cancel_requested = flag.reason
+        await self.warn(
+            f"cancel requested ({flag.reason}): no new steps start, running steps finish"
+        )
+        return self.cancel_requested
 
     # -- events ---------------------------------------------------------------------------
 
@@ -1143,6 +1182,7 @@ def sha256_json(value: Any) -> str:
 
 __all__ = [
     "BUDGET_SKIP_REASON",
+    "CANCEL_SKIP_REASON",
     "CAP_KNOBS",
     "CAP_REASON_PREFIXES",
     "LEAF_KINDS",
