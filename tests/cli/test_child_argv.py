@@ -30,6 +30,7 @@ LAUNCHER_OWNED = frozenset(
         "verbose",  # the child always runs --quiet
         "quiet",  # forced on for the child regardless of the parent
         "no_interactive",  # forced on for the child regardless of the parent
+        "detached_child",  # the launcher INJECTS this (via child_run_argv's own tail), never mirrors it
     }
 )
 

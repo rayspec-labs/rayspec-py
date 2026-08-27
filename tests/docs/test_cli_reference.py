@@ -68,6 +68,8 @@ def test_every_option_is_mentioned_in_its_section(docs_dir: Path) -> None:
         for param in cmd.params:
             if getattr(param, "param_type_name", "") != "option" or param.name == "help":
                 continue
+            if getattr(param, "hidden", False):
+                continue  # an internal option (e.g. --detached-child) is not user documentation
             flags = [o for o in param.opts if o.startswith("--")]
             flags += [o for o in param.secondary_opts if o.startswith("--")]
             if not any(flag in section for flag in flags):
@@ -106,3 +108,17 @@ def test_fail_fast_says_it_overrides_the_workflow_failure_policy(docs_dir: Path)
     assert len(rows) == 1, rows
     assert "on_step_failure" in rows[0], "the option table does not say what the flag overrides"
     assert "tighten" in rows[0], "the option table does not say the override may only tighten"
+
+
+def test_detached_child_is_a_hidden_run_option() -> None:
+    """PRD-07 R1: ``--detached-child`` is the launcher→child handshake, never a user knob — it
+    must exist (the launcher passes it) yet be hidden from ``--help`` and from the docs."""
+    run = cli_commands()["run"]
+    hidden = {
+        opt
+        for param in run.params
+        if getattr(param, "hidden", False)
+        for opt in param.opts
+        if opt.startswith("--")
+    }
+    assert "--detached-child" in hidden, "the child option must be present but hidden"

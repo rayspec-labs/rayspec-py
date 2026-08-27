@@ -990,6 +990,9 @@ CLI_FLAGS: Mapping[str, ExternalControl] = {
     "--detach": ExternalControl(
         False, "background the run behind a forked child; what it may do is unchanged"
     ),
+    "--detached-child": ExternalControl(
+        False, "internal: the run directory a --detach launcher pre-created for its child"
+    ),
     "--step": ExternalControl(False, "which step to report on"),
     "--select": ExternalControl(False, "which test cases to run"),
     "--case": ExternalControl(False, "the same, by name"),

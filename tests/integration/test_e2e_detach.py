@@ -1,11 +1,15 @@
-"""PRD-07 `rayspec run --detach`, end to end: R1 (launch returns immediately, exit reflects
-launch not outcome), R6 (a gate in a detached run pauses cleanly, never blocks on a TTY) and R7
-(the detached child holds the path lock exactly like a foreground run).
+"""PRD-07 `rayspec run --detach`, end to end.
 
-``--detach`` does not exist yet: every ``run ... --detach`` invocation below is refused by Click
-as an unknown option (exit 2, nothing printed to stdout, no run ever created). Every assertion
-below is therefore written against the *documented* behaviour and fails now for that reason —
-once ``--detach`` launches a real background child, these exercise the actual contract.
+R1: launch backgrounds the workflow and returns the bare run id, exit 0 reflecting the *launch*
+not the run's outcome. R3: `logs -f [--exit-code]` streams a detached run to a terminal status
+and can report its code. R5: `cancel`/`cancel --now` stop a real detached child. R6: a gate in a
+detached run pauses cleanly (no controlling terminal, never blocks on stdin). R7: the detached
+child holds the path lock exactly like a foreground run.
+
+These drive real subprocesses (a genuinely backgrounded `setsid` child), so they assert on
+ordering and recorded state — a run's status reaching a value, a lock being taken — rather than
+wall-clock deadlines, which flake under CI load. Slow witnesses are cleaned up with `cancel
+--now` in a finally.
 """
 
 from __future__ import annotations
@@ -61,6 +65,20 @@ outputs:
   ship: "{{ steps.ship.output }}"
 """
 
+# a loop that checks the cooperative cancel flag between iterations (a single long sleep never
+# would): each tick is short, so `cancel` (the flag) stops it within about one tick.
+COOP_WF = """
+rayspec: 1
+name: coop
+steps:
+  - id: work
+    loop:
+      max_iterations: 60
+      steps:
+        - id: tick
+          shell: sleep 0.5
+"""
+
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: --detach uses setsid")
 
 
@@ -71,6 +89,25 @@ def _wait_for(predicate, *, timeout: float, what: str) -> None:
             return
         time.sleep(0.1)
     raise AssertionError(f"timed out waiting for {what}")
+
+
+def _run_dir(home: Path, run_id: str) -> Path:
+    return next(home.rglob(f"runs/{run_id}"))
+
+
+def _status(home: Path, run_id: str) -> str:
+    return json.loads((_run_dir(home, run_id) / "run.json").read_text())["status"]
+
+
+def _wait_status(home: Path, run_id: str, wanted: set[str], *, timeout: float = 20) -> str:
+    _wait_for(
+        lambda: (
+            bool(list(home.rglob(f"runs/{run_id}/run.json"))) and _status(home, run_id) in wanted
+        ),
+        timeout=timeout,
+        what=f"run {run_id} to reach {wanted}",
+    )
+    return _status(home, run_id)
 
 
 def _run_detach(
@@ -105,23 +142,32 @@ def _run_detach(
         env=full_env,
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=15,
     )
 
 
-def test_detach_returns_within_a_second_with_run_id(tmp_path: Path) -> None:
-    """A slow canary step is the witness: if launch ever ran the workflow inline instead of
-    backgrounding it, this would time out long before returning."""
+def _cancel_now(root: Path, home: Path, run_id: str) -> None:
+    """Best-effort teardown for a slow witness — SIGINT the detached group so nothing is left
+    sleeping for 30 s after the test."""
+    invoke(["cancel", run_id, "--now", "--yes", "--root", str(root)], home)
+
+
+def test_detach_backgrounds_the_run_and_returns_a_run_id(tmp_path: Path) -> None:
+    """The witness sleeps far longer than the launcher's own timeout: if launch ran the
+    workflow inline the subprocess would hit its 15 s timeout, never returning a run id. That it
+    returns promptly with the run still RUNNING is the ordering proof it backgrounded."""
     root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
     home = tmp_path / "home"
     home.mkdir()
-    t0 = time.monotonic()
     result = _run_detach(root, home, "slow", env={"E2E_SLEEP": "30"})
-    elapsed = time.monotonic() - t0
-    assert elapsed < 1.0, f"--detach did not return promptly ({elapsed:.2f}s)"
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
-    stdout = result.stdout.strip()
-    assert RUN_ID_RE.match(stdout), f"stdout is not a bare run id: {stdout!r}"
+    run_id = result.stdout.strip()
+    assert RUN_ID_RE.match(run_id), f"stdout is not a bare run id: {run_id!r}"
+    try:
+        # the run outlives the launcher: right after launch it is still running, not finished
+        assert _wait_status(home, run_id, {"running"}, timeout=10) == "running"
+    finally:
+        _cancel_now(root, home, run_id)
 
 
 def test_detach_writes_no_output_to_stdout_besides_run_id(tmp_path: Path) -> None:
@@ -134,6 +180,19 @@ def test_detach_writes_no_output_to_stdout_besides_run_id(tmp_path: Path) -> Non
     assert len(lines) == 1 and RUN_ID_RE.match(lines[0]), result.stdout
 
 
+def test_detach_json_output_is_one_launch_object(tmp_path: Path) -> None:
+    root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
+    home = tmp_path / "home"
+    home.mkdir()
+    result = _run_detach(root, home, "slow", extra=["--json"], env={"E2E_SLEEP": "0"})
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(lines) == 1, result.stdout
+    obj = json.loads(lines[0])
+    assert RUN_ID_RE.match(obj["run_id"]) and obj["started"] is True
+    assert obj["pid"] and obj["run_dir"] and obj["launch_log"].endswith("detach-launch.log")
+
+
 def test_detach_exit_code_reflects_launch_not_outcome(tmp_path: Path) -> None:
     """The workflow itself fails; launch must still report success (exit 0)."""
     root = git_project(tmp_path, {"failing": FAILING_WF}, name="failing")
@@ -143,14 +202,7 @@ def test_detach_exit_code_reflects_launch_not_outcome(tmp_path: Path) -> None:
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     run_id = result.stdout.strip()
     assert RUN_ID_RE.match(run_id)
-    run_dir = next(home.rglob(f"runs/{run_id}"))
-    _wait_for(
-        lambda: json.loads((run_dir / "run.json").read_text())["status"] in {"failed", "succeeded"},
-        timeout=15,
-        what="the detached run to finish",
-    )
-    record = json.loads((run_dir / "run.json").read_text())
-    assert record["status"] == "failed"
+    assert _wait_status(home, run_id, {"failed", "succeeded"}) == "failed"
 
 
 def test_detach_survives_parent_exit(tmp_path: Path) -> None:
@@ -162,18 +214,25 @@ def test_detach_survives_parent_exit(tmp_path: Path) -> None:
     run_id = result.stdout.strip()
     assert RUN_ID_RE.match(run_id)
     # the launcher process is long gone by now; the run must still reach a terminal status
-    _wait_for(
-        lambda: (
-            bool(list(home.rglob(f"runs/{run_id}/run.json")))
-            and json.loads(next(home.rglob(f"runs/{run_id}/run.json")).read_text())["status"]
-            == "succeeded"
-        ),
-        timeout=15,
-        what="the detached run to complete after the launcher exited",
-    )
+    assert _wait_status(home, run_id, {"succeeded"}) == "succeeded"
 
 
-def test_detached_run_at_gate_reaches_exit_3(tmp_path: Path) -> None:
+def test_no_stale_launch_artifacts_after_a_clean_launch(tmp_path: Path) -> None:
+    """The handshake file is transient plumbing; a launched run keeps its launch log (a record
+    of the child's boot) but the run directory is the real one, not a sibling."""
+    root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
+    home = tmp_path / "home"
+    home.mkdir()
+    result = _run_detach(root, home, "slow", env={"E2E_SLEEP": "0"})
+    run_id = result.stdout.strip()
+    _wait_status(home, run_id, {"succeeded"})
+    run_dir = _run_dir(home, run_id)
+    assert (run_dir / "detach-launch.log").exists(), "the launch log lives inside the run dir"
+    # no sibling <run_id>.detach-launch.log next to the run directory (the old wrong location)
+    assert not (run_dir.parent / f"{run_id}.detach-launch.log").exists()
+
+
+def test_detached_run_at_gate_reaches_paused(tmp_path: Path) -> None:
     root = git_project(tmp_path, {"gated": GATE_WF}, name="gated")
     home = tmp_path / "home"
     home.mkdir()
@@ -181,13 +240,8 @@ def test_detached_run_at_gate_reaches_exit_3(tmp_path: Path) -> None:
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     run_id = result.stdout.strip()
     assert RUN_ID_RE.match(run_id)
-    run_dir = next(home.rglob(f"runs/{run_id}"))
-    _wait_for(
-        lambda: json.loads((run_dir / "run.json").read_text())["status"] == "paused",
-        timeout=15,
-        what="the detached run to pause at the gate",
-    )
-    record = json.loads((run_dir / "run.json").read_text())
+    assert _wait_status(home, run_id, {"paused"}) == "paused"
+    record = json.loads((_run_dir(home, run_id) / "run.json").read_text())
     assert record.get("pause") is not None, "pause info must be populated"
 
 
@@ -199,12 +253,7 @@ def test_detached_run_at_gate_is_resumable(tmp_path: Path) -> None:
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     run_id = result.stdout.strip()
     assert RUN_ID_RE.match(run_id)
-    run_dir = next(home.rglob(f"runs/{run_id}"))
-    _wait_for(
-        lambda: json.loads((run_dir / "run.json").read_text())["status"] == "paused",
-        timeout=15,
-        what="the detached run to pause at the gate",
-    )
+    _wait_status(home, run_id, {"paused"})
     approved = invoke(["approve", run_id, "ship it", "--root", str(root)], home)
     assert approved.exit_code == 0, approved.output
     [rec] = run_records(home)
@@ -212,32 +261,53 @@ def test_detached_run_at_gate_is_resumable(tmp_path: Path) -> None:
 
 
 def test_gate_with_no_tty_does_not_hang_when_detached(tmp_path: Path) -> None:
-    """Detach guarantees no controlling terminal; a gate must never block reading stdin."""
+    """Detach guarantees no controlling terminal; a gate must never block reading stdin. The
+    witness is that launch returns at all (its 15 s subprocess timeout would fire on a hang)."""
     root = git_project(tmp_path, {"gated": GATE_WF}, name="gated")
     home = tmp_path / "home"
     home.mkdir()
-    t0 = time.monotonic()
     result = _run_detach(root, home, "gated")
-    elapsed = time.monotonic() - t0
-    assert elapsed < 3.0, f"launch blocked for {elapsed:.2f}s — looks like a hang on stdin"
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    assert _wait_status(home, run_id=result.stdout.strip(), wanted={"paused"}) == "paused"
 
 
 def test_second_run_same_path_fails_exit_2_naming_first(tmp_path: Path) -> None:
     root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
     home = tmp_path / "home"
     home.mkdir()
-    launched = _run_detach(root, home, "slow", env={"E2E_SLEEP": "5"})
+    launched = _run_detach(root, home, "slow", env={"E2E_SLEEP": "30"})
     assert launched.returncode == 0, (launched.returncode, launched.stdout, launched.stderr)
     run_id_a = launched.stdout.strip()
     assert RUN_ID_RE.match(run_id_a)
-    second = invoke(
-        ["run", "slow", "--root", str(root), "--no-worktree", "--no-interactive"],
-        home,
-        E2E_SLEEP="0",
-    )
-    assert second.exit_code == 2, second.output
-    assert run_id_a in second.output, second.output
+    try:
+        _wait_status(home, run_id_a, {"running"}, timeout=10)
+        second = invoke(
+            ["run", "slow", "--root", str(root), "--no-worktree", "--no-interactive"],
+            home,
+            E2E_SLEEP="0",
+        )
+        assert second.exit_code == 2, second.output
+        assert run_id_a in second.output, second.output
+    finally:
+        _cancel_now(root, home, run_id_a)
+
+
+def test_second_detached_run_same_path_fails_exit_2(tmp_path: Path) -> None:
+    """R7 both directions: the launcher's own preflight lock check refuses a second *detached*
+    in-place run before backgrounding anything, naming the holder."""
+    root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
+    home = tmp_path / "home"
+    home.mkdir()
+    first = _run_detach(root, home, "slow", env={"E2E_SLEEP": "30"})
+    run_id_a = first.stdout.strip()
+    assert RUN_ID_RE.match(run_id_a)
+    try:
+        _wait_status(home, run_id_a, {"running"}, timeout=10)
+        second = _run_detach(root, home, "slow", env={"E2E_SLEEP": "0"})
+        assert second.returncode == 2, (second.returncode, second.stdout, second.stderr)
+        assert run_id_a in (second.stdout + second.stderr)
+    finally:
+        _cancel_now(root, home, run_id_a)
 
 
 def test_lock_released_after_detached_run_ends(tmp_path: Path) -> None:
@@ -248,12 +318,7 @@ def test_lock_released_after_detached_run_ends(tmp_path: Path) -> None:
     assert launched.returncode == 0, (launched.returncode, launched.stdout, launched.stderr)
     run_id_a = launched.stdout.strip()
     assert RUN_ID_RE.match(run_id_a)
-    run_dir = next(home.rglob(f"runs/{run_id_a}"))
-    _wait_for(
-        lambda: json.loads((run_dir / "run.json").read_text())["status"] == "succeeded",
-        timeout=15,
-        what="run A to finish and release the lock",
-    )
+    _wait_status(home, run_id_a, {"succeeded"})
     third = invoke(
         ["run", "slow", "--root", str(root), "--no-worktree", "--no-interactive"],
         home,
@@ -262,16 +327,53 @@ def test_lock_released_after_detached_run_ends(tmp_path: Path) -> None:
     assert third.exit_code == 0, third.output
 
 
-def _logs_follow(root: Path, home: Path, run_id: str) -> subprocess.CompletedProcess:
+def test_cancel_now_stops_a_detached_run(tmp_path: Path) -> None:
+    """R5: `cancel --now` SIGINTs the detached child's group; a single long sleep is interrupted
+    at once (the cooperative flag alone could not break into a sleep)."""
+    root = git_project(tmp_path, {"slow": SLOW_WF}, name="slow")
+    home = tmp_path / "home"
+    home.mkdir()
+    launched = _run_detach(root, home, "slow", env={"E2E_SLEEP": "30"})
+    run_id = launched.stdout.strip()
+    assert RUN_ID_RE.match(run_id)
+    _wait_status(home, run_id, {"running"}, timeout=10)
+    cancelled = invoke(["cancel", run_id, "--now", "--yes", "--root", str(root)], home)
+    assert cancelled.exit_code == 0, cancelled.output
+    assert _wait_status(home, run_id, {"cancelled", "interrupted"}) in {"cancelled", "interrupted"}
+
+
+def test_cancel_flag_stops_a_detached_loop_between_iterations(tmp_path: Path) -> None:
+    """R5: the cooperative flag (plain `cancel`) is honoured at a step boundary — a bounded loop
+    of short ticks stops within about one tick, recorded cancelled."""
+    root = git_project(tmp_path, {"coop": COOP_WF}, name="coop")
+    home = tmp_path / "home"
+    home.mkdir()
+    launched = _run_detach(root, home, "coop")
+    run_id = launched.stdout.strip()
+    assert RUN_ID_RE.match(run_id)
+    _wait_status(home, run_id, {"running"}, timeout=10)
+    cancelled = invoke(["cancel", run_id, "--yes", "--root", str(root)], home)
+    assert cancelled.exit_code == 0, cancelled.output
+    assert _wait_status(home, run_id, {"cancelled"}, timeout=15) == "cancelled"
+
+
+def _logs_follow(
+    root: Path, home: Path, run_id: str, *, exit_code: bool = False
+) -> subprocess.CompletedProcess:
     env = {**os.environ, "RAYSPEC_HOME": str(home), "NO_COLOR": "1", "PYTHONUNBUFFERED": "1"}
-    return subprocess.run(
-        [sys.executable, "-m", "rayspec.cli.app", "logs", run_id, "--follow", "--root", str(root)],
-        cwd=root,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
+    args = [
+        sys.executable,
+        "-m",
+        "rayspec.cli.app",
+        "logs",
+        run_id,
+        "--follow",
+        "--root",
+        str(root),
+    ]
+    if exit_code:
+        args.append("--exit-code")
+    return subprocess.run(args, cwd=root, env=env, capture_output=True, text=True, timeout=30)
 
 
 def test_logs_follow_streams_to_completion_for_a_detached_run(tmp_path: Path) -> None:
@@ -286,7 +388,40 @@ def test_logs_follow_streams_to_completion_for_a_detached_run(tmp_path: Path) ->
     assert RUN_ID_RE.match(run_id)
     followed = _logs_follow(root, home, run_id)
     assert followed.returncode == 0, (followed.returncode, followed.stdout, followed.stderr)
-    assert "canary-done" in followed.stdout, followed.stdout
+    assert "succeeded" in followed.stdout, followed.stdout
+    # the step's raw stdout is still retrievable (it is just not inlined in the follow tree)
+    streamed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "rayspec.cli.app",
+            "logs",
+            run_id,
+            "--step",
+            "canary",
+            "--root",
+            str(root),
+        ],
+        cwd=root,
+        env={**os.environ, "RAYSPEC_HOME": str(home), "NO_COLOR": "1"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert "canary-done" in streamed.stdout, (streamed.stdout, streamed.stderr)
+
+
+def test_logs_follow_exit_code_reflects_a_failed_detached_run(tmp_path: Path) -> None:
+    """R3: `logs -f --exit-code` lets a detached run be waited on and its outcome learned — a
+    failed run exits the follower with 1."""
+    root = git_project(tmp_path, {"failing": FAILING_WF}, name="failing")
+    home = tmp_path / "home"
+    home.mkdir()
+    launched = _run_detach(root, home, "failing")
+    run_id = launched.stdout.strip()
+    assert RUN_ID_RE.match(run_id)
+    followed = _logs_follow(root, home, run_id, exit_code=True)
+    assert followed.returncode == 1, (followed.returncode, followed.stdout, followed.stderr)
 
 
 def test_logs_follow_terminates_on_pause_for_a_detached_run(tmp_path: Path) -> None:
