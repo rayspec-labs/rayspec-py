@@ -386,6 +386,9 @@ class Runner:
                 base_sha=self.workspace.base_sha,
             )
         await self._consume_envelope_decision(ctx, run)
+        # prove the process is alive before the first slow thing (toolchain capture, envelope):
+        # the periodic timer starts inside ``body()``, so stamp once up front too.
+        await to_thread.run_sync(ctx._stamp_alive)
         if not resumed and run.toolchain is None:  # the SDK/CLI/models in effect, once
             run.toolchain = await capture_toolchain(ctx)
             await ctx.save_run()
@@ -400,9 +403,17 @@ class Runner:
         heartbeat_s = liveness.HEARTBEAT_INTERVAL_S  # read at call time: tests shorten it
 
         async def _heartbeat_loop() -> None:
+            # best-effort: a liveness write that fails (a full disk, a slow FS) must never end the
+            # run — the run's own step saves stamp ``heartbeat_at`` too, and finalize decides the
+            # real status. Letting an OSError escape the task group here would bypass ``_finalize``
+            # and leave ``run.json`` stuck on ``running`` with a live pid.
             while True:
                 await anyio.sleep(heartbeat_s)
-                await ctx.touch_heartbeat()
+                try:
+                    await ctx.touch_heartbeat()
+                except Exception as exc:  # a liveness write is never fatal
+                    with contextlib.suppress(Exception):
+                        await ctx.warn(f"heartbeat write failed (continuing): {exc}")
 
         async def body() -> None:
             nonlocal engine_error

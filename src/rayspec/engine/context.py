@@ -723,12 +723,19 @@ class RunContext:
         if self.envelope_pause is None:
             self.last_finished_path = record.path
 
+    def _stamp_alive(self) -> None:
+        """Stamp ``heartbeat_at`` and save ``run.json`` — every engine-originated save proves the
+        process is alive (PRD-07 R2). Never called by CLI writers (``reconcile_run``,
+        ``mark_cancelled``), which must not forge liveness for a process they only observe."""
+        self.run.heartbeat_at = utcnow()
+        self.store.save(self.run)
+
     async def save_record(self, record: StepRecord) -> None:
         """Store a (non-final) record and save ``run.json``."""
         async with self.lock:
             self.run.steps[record.path] = record
             self._note_progress(record)
-            await to_thread.run_sync(self.store.save, self.run)
+            await to_thread.run_sync(self._stamp_alive)
 
     async def persist(self, outcome: StepOutcome) -> None:
         """Write-ahead: output file (when there is an output) → record → ``run.json``."""
@@ -747,7 +754,7 @@ class RunContext:
                 outcome.output_kind = kind
             self.run.steps[record.path] = record
             self._note_progress(record)
-            await to_thread.run_sync(self.store.save, self.run)
+            await to_thread.run_sync(self._stamp_alive)
 
     def _write_output(self, record: StepRecord, content: str, kind: str) -> None:
         """Write the output file (fsync) and stamp ``output_ref/kind/sha256`` on the record."""
@@ -810,25 +817,20 @@ class RunContext:
         return warnings
 
     async def save_run(self) -> None:
-        """Save ``run.json`` (worker thread, under the persistence lock)."""
+        """Save ``run.json`` (worker thread, under the persistence lock); stamps liveness."""
         async with self.lock:
-            await to_thread.run_sync(self.store.save, self.run)
+            await to_thread.run_sync(self._stamp_alive)
 
     def save_run_sync(self) -> None:
-        """Synchronous flush (used by the second-SIGINT hard-exit path)."""
-        self.store.save(self.run)
+        """Synchronous flush (used by the second-SIGINT hard-exit path); stamps liveness."""
+        self._stamp_alive()
 
     async def touch_heartbeat(self) -> None:
-        """Stamp ``run.heartbeat_at`` and persist it (PRD-07 R2) — cheap, no output write.
-
-        Called by a periodic timer for the life of the run and right before/after every
-        provider call (:mod:`rayspec.engine.executors.prompt`), so a long shell/prompt step
-        still proves it is alive between the ``step.started``/``step.finished`` events that
-        would otherwise be the only writes.
-        """
+        """Stamp ``run.heartbeat_at`` and persist it (PRD-07 R2) — the periodic timer's write, so
+        a step with no save of its own (a long shell/prompt) still proves it is alive between the
+        ``step.started``/``step.finished`` events. Every other engine save stamps it too."""
         async with self.lock:
-            self.run.heartbeat_at = utcnow()
-            await to_thread.run_sync(self.store.save, self.run)
+            await to_thread.run_sync(self._stamp_alive)
 
     async def check_cancelled(self) -> str | None:
         """The reason ``rayspec cancel`` flagged this run, or ``None`` (PRD-07 R5).

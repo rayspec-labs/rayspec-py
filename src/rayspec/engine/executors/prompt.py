@@ -287,9 +287,6 @@ async def run_prompt(
     emit = UsageTracker(make_emit(ctx, record.path, attempt))
     structured_value: Any = None
     structured_error: str | None = None
-    # PRD-07 R2: a heartbeat right before and after the call, on top of the periodic timer — a
-    # single long agent turn proves it is still alive at both ends, not only once every interval
-    await ctx.touch_heartbeat()
     try:
         if step.output_schema is not None:
             sres = await run_structured(provider, req, emit, step.output_schema)
@@ -300,7 +297,6 @@ async def run_prompt(
         else:
             result = await provider.run(req, emit)
             usage, cost = result.usage, result.cost_usd
-        await ctx.touch_heartbeat()
     except ProviderError as exc:
         # a raised provider error (auth, CLI missing, a 429 the SDK raised): keep what the
         # stream reported before it, else zero — NOT "unknown", which is reserved for attempts

@@ -88,3 +88,65 @@ async def test_heartbeat_uses_no_new_storage_location(harness: Harness) -> None:
     assert "heartbeat_at" in raw, "heartbeat must be a field of run.json, not a new artefact"
     after = sorted(p.relative_to(run_dir).as_posix() for p in run_dir.rglob("*") if p.is_file())
     assert after == before, "no new file should appear for the heartbeat"
+
+
+async def test_a_heartbeat_write_failure_never_ends_the_run(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRD-07 R2 (review N1): an OSError from the periodic liveness save must not escape the
+    heartbeat task, cancel the graph and bypass finalize — the run still reaches a terminal
+    status with its pid cleared, and the step's own saves keep proving liveness."""
+    from rayspec.engine.context import RunContext
+
+    monkeypatch.setattr(liveness, "HEARTBEAT_INTERVAL_S", 0.3)
+    harness.workflow("t", wf("  - {id: slow, agent: {provider: stub}, prompt: go}\n"))
+    provider = StubProvider(script={"defaults": {"latency_ms": 1500}})
+
+    async def boom(self: RunContext) -> None:  # only the periodic timer calls touch_heartbeat now
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(RunContext, "touch_heartbeat", boom)
+    result = await harness.run(
+        "t", options=RunOptions(interactive=False), providers={"stub": provider}
+    )
+    assert result.status is RunStatus.SUCCEEDED, result.reason
+    stored = harness.store.load(result.run_id)
+    assert stored.status is RunStatus.SUCCEEDED
+    assert stored.pid is None
+    assert all(r.status is not RunStatus.RUNNING for r in stored.steps.values())
+
+
+async def test_a_finished_step_advances_the_heartbeat(harness: Harness) -> None:
+    """Every engine-originated save stamps ``heartbeat_at`` (``_stamp_alive``), so a step
+    finishing moves it even with the timer never firing — a write is proof of life."""
+    harness.workflow("t", wf("  - {id: a, shell: echo one}\n  - {id: b, needs: [a], shell: echo two}\n"))
+    result = await harness.run("t", options=RunOptions(interactive=False))
+    assert result.status is RunStatus.SUCCEEDED
+    a, b = result.steps["a"], result.steps["b"]
+    assert a.ended_at is not None and b.ended_at is not None
+    stored = json.loads((harness.store.run_dir(result.run_id) / "run.json").read_text())
+    assert stored["heartbeat_at"] is not None
+
+
+async def test_the_prompt_executor_does_not_stamp_the_heartbeat_itself(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two per-call ``touch_heartbeat`` writes are gone: liveness during a prompt step rests
+    on the periodic timer and the step's own record save, not two extra run.json writes."""
+    from rayspec.engine.executors import prompt as prompt_exec
+
+    assert not hasattr(prompt_exec, "_TOUCH_MARKER")
+    monkeypatch.setattr(liveness, "HEARTBEAT_INTERVAL_S", 3600)  # timer effectively off
+    harness.workflow("t", wf("  - {id: p, agent: {provider: stub}, prompt: go}\n"))
+    saves = {"n": 0}
+    real = harness.store.save
+
+    def count(run: object) -> None:
+        saves["n"] += 1
+        real(run)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(harness.store, "save", count)
+    result = await harness.run("t", options=RunOptions(interactive=False), providers={"stub": StubProvider()})
+    assert result.status is RunStatus.SUCCEEDED
+    # start + toolchain + step-start + step-finish + finalize — a handful, not "+2 per prompt"
+    assert saves["n"] <= 8, saves["n"]
