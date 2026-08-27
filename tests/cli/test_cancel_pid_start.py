@@ -236,5 +236,7 @@ def test_pid_is_rayspec_run_recognises_the_module_launch_shape(
         monkeypatch.setattr(common, "pid_command_line", lambda pid, c=cmdline: c)
         assert common.pid_is_rayspec_run(run) is True, cmdline
     # still rejects a look-alike that is not a rayspec execution command
-    monkeypatch.setattr(common, "pid_command_line", lambda pid: "python -m rayspecx.cli.app run live")
+    monkeypatch.setattr(
+        common, "pid_command_line", lambda pid: "python -m rayspecx.cli.app run live"
+    )
     assert common.pid_is_rayspec_run(run) is False

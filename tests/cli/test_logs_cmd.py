@@ -256,7 +256,9 @@ def test_follow_exit_code_returns_the_runs_code(cli: CliRunner, seeded: Seeded) 
         assert result.exit_code == code, (run_id, result.output)
 
 
-def test_follow_without_exit_code_exits_zero_on_a_failed_run(cli: CliRunner, seeded: Seeded) -> None:
+def test_follow_without_exit_code_exits_zero_on_a_failed_run(
+    cli: CliRunner, seeded: Seeded
+) -> None:
     result = cli.invoke(app, ["logs", FAILED_ID, "--follow", "--root", str(seeded.project)])
     assert result.exit_code == 0, result.output
 

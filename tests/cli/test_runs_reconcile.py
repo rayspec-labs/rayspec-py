@@ -101,9 +101,7 @@ def test_reconcile_reports_a_reused_pid_as_interrupted(cli: CliRunner, seeded: S
     """A running record whose pid now belongs to a different process (start time differs) is
     interrupted — the case a bare pid check would miss."""
 
-    run = _running(
-        seeded, "20260827-100900-reuse", pid=os.getpid(), heartbeat_at=datetime.now(UTC)
-    )
+    run = _running(seeded, "20260827-100900-reuse", pid=os.getpid(), heartbeat_at=datetime.now(UTC))
     run.pid_started_at = "a-start-time-that-is-not-this-process"
     seeded.store.save(run)
     result = cli.invoke(app, ["runs", "--root", str(seeded.project), "--json"])

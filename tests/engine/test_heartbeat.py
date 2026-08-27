@@ -59,6 +59,7 @@ async def test_heartbeat_is_updated_periodically_during_a_run(
             samples.append(getattr(rec, "heartbeat_at", "MISSING"))
             await anyio.sleep(0.4)
 
+    result = None
     async with anyio.create_task_group() as tg:
         tg.start_soon(poll)
         result = await harness.run(
@@ -69,6 +70,7 @@ async def test_heartbeat_is_updated_periodically_during_a_run(
         )
         done.set()
 
+    assert result is not None
     assert result.status is RunStatus.SUCCEEDED
     assert "MISSING" not in samples, "RunRecord has no heartbeat_at field yet"
     distinct = {s for s in samples if s is not None}
@@ -119,7 +121,9 @@ async def test_a_heartbeat_write_failure_never_ends_the_run(
 async def test_a_finished_step_advances_the_heartbeat(harness: Harness) -> None:
     """Every engine-originated save stamps ``heartbeat_at`` (``_stamp_alive``), so a step
     finishing moves it even with the timer never firing — a write is proof of life."""
-    harness.workflow("t", wf("  - {id: a, shell: echo one}\n  - {id: b, needs: [a], shell: echo two}\n"))
+    harness.workflow(
+        "t", wf("  - {id: a, shell: echo one}\n  - {id: b, needs: [a], shell: echo two}\n")
+    )
     result = await harness.run("t", options=RunOptions(interactive=False))
     assert result.status is RunStatus.SUCCEEDED
     a, b = result.steps["a"], result.steps["b"]
@@ -146,7 +150,9 @@ async def test_the_prompt_executor_does_not_stamp_the_heartbeat_itself(
         real(run)  # type: ignore[arg-type]
 
     monkeypatch.setattr(harness.store, "save", count)
-    result = await harness.run("t", options=RunOptions(interactive=False), providers={"stub": StubProvider()})
+    result = await harness.run(
+        "t", options=RunOptions(interactive=False), providers={"stub": StubProvider()}
+    )
     assert result.status is RunStatus.SUCCEEDED
     # start + toolchain + step-start + step-finish + finalize — a handful, not "+2 per prompt"
     assert saves["n"] <= 8, saves["n"]

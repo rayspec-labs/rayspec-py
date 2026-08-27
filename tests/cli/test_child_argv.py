@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import Any
 
 from typer.main import get_command
 
@@ -35,7 +36,7 @@ LAUNCHER_OWNED = frozenset(
 )
 
 
-def _run_command() -> object:
+def _run_command() -> Any:
     """The click command object behind ``rayspec run`` (its params carry the option names)."""
     root = get_command(app)
     return root.commands["run"]  # type: ignore[attr-defined]
