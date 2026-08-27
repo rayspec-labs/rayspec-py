@@ -8,9 +8,12 @@ deltas are joined per block and printed as whole ``thinking:`` lines, internal `
 records are hidden unless ``--verbose``); ``--stream`` interleaves every step's stream
 into the event log (ordered by timestamp); ``--json`` prints the raw JSONL records (events as
 stored, stream records wrapped as ``{"type": "stream", "step_path": ..., "record": {...}}``);
-``--follow`` tails the files until ``run.json`` leaves the ``running`` status. Every rendered
-string is untrusted text and goes through :mod:`rayspec.textsafe`; ``--raw`` prints it
-unescaped for debugging. Reading only — the store owns the files.
+``--follow`` tails the files until ``run.json`` leaves the ``running`` status, and with
+``--exit-code`` exits with that final status's code (``0``/``1``/``3``/``4``) rather than
+always ``0`` — the way to wait for a detached run and learn its outcome. Every rendered string
+is untrusted text and goes through :mod:`rayspec.textsafe`; ``--raw`` prints it unescaped for
+debugging. Reading, except that ``--follow`` reconciles a stale ``running`` record (writes the
+corrected status back) so a dead run's follow terminates.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from rayspec.cli.commands._loader_common import (
     resolve_output,
 )
 from rayspec.engine.paths import StepPath
-from rayspec.engine.runtime import EXIT_INTERRUPTED
+from rayspec.engine.runtime import EXIT_INTERRUPTED, exit_code_for
 from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.schema import RunStatus
 from rayspec.store.file import EVENTS_JSONL, STREAM_JSONL, FileRunStore, StoreError
@@ -465,11 +468,22 @@ def register(app: typer.Typer) -> None:
                 "included) — for debugging only.",
             ),
         ] = False,
+        exit_code: Annotated[
+            bool,
+            typer.Option(
+                "--exit-code",
+                help="With --follow: exit with the run's final status code (0/1/3/4) instead "
+                "of 0. The way to wait for a detached run and learn its outcome.",
+            ),
+        ] = False,
         json_: JsonOption = False,
         output: OutputOption = None,
         root: RootOption = None,
     ) -> None:
         """Show a run's event log (or one step's stream); --follow tails a live run."""
+        if exit_code and not follow:
+            fail("--exit-code needs --follow (a run not being followed has no live outcome)")
+            return
         json_ = resolve_output(output, json_)
         ctx = common.make_runs_context(root)
         store, record = common.lookup_run(ctx, run)
@@ -495,7 +509,7 @@ def register(app: typer.Typer) -> None:
             prefix_steps=step is None and stream,
             verbose=verbose,
             raw=raw,
-            show_outputs=follow,
+            show_outputs=False,  # parity with plain logs; `rayspec show` has outputs
         )
         if follow:
             try:
@@ -506,9 +520,13 @@ def register(app: typer.Typer) -> None:
             except KeyboardInterrupt:
                 finish()
                 raise typer.Exit(code=EXIT_INTERRUPTED) from None
-        else:
-            for source, item in read_history(store, record.run_id, step=step, stream=stream):
-                emit(source, item)
+            finish()
+            if exit_code:
+                final = common.reconcile_run(store, store.load(record.run_id))
+                raise typer.Exit(code=exit_code_for(final.status))
+            return
+        for source, item in read_history(store, record.run_id, step=step, stream=stream):
+            emit(source, item)
         finish()
 
 

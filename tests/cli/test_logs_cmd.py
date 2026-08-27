@@ -18,7 +18,7 @@ from rayspec.events.model import EventType, RunEvent, StreamRecord
 from rayspec.schema import RunStatus
 from rayspec.store.model import RunRecord
 
-from .conftest import FAILED_ID, SUCCEEDED_ID, Seeded
+from .conftest import FAILED_ID, PAUSED_ID, SUCCEEDED_ID, Seeded
 
 pytestmark = pytest.mark.anyio
 
@@ -239,3 +239,33 @@ def test_logs_step_validation(cli: CliRunner, seeded: Seeded) -> None:
         app, ["logs", SUCCEEDED_ID, "--step", "nope", "--root", str(seeded.project)]
     )
     assert unknown.exit_code == 2 and "no step 'nope'" in unknown.output
+
+
+def test_exit_code_requires_follow(cli: CliRunner, seeded: Seeded) -> None:
+    result = cli.invoke(app, ["logs", SUCCEEDED_ID, "--exit-code", "--root", str(seeded.project)])
+    assert result.exit_code == 2
+    assert "needs --follow" in result.output
+
+
+def test_follow_exit_code_returns_the_runs_code(cli: CliRunner, seeded: Seeded) -> None:
+    """A finished run followed with --exit-code exits with its status code: 0/1/3 here."""
+    for run_id, code in ((SUCCEEDED_ID, 0), (FAILED_ID, 1), (PAUSED_ID, 3)):
+        result = cli.invoke(
+            app, ["logs", run_id, "--follow", "--exit-code", "--root", str(seeded.project)]
+        )
+        assert result.exit_code == code, (run_id, result.output)
+
+
+def test_follow_without_exit_code_exits_zero_on_a_failed_run(cli: CliRunner, seeded: Seeded) -> None:
+    result = cli.invoke(app, ["logs", FAILED_ID, "--follow", "--root", str(seeded.project)])
+    assert result.exit_code == 0, result.output
+
+
+def test_follow_does_not_append_an_outputs_line(cli: CliRunner, seeded: Seeded) -> None:
+    """PRD-07 D20: --follow renders run.finished exactly as plain logs — no extra ` outputs:`
+    line that a reader of the plain log would not see (`rayspec show` has the outputs)."""
+    plain = cli.invoke(app, ["logs", SUCCEEDED_ID, "--root", str(seeded.project)])
+    followed = cli.invoke(app, ["logs", SUCCEEDED_ID, "--follow", "--root", str(seeded.project)])
+    assert plain.exit_code == 0 and followed.exit_code == 0
+    assert "outputs:" not in followed.output
+    assert "verdict" not in followed.output  # the outputs values are not spilled into the log line
