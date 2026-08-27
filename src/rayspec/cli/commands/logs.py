@@ -19,6 +19,7 @@ corrected status back) so a dead run's follow terminates.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -72,6 +73,12 @@ class LogTailer:
     step: str | None = None
     stream: bool = False
     _offsets: dict[Path, int] = field(default_factory=dict)
+    #: inode of each file at the last poll — a change means the store replaced it (a truncation),
+    #: so a byte offset kept from before now points into a different (shorter) file.
+    _inodes: dict[Path, int] = field(default_factory=dict)
+    #: the last whole line yielded per file — the anchor a follower resumes after when the file
+    #: was truncated (D7: without it, ``seek(stale offset)`` reads nothing forever).
+    _last_line: dict[Path, bytes] = field(default_factory=dict)
 
     @property
     def run_dir(self) -> Path:
@@ -109,6 +116,17 @@ class LogTailer:
         offset = self._offsets.get(file, 0)
         try:
             with file.open("rb") as fh:
+                st = os.fstat(fh.fileno())
+                shrunk = (file in self._inodes and st.st_ino != self._inodes[file]) or (
+                    st.st_size < offset
+                )
+                if shrunk:
+                    # PRD-07 D7: the store replaced this file with a middle-truncated, shorter one.
+                    # Resume from just after the last line already shown, or — when that line was
+                    # in the dropped middle — from the truncation marker, so the follower prints
+                    # the "truncated" warning and the tail rather than going silent forever.
+                    offset = self._resume_offset(fh, self._last_line.get(file))
+                self._inodes[file] = st.st_ino
                 fh.seek(offset)
                 chunk = fh.read()
         except FileNotFoundError:
@@ -119,10 +137,30 @@ class LogTailer:
         if end < 0:
             return  # only a torn line so far
         self._offsets[file] = offset + end + 1
+        last: bytes | None = None
         for raw in chunk[:end].split(b"\n"):
-            line = raw.decode("utf-8", errors="replace").strip()
-            if line:
-                yield line
+            if raw.strip():
+                last = raw
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line:
+                    yield line
+        if last is not None:
+            self._last_line[file] = last
+
+    @staticmethod
+    def _resume_offset(fh: Any, anchor: bytes | None) -> int:
+        """Where to resume reading a file the store just truncated: right after ``anchor`` (the
+        last line already shown) if it survived, else at the last truncation marker line."""
+        fh.seek(0)
+        data = fh.read()
+        if anchor:
+            pos = data.rfind(anchor + b"\n")
+            if pos >= 0:
+                return pos + len(anchor) + 1
+        marker = data.rfind(b"log_truncated")
+        if marker >= 0:
+            return data.rfind(b"\n", 0, marker) + 1  # start of the marker line (0 if it is first)
+        return 0
 
 
 def _sort_key(pair: tuple[str, LogItem]) -> datetime:
