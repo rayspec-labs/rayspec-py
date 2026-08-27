@@ -1326,6 +1326,31 @@ def _audit_marker(split: CapSplit) -> bytes:
     ).encode("utf-8")
 
 
+def open_private_rdwr(path: Path, *, truncate: bool) -> BinaryIO:
+    """A private (``0600``) binary read/write handle — for a writer (a process pump) that must
+    cap its own file in place with :func:`truncate_open_file` without an ``os.replace`` (which
+    would strand the open fd). ``truncate=True`` starts fresh; otherwise the position is left at
+    end so writes append."""
+    flags = os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC
+    if truncate:
+        flags |= os.O_TRUNC
+    fd = os.open(path, flags, PRIVATE_FILE_MODE)
+    try:
+        fh = cast(BinaryIO, os.fdopen(fd, "r+b"))
+    except BaseException:  # pragma: no cover
+        os.close(fd)
+        raise
+    if not truncate:
+        fh.seek(0, os.SEEK_END)
+    return fh
+
+
+def text_log_marker(split: CapSplit) -> bytes:
+    """The marker line a capped ``stdout.log``/``stderr.log`` carries at the cut — plain text,
+    since these files are not JSONL."""
+    return f"\n--- log truncated: {split.dropped_bytes} bytes dropped ---\n".encode()
+
+
 def _open_private_bytes(path: Path) -> BinaryIO:
     """``open(path, "wb")`` that creates the file ``0600`` — the binary twin of
     :func:`open_private` (same ``O_NOFOLLOW``/``O_CLOEXEC`` guarantees)."""
